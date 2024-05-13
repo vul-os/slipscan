@@ -25,7 +25,7 @@ async function sendClaudeRequest(imageUrls: string[]) {
 
   contentArray.push({
     type: "text",
-    text: 'Analyze the given receipt images and extract relevant information in JSON format: { "merchant": { "name": "", "location": "" }, "receipt": { "transaction_number": "", "receipt_timestamp": "", "cashier_name": "", "till_number": "", "subtotal": 0, "tax_amount": 0, "total_amount": 0, "barcode": "" }, "items": [ { "description": "", "quantity": 0, "unit": "", "regular_price": 0, "discount_amount": 0, "discount_percentage": 0, "price": 0, "category": "", "subcategory": "", "brand": "", "product_code": "", "unit_of_measurement": "", "tax_amount": 0, "tax_rate": 0 } ], "payment_methods": [ { "method": "", "amount": 0 } ], "receipt_type": "" }',
+    text: 'Analyze the given receipt images and extract relevant information in JSON format: { "merchant": { "name": "", "location": "" }, "document": { "transaction_number": "", "document_timestamp": "", "cashier_name": "", "till_number": "", "subtotal": 0, "tax_amount": 0, "total_amount": 0, "barcode": "" }, "items": [ { "description": "", "quantity": 0, "unit": "", "regular_price": 0, "discount_amount": 0, "discount_percentage": 0, "price": 0, "category": "", "subcategory": "", "brand": "", "product_code": "", "unit_of_measurement": "", "tax_amount": 0, "tax_rate": 0 } ], "payment_methods": [ { "method": "", "amount": 0 } ], "document_type": "" }',
   });
 
   const url = "https://api.anthropic.com/v1/messages";
@@ -72,7 +72,7 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
   }
 
   // Destructure the parsed data
-  const { merchant, receipt, items, payment_methods, receipt_type } = extractedData;
+  const { merchant, document, items, payment_methods, document_type } = extractedData;
 
   // Merchant information
   const { data: merchantData, error: merchantError } = await supabase
@@ -99,106 +99,106 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
     merchantId = merchantData.id;
   }
 
-  // Receipt type information
-  const { data: receiptTypeData, error: receiptTypeError } = await supabase
-    .from('receipt_types')
+  // Document type information
+  const { data: documentTypeData, error: documentTypeError } = await supabase
+    .from('document_types')
     .select('id')
-    .eq('name', receipt_type)
+    .eq('name', document_type)
     .single();
 
-  let receiptTypeId;
-  if (receiptTypeError) {
-    const { data: insertedReceiptType, error: insertReceiptTypeError } = await supabase
-      .from('receipt_types')
-      .insert({ name: receipt_type })
+  let documentTypeId;
+  if (documentTypeError) {
+    const { data: insertedDocumentType, error: insertDocumentTypeError } = await supabase
+      .from('document_types')
+      .insert({ name: document_type })
       .select('id')
       .single();
 
-    if (insertReceiptTypeError) {
-      throw insertReceiptTypeError;
+    if (insertDocumentTypeError) {
+      throw insertDocumentTypeError;
     }
 
-    receiptTypeId = insertedReceiptType.id;
+    documentTypeId = insertedDocumentType.id;
   } else {
-    receiptTypeId = receiptTypeData.id;
+    documentTypeId = documentTypeData.id;
   }
 
-  // Check if receipt already exists
-  const { data: existingReceipt, error: existingReceiptError } = await supabase
-    .from('receipts')
+  // Check if document already exists
+  const { data: existingDocument, error: existingDocumentError } = await supabase
+    .from('documents')
     .select('id')
-    .eq('transaction_number', receipt.transaction_number)
+    .eq('transaction_number', document.transaction_number)
     .eq('merchant_id', merchantId)
     .single();
 
-  let receiptId;
-  if (existingReceiptError) {
-    const { data: insertedReceipt, error: insertReceiptError } = await supabase
-      .from('receipts')
+  let documentId;
+  if (existingDocumentError) {
+    const { data: insertedDocument, error: insertDocumentError } = await supabase
+      .from('documents')
       .insert({
         merchant_id: merchantId,
-        receipt_type_id: receiptTypeId,
-        transaction_number: receipt.transaction_number,
-        receipt_timestamp: receipt.receipt_timestamp || null, // Set to null if empty or invalid
-        cashier_name: receipt.cashier_name,
-        till_number: receipt.till_number,
-        subtotal: receipt.subtotal,
-        tax_amount: receipt.tax_amount,
-        total_amount: receipt.total_amount,
-        barcode: receipt.barcode,
+        document_type_id: documentTypeId,
+        transaction_number: document.transaction_number,
+        document_timestamp: document.document_timestamp || null, // Set to null if empty or invalid
+        cashier_name: document.cashier_name,
+        till_number: document.till_number,
+        subtotal: document.subtotal,
+        tax_amount: document.tax_amount,
+        total_amount: document.total_amount,
+        barcode: document.barcode,
       })
       .select('id')
       .single();
 
-    if (insertReceiptError) {
-      throw insertReceiptError;
+    if (insertDocumentError) {
+      throw insertDocumentError;
     }
 
-    receiptId = insertedReceipt.id;
+    documentId = insertedDocument.id;
   } else {
-    receiptId = existingReceipt.id;
+    documentId = existingDocument.id;
 
-    // Update receipt information
-    const { error: updateReceiptError } = await supabase
-      .from('receipts')
+    // Update document information
+    const { error: updateDocumentError } = await supabase
+      .from('documents')
       .update({
-        receipt_type_id: receiptTypeId,
-        receipt_timestamp: receipt.receipt_timestamp || null, // Set to null if empty or invalid
-        cashier_name: receipt.cashier_name,
-        till_number: receipt.till_number,
-        subtotal: receipt.subtotal,
-        tax_amount: receipt.tax_amount,
-        total_amount: receipt.total_amount,
-        barcode: receipt.barcode,
+        document_type_id: documentTypeId,
+        document_timestamp: document.document_timestamp || null, // Set to null if empty or invalid
+        cashier_name: document.cashier_name,
+        till_number: document.till_number,
+        subtotal: document.subtotal,
+        tax_amount: document.tax_amount,
+        total_amount: document.total_amount,
+        barcode: document.barcode,
       })
-      .eq('id', receiptId);
+      .eq('id', documentId);
 
-    if (updateReceiptError) {
-      throw updateReceiptError;
+    if (updateDocumentError) {
+      throw updateDocumentError;
     }
   }
 
-  // Delete existing receipt images
+  // Delete existing document images
   const { error: deleteImagesError } = await supabase
     .from('receipt_images')
     .delete()
-    .eq('receipt_id', receiptId);
+    .eq('document_id', documentId);
 
   if (deleteImagesError) {
     throw deleteImagesError;
   }
 
-  // Insert new receipt images
+  // Insert new document images
   for (const imageUrl of imageUrls) {
-    const { error: receiptImageError } = await supabase
+    const { error: documentImageError } = await supabase
       .from('receipt_images')
       .insert({
-        receipt_id: receiptId,
+        document_id: documentId,
         image_url: imageUrl,
       });
 
-    if (receiptImageError) {
-      throw receiptImageError;
+    if (documentImageError) {
+      throw documentImageError;
     }
   }
 
@@ -206,7 +206,7 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
   const { error: deleteRawResponseError } = await supabase
     .from('raw_responses')
     .delete()
-    .eq('receipt_id', receiptId);
+    .eq('document_id', documentId);
 
   if (deleteRawResponseError) {
     throw deleteRawResponseError;
@@ -216,7 +216,7 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
   const { data: insertedRawResponse, error: rawResponseError } = await supabase
     .from('raw_responses')
     .insert({
-      receipt_id: receiptId,
+      document_id: documentId,
       response_data: extractedData,
     })
     .single();
@@ -229,7 +229,7 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
   const { error: deleteItemsError } = await supabase
     .from('extracted_items')
     .delete()
-    .eq('receipt_id', receiptId);
+    .eq('document_id', documentId);
 
   if (deleteItemsError) {
     throw deleteItemsError;
@@ -241,7 +241,7 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
       const { data: insertedItem, error: itemError } = await supabase
         .from('extracted_items')
         .insert({
-          receipt_id: receiptId,
+          document_id: documentId,
           description: item.description,
           quantity: item.quantity,
           unit: item.unit,
@@ -269,7 +269,7 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
   const { error: deletePaymentMethodsError } = await supabase
     .from('receipt_payments')
     .delete()
-    .eq('receipt_id', receiptId);
+    .eq('document_id', documentId);
 
   if (deletePaymentMethodsError) {
     throw deletePaymentMethodsError;
@@ -304,7 +304,7 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
       const { data: insertedReceiptPayment, error: receiptPaymentError } = await supabase
         .from('receipt_payments')
         .insert({
-          receipt_id: receiptId,
+          document_id: documentId,
           payment_method_id: paymentMethodId,
           amount: paymentMethod.amount,
         })
