@@ -10,8 +10,9 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/chromedp/cdproto/network"
-	"github.com/chromedp/chromedp"
+	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/launcher"
+	"github.com/go-rod/rod/lib/proto"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
@@ -36,20 +37,13 @@ func main() {
 	defer dbPool.Close()
 	log.Println("DEBUG: Connected to database")
 
-	opts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.Flag("headless", false),
-		chromedp.Flag("disable-gpu", false),
-		chromedp.Flag("enable-automation", false),
-		chromedp.Flag("disable-extensions", false),
-	)
-
-	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
-	defer cancel()
-	log.Println("DEBUG: Created ChromeDP execution allocator")
+	// Initialize rod browser with headless mode off
+	u := launcher.New().MustLaunch()
+	browser := rod.New().ControlURL(u).MustConnect()
+	defer browser.MustClose()
 
 	for {
 		log.Println("DEBUG: Starting new iteration in main loop")
-		ctx, cancel := chromedp.NewContext(allocCtx)
 
 		log.Println("DEBUG: Loading cookies")
 		cookies, err := loadCookies()
@@ -57,17 +51,16 @@ func main() {
 			log.Println("No saved cookies found or error loading cookies:", err)
 		}
 
-		log.Println("DEBUG: Attempting login")
-		if err := login(ctx, cookies); err != nil {
+		page := browser.MustPage(url)
+		if err := login(page, cookies); err != nil {
 			log.Printf("Login failed: %v", err)
-			cancel()
 			log.Println("DEBUG: Waiting 5 seconds before retrying login")
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
 		log.Println("DEBUG: Login successful, starting main loop")
-		if err := runLoop(ctx); err != nil {
+		if err := runLoop(page); err != nil {
 			log.Printf("Error during loop: %v", err)
 			if strings.Contains(err.Error(), "logged out") {
 				waitTime := 5 * time.Second
@@ -75,60 +68,67 @@ func main() {
 					waitTime = 15 * time.Second
 				}
 				log.Printf("Detected logout. Waiting %v before restarting...", waitTime)
-				cancel()
 				time.Sleep(waitTime)
 				continue
 			}
 		}
 
-		cancel()
 		log.Println("DEBUG: Finished iteration, waiting 5 seconds before next iteration")
 		time.Sleep(5 * time.Second)
 	}
 }
 
-func runLoop(ctx context.Context) error {
+func runLoop(page *rod.Page) error {
 	for {
 		log.Println("DEBUG: Starting new iteration in runLoop")
 
 		log.Println("DEBUG: Checking logout status")
-		loggedOut, reason, err := checkLogout(ctx)
+		loggedOut, err := checkLogout(page)
 		if err != nil {
 			return fmt.Errorf("error checking logout status: %w", err)
 		}
 
 		if loggedOut {
-			log.Printf("DEBUG: Logged out detected. Reason: %s", reason)
-			return fmt.Errorf("logged out: %s", reason)
+			log.Println("DEBUG: Logged out detected")
+			return fmt.Errorf("logged out")
 		}
 
 		log.Println("DEBUG: Navigating to transaction history")
-		err = chromedp.Run(ctx,
-			chromedp.Navigate(url),
-			chromedp.WaitVisible(`//span[contains(@class, "shortCutLink") and contains(text(), "Accounts")]`, chromedp.BySearch),
-			chromedp.Click(`//span[contains(@class, "shortCutLink") and contains(text(), "Accounts")]`, chromedp.BySearch),
-			chromedp.WaitVisible(`//div[@id="nickname_0"]//a[contains(text(), "Gold Business Account")]`, chromedp.BySearch),
-			chromedp.Click(`//div[@id="nickname_0"]//a[contains(text(), "Gold Business Account")]`, chromedp.BySearch),
-			chromedp.WaitVisible(`//div[contains(@class, "subTabButton") and .//div[contains(text(), "Transaction History")]]`, chromedp.BySearch),
-		)
+
+		// Click on "Accounts" link
+		accountElement, err := page.ElementR("span.shortCutLink", "Accounts")
 		if err != nil {
-			return fmt.Errorf("error navigating to transaction history: %w", err)
+			return fmt.Errorf("error finding Accounts link: %w", err)
+		}
+		if err := accountElement.Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return fmt.Errorf("error clicking on Accounts link: %w", err)
+		}
+
+		// Click on "Gold Business Account" link
+		businessAccountElement, err := page.ElementR("#nickname_0 a", "Gold Business Account")
+		if err != nil {
+			return fmt.Errorf("error finding Gold Business Account link: %w", err)
+		}
+		if err := businessAccountElement.Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return fmt.Errorf("error clicking on Gold Business Account link: %w", err)
+		}
+
+		// Click on "Transaction History" link
+		transactionHistoryElement, err := page.ElementR("div.subTabButton", "Transaction History")
+		if err != nil {
+			return fmt.Errorf("error finding Transaction History link: %w", err)
+		}
+		if err := transactionHistoryElement.Click(proto.InputMouseButtonLeft, 1); err != nil {
+			return fmt.Errorf("error clicking on Transaction History link: %w", err)
 		}
 
 		log.Println("DEBUG: Clicking transaction history to update table")
-		err = chromedp.Run(ctx,
-			chromedp.Click(`//div[contains(@class, "subTabButton") and .//div[contains(text(), "Transaction History")]]`, chromedp.BySearch),
-			chromedp.WaitVisible(`#transactionHistoryTables_tableContent`, chromedp.ByID),
-		)
-		if err != nil {
+		if err := page.MustElement(`#transactionHistoryTables_tableContent`).WaitVisible(); err != nil {
 			return fmt.Errorf("error updating transaction history: %w", err)
 		}
 
 		log.Println("DEBUG: Extracting transaction data")
-		var tableHTML string
-		err = chromedp.Run(ctx,
-			chromedp.OuterHTML(`#transactionHistoryTables_tableContent`, &tableHTML),
-		)
+		tableHTML, err := page.MustElement(`#transactionHistoryTables_tableContent`).HTML()
 		if err != nil {
 			return fmt.Errorf("error extracting transaction history: %w", err)
 		}
@@ -147,169 +147,68 @@ func runLoop(ctx context.Context) error {
 	}
 }
 
-func checkLogout(ctx context.Context) (bool, string, error) {
-	var result struct {
-		LoggedOut bool
-		Reason    string
-	}
-	err := chromedp.Run(ctx,
-		chromedp.Evaluate(`
-			(function() {
-				if (document.body.innerText.includes("You have successfully logged out of banking")) {
-					return {LoggedOut: true, Reason: "normal"};
-				} else if (document.body.innerText.includes("This session is being terminated because you are logged in concurrent sessions")) {
-					return {LoggedOut: true, Reason: "concurrent"};
-				} else if (!document.querySelector('span.shortCutLink')) {
-					return {LoggedOut: true, Reason: "no_menu"};
-				}
-				return {LoggedOut: false, Reason: ""};
-			})()
-		`, &result),
-	)
-	return result.LoggedOut, result.Reason, err
-}
-
-func login(ctx context.Context, cookies []*network.CookieParam) error {
-	log.Println("DEBUG: Starting login function")
-	return chromedp.Run(ctx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			// Set cookies if they exist
-			if len(cookies) > 0 {
-				log.Println("DEBUG: Setting cookies")
-				return network.SetCookies(cookies).Do(ctx)
-			}
-			log.Println("DEBUG: No cookies to set")
-			return nil
-		}),
-		chromedp.Navigate(url),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			log.Println("DEBUG: Handling cookie banner")
-			return handleCookieBanner(ctx)
-		}),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			log.Println("DEBUG: Checking if logged in")
-			var loggedIn bool
-			err := chromedp.Evaluate(`document.querySelector('span.shortCutLink') !== null`, &loggedIn).Do(ctx)
-			if err != nil {
-				log.Println("DEBUG: Error checking login status:", err)
-				return err
-			}
-			log.Println("DEBUG: Logged In:", loggedIn)
-
-			if !loggedIn {
-				log.Println("DEBUG: Not logged in, performing login")
-				return chromedp.Run(ctx,
-					chromedp.ActionFunc(func(ctx context.Context) error {
-						log.Println("DEBUG: Waiting for #user to be visible")
-						err := chromedp.WaitVisible(`#user`, chromedp.ByID).Do(ctx)
-						if err != nil {
-							log.Println("DEBUG: Error waiting for #user:", err)
-							return err
-						}
-						return nil
-					}),
-					chromedp.ActionFunc(func(ctx context.Context) error {
-						log.Println("DEBUG: Entering username")
-						err := chromedp.SendKeys(`#user`, username, chromedp.ByID).Do(ctx)
-						if err != nil {
-							log.Println("DEBUG: Error entering username:", err)
-							return err
-						}
-						return nil
-					}),
-					chromedp.ActionFunc(func(ctx context.Context) error {
-						log.Println("DEBUG: Entering password")
-						err := chromedp.SendKeys(`#pass`, password, chromedp.ByID).Do(ctx)
-						if err != nil {
-							log.Println("DEBUG: Error entering password:", err)
-							return err
-						}
-						return nil
-					}),
-					chromedp.ActionFunc(func(ctx context.Context) error {
-						log.Println("DEBUG: Clicking submit button")
-						err := chromedp.Click(`#OBSubmit`, chromedp.ByID).Do(ctx)
-						if err != nil {
-							log.Println("DEBUG: Error clicking submit button:", err)
-							return err
-						}
-						return nil
-					}),
-					chromedp.ActionFunc(func(ctx context.Context) error {
-						log.Println("DEBUG: Waiting for span.shortCutLink to be visible")
-						err := chromedp.WaitVisible(`span.shortCutLink`, chromedp.ByQuery).Do(ctx)
-						if err != nil {
-							log.Println("DEBUG: Error waiting for span.shortCutLink:", err)
-							return err
-						}
-						return nil
-					}),
-				)
-			} else {
-				log.Println("DEBUG: Already logged in, skipping login process")
-			}
-			return nil
-		}),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			log.Println("DEBUG: Saving cookies")
-			newCookies, err := network.GetCookies().Do(ctx)
-			if err != nil {
-				log.Println("DEBUG: Error getting cookies:", err)
-				return err
-			}
-			return saveCookies(newCookies)
-		}),
-	)
-}
-
-func handleCookieBanner(ctx context.Context) error {
-	var cookieBannerVisible bool
-	err := chromedp.Run(ctx,
-		chromedp.Evaluate(`!!document.querySelector('.cookieBanner')`, &cookieBannerVisible),
-	)
+func checkLogout(page *rod.Page) (bool, error) {
+	text, err := page.MustElement("body").Text()
 	if err != nil {
+		return false, fmt.Errorf("error getting page text: %w", err)
+	}
+	if strings.Contains(text, "You have successfully logged out of banking") {
+		return true, nil
+	}
+	return false, nil
+}
+
+func login(page *rod.Page, cookies []*proto.NetworkCookieParam) error {
+	log.Println("DEBUG: Starting login function")
+	if len(cookies) > 0 {
+		log.Println("DEBUG: Setting cookies")
+		page.MustSetCookies(cookies...)
+	}
+
+	page.MustNavigate(url)
+	if err := handleCookieBanner(page); err != nil {
 		return err
 	}
 
-	if cookieBannerVisible {
-		err = chromedp.Run(ctx,
-			chromedp.Click(`button.js-accept-cookies.s-btn__primary`, chromedp.ByQuery),
-			chromedp.WaitNotPresent(`.cookieBanner`, chromedp.ByQuery),
-		)
-		if err != nil {
-			return err
-		}
-		log.Println("Cookie banner accepted")
+	log.Println("DEBUG: Checking if logged in")
+	loggedIn := page.MustHas(`span.shortCutLink`)
+	if !loggedIn {
+		log.Println("DEBUG: Not logged in, performing login")
+		page.MustElement(`#user`).MustWaitVisible()
+		page.MustElement(`#user`).MustInput(username)
+		page.MustElement(`#pass`).MustInput(password)
+		page.MustElement(`#OBSubmit`).MustClick()
+		page.MustElement(`span.shortCutLink`).MustWaitVisible()
 	}
 
+	log.Println("DEBUG: Saving cookies")
+	newCookies := page.MustCookies()
+	return saveCookies(newCookies)
+}
+
+func handleCookieBanner(page *rod.Page) error {
+	cookieBannerVisible := page.MustHas(`.cookieBanner`)
+	if cookieBannerVisible {
+		page.MustElement(`button.js-accept-cookies.s-btn__primary`).MustClick()
+		page.MustElement(`.cookieBanner`).MustWaitVisible()
+		log.Println("Cookie banner accepted")
+	}
 	return nil
 }
 
-func loadCookies() ([]*network.CookieParam, error) {
+func loadCookies() ([]*proto.NetworkCookieParam, error) {
 	data, err := ioutil.ReadFile(cookieFile)
 	if err != nil {
 		return nil, err
 	}
 
-	var cookies []*network.CookieParam
+	var cookies []*proto.NetworkCookieParam
 	err = json.Unmarshal(data, &cookies)
 	return cookies, err
 }
 
-func saveCookies(cookies []*network.Cookie) error {
-	cookieParams := make([]*network.CookieParam, len(cookies))
-	for i, cookie := range cookies {
-		cookieParams[i] = &network.CookieParam{
-			Name:     cookie.Name,
-			Value:    cookie.Value,
-			Domain:   cookie.Domain,
-			Path:     cookie.Path,
-			Secure:   cookie.Secure,
-			HTTPOnly: cookie.HTTPOnly,
-		}
-	}
-
-	data, err := json.Marshal(cookieParams)
+func saveCookies(cookies []*proto.NetworkCookie) error {
+	data, err := json.Marshal(cookies)
 	if err != nil {
 		return err
 	}
@@ -343,37 +242,58 @@ func parseTableHTML(tableHTML string) []map[string]string {
 				transaction["balance"] = strings.TrimSpace(cell.Text())
 			}
 		})
-		if len(transaction) == 6 {
-			transactions = append(transactions, transaction)
-		}
+		transactions = append(transactions, transaction)
 	})
 
 	return transactions
 }
 
-func saveToSupabase(dbPool *pgxpool.Pool, transactions []map[string]string) error {
+func saveToSupabase(pool *pgxpool.Pool, transactions []map[string]string) error {
 	ctx := context.Background()
-	tx, err := dbPool.Begin(ctx)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
 	for _, t := range transactions {
-		_, err := tx.Exec(ctx,
-			`INSERT INTO bank_transactions (id, date, description, reference, service_fee, amount, balance)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-			ON CONFLICT (id) DO NOTHING`,
-			uuid.New(),
+		// Check if transaction already exists
+		var exists bool
+		err = tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM bank_transactions
+				WHERE date = $1 AND description = $2 AND reference = $3 AND service_fee = $4 AND amount = $5 AND balance = $6
+			)
+		`,
 			t["date"],
 			t["description"],
 			t["reference"],
 			t["service_fee"],
 			t["amount"],
 			t["balance"],
-		)
+		).Scan(&exists)
 		if err != nil {
 			return err
 		}
+
+		// If transaction does not exist, insert it
+		if !exists {
+			_, err := tx.Exec(ctx,
+				`INSERT INTO bank_transactions (id, date, description, reference, service_fee, amount, balance) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+				uuid.New().String(),
+				t["date"],
+				t["description"],
+				t["reference"],
+				t["service_fee"],
+				t["amount"],
+				t["balance"],
+			)
+			if err != nil {
+				return err
+			}
+		}
 	}
+
 	return tx.Commit(ctx)
 }
