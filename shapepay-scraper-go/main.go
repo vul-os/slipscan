@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -197,7 +197,7 @@ func handleCookieBanner(page *rod.Page) error {
 }
 
 func loadCookies() ([]*proto.NetworkCookieParam, error) {
-	data, err := ioutil.ReadFile(cookieFile)
+	data, err := os.ReadFile(cookieFile)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +212,7 @@ func saveCookies(cookies []*proto.NetworkCookie) error {
 	if err != nil {
 		return err
 	}
-	return ioutil.WriteFile(cookieFile, data, 0644)
+	return os.WriteFile(cookieFile, data, 0644)
 }
 
 func parseTableHTML(tableHTML string) []map[string]string {
