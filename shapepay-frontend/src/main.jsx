@@ -1,10 +1,14 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './App';
+import { ThemeProvider } from '@/components/theme-provider';
+import App from './app';
+import './index.css';
 
 const root = createRoot(document.getElementById('root'));
 root.render(
   <React.StrictMode>
-    <App />
+    <ThemeProvider defaultTheme='dark' storageKey='vite-ui-theme'>
+      <App />
+    </ThemeProvider>
   </React.StrictMode>
 );

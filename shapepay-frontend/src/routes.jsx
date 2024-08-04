@@ -1,38 +1,49 @@
 import React from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 
-import Customers from './pages/Customers';
-import APIKeys from './pages/APIKeys';
-import Webhooks from './pages/Webhooks';
-import Payments from './pages/Payments'
-import TransactionsPage from './pages/Transactions';
-import Refunds from './pages/Refunds'
-import Dashboard from './pages/Dashboard'
+// Layouts
+import BlankLayout from './components/layout/blank-layout';
+import MainLayout from './components/layout/main-layout';
 
-import BlankLayout from './components/BlankLayout';
-import MainLayout from './components/MainLayout';
-import SignIn from './pages/auth/SignIn';
-import SignUp from './pages/auth/SignUp';
-import ProtectedRoute from './components/ProtectedRoute';
+// Auth Pages
+import SignIn from './pages/auth/signin';
+import SignUp from './pages/auth/signup';
+
+// Protected Pages
+import Dashboard from './pages/dashboard';
+import Customers from './pages/customers';
+import APIKeys from './pages/apikeys';
+import Webhooks from './pages/webhooks';
+import Payments from './pages/payments';
+import TransactionsPage from './pages/transactions';
+import Refunds from './pages/refunds';
+
+// Components
+import ProtectedRoute from './components/auth/protected-route';
 
 const AppRoutes = () => {
   return (
     <Routes>
+      {/* Public routes */}
       <Route element={<BlankLayout />}>
         <Route path="/login" element={<SignIn />} />
         <Route path="/signup" element={<SignUp />} />
       </Route>
+
+      {/* Protected routes */}
       <Route element={<MainLayout />}>
-        <Route path="/" element={<ProtectedRoute><Customers /></ProtectedRoute>} />
+        <Route path="/" element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+        <Route path="/customers" element={<ProtectedRoute><Customers /></ProtectedRoute>} />
         <Route path="/apikeys" element={<ProtectedRoute><APIKeys /></ProtectedRoute>} />
         <Route path="/webhooks" element={<ProtectedRoute><Webhooks /></ProtectedRoute>} />
-        <Route path="/customers" element={<ProtectedRoute><Customers /></ProtectedRoute>} />
         <Route path="/payments" element={<ProtectedRoute><Payments /></ProtectedRoute>} />
         <Route path="/transactions" element={<ProtectedRoute><TransactionsPage /></ProtectedRoute>} />
         <Route path="/refunds" element={<ProtectedRoute><Refunds /></ProtectedRoute>} />
-
       </Route>
+
+      {/* Catch-all route */}
+      <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );
 };
