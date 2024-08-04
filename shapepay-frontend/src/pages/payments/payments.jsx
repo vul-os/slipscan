@@ -14,32 +14,58 @@ const PaymentsPage = () => {
   const [isCreatePaymentOpen, setIsCreatePaymentOpen] = useState(false);
 
   useEffect(() => {
-    fetchPaymentGroups();
+    fetchPaymentGroupsWithCodes();
   }, []);
 
-  const fetchPaymentGroups = async () => {
+  const fetchPaymentGroupsWithCodes = async () => {
     try {
       setLoading(true);
+
+      // Execute the query
       const { data, error } = await supabase
         .from('payment_groups')
         .select(`
-          *,
+          id,
+          txn_id,
+          external_reference_id,
+          total_amount,
+          status,
+          created_at,
+          updated_at,
           transaction_codes (
             code,
-            status
+            status,
+            expires_at
           )
         `)
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
-      setPaymentGroups(data.map(group => ({
-        ...group,
-        transactionCode: group.transaction_codes?.[0]?.code || 'N/A',
-        codeStatus: group.transaction_codes?.[0]?.status || 'N/A',
-        payments: []
-      })));
+      if (error) {
+        console.error('Error fetching data:', error);
+        return; // Early return if there's an error
+      }
+
+      console.log('Fetched data:', data);
+
+      // Process the data to flatten each group with its transaction codes
+      const processedData = data.map((group) => {
+        const { transaction_codes, ...rest } = group;
+        const flattenedTransactionCode = transaction_codes?.[0] || {}; // Take the first transaction code if available
+
+        return {
+          ...rest,
+          code: flattenedTransactionCode.code || 'Not available',
+          transactionCodeStatus: flattenedTransactionCode.status || 'Not available',
+          codeExpiry: flattenedTransactionCode.expires_at || null,
+          payments: [], // Initialize an empty array for payments
+        };
+      });
+
+      console.log('Processed data:', processedData); // For debugging
+
+      setPaymentGroups(processedData);
     } catch (error) {
-      console.error('Error fetching payment groups:', error);
+      console.error('Error fetching payment groups with codes:', error);
     } finally {
       setLoading(false);
     }
@@ -97,7 +123,7 @@ const PaymentsPage = () => {
 
       console.log('Payment created:', data);
       setIsCreatePaymentOpen(false);
-      fetchPaymentGroups(); // Refresh the payment groups
+      fetchPaymentGroupsWithCodes(); // Refresh the payment groups and codes
     } catch (error) {
       console.error('Error creating payment:', error);
     }
@@ -153,14 +179,16 @@ const PaymentsPage = () => {
                       <TableHead className="hidden md:table-cell text-gray-300">Status</TableHead>
                       <TableHead className="text-gray-300">Transaction Code</TableHead>
                       <TableHead className="hidden md:table-cell text-gray-300">Code Status</TableHead>
+                      <TableHead className="hidden md:table-cell text-gray-300">Code Expiry</TableHead>
                       <TableHead className="hidden md:table-cell text-gray-300">Created At</TableHead>
+                      <TableHead className="text-gray-300">Expand</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {paymentGroups.map((group) => (
                       <React.Fragment key={group.id}>
-                        <TableRow 
-                          onClick={() => handleRowClick(group.id)} 
+                        <TableRow
+                          onClick={() => handleRowClick(group.id)}
                           className="cursor-pointer hover:bg-gray-700 border-b border-gray-700 transition-colors duration-150"
                         >
                           <TableCell className="hidden md:table-cell">{group.id}</TableCell>
@@ -170,19 +198,24 @@ const PaymentsPage = () => {
                           <TableCell className="hidden md:table-cell">{group.status}</TableCell>
                           <TableCell>
                             <div className="flex items-center">
-                              {group.transactionCode}
-                              <Button 
-                                variant="ghost" 
-                                size="sm" 
-                                onClick={(e) => { e.stopPropagation(); copyToClipboard(group.transactionCode); }} 
-                                aria-label="Copy transaction code"
-                                className="text-gray-300 hover:text-gray-100 hover:bg-gray-600"
-                              >
-                                <Copy className="w-4 h-4" />
-                              </Button>
+                              {group.code}
+                              {group.code !== 'Not available' && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={(e) => { e.stopPropagation(); copyToClipboard(group.code); }}
+                                  aria-label="Copy transaction code"
+                                  className="text-gray-300 hover:text-gray-100 hover:bg-gray-600"
+                                >
+                                  <Copy className="w-4 h-4" />
+                                </Button>
+                              )}
                             </div>
                           </TableCell>
-                          <TableCell className="hidden md:table-cell">{group.codeStatus}</TableCell>
+                          <TableCell className="hidden md:table-cell">{group.transactionCodeStatus}</TableCell>
+                          <TableCell className="hidden md:table-cell">
+                            {group.codeExpiry ? new Date(group.codeExpiry).toLocaleString() : 'N/A'}
+                          </TableCell>
                           <TableCell className="hidden md:table-cell">{new Date(group.created_at).toLocaleString()}</TableCell>
                           <TableCell>
                             {expandedGroupId === group.id ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
@@ -190,7 +223,7 @@ const PaymentsPage = () => {
                         </TableRow>
                         {expandedGroupId === group.id && (
                           <TableRow>
-                            <TableCell colSpan="9" className="p-0">
+                            <TableCell colSpan="10" className="p-0">
                               <Card className="m-2 bg-gray-700 border-gray-600">
                                 <CardHeader>
                                   <CardTitle className="text-gray-100">Payments for Group {group.id}</CardTitle>
@@ -209,8 +242,8 @@ const PaymentsPage = () => {
                                       </TableHeader>
                                       <TableBody>
                                         {group.payments.map((payment) => (
-                                          <TableRow 
-                                            key={payment.id} 
+                                          <TableRow
+                                            key={payment.id}
                                             className="border-b border-gray-600 hover:bg-gray-600 transition-colors duration-150"
                                           >
                                             <TableCell>{payment.id}</TableCell>
