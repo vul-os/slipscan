@@ -13,6 +13,11 @@ import {
   CircularProgress,
   Alert,
   Chip,
+  Button,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from '@mui/material';
 import { DataGrid, GridToolbar } from '@mui/x-data-grid';
 import { DatePicker } from '@mui/x-date-pickers/DatePicker';
@@ -22,7 +27,6 @@ import { createTheme, ThemeProvider } from '@mui/material/styles';
 import AuthContext from '../context/AuthContext';
 import { supabase } from '../services/supabaseClient';
 
-// Custom theme for DataGrid
 const dataGridTheme = createTheme({
   components: {
     MuiDataGrid: {
@@ -54,6 +58,7 @@ const TransactionsPage = () => {
     search: '',
   });
   const [merchantId, setMerchantId] = useState(null);
+  const [selectedTransaction, setSelectedTransaction] = useState(null);
   const { user } = useContext(AuthContext);
 
   useEffect(() => {
@@ -69,82 +74,86 @@ const TransactionsPage = () => {
   }, [merchantId, filter]);
 
   const fetchMerchantId = async () => {
-    const { data, error } = await supabase
-      .from('merchants')
-      .select('id')
-      .eq('user_id', user?.id)
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('merchants')
+        .select('id')
+        .eq('user_id', user?.id)
+        .single();
 
-    if (error) {
+      if (error) throw error;
+
+      setMerchantId(data?.id);
+    } catch (error) {
       console.error('Error fetching merchant ID:', error);
       setError('Failed to fetch merchant information.');
-    } else {
-      setMerchantId(data?.id);
     }
   };
 
   const fetchTransactions = async () => {
     setLoading(true);
-    let query = supabase
-      .from('txns')
-      .select(`
-        id,
-        created_at,
-        txn_number,
-        total_amount,
-        status,
-        type,
-        customers (
-          name,
-          email
-        ),
-        payment_groups (
+    setError(null);
+    try {
+      let query = supabase
+        .from('txns')
+        .select(`
           id,
+          created_at,
+          txn_number,
           total_amount,
           status,
-          payments (
+          type,
+          customers (
+            name,
+            email
+          ),
+          payment_groups (
             id,
-            amount_charged,
-            amount_collected,
+            total_amount,
             status,
-            payshap_transaction_id
+            payments (
+              id,
+              amount_charged,
+              amount_collected,
+              status,
+              payshap_transaction_id
+            )
           )
-        )
-      `)
-      .eq('merchant_id', merchantId);
+        `)
+        .eq('merchant_id', merchantId);
 
-    if (filter.startDate) {
-      query = query.gte('created_at', filter.startDate.toISOString());
-    }
-    if (filter.endDate) {
-      query = query.lte('created_at', filter.endDate.toISOString());
-    }
-    if (filter.status !== 'all') {
-      query = query.eq('status', filter.status);
-    }
-    if (filter.search) {
-      query = query.ilike('txn_number', `%${filter.search}%`);
-    }
+      if (filter.startDate) {
+        query = query.gte('created_at', filter.startDate.toISOString());
+      }
+      if (filter.endDate) {
+        query = query.lte('created_at', filter.endDate.toISOString());
+      }
+      if (filter.status !== 'all') {
+        query = query.eq('status', filter.status);
+      }
+      if (filter.search) {
+        query = query.ilike('txn_number', `%${filter.search}%`);
+      }
 
-    query = query.order('created_at', { ascending: false });
+      query = query.order('created_at', { ascending: false });
 
-    const { data, error } = await query;
+      const { data, error } = await query;
 
-    if (error) {
+      if (error) throw error;
+
+      const processedData = data.map(txn => ({
+        ...txn,
+        customer_name: txn.customers?.name,
+        customer_email: txn.customers?.email,
+      }));
+
+      setTransactions(processedData);
+    } catch (error) {
       console.error('Error fetching transactions:', error);
       setError('Failed to fetch transactions');
+    } finally {
       setLoading(false);
-      return;
     }
-
-    const processedData = data.map(txn => ({
-      ...txn,
-      customer_name: txn.customers?.name,
-      customer_email: txn.customers?.email,
-    }));
-
-    setTransactions(processedData);
-    setLoading(false);
   };
 
   const handleFilterChange = (field, value) => {
@@ -162,6 +171,14 @@ const TransactionsPage = () => {
   };
 
   const { totalAmount, totalCollected } = calculateTotals();
+
+  const handleOpenDetails = (transaction) => {
+    setSelectedTransaction(transaction);
+  };
+
+  const handleCloseDetails = () => {
+    setSelectedTransaction(null);
+  };
 
   const transactionColumns = [
     { 
@@ -190,6 +207,20 @@ const TransactionsPage = () => {
           color={params.value === 'completed' ? 'success' : params.value === 'processing' ? 'warning' : 'default'}
           size="small"
         />
+      ),
+    },
+    {
+      field: 'actions',
+      headerName: 'Actions',
+      width: 150,
+      renderCell: (params) => (
+        <Button
+          variant="contained"
+          size="small"
+          onClick={() => handleOpenDetails(params.row)}
+        >
+          View Details
+        </Button>
       ),
     },
   ];
@@ -341,35 +372,43 @@ const TransactionsPage = () => {
               components={{
                 Toolbar: GridToolbar,
               }}
-              getDetailPanelContent={(params) => (
-                <Box sx={{ p: 2 }}>
-                  <Typography variant="h6" gutterBottom>Payment Groups</Typography>
-                  <DataGrid
-                    rows={params.row.payment_groups}
-                    columns={paymentGroupColumns}
-                    pageSize={5}
-                    autoHeight
-                    hideFooter
-                    getDetailPanelContent={(groupParams) => (
-                      <Box sx={{ p: 2 }}>
-                        <Typography variant="h6" gutterBottom>Payments</Typography>
-                        <DataGrid
-                          rows={groupParams.row.payments}
-                          columns={paymentColumns}
-                          pageSize={5}
-                          autoHeight
-                          hideFooter
-                        />
-                      </Box>
-                    )}
-                    getDetailPanelHeight={() => 'auto'}
-                  />
-                </Box>
-              )}
-              getDetailPanelHeight={() => 'auto'}
             />
           </Box>
         </ThemeProvider>
+
+        <Dialog
+          open={Boolean(selectedTransaction)}
+          onClose={handleCloseDetails}
+          maxWidth="md"
+          fullWidth
+        >
+          <DialogTitle>
+            Transaction Details: {selectedTransaction?.txn_number}
+          </DialogTitle>
+          <DialogContent>
+            <Typography variant="h6" gutterBottom>Payment Groups</Typography>
+            <DataGrid
+              rows={selectedTransaction?.payment_groups || []}
+              columns={paymentGroupColumns}
+              pageSize={5}
+              autoHeight
+              hideFooter
+            />
+            <Typography variant="h6" gutterBottom sx={{ mt: 4 }}>Payments</Typography>
+            <DataGrid
+              rows={selectedTransaction?.payment_groups.flatMap(group => group.payments) || []}
+              columns={paymentColumns}
+              pageSize={5}
+              autoHeight
+              hideFooter
+            />
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={handleCloseDetails} color="primary">
+              Close
+            </Button>
+          </DialogActions>
+        </Dialog>
       </Box>
     </LocalizationProvider>
   );

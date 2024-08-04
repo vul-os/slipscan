@@ -7,13 +7,13 @@ export const PermissionsProvider = ({ children }) => {
   const [permissions, setPermissions] = useState([]);
 
   useEffect(() => {
-    const fetchPermissions = async () => {
-      const { data, error } = await supabase.from('permissions').select('*');
-      if (error) throw error;
-      setPermissions(data.map((perm) => perm.name));
-    };
+    // const fetchPermissions = async () => {
+    //   const { data, error } = await supabase.from('permissions').select('*');
+    //   if (error) throw error;
+    //   setPermissions(data.map((perm) => perm.name));
+    // };
 
-    fetchPermissions();
+    // fetchPermissions();
   }, []);
 
   return (

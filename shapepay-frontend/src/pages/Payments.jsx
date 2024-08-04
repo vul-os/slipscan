@@ -1,182 +1,222 @@
-import React, { useState, useEffect, useContext } from 'react';
-import {
-  Card,
-  CardContent,
-  Typography,
-  Button,
-  TextField,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
+import React, { useState, useEffect } from 'react';
+import { 
+  Box, 
+  Container, 
+  Typography, 
   Paper,
-  Alert,
-  Grid,
-  Box,
-  CircularProgress
+  Breadcrumbs,
+  Link,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  IconButton,
+  Tooltip
 } from '@mui/material';
-import AuthContext from '../context/AuthContext';
+import { DataGrid } from '@mui/x-data-grid';
+import CloseIcon from '@mui/icons-material/Close';
+import HomeIcon from '@mui/icons-material/Home';
+import PaymentIcon from '@mui/icons-material/Payment';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import { supabase } from '../services/supabaseClient';
 
 const PaymentsPage = () => {
-  const [balance, setBalance] = useState(0);
-  const [payoutAmount, setPayoutAmount] = useState('');
-  const [payouts, setPayouts] = useState([]);
+  const [paymentGroups, setPaymentGroups] = useState([]);
+  const [selectedPayments, setSelectedPayments] = useState([]);
+  const [openDialog, setOpenDialog] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const { user } = useContext(AuthContext);
 
   useEffect(() => {
-    if (user) {
-      fetchBalance();
-      fetchPayouts();
-    }
-  }, [user]);
+    fetchPaymentGroups();
+  }, []);
 
-  const fetchBalance = async () => {
+  const fetchPaymentGroups = async () => {
     try {
-      const response = await fetch('/api/balance', {
-        headers: { 'Authorization': `Bearer ${user.token}` }
-      });
-      if (!response.ok) throw new Error('Failed to fetch balance');
-      const data = await response.json();
-      setBalance(data.balance);
-    } catch (err) {
-      setError('Failed to fetch balance');
-    }
-  };
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('payment_groups')
+        .select(`
+          *,
+          transaction_codes (
+            code,
+            status
+          )
+        `)
+        .order('created_at', { ascending: false });
 
-  const fetchPayouts = async () => {
-    try {
-      const response = await fetch('/api/payouts/history', {
-        headers: { 'Authorization': `Bearer ${user.token}` }
-      });
-      if (!response.ok) throw new Error('Failed to fetch payout history');
-      const data = await response.json();
-      setPayouts(data);
-    } catch (err) {
-      setError('Failed to fetch payout history');
+      if (error) throw error;
+      setPaymentGroups(data.map(group => ({
+        ...group,
+        transactionCode: group.transaction_codes?.[0]?.code || 'N/A',
+        codeStatus: group.transaction_codes?.[0]?.status || 'N/A'
+      })));
+    } catch (error) {
+      console.error('Error fetching payment groups:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  const requestPayout = async (e) => {
-    e.preventDefault();
-    setError(null);
+  const handleRowClick = async (params) => {
+    const groupId = params.row.id;
     try {
-      const response = await fetch('/api/payouts/request', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${user.token}`
-        },
-        body: JSON.stringify({ amount: parseFloat(payoutAmount) })
-      });
-      if (!response.ok) throw new Error('Payout request failed');
-      const data = await response.json();
-      setPayouts([data, ...payouts]);
-      setPayoutAmount('');
-      setBalance(prevBalance => prevBalance - parseFloat(payoutAmount));
-    } catch (err) {
-      setError(err.message);
+      const { data, error } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('payment_group_id', groupId)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setSelectedPayments(data);
+      setOpenDialog(true);
+    } catch (error) {
+      console.error('Error fetching payments:', error);
     }
   };
 
-  if (loading) {
-    return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="100vh">
-        <CircularProgress />
-      </Box>
-    );
-  }
+  const handleCloseDialog = () => {
+    setOpenDialog(false);
+  };
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text).then(() => {
+      // You might want to show a snackbar or tooltip here to indicate successful copy
+      console.log('Copied to clipboard');
+    }, (err) => {
+      console.error('Could not copy text: ', err);
+    });
+  };
+
+  const paymentGroupColumns = [
+    { field: 'id', headerName: 'ID', width: 220 },
+    { field: 'txn_id', headerName: 'Transaction ID', width: 220 },
+    { 
+      field: 'total_amount', 
+      headerName: 'Total Amount', 
+      width: 130,
+    },
+    { field: 'status', headerName: 'Status', width: 130 },
+    {
+      field: 'transactionCode',
+      headerName: 'Transaction Code',
+      width: 180,
+      renderCell: (params) => (
+        <Tooltip title="Click to copy">
+          <Box sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }} onClick={() => copyToClipboard(params.value)}>
+            {params.value}
+            <ContentCopyIcon fontSize="small" sx={{ ml: 1 }} />
+          </Box>
+        </Tooltip>
+      ),
+    },
+    { field: 'codeStatus', headerName: 'Code Status', width: 130 },
+    {
+      field: 'created_at',
+      headerName: 'Created At',
+      width: 200,
+    },
+  ];
+
+  const paymentColumns = [
+    { field: 'id', headerName: 'ID', width: 220 },
+    { 
+      field: 'amount_charged', 
+      headerName: 'Amount Charged', 
+      width: 150,
+      valueFormatter: (params) => {
+        return new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(params.value);
+      },
+    },
+    { 
+      field: 'amount_collected', 
+      headerName: 'Amount Collected', 
+      width: 150,
+      valueFormatter: (params) => {
+        return new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(params.value);
+      },
+    },
+    { field: 'status', headerName: 'Status', width: 130 },
+    {
+      field: 'created_at',
+      headerName: 'Created At',
+      width: 200,
+      valueGetter: (params) => new Date(params.value).toLocaleString(),
+    },
+  ];
 
   return (
-    <Box sx={{ flexGrow: 1, p: 3 }}>
-      <Typography variant="h4" gutterBottom>
-        Payments Dashboard
-      </Typography>
-      
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
-        </Alert>
-      )}
-
-      <Grid container spacing={3} sx={{ mb: 4 }}>
-        <Grid item xs={12} md={6}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Current Balance
-              </Typography>
-              <Typography variant="h4">
-                ${balance.toFixed(2)}
-              </Typography>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        <Grid item xs={12} md={6}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Request Payout
-              </Typography>
-              <Box component="form" onSubmit={requestPayout} sx={{ display: 'flex', alignItems: 'flex-end' }}>
-                <TextField
-                  type="number"
-                  label="Amount"
-                  value={payoutAmount}
-                  onChange={(e) => setPayoutAmount(e.target.value)}
-                  variant="outlined"
-                  size="small"
-                  InputProps={{ inputProps: { min: 0, step: 0.01 } }}
-                  required
-                  sx={{ mr: 1, flexGrow: 1 }}
-                />
-                <Button
-                  type="submit"
-                  variant="contained"
-                  disabled={!payoutAmount || parseFloat(payoutAmount) > balance}
-                >
-                  Request
-                </Button>
-              </Box>
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
-
-      <Card>
-        <CardContent>
-          <Typography variant="h6" gutterBottom>
-            Payout History
+    <Container maxWidth="lg">
+      <Box sx={{ mt: 4, mb: 4 }}>
+        <Breadcrumbs aria-label="breadcrumb">
+          <Link
+            underline="hover"
+            sx={{ display: 'flex', alignItems: 'center' }}
+            color="inherit"
+            href="/"
+          >
+            <HomeIcon sx={{ mr: 0.5 }} fontSize="inherit" />
+            Home
+          </Link>
+          <Typography
+            sx={{ display: 'flex', alignItems: 'center' }}
+            color="text.primary"
+          >
+            <PaymentIcon sx={{ mr: 0.5 }} fontSize="inherit" />
+            Payments
           </Typography>
-          <TableContainer component={Paper}>
-            <Table>
-              <TableHead>
-                <TableRow>
-                  <TableCell>Date</TableCell>
-                  <TableCell>Amount</TableCell>
-                  <TableCell>Status</TableCell>
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {payouts.map(payout => (
-                  <TableRow key={payout.id}>
-                    <TableCell>{new Date(payout.created_at).toLocaleDateString()}</TableCell>
-                    <TableCell>${payout.amount.toFixed(2)}</TableCell>
-                    <TableCell>{payout.status}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableContainer>
-        </CardContent>
-      </Card>
-    </Box>
+        </Breadcrumbs>
+      </Box>
+
+      <Paper elevation={3} sx={{ p: 3, mb: 4 }}>
+        <Typography variant="h4" gutterBottom component="div">
+          Payments Overview
+        </Typography>
+        <Typography variant="body1" paragraph>
+          This page displays all payment groups and their associated transaction codes. Click on a row to view individual payments within that group.
+        </Typography>
+      </Paper>
+
+      <Paper elevation={3} sx={{ p: 3 }}>
+        <Typography variant="h5" gutterBottom component="div">
+          Payment Groups
+        </Typography>
+        <Box sx={{ height: 400, width: '100%' }}>
+          <DataGrid
+            rows={paymentGroups}
+            columns={paymentGroupColumns}
+            pageSize={5}
+            rowsPerPageOptions={[5]}
+            onRowClick={handleRowClick}
+            loading={loading}
+          />
+        </Box>
+      </Paper>
+
+      <Dialog open={openDialog} onClose={handleCloseDialog} maxWidth="md" fullWidth>
+        <DialogTitle>
+          Payments
+          <IconButton
+            aria-label="close"
+            onClick={handleCloseDialog}
+            sx={{
+              position: 'absolute',
+              right: 8,
+              top: 8,
+            }}
+          >
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent>
+          <DataGrid
+            rows={selectedPayments}
+            columns={paymentColumns}
+            pageSize={5}
+            rowsPerPageOptions={[5]}
+            autoHeight
+          />
+        </DialogContent>
+      </Dialog>
+    </Container>
   );
 };
 
