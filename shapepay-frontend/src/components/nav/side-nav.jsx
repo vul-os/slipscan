@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+// SideNav.js
+import React from 'react';
 import {
   LayoutDashboard,
   Users,
@@ -9,7 +10,7 @@ import {
   Key,
   Settings,
 } from 'lucide-react';
-import { NavItem } from './nav-item'
+import { NavItem } from './nav-item';
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, text: 'Dashboard' },
@@ -22,22 +23,22 @@ const navItems = [
   { to: '/settings', icon: Settings, text: 'Settings' },
 ];
 
-const SideNav = () => {
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  // Function to handle mouse enter event
+const SideNav = ({ isExpanded, setIsExpanded, isMobile }) => {
   const handleMouseEnter = () => {
-    setIsExpanded(true);
+    if (!isMobile) {
+      setIsExpanded(true); // Expand sidebar on desktop hover
+    }
   };
 
-  // Function to handle mouse leave event
   const handleMouseLeave = () => {
-    setIsExpanded(false);
+    if (!isMobile) {
+      setIsExpanded(false); // Collapse sidebar on desktop mouse leave
+    }
   };
 
   return (
     <div
-      className={`fixed inset-y-0 left-0 bg-white shadow-md overflow-hidden transition-all duration-300 ${
+      className={`fixed top-16 left-0 h-[calc(100vh-4rem)] bg-gray-800 text-white shadow-md transition-all duration-300 ${
         isExpanded ? 'w-60' : 'w-16'
       }`}
       onMouseEnter={handleMouseEnter}

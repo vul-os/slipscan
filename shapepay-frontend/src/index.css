@@ -39,10 +39,10 @@
         --background: 240 10% 3.9%;
         --foreground: 0 0% 98%;
 
-        --card: 240 10% 3.9%;
+        --card: 240 15% 10%; /* Darker shade for card */
         --card-foreground: 0 0% 98%;
 
-        --popover: 240 10% 3.9%;
+        --popover: 240 20% 12%; /* Darker shade for popover */
         --popover-foreground: 0 0% 98%;
 
         --primary: 0 0% 98%;
