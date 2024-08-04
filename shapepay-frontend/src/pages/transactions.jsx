@@ -9,22 +9,9 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import { DatePicker } from "@/components/ui/date-picker";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Home, CreditCard, ChevronDown, ChevronUp } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 const TransactionsPage = () => {
   const [transactions, setTransactions] = useState([]);
@@ -38,6 +25,7 @@ const TransactionsPage = () => {
   });
   const [merchantId, setMerchantId] = useState(null);
   const [selectedTransaction, setSelectedTransaction] = useState(null);
+  const [expandedTransactionId, setExpandedTransactionId] = useState(null);
   const { user } = useContext(AuthContext);
 
   useEffect(() => {
@@ -151,179 +139,216 @@ const TransactionsPage = () => {
 
   const { totalAmount, totalCollected } = calculateTotals();
 
-  const handleOpenDetails = (transaction) => {
-    setSelectedTransaction(transaction);
+  const handleRowClick = (transactionId) => {
+    setExpandedTransactionId(expandedTransactionId === transactionId ? null : transactionId);
   };
-
-  const handleCloseDetails = () => {
-    setSelectedTransaction(null);
-  };
-
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center min-h-screen">
-        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-gray-900"></div>
-      </div>
-    );
-  }
 
   return (
-    <div className="container mx-auto p-6">
-      <h1 className="text-3xl font-bold mb-6">Transactions, Payment Groups, and Payments</h1>
-
-      {error && (
-        <Alert variant="destructive" className="mb-4">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-        <DatePicker
-          selected={filter.startDate}
-          onSelect={(date) => handleFilterChange('startDate', date)}
-          placeholderText="Start Date"
-        />
-        <DatePicker
-          selected={filter.endDate}
-          onSelect={(date) => handleFilterChange('endDate', date)}
-          placeholderText="End Date"
-        />
-        <Select onValueChange={(value) => handleFilterChange('status', value)} value={filter.status}>
-          <SelectTrigger>
-            <SelectValue placeholder="Select status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All</SelectItem>
-            <SelectItem value="completed">Completed</SelectItem>
-            <SelectItem value="processing">Processing</SelectItem>
-            <SelectItem value="failed">Failed</SelectItem>
-          </SelectContent>
-        </Select>
-        <Input
-          placeholder="Search Transaction Number"
-          value={filter.search}
-          onChange={(e) => handleFilterChange('search', e.target.value)}
-        />
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-        <Card>
-          <CardHeader>
-            <CardTitle>Total Transaction Amount</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-3xl font-bold text-blue-600">{totalAmount.toFixed(2)} ZAR</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Total Amount Collected</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-3xl font-bold text-green-600">{totalCollected.toFixed(2)} ZAR</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Date</TableHead>
-              <TableHead>Transaction Number</TableHead>
-              <TableHead>Customer Name</TableHead>
-              <TableHead>Customer Email</TableHead>
-              <TableHead>Total Amount</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {transactions.map((transaction) => (
-              <TableRow key={transaction.id}>
-                <TableCell>{new Date(transaction.created_at).toLocaleDateString()}</TableCell>
-                <TableCell>{transaction.txn_number}</TableCell>
-                <TableCell>{transaction.customer_name}</TableCell>
-                <TableCell>{transaction.customer_email}</TableCell>
-                <TableCell>{Number(transaction.total_amount).toFixed(2)} ZAR</TableCell>
-                <TableCell>
-                  <Badge variant={transaction.status === 'completed' ? 'success' : transaction.status === 'processing' ? 'warning' : 'destructive'}>
-                    {transaction.status}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <Button onClick={() => handleOpenDetails(transaction)}>View Details</Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-
-      <Dialog open={Boolean(selectedTransaction)} onOpenChange={handleCloseDetails}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Transaction Details: {selectedTransaction?.txn_number}</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <h3 className="text-lg font-semibold mb-2">Payment Groups</h3>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Payment Group ID</TableHead>
-                    <TableHead>Group Total</TableHead>
-                    <TableHead>Group Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {selectedTransaction?.payment_groups.map((group) => (
-                    <TableRow key={group.id}>
-                      <TableCell>{group.id}</TableCell>
-                      <TableCell>{Number(group.total_amount).toFixed(2)} ZAR</TableCell>
-                      <TableCell>
-                        <Badge variant={group.status === 'completed' ? 'success' : group.status === 'processing' ? 'warning' : 'destructive'}>
-                          {group.status}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold mb-2">Payments</h3>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>PayShap Transaction ID</TableHead>
-                    <TableHead>Amount Charged</TableHead>
-                    <TableHead>Amount Collected</TableHead>
-                    <TableHead>Payment Status</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {selectedTransaction?.payment_groups.flatMap(group => group.payments).map((payment) => (
-                    <TableRow key={payment.id}>
-                      <TableCell>{payment.payshap_transaction_id}</TableCell>
-                      <TableCell>{Number(payment.amount_charged).toFixed(2)} ZAR</TableCell>
-                      <TableCell>{Number(payment.amount_collected).toFixed(2)} ZAR</TableCell>
-                      <TableCell>
-                        <Badge variant={payment.status === 'completed' ? 'success' : payment.status === 'processing' ? 'warning' : 'destructive'}>
-                          {payment.status}
-                        </Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+    <div className="min-h-screen bg-gray-900 text-gray-100">
+      <div className="container mx-auto p-4">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center space-x-2">
+            <Link to="/" className="text-blue-400 hover:text-blue-300 flex items-center">
+              <Home className="w-4 h-4 mr-1" />
+              Home
+            </Link>
+            <span>/</span>
+            <span className="flex items-center">
+              <CreditCard className="w-4 h-4 mr-1" />
+              Transactions
+            </span>
           </div>
-          <DialogFooter>
-            <Button onClick={handleCloseDetails}>Close</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        </div>
+
+        <Card className="mb-6 bg-gray-800 border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-gray-100">Transactions Overview</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-gray-300">This page displays all transactions, payment groups, and payments. Use the filters to narrow down your search.</p>
+          </CardContent>
+        </Card>
+
+        <Card className="mb-6 bg-gray-800 border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-gray-100">Filters</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <DatePicker
+                selected={filter.startDate}
+                onSelect={(date) => handleFilterChange('startDate', date)}
+                placeholderText="Start Date"
+                className="bg-gray-700 text-white"
+              />
+              <DatePicker
+                selected={filter.endDate}
+                onSelect={(date) => handleFilterChange('endDate', date)}
+                placeholderText="End Date"
+                className="bg-gray-700 text-white"
+              />
+              <Select onValueChange={(value) => handleFilterChange('status', value)} value={filter.status}>
+                <SelectTrigger className="bg-gray-700 text-white">
+                  <SelectValue placeholder="Select status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All</SelectItem>
+                  <SelectItem value="completed">Completed</SelectItem>
+                  <SelectItem value="processing">Processing</SelectItem>
+                  <SelectItem value="failed">Failed</SelectItem>
+                </SelectContent>
+              </Select>
+              <Input
+                placeholder="Search Transaction Number"
+                value={filter.search}
+                onChange={(e) => handleFilterChange('search', e.target.value)}
+                className="bg-gray-700 text-white"
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <Card className="bg-gray-800 border-gray-700">
+            <CardHeader>
+              <CardTitle className="text-gray-100">Total Transaction Amount</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-3xl font-bold text-blue-400">{totalAmount.toFixed(2)} ZAR</p>
+            </CardContent>
+          </Card>
+          <Card className="bg-gray-800 border-gray-700">
+            <CardHeader>
+              <CardTitle className="text-gray-100">Total Amount Collected</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-3xl font-bold text-green-400">{totalCollected.toFixed(2)} ZAR</p>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card className="bg-gray-800 border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-gray-100">Transactions</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {loading ? (
+              <div className="flex justify-center items-center h-40">
+                <p className="text-gray-300">Loading...</p>
+              </div>
+            ) : error ? (
+              <Alert variant="destructive">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-b border-gray-700">
+                      <TableHead className="text-gray-300">Date</TableHead>
+                      <TableHead className="text-gray-300">Transaction Number</TableHead>
+                      <TableHead className="text-gray-300">Customer Name</TableHead>
+                      <TableHead className="text-gray-300">Total Amount</TableHead>
+                      <TableHead className="text-gray-300">Status</TableHead>
+                      <TableHead className="text-gray-300"></TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {transactions.map((transaction) => (
+                      <React.Fragment key={transaction.id}>
+                        <TableRow 
+                          onClick={() => handleRowClick(transaction.id)} 
+                          className="cursor-pointer hover:bg-gray-700 border-b border-gray-700 transition-colors duration-150"
+                        >
+                          <TableCell>{new Date(transaction.created_at).toLocaleDateString()}</TableCell>
+                          <TableCell>{transaction.txn_number}</TableCell>
+                          <TableCell>{transaction.customer_name}</TableCell>
+                          <TableCell>{Number(transaction.total_amount).toFixed(2)} ZAR</TableCell>
+                          <TableCell>
+                            <Badge variant={transaction.status === 'completed' ? 'success' : transaction.status === 'processing' ? 'warning' : 'destructive'}>
+                              {transaction.status}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            {expandedTransactionId === transaction.id ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                          </TableCell>
+                        </TableRow>
+                        {expandedTransactionId === transaction.id && (
+                          <TableRow>
+                            <TableCell colSpan="6" className="p-0">
+                              <Card className="m-2 bg-gray-700 border-gray-600">
+                                <CardHeader>
+                                  <CardTitle className="text-gray-100">Transaction Details</CardTitle>
+                                </CardHeader>
+                                <CardContent>
+                                  <div className="space-y-4">
+                                    <div>
+                                      <h3 className="text-lg font-semibold mb-2 text-gray-200">Payment Groups</h3>
+                                      <Table>
+                                        <TableHeader>
+                                          <TableRow className="border-b border-gray-600">
+                                            <TableHead className="text-gray-300">Payment Group ID</TableHead>
+                                            <TableHead className="text-gray-300">Group Total</TableHead>
+                                            <TableHead className="text-gray-300">Group Status</TableHead>
+                                          </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                          {transaction.payment_groups.map((group) => (
+                                            <TableRow key={group.id} className="border-b border-gray-600">
+                                              <TableCell>{group.id}</TableCell>
+                                              <TableCell>{Number(group.total_amount).toFixed(2)} ZAR</TableCell>
+                                              <TableCell>
+                                                <Badge variant={group.status === 'completed' ? 'success' : group.status === 'processing' ? 'warning' : 'destructive'}>
+                                                  {group.status}
+                                                </Badge>
+                                              </TableCell>
+                                            </TableRow>
+                                          ))}
+                                        </TableBody>
+                                      </Table>
+                                    </div>
+                                    <div>
+                                      <h3 className="text-lg font-semibold mb-2 text-gray-200">Payments</h3>
+                                      <Table>
+                                        <TableHeader>
+                                          <TableRow className="border-b border-gray-600">
+                                            <TableHead className="text-gray-300">PayShap Transaction ID</TableHead>
+                                            <TableHead className="text-gray-300">Amount Charged</TableHead>
+                                            <TableHead className="text-gray-300">Amount Collected</TableHead>
+                                            <TableHead className="text-gray-300">Payment Status</TableHead>
+                                          </TableRow>
+                                        </TableHeader>
+                                        <TableBody>
+                                          {transaction.payment_groups.flatMap(group => group.payments).map((payment) => (
+                                            <TableRow key={payment.id} className="border-b border-gray-600">
+                                              <TableCell>{payment.payshap_transaction_id}</TableCell>
+                                              <TableCell>{Number(payment.amount_charged).toFixed(2)} ZAR</TableCell>
+                                              <TableCell>{Number(payment.amount_collected).toFixed(2)} ZAR</TableCell>
+                                              <TableCell>
+                                                <Badge variant={payment.status === 'completed' ? 'success' : payment.status === 'processing' ? 'warning' : 'destructive'}>
+                                                  {payment.status}
+                                                </Badge>
+                                              </TableCell>
+                                            </TableRow>
+                                          ))}
+                                        </TableBody>
+                                      </Table>
+                                    </div>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            </TableCell>
+                          </TableRow>
+                        )}
+                      </React.Fragment>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 };

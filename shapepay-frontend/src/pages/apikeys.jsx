@@ -6,10 +6,11 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Key } from 'lucide-react';
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Key, Home, Plus } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
-
-const APIKeys = () => {
+const APIKeysPage = () => {
   const [keys, setKeys] = useState([]);
   const [open, setOpen] = useState(false);
   const [newKeyName, setNewKeyName] = useState('');
@@ -96,67 +97,112 @@ const APIKeys = () => {
   };
 
   if (!user) {
-    return <Alert><AlertDescription>Please log in to manage your API keys.</AlertDescription></Alert>;
+    return (
+      <div className="min-h-screen bg-gray-900 text-gray-100 flex items-center justify-center">
+        <Alert>
+          <AlertDescription>Please log in to manage your API keys.</AlertDescription>
+        </Alert>
+      </div>
+    );
   }
 
   if (loading) {
-    return <div className="flex justify-center"><div className="animate-spin rounded-full h-32 w-32 border-b-2 border-gray-900"></div></div>;
-  }
-
-  if (error) {
-    return <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>;
+    return (
+      <div className="min-h-screen bg-gray-900 text-gray-100 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-gray-100"></div>
+      </div>
+    );
   }
 
   return (
-    <div className="flex flex-col items-center p-6">
-      <Button onClick={() => setOpen(true)} className="mb-4">
-        <Key className="mr-2 h-4 w-4" /> Create New API Key
-      </Button>
-      <div className="w-full max-w-4xl">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Name</TableHead>
-              <TableHead>Key</TableHead>
-              <TableHead>Created At</TableHead>
-              <TableHead>Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {keys.map((row) => (
-              <TableRow key={row.id}>
-                <TableCell>{row.name}</TableCell>
-                <TableCell>{row.key}</TableCell>
-                <TableCell>{new Date(row.created_at).toLocaleString()}</TableCell>
-                <TableCell>
-                  <Button variant="outline" size="sm" onClick={() => handleRevokeKey(row.id)}>Revoke</Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create New API Key</DialogTitle>
-          </DialogHeader>
-          <div className="py-4">
-            <Input
-              id="name"
-              placeholder="API Key Name"
-              value={newKeyName}
-              onChange={(e) => setNewKeyName(e.target.value)}
-            />
+    <div className="min-h-screen bg-gray-900 text-gray-100">
+      <div className="container mx-auto p-4">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center space-x-2">
+            <Link to="/" className="text-blue-400 hover:text-blue-300 flex items-center">
+              <Home className="w-4 h-4 mr-1" />
+              Home
+            </Link>
+            <span>/</span>
+            <span className="flex items-center">
+              <Key className="w-4 h-4 mr-1" />
+              API Keys
+            </span>
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-            <Button onClick={handleCreateKey}>Create</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          <Button onClick={() => setOpen(true)} className="bg-blue-500 hover:bg-blue-600">
+            <Plus className="mr-2 h-4 w-4" /> New API Key
+          </Button>
+        </div>
+
+        <Card className="mb-6 bg-gray-800 border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-gray-100">API Keys Overview</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-gray-300">Manage your API keys here. You can create new keys and revoke existing ones as needed.</p>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-gray-800 border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-gray-100">Your API Keys</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {error && (
+              <Alert variant="destructive" className="mb-4">
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-b border-gray-700">
+                    <TableHead className="text-gray-300">Name</TableHead>
+                    <TableHead className="text-gray-300">Key</TableHead>
+                    <TableHead className="text-gray-300">Created At</TableHead>
+                    <TableHead className="text-gray-300">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {keys.map((row) => (
+                    <TableRow key={row.id} className="border-b border-gray-700">
+                      <TableCell className="text-gray-300">{row.name}</TableCell>
+                      <TableCell className="text-gray-300">{row.key}</TableCell>
+                      <TableCell className="text-gray-300">{new Date(row.created_at).toLocaleString()}</TableCell>
+                      <TableCell>
+                        <Button variant="destructive" size="sm" onClick={() => handleRevokeKey(row.id)}>Revoke</Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogContent className="bg-gray-800 text-gray-100">
+            <DialogHeader>
+              <DialogTitle>Create New API Key</DialogTitle>
+            </DialogHeader>
+            <div className="py-4">
+              <Input
+                id="name"
+                placeholder="API Key Name"
+                value={newKeyName}
+                onChange={(e) => setNewKeyName(e.target.value)}
+                className="bg-gray-700 text-gray-100"
+              />
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setOpen(false)} className="bg-gray-700 text-gray-100 hover:bg-gray-600">Cancel</Button>
+              <Button onClick={handleCreateKey} className="bg-blue-500 hover:bg-blue-600">Create</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
     </div>
   );
 };
 
-export default APIKeys;
+export default APIKeysPage;

@@ -14,7 +14,7 @@ import Dashboard from './pages/dashboard';
 import Customers from './pages/customers';
 import APIKeys from './pages/apikeys';
 import Webhooks from './pages/webhooks';
-import Payments from './pages/payments';
+import Payments from './pages/payments/payments';
 import TransactionsPage from './pages/transactions';
 import Refunds from './pages/refunds';
 

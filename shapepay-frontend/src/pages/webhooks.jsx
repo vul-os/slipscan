@@ -22,11 +22,13 @@ import {
 import { Switch } from "@/components/ui/switch"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Progress } from "@/components/ui/progress"
-import { Webhook } from 'lucide-react'
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Webhook, Home, Plus } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import AuthContext from '../context/auth-context';
 import { supabase } from '../services/supabaseClient';
 
-const Webhooks = () => {
+const WebhooksPage = () => {
   const [webhooks, setWebhooks] = useState([]);
   const [open, setOpen] = useState(false);
   const [newWebhookUrl, setNewWebhookUrl] = useState('');
@@ -136,119 +138,154 @@ const Webhooks = () => {
 
   if (!user) {
     return (
-      <Alert>
-        <AlertTitle>Info</AlertTitle>
-        <AlertDescription>
-          Please log in to manage your webhooks.
-        </AlertDescription>
-      </Alert>
+      <div className="min-h-screen bg-gray-900 text-gray-100 flex items-center justify-center">
+        <Alert>
+          <AlertTitle>Info</AlertTitle>
+          <AlertDescription>
+            Please log in to manage your webhooks.
+          </AlertDescription>
+        </Alert>
+      </div>
     );
   }
 
   if (loading) {
     return (
-      <div className="w-full max-w-md mx-auto mt-8">
-        <Progress value={33} className="w-full" />
+      <div className="min-h-screen bg-gray-900 text-gray-100 flex items-center justify-center">
+        <div className="w-full max-w-md mx-auto">
+          <Progress value={33} className="w-full" />
+        </div>
       </div>
     );
   }
 
-  if (error) {
-    return (
-      <Alert variant="destructive">
-        <AlertTitle>Error</AlertTitle>
-        <AlertDescription>{error}</AlertDescription>
-      </Alert>
-    );
-  }
-
   return (
-    <div className="flex flex-col items-center p-6">
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogTrigger asChild>
-          <Button className="mb-4">
-            <Webhook className="mr-2 h-4 w-4" />
-            Create New Webhook
-          </Button>
-        </DialogTrigger>
-        <DialogContent className="sm:max-w-[425px]">
-          <DialogHeader>
-            <DialogTitle>Create New Webhook</DialogTitle>
-            <DialogDescription>
-              Enter the details for your new webhook here.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="url" className="text-right">
-                URL
-              </Label>
-              <Input
-                id="url"
-                value={newWebhookUrl}
-                onChange={(e) => setNewWebhookUrl(e.target.value)}
-                className="col-span-3"
-              />
-            </div>
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="eventType" className="text-right">
-                Event Type
-              </Label>
-              <Select
-                value={newWebhookEventType}
-                onValueChange={setNewWebhookEventType}
-              >
-                <SelectTrigger className="col-span-3">
-                  <SelectValue placeholder="Select an event type" />
-                </SelectTrigger>
-                <SelectContent>
-                  {eventTypes.map((type) => (
-                    <SelectItem key={type} value={type}>
-                      {type}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+    <div className="min-h-screen bg-gray-900 text-gray-100">
+      <div className="container mx-auto p-4">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center space-x-2">
+            <Link to="/" className="text-blue-400 hover:text-blue-300 flex items-center">
+              <Home className="w-4 h-4 mr-1" />
+              Home
+            </Link>
+            <span>/</span>
+            <span className="flex items-center">
+              <Webhook className="w-4 h-4 mr-1" />
+              Webhooks
+            </span>
           </div>
-          <DialogFooter>
-            <Button onClick={handleCreateWebhook}>Create</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>URL</TableHead>
-            <TableHead>Event Type</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Created At</TableHead>
-            <TableHead>Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {webhooks.map((row) => (
-            <TableRow key={row.id}>
-              <TableCell>{row.url}</TableCell>
-              <TableCell>{row.event_type}</TableCell>
-              <TableCell>
-                <Switch
-                  checked={row.is_active}
-                  onCheckedChange={() => handleToggleWebhook(row.id, row.is_active)}
-                />
-              </TableCell>
-              <TableCell>{new Date(row.created_at).toLocaleString()}</TableCell>
-              <TableCell>
-                <Button variant="outline" size="sm" onClick={() => handleDeleteWebhook(row.id)}>
-                  Delete
-                </Button>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+              <Button className="bg-blue-500 hover:bg-blue-600">
+                <Plus className="mr-2 h-4 w-4" />
+                New Webhook
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[425px] bg-gray-800 text-gray-100">
+              <DialogHeader>
+                <DialogTitle>Create New Webhook</DialogTitle>
+                <DialogDescription>
+                  Enter the details for your new webhook here.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-4 py-4">
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="url" className="text-right">
+                    URL
+                  </Label>
+                  <Input
+                    id="url"
+                    value={newWebhookUrl}
+                    onChange={(e) => setNewWebhookUrl(e.target.value)}
+                    className="col-span-3 bg-gray-700 text-gray-100"
+                  />
+                </div>
+                <div className="grid grid-cols-4 items-center gap-4">
+                  <Label htmlFor="eventType" className="text-right">
+                    Event Type
+                  </Label>
+                  <Select
+                    value={newWebhookEventType}
+                    onValueChange={setNewWebhookEventType}
+                  >
+                    <SelectTrigger className="col-span-3 bg-gray-700 text-gray-100">
+                      <SelectValue placeholder="Select an event type" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-gray-700 text-gray-100">
+                      {eventTypes.map((type) => (
+                        <SelectItem key={type} value={type}>
+                          {type}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button onClick={handleCreateWebhook} className="bg-blue-500 hover:bg-blue-600">Create</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+
+        <Card className="mb-6 bg-gray-800 border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-gray-100">Webhooks Overview</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-gray-300">Manage your webhooks here. You can create, activate, deactivate, and delete webhooks as needed.</p>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-gray-800 border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-gray-100">Your Webhooks</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {error && (
+              <Alert variant="destructive" className="mb-4">
+                <AlertTitle>Error</AlertTitle>
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            )}
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-b border-gray-700">
+                    <TableHead className="text-gray-300">URL</TableHead>
+                    <TableHead className="text-gray-300">Event Type</TableHead>
+                    <TableHead className="text-gray-300">Status</TableHead>
+                    <TableHead className="text-gray-300">Created At</TableHead>
+                    <TableHead className="text-gray-300">Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {webhooks.map((row) => (
+                    <TableRow key={row.id} className="border-b border-gray-700">
+                      <TableCell className="text-gray-300">{row.url}</TableCell>
+                      <TableCell className="text-gray-300">{row.event_type}</TableCell>
+                      <TableCell>
+                        <Switch
+                          checked={row.is_active}
+                          onCheckedChange={() => handleToggleWebhook(row.id, row.is_active)}
+                        />
+                      </TableCell>
+                      <TableCell className="text-gray-300">{new Date(row.created_at).toLocaleString()}</TableCell>
+                      <TableCell>
+                        <Button variant="destructive" size="sm" onClick={() => handleDeleteWebhook(row.id)}>
+                          Delete
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 };
 
-export default Webhooks;
+export default WebhooksPage;
