@@ -33,6 +33,9 @@ DECLARE
     transactions_created INT := 0;
     payments_created INT := 0;
     refunds_created INT := 0;
+    namespace_id UUID;
+    relation_id UUID;
+    object_id UUID;
 BEGIN
     -- Ensure we have enough profiles
     IF (SELECT COUNT(*) FROM profiles) < 4 THEN
@@ -71,7 +74,69 @@ BEGIN
         RAISE NOTICE 'Merchant already exists, skipping insertion';
     END;
 
-    -- Set up permissions
+    -- Insert namespaces
+    INSERT INTO namespaces (name) VALUES 
+    ('merchant'), ('customer'), ('payment'), ('payout')
+    ON CONFLICT (name) DO NOTHING;
+
+    -- Insert relations
+    INSERT INTO relations (namespace_id, name)
+    SELECT id, 'owner' FROM namespaces WHERE name = 'merchant'
+    ON CONFLICT (namespace_id, name) DO NOTHING;
+
+    INSERT INTO relations (namespace_id, name)
+    SELECT id, 'viewer' FROM namespaces WHERE name = 'merchant'
+    ON CONFLICT (namespace_id, name) DO NOTHING;
+
+    INSERT INTO relations (namespace_id, name)
+    SELECT id, 'owner' FROM namespaces WHERE name = 'customer'
+    ON CONFLICT (namespace_id, name) DO NOTHING;
+
+    INSERT INTO relations (namespace_id, name)
+    SELECT id, 'viewer' FROM namespaces WHERE name = 'payment'
+    ON CONFLICT (namespace_id, name) DO NOTHING;
+
+    INSERT INTO relations (namespace_id, name)
+    SELECT id, 'viewer' FROM namespaces WHERE name = 'payout'
+    ON CONFLICT (namespace_id, name) DO NOTHING;
+
+    -- Insert permissions
+    INSERT INTO permissions (namespace_id, relation_id, permission)
+    SELECT n.id, r.id, 'view'
+    FROM namespaces n
+    JOIN relations r ON n.id = r.namespace_id
+    WHERE n.name = 'merchant' AND r.name = 'owner'
+    ON CONFLICT (namespace_id, relation_id, permission) DO NOTHING;
+
+    INSERT INTO permissions (namespace_id, relation_id, permission)
+    SELECT n.id, r.id, 'edit'
+    FROM namespaces n
+    JOIN relations r ON n.id = r.namespace_id
+    WHERE n.name = 'merchant' AND r.name = 'owner'
+    ON CONFLICT (namespace_id, relation_id, permission) DO NOTHING;
+
+    INSERT INTO permissions (namespace_id, relation_id, permission)
+    SELECT n.id, r.id, 'grant_owner'
+    FROM namespaces n
+    JOIN relations r ON n.id = r.namespace_id
+    WHERE n.name = 'merchant' AND r.name = 'owner'
+    ON CONFLICT (namespace_id, relation_id, permission) DO NOTHING;
+
+    INSERT INTO permissions (namespace_id, relation_id, permission)
+    SELECT n.id, r.id, 'grant_viewer'
+    FROM namespaces n
+    JOIN relations r ON n.id = r.namespace_id
+    WHERE n.name = 'merchant' AND r.name = 'owner'
+    ON CONFLICT (namespace_id, relation_id, permission) DO NOTHING;
+
+    INSERT INTO permissions (namespace_id, relation_id, permission)
+    SELECT n.id, r.id, 'view'
+    FROM namespaces n
+    JOIN relations r ON n.id = r.namespace_id
+    WHERE n.name = 'merchant' AND r.name = 'viewer'
+    ON CONFLICT (namespace_id, relation_id, permission) DO NOTHING;
+
+    -- Set up permissions for merchants
     BEGIN
         PERFORM initialize_merchant_permissions(merchant_id1, main_merchant_user_id1);
         PERFORM initialize_merchant_permissions(merchant_id2, main_merchant_user_id2);
@@ -258,6 +323,45 @@ BEGIN
         END LOOP;
     END LOOP;
 
+    -- Create objects for merchants in the permission system
+    INSERT INTO objects (namespace_id, object_id)
+    SELECT n.id, merchant_id1::text
+    FROM namespaces n
+    WHERE n.name = 'merchant'
+    ON CONFLICT (namespace_id, object_id) DO NOTHING;
+
+    INSERT INTO objects (namespace_id, object_id)
+    SELECT n.id, merchant_id2::text
+    FROM namespaces n
+    WHERE n.name = 'merchant'
+    ON CONFLICT (namespace_id, object_id) DO NOTHING;
+
+    -- Create tuples for merchant owners
+    INSERT INTO tuples (namespace_id, object_id, relation_id, user_id)
+    SELECT n.id, o.id, r.id, main_merchant_user_id1
+    FROM namespaces n
+    JOIN objects o ON n.id = o.namespace_id
+    JOIN relations r ON n.id = r.namespace_id
+    WHERE n.name = 'merchant' AND o.object_id = merchant_id1::text AND r.name = 'owner'
+    ON CONFLICT (namespace_id, object_id, relation_id, user_id) DO NOTHING;
+
+    INSERT INTO tuples (namespace_id, object_id, relation_id, user_id)
+    SELECT n.id, o.id, r.id, main_merchant_user_id2
+    FROM namespaces n
+    JOIN objects o ON n.id = o.namespace_id
+    JOIN relations r ON n.id = r.namespace_id
+    WHERE n.name = 'merchant' AND o.object_id = merchant_id2::text AND r.name = 'owner'
+    ON CONFLICT (namespace_id, object_id, relation_id, user_id) DO NOTHING;
+
+    -- Create tuple for merchant viewer
+    INSERT INTO tuples (namespace_id, object_id, relation_id, user_id)
+    SELECT n.id, o.id, r.id, view_only_merchant_user_id1
+    FROM namespaces n
+    JOIN objects o ON n.id = o.namespace_id
+    JOIN relations r ON n.id = r.namespace_id
+    WHERE n.name = 'merchant' AND o.object_id = merchant_id1::text AND r.name = 'viewer'
+    ON CONFLICT (namespace_id, object_id, relation_id, user_id) DO NOTHING;
+
     -- Output summary
     RAISE NOTICE 'Dummy data generation complete:';
     RAISE NOTICE '- 2 merchants created';
@@ -265,6 +369,7 @@ BEGIN
     RAISE NOTICE '- % payments created', payments_created;
     RAISE NOTICE '- % refunds created', refunds_created;
     RAISE NOTICE '- 10 payouts created (5 per merchant)';
+    RAISE NOTICE '- Permissions and relations set up for the Zanzibar-like system';
 EXCEPTION WHEN others THEN
     RAISE EXCEPTION 'Error in dummy data generation: %', SQLERRM;
 END $$;

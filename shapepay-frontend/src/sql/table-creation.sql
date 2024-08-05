@@ -4,17 +4,6 @@
 -- Enable necessary extensions
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- Create profiles table
-CREATE TABLE profiles (
-  id uuid references auth.users on delete cascade not null primary key,
-  updated_at timestamp with time zone,
-  username text unique,
-  full_name text,
-  avatar_url text,
-  website text,
-  constraint username_length check (char_length(username) >= 3)
-);
-
 -- Create merchants table
 CREATE TABLE merchants (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -25,6 +14,26 @@ CREATE TABLE merchants (
     handle TEXT NOT NULL UNIQUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create merchant_roles table
+CREATE TABLE merchant_roles (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name TEXT UNIQUE NOT NULL
+);
+
+-- Insert default roles
+INSERT INTO merchant_roles (name) VALUES ('admin'), ('viewer');
+
+-- Create merchant_users table
+CREATE TABLE merchant_users (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    merchant_id UUID REFERENCES merchants(id),
+    user_id UUID REFERENCES auth.users(id),
+    role_id UUID REFERENCES merchant_roles(id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (merchant_id, user_id)
 );
 
 -- Create customers table
@@ -210,11 +219,20 @@ CREATE TABLE transaction_codes (
     payment_group_id UUID REFERENCES payment_groups(id),
     bank_transaction_id UUID REFERENCES bank_transactions(id),
     code TEXT NOT NULL,
-    soundex_code TEXT NOT NULL,
     status TEXT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     UNIQUE (code)
+);
+
+-- Create customer_sessions table
+CREATE TABLE customer_sessions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    customer_id UUID REFERENCES customers(id),
+    token TEXT UNIQUE NOT NULL,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Tables for Zanzibar-like permission system
@@ -340,6 +358,16 @@ CREATE TRIGGER update_unmatched_transaction_modtime
     FOR EACH ROW
     EXECUTE FUNCTION update_modified_column();
 
+CREATE TRIGGER update_merchant_user_modtime
+    BEFORE UPDATE ON merchant_users
+    FOR EACH ROW
+    EXECUTE FUNCTION update_modified_column();
+
+CREATE TRIGGER update_customer_session_modtime
+    BEFORE UPDATE ON customer_sessions
+    FOR EACH ROW
+    EXECUTE FUNCTION update_modified_column();
+
 -- Create indexes for faster lookups
 CREATE INDEX idx_api_keys_key_hash ON api_keys(key_hash);
 CREATE INDEX idx_audit_log_table_record ON audit_log(table_name, record_id);
@@ -350,6 +378,8 @@ CREATE INDEX idx_bank_transactions_date ON bank_transactions(date);
 CREATE INDEX idx_payments_bank_transaction ON payments(bank_transaction_id);
 CREATE INDEX idx_unmatched_transactions_bank_transaction ON unmatched_transactions(bank_transaction_id);
 CREATE INDEX idx_transaction_codes_code ON transaction_codes(code);
-CREATE INDEX idx_transaction_codes_soundex ON transaction_codes(soundex_code);
 CREATE INDEX idx_transaction_codes_payment_group ON transaction_codes(payment_group_id);
 CREATE INDEX idx_transaction_codes_bank_transaction ON transaction_codes(bank_transaction_id);
+CREATE INDEX idx_merchant_users_merchant_user ON merchant_users(merchant_id, user_id);
+CREATE INDEX idx_merchant_users_user ON merchant_users(user_id);
+CREATE INDEX idx_customer_sessions_token ON customer_sessions(token);

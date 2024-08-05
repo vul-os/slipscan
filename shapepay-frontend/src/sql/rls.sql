@@ -1,118 +1,207 @@
--- File: 03-rls-and-security.sql
--- Description: Row Level Security policies and additional security configurations
-
--- Enable Row Level Security on all tables
+-- Enable RLS on all tables that require access control
 ALTER TABLE merchants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE merchant_users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customers ENABLE ROW LEVEL SECURITY;
-ALTER TABLE payshap_targets ENABLE ROW LEVEL SECURITY;
 ALTER TABLE txns ENABLE ROW LEVEL SECURITY;
-ALTER TABLE payment_groups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bank_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bank_transactions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE refunds ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payouts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payshap_targets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payment_groups ENABLE ROW LEVEL SECURITY;
 ALTER TABLE webhooks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;
-ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE unmatched_transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reconciliation_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE transaction_codes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE customer_sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE merchant_roles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE namespaces ENABLE ROW LEVEL SECURITY;
-ALTER TABLE relations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE objects ENABLE ROW LEVEL SECURITY;
-ALTER TABLE tuples ENABLE ROW LEVEL SECURITY;
-ALTER TABLE permissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE permission_cache ENABLE ROW LEVEL SECURITY;
+ALTER TABLE relations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tuples ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 
--- Create RLS policies for each table
+-- Policy for merchants: allow access based on Zanzibar permissions
+CREATE POLICY merchant_access_policy ON merchants
+USING (
+    check_permission(auth.uid(), 'merchant', id::TEXT, 'view')
+);
 
--- Merchants table
-CREATE POLICY "Allow service_role full access on merchants" ON merchants
-    USING (auth.role() = 'service_role')
-    WITH CHECK (auth.role() = 'service_role');
+-- Policy for merchant_users: allow access based on Zanzibar permissions
+CREATE POLICY merchant_user_access_policy ON merchant_users
+USING (
+    check_permission(auth.uid(), 'merchant', merchant_id::TEXT, 'manage_users')
+);
 
-CREATE POLICY "Allow authenticated users to view own merchant" ON merchants
-    FOR SELECT
-    USING (auth.uid() = profile_id);
+-- Policy for customers: allow access based on Zanzibar permissions
+CREATE POLICY customer_access_policy ON customers
+USING (
+    check_permission(auth.uid(), 'customer', id::TEXT, 'view')
+);
 
--- Customers table
-CREATE POLICY "Allow service_role full access on customers" ON customers
-    USING (auth.role() = 'service_role')
-    WITH CHECK (auth.role() = 'service_role');
+-- Policy for transactions: allow access based on Zanzibar permissions
+CREATE POLICY txn_access_policy ON txns
+USING (
+    check_permission(auth.uid(), 'transaction', id::TEXT, 'view')
+);
 
-CREATE POLICY "Allow merchant to access own customers" ON customers
-    USING (merchant_id IN (SELECT id FROM merchants WHERE profile_id = auth.uid()));
+-- Policy for payments: allow access based on Zanzibar permissions
+CREATE POLICY payment_access_policy ON payments
+USING (
+    check_permission(auth.uid(), 'payment', id::TEXT, 'view')
+);
 
--- Transactions table
-CREATE POLICY "Allow service_role full access on txns" ON txns
-    USING (auth.role() = 'service_role')
-    WITH CHECK (auth.role() = 'service_role');
+-- Policy for bank_accounts: allow access based on Zanzibar permissions
+CREATE POLICY bank_account_access_policy ON bank_accounts
+USING (
+    check_permission(auth.uid(), 'bank_account', id::TEXT, 'view')
+);
 
-CREATE POLICY "Allow merchant to access own transactions" ON txns
-    USING (merchant_id IN (SELECT id FROM merchants WHERE profile_id = auth.uid()));
+-- Policy for bank_transactions: allow access based on Zanzibar permissions
+CREATE POLICY bank_transaction_access_policy ON bank_transactions
+USING (
+    check_permission(auth.uid(), 'bank_transaction', id::TEXT, 'view')
+);
 
--- Payment groups table
-CREATE POLICY "Allow service_role full access on payment_groups" ON payment_groups
-    USING (auth.role() = 'service_role')
-    WITH CHECK (auth.role() = 'service_role');
+-- Policy for refunds: allow access based on Zanzibar permissions
+CREATE POLICY refund_access_policy ON refunds
+USING (
+    check_permission(auth.uid(), 'refund', id::TEXT, 'view')
+);
 
-CREATE POLICY "Allow merchant to access own payment groups" ON payment_groups
-    USING (txn_id IN (SELECT id FROM txns WHERE merchant_id IN (SELECT id FROM merchants WHERE profile_id = auth.uid())));
+-- Policy for payouts: allow access based on Zanzibar permissions
+CREATE POLICY payout_access_policy ON payouts
+USING (
+    check_permission(auth.uid(), 'payout', id::TEXT, 'view')
+);
 
--- Payments table
-CREATE POLICY "Allow service_role full access on payments" ON payments
-    USING (auth.role() = 'service_role')
-    WITH CHECK (auth.role() = 'service_role');
+-- Policy for payshap_targets: allow access based on Zanzibar permissions
+CREATE POLICY payshap_target_access_policy ON payshap_targets
+USING (
+    check_permission(auth.uid(), 'payshap_target', id::TEXT, 'view')
+);
 
-CREATE POLICY "Allow merchant to access own payments" ON payments
-    USING (payment_group_id IN (
-        SELECT pg.id 
-        FROM payment_groups pg
-        JOIN txns t ON pg.txn_id = t.id
-        JOIN merchants m ON t.merchant_id = m.id
-        WHERE m.profile_id = auth.uid()
-    ));
+-- Policy for payment_groups: allow access based on Zanzibar permissions
+CREATE POLICY payment_group_access_policy ON payment_groups
+USING (
+    check_permission(auth.uid(), 'payment_group', id::TEXT, 'view')
+);
 
--- Add similar policies for other tables...
+-- Policy for webhooks: allow access based on Zanzibar permissions
+CREATE POLICY webhook_access_policy ON webhooks
+USING (
+    check_permission(auth.uid(), 'webhook', id::TEXT, 'view')
+);
 
--- Function to handle new user creation
-CREATE OR REPLACE FUNCTION public.handle_new_user()
-RETURNS TRIGGER AS $$
-BEGIN
-    INSERT INTO public.profiles (id, full_name, avatar_url)
-    VALUES (new.id, new.raw_user_meta_data->>'full_name', new.raw_user_meta_data->>'avatar_url');
-    RETURN new;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+-- Policy for api_keys: allow access based on Zanzibar permissions
+CREATE POLICY api_key_access_policy ON api_keys
+USING (
+    check_permission(auth.uid(), 'api_key', id::TEXT, 'view')
+);
 
--- Trigger for new user creation
-CREATE TRIGGER on_auth_user_created
-    AFTER INSERT ON auth.users
-    FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+-- Policy for unmatched_transactions: allow access based on Zanzibar permissions
+CREATE POLICY unmatched_transaction_access_policy ON unmatched_transactions
+USING (
+    check_permission(auth.uid(), 'unmatched_transaction', id::TEXT, 'view')
+);
 
--- Function to generate merchant handle from email
-CREATE OR REPLACE FUNCTION generate_handle_from_email() 
-RETURNS TRIGGER AS $$
-BEGIN
-    -- Generate handle by replacing non-alphanumeric characters with underscores
-    NEW.handle := regexp_replace(split_part(NEW.email, '@', 1), '[^a-zA-Z0-9]', '_', 'g');
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+-- Policy for reconciliation_log: allow access based on Zanzibar permissions
+CREATE POLICY reconciliation_log_access_policy ON reconciliation_log
+USING (
+    check_permission(auth.uid(), 'reconciliation_log', id::TEXT, 'view')
+);
 
--- Trigger to generate merchant handle before insert
-CREATE TRIGGER before_insert_merchant
-BEFORE INSERT ON merchants
-FOR EACH ROW
-EXECUTE FUNCTION generate_handle_from_email();
+-- Policy for transaction_codes: allow access based on Zanzibar permissions
+CREATE POLICY transaction_code_access_policy ON transaction_codes
+USING (
+    check_permission(auth.uid(), 'transaction_code', id::TEXT, 'view')
+);
 
--- Grant necessary privileges to the service_role
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO service_role;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO service_role;
-GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO service_role;
+-- Policy for customer_sessions: allow access based on Zanzibar permissions
+CREATE POLICY customer_session_access_policy ON customer_sessions
+USING (
+    check_permission(auth.uid(), 'customer_session', id::TEXT, 'view')
+);
 
--- Additional security measures can be added here, such as:
--- - Setting up audit triggers
--- - Implementing encryption for sensitive data
--- - Configuring connection security settings
+-- Policy for audit_log: allow access based on Zanzibar permissions
+CREATE POLICY audit_log_access_policy ON audit_log
+USING (
+    check_permission(auth.uid(), 'audit_log', table_name::TEXT, 'view')
+);
+
+-- Policy for merchant_roles: allow access based on Zanzibar permissions
+CREATE POLICY merchant_roles_access_policy ON merchant_roles
+USING (
+    check_permission(auth.uid(), 'merchant_roles', id::TEXT, 'view')
+);
+
+-- Policy for namespaces: allow access based on Zanzibar permissions
+CREATE POLICY namespaces_access_policy ON namespaces
+USING (
+    check_permission(auth.uid(), 'namespace', id::TEXT, 'view')
+);
+
+-- Policy for objects: allow access based on Zanzibar permissions
+CREATE POLICY objects_access_policy ON objects
+USING (
+    check_permission(auth.uid(), 'object', id::TEXT, 'view')
+);
+
+-- Policy for permission_cache: allow access based on Zanzibar permissions
+CREATE POLICY permission_cache_access_policy ON permission_cache
+USING (
+    check_permission(auth.uid(), 'permission_cache', id::TEXT, 'view')
+);
+
+-- Policy for relations: allow access based on Zanzibar permissions
+CREATE POLICY relations_access_policy ON relations
+USING (
+    check_permission(auth.uid(), 'relation', id::TEXT, 'view')
+);
+
+-- Policy for tuples: allow access based on Zanzibar permissions
+CREATE POLICY tuples_access_policy ON tuples
+USING (
+    check_permission(auth.uid(), 'tuple', id::TEXT, 'view')
+);
+
+-- Policy for profiles: allow access to profiles linked to the merchant only
+CREATE POLICY profiles_access_policy ON profiles
+USING (
+    EXISTS (
+        SELECT 1 FROM merchant_users
+        WHERE merchant_users.user_id = profiles.id
+        AND check_permission(auth.uid(), 'merchant', merchant_users.merchant_id::TEXT, 'view')
+    )
+);
+
+-- Force the use of RLS policies
+ALTER TABLE merchants FORCE ROW LEVEL SECURITY;
+ALTER TABLE merchant_users FORCE ROW LEVEL SECURITY;
+ALTER TABLE customers FORCE ROW LEVEL SECURITY;
+ALTER TABLE txns FORCE ROW LEVEL SECURITY;
+ALTER TABLE payments FORCE ROW LEVEL SECURITY;
+ALTER TABLE bank_accounts FORCE ROW LEVEL SECURITY;
+ALTER TABLE bank_transactions FORCE ROW LEVEL SECURITY;
+ALTER TABLE refunds FORCE ROW LEVEL SECURITY;
+ALTER TABLE payouts FORCE ROW LEVEL SECURITY;
+ALTER TABLE payshap_targets FORCE ROW LEVEL SECURITY;
+ALTER TABLE payment_groups FORCE ROW LEVEL SECURITY;
+ALTER TABLE webhooks FORCE ROW LEVEL SECURITY;
+ALTER TABLE api_keys FORCE ROW LEVEL SECURITY;
+ALTER TABLE unmatched_transactions FORCE ROW LEVEL SECURITY;
+ALTER TABLE reconciliation_log FORCE ROW LEVEL SECURITY;
+ALTER TABLE transaction_codes FORCE ROW LEVEL SECURITY;
+ALTER TABLE customer_sessions FORCE ROW LEVEL SECURITY;
+ALTER TABLE audit_log FORCE ROW LEVEL SECURITY;
+ALTER TABLE merchant_roles FORCE ROW LEVEL SECURITY;
+ALTER TABLE namespaces FORCE ROW LEVEL SECURITY;
+ALTER TABLE objects FORCE ROW LEVEL SECURITY;
+ALTER TABLE permission_cache FORCE ROW LEVEL SECURITY;
+ALTER TABLE relations FORCE ROW LEVEL SECURITY;
+ALTER TABLE tuples FORCE ROW LEVEL SECURITY;
+ALTER TABLE profiles FORCE ROW LEVEL SECURITY;
