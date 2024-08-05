@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Home, CreditCard as Payment, Copy, ChevronDown, ChevronUp, Plus } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import CreatePaymentForm from './create-payments';
+import CreatePaymentForm from './create-payment';
 
 const PaymentsPage = () => {
   const [paymentGroups, setPaymentGroups] = useState([]);

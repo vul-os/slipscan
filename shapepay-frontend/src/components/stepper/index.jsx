@@ -1,7 +1,6 @@
-"use client";
-
+// Stepper.jsx
 import { cn } from "@/lib/utils";
-import React, { forwardRef, useState } from "react";
+import React, { forwardRef } from "react";
 import { StepperProvider, useStepper } from "./context"; // Import StepperProvider and useStepper
 import { Step } from "./step";
 import { useMediaQuery } from "./use-media-query"; // Import media query hook
