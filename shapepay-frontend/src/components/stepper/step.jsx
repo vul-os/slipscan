@@ -1,6 +1,6 @@
 import * as React from "react";
 import { HorizontalStep } from "./horizontal-step";
-import { useStepper } from "./context";
+import { useStepper } from "./use-stepper";
 import { VerticalStep } from "./vertical-step";
 
 const Step = React.forwardRef((props, ref) => {
@@ -21,9 +21,8 @@ const Step = React.forwardRef((props, ref) => {
   } = props;
 
   const { isVertical, isError, isLoading, clickable } = useStepper();
-
   const hasVisited = isCurrentStep || isCompletedStep;
-
+  
   const sharedProps = {
     isLastStep,
     isCompletedStep,

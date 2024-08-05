@@ -1,20 +1,19 @@
-// Stepper.jsx
-import { cn } from "@/lib/utils";
-import React, { forwardRef } from "react";
-import { StepperProvider, useStepper } from "./context"; // Import StepperProvider and useStepper
-import { Step } from "./step";
-import { useMediaQuery } from "./use-media-query"; // Import media query hook
+"use client";
 
-// Variable sizes for stepper icon sizes
+import { cn } from "@/lib/utils";
+import * as React from "react";
+import { StepperProvider} from "./context";
+import { Step } from "./step";
+import { useMediaQuery } from "./use-media-query";
+import { useStepper } from "./use-stepper";
+
 const VARIABLE_SIZES = {
   sm: "36px",
   md: "40px",
   lg: "44px",
 };
 
-// Stepper component definition
-const Stepper = forwardRef((props, ref) => {
-  // Destructuring props
+const Stepper = React.forwardRef((props, ref) => {
   const {
     className,
     children,
@@ -36,12 +35,8 @@ const Stepper = forwardRef((props, ref) => {
     ...rest
   } = props;
 
-  // Converting children to an array
   const childArr = React.Children.toArray(children);
-
   const items = [];
-
-  // Extracting Step components and footer content
   const footer = childArr.map((child, _index) => {
     if (!React.isValidElement(child)) {
       throw new Error("Stepper children must be valid React elements.");
@@ -50,45 +45,37 @@ const Stepper = forwardRef((props, ref) => {
       items.push(child);
       return null;
     }
-
     return child;
   });
 
-  // Determining step count
   const stepCount = items.length;
-
-  // Check if the view is mobile using a media query
   const isMobile = useMediaQuery(
     `(max-width: ${mobileBreakpoint || "768px"})`
   );
-
-  // Check if the stepper is clickable
   const clickable = !!onClickStep;
-
-  // Determine orientation based on media query
   const orientation = isMobile && responsive ? "vertical" : orientationProp;
-
-  // Check if the orientation is vertical
   const isVertical = orientation === "vertical";
 
   return (
     <StepperProvider
-      // Passing context values to StepperProvider
-      initialStep={initialStep}
-      steps={steps}
-      state={state}
-      size={size}
-      responsive={responsive}
-      checkIcon={checkIcon}
-      errorIcon={errorIcon}
-      onClickStep={onClickStep}
-      clickable={clickable}
-      stepCount={stepCount}
-      isVertical={isVertical}
-      variant={variant || "circle"}
-      expandVerticalSteps={expandVerticalSteps}
-      scrollTracking={scrollTracking}
-      styles={styles}
+      value={{
+        initialStep,
+        orientation,
+        state,
+        size,
+        responsive,
+        checkIcon,
+        errorIcon,
+        onClickStep,
+        clickable,
+        stepCount,
+        isVertical,
+        variant: variant || "circle",
+        expandVerticalSteps,
+        steps,
+        scrollTracking,
+        styles,
+      }}
     >
       <div
         ref={ref}
@@ -102,8 +89,7 @@ const Stepper = forwardRef((props, ref) => {
           styles?.["main-container"]
         )}
         style={{
-          "--step-icon-size":
-            variables?.["--step-icon-size"] || `${VARIABLE_SIZES[size || "md"]}`,
+          "--step-icon-size": variables?.["--step-icon-size"] || `${VARIABLE_SIZES[size || "md"]}`,
           "--step-gap": variables?.["--step-gap"] || "8px",
         }}
         {...rest}
@@ -126,19 +112,15 @@ Stepper.defaultProps = {
 
 const VerticalContent = ({ children }) => {
   const { activeStep } = useStepper();
-
   const childArr = React.Children.toArray(children);
   const stepCount = childArr.length;
 
   return (
     <>
       {React.Children.map(children, (child, i) => {
-        const isCompletedStep =
-          (React.isValidElement(child) && child.props.isCompletedStep) ??
-          i < activeStep;
+        const isCompletedStep = (React.isValidElement(child) && child.props.isCompletedStep) ?? i < activeStep;
         const isLastStep = i === stepCount - 1;
         const isCurrentStep = i === activeStep;
-
         const stepProps = {
           index: i,
           isCompletedStep,

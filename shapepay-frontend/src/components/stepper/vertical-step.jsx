@@ -5,7 +5,7 @@ import { cva } from "class-variance-authority";
 import { StepButtonContainer } from "./step-button-container";
 import { StepIcon } from "./step-icon";
 import { StepLabel } from "./step-label";
-import { useStepper } from "./context";
+import { useStepper } from "./use-stepper";
 
 const verticalStepVariants = cva(
   [

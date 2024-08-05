@@ -3,7 +3,7 @@ import * as React from "react";
 import { StepButtonContainer } from "./step-button-container";
 import { StepIcon } from "./step-icon";
 import { StepLabel } from "./step-label";
-import { useStepper } from "./context";
+import { useStepper } from "./use-stepper";
 
 const HorizontalStep = React.forwardRef((props, ref) => {
   const {
@@ -35,12 +35,8 @@ const HorizontalStep = React.forwardRef((props, ref) => {
 
   const localIsLoading = isLoading || state === "loading";
   const localIsError = isError || state === "error";
-
   const opacity = hasVisited ? 1 : 0.8;
-
-  const active =
-    variant === "line" ? isCompletedStep || isCurrentStep : isCompletedStep;
-
+  const active = variant === "line" ? isCompletedStep || isCurrentStep : isCompletedStep;
   const checkIcon = checkIconProp || checkIconContext;
   const errorIcon = errorIconProp || errorIconContext;
 
@@ -55,13 +51,10 @@ const HorizontalStep = React.forwardRef((props, ref) => {
         "[&:not(:last-child)]:after:content-[''] [&:not(:last-child)]:after:h-[2px] [&:not(:last-child)]:after:bg-border",
         "data-[completed=true]:[&:not(:last-child)]:after:bg-primary",
         "data-[invalid=true]:[&:not(:last-child)]:after:bg-destructive",
-        variant === "circle-alt" &&
-          "justify-start flex-col flex-1 [&:not(:last-child)]:after:relative [&:not(:last-child)]:after:order-[-1] [&:not(:last-child)]:after:start-[50%] [&:not(:last-child)]:after:end-[50%] [&:not(:last-child)]:after:top-[calc(var(--step-icon-size)/2)] [&:not(:last-child)]:after:w-[calc((100%-var(--step-icon-size))-(var(--step-gap)))]",
-        variant === "circle" &&
-          "[&:not(:last-child)]:after:flex-1 [&:not(:last-child)]:after:ms-[var(--step-gap)] [&:not(:last-child)]:after:me-[var(--step-gap)]",
-        variant === "line" &&
-          "flex-col flex-1 border-t-[3px] data-[active=true]:border-primary",
-        styles?.["horizontal-step"],
+        variant === "circle-alt" && "justify-start flex-col flex-1 [&:not(:last-child)]:after:relative [&:not(:last-child)]:after:order-[-1] [&:not(:last-child)]:after:start-[50%] [&:not(:last-child)]:after:end-[50%] [&:not(:last-child)]:after:top-[calc(var(--step-icon-size)/2)] [&:not(:last-child)]:after:w-[calc((100%-var(--step-icon-size))-(var(--step-gap)))]",
+        variant === "circle" && "[&:not(:last-child)]:after:flex-1 [&:not(:last-child)]:after:ms-[var(--step-gap)] [&:not(:last-child)]:after:me-[var(--step-gap)]",
+        variant === "line" && "flex-col flex-1 border-t-[3px] data-[active=true]:border-primary",
+        styles?.["horizontal-step"]
       )}
       data-optional={steps[index || 0]?.optional}
       data-completed={isCompletedStep}
@@ -77,12 +70,10 @@ const HorizontalStep = React.forwardRef((props, ref) => {
           "flex items-center",
           variant === "circle-alt" && "flex-col justify-center gap-1",
           variant === "line" && "w-full",
-          styles?.["horizontal-step-container"],
+          styles?.["horizontal-step-container"]
         )}
       >
-        <StepButtonContainer
-          {...{ ...props, isError: localIsError, isLoading: localIsLoading }}
-        >
+        <StepButtonContainer {...{ ...props, isError: localIsError, isLoading: localIsLoading }}>
           <StepIcon
             {...{
               index,
@@ -97,11 +88,7 @@ const HorizontalStep = React.forwardRef((props, ref) => {
             errorIcon={errorIcon}
           />
         </StepButtonContainer>
-        <StepLabel
-          label={label}
-          description={description}
-          {...{ isCurrentStep, opacity }}
-        />
+        <StepLabel label={label} description={description} {...{ isCurrentStep, opacity }} />
       </div>
     </div>
   );

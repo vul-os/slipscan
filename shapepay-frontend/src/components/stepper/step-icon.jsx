@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import { cva } from "class-variance-authority";
 import { CheckIcon, Loader2, X } from "lucide-react";
 import * as React from "react";
-import { useStepper } from "./context";
+import { useStepper } from "./use-stepper";
 
 const iconVariants = cva("", {
   variants: {
@@ -19,7 +19,6 @@ const iconVariants = cva("", {
 
 const StepIcon = React.forwardRef((props, ref) => {
   const { size } = useStepper();
-
   const {
     isCompletedStep,
     isCurrentStep,
@@ -32,9 +31,10 @@ const StepIcon = React.forwardRef((props, ref) => {
     errorIcon: CustomErrorIcon,
   } = props;
 
-  const Icon = React.useMemo(() => (CustomIcon ? CustomIcon : null), [
-    CustomIcon,
-  ]);
+  const Icon = React.useMemo(
+    () => (CustomIcon ? CustomIcon : null),
+    [CustomIcon]
+  );
 
   const ErrorIcon = React.useMemo(
     () => (CustomErrorIcon ? CustomErrorIcon : null),
@@ -90,11 +90,7 @@ const StepIcon = React.forwardRef((props, ref) => {
       );
     }
     return (
-      <span
-        ref={ref}
-        key="label"
-        className={cn("font-medium text-center text-md")}
-      >
+      <span ref={ref} key="label" className={cn("font-medium text-center text-md")}>
         {(index || 0) + 1}
       </span>
     );

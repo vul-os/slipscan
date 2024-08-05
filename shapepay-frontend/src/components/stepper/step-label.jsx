@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 import { cva } from "class-variance-authority";
-import { useStepper } from "./context";
+import { useStepper } from "./use-stepper";
 
 const labelVariants = cva("", {
   variants: {
@@ -44,9 +44,7 @@ const StepLabel = ({ isCurrentStep, opacity, label, description }) => {
         variant === "circle-alt" && orientation === "vertical" && "text-start",
         styles?.["step-label-container"]
       )}
-      style={{
-        opacity,
-      }}
+      style={{ opacity }}
     >
       {!!label && (
         <span

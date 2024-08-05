@@ -5,12 +5,13 @@ import { useStepper } from "@/components/stepper"; // Import useStepper from you
 
 // PaymentTypeStep Component
 const PaymentTypeStep = ({ newPayment, setNewPayment }) => {
-  const { nextStep } = useStepper(); // Use nextStep from the stepper context
+  const { nextStep, activeStep} = useStepper(); // Use nextStep from the stepper context
 
+console.log("step: ", activeStep )
   return (
     <div className="flex flex-col items-center justify-center gap-6 py-8">
       <Label className="text-center text-lg font-medium text-gray-300 mb-4">
-        Choose Simple Payment
+        Choose Payment Type
       </Label>
       <Button
         onClick={() => {

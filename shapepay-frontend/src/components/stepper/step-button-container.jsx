@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { useStepper } from "./context";
+import { useStepper } from "./use-stepper";
 
 const StepButtonContainer = ({
   isCurrentStep,
