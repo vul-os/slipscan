@@ -17,6 +17,7 @@ import Webhooks from './pages/webhooks';
 import Payments from './pages/payments/payments';
 import TransactionsPage from './pages/transactions';
 import Refunds from './pages/refunds';
+import PaymentPage from './pages/payments/customer-payments';
 
 // Components
 import ProtectedRoute from './components/auth/protected-route';
@@ -28,6 +29,7 @@ const AppRoutes = () => {
       <Route element={<BlankLayout />}>
         <Route path="/login" element={<SignIn />} />
         <Route path="/signup" element={<SignUp />} />
+        <Route path="/pay/:merchantId" element={<ProtectedRoute><PaymentPage /></ProtectedRoute>} />
       </Route>
 
       {/* Protected routes */}
