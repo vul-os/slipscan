@@ -16,23 +16,30 @@ const steps = [
   { label: "Confirmation" },
 ];
 
+const STORAGE_KEY_PREFIX = 'paymentSessionData_';
+const EXPIRATION_TIME = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+
+const initialPaymentState = {
+  amount: "",
+  referenceCode: "",
+  customerName: "",
+  customerEmail: "",
+  customerPhone: "",
+};
+
 const PaymentPage = () => {
   const { merchantId } = useParams();
-  const [newPayment, setNewPayment] = useState({
-    amount: "",
-    referenceCode: "",
-    customerName: "",
-    customerEmail: "",
-    customerPhone: "",
-  });
-
+  const [newPayment, setNewPayment] = useState(initialPaymentState);
   const [paymentCode, setPaymentCode] = useState("");
   const [merchantDetails, setMerchantDetails] = useState(null);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [sessionActive, setSessionActive] = useState(false);
+
+  const storageKey = `${STORAGE_KEY_PREFIX}${merchantId}`;
 
   useEffect(() => {
     const fetchMerchantDetails = async () => {
       try {
-        // Fetch merchant data
         const { data: merchantData, error: merchantError } = await supabase
           .from('merchants')
           .select('*')
@@ -41,7 +48,6 @@ const PaymentPage = () => {
 
         if (merchantError) throw merchantError;
         if (merchantData) {
-          // Fetch profile data using the profile_id from merchant data
           const { data: profileData, error: profileError } = await supabase
             .from('profiles')
             .select('avatar_url')
@@ -62,12 +68,53 @@ const PaymentPage = () => {
 
     if (merchantId) {
       fetchMerchantDetails();
+      loadSessionData();
     }
   }, [merchantId]);
+
+  const loadSessionData = () => {
+    const storedData = localStorage.getItem(storageKey);
+    if (storedData) {
+      try {
+        const { data, timestamp } = JSON.parse(storedData);
+        const now = new Date().getTime();
+        if (now - timestamp < EXPIRATION_TIME) {
+          setNewPayment(data.newPayment || initialPaymentState);
+          setCurrentStep(data.currentStep || 0);
+          setSessionActive(true);
+        } else {
+          // If expired, remove the stored data
+          localStorage.removeItem(storageKey);
+        }
+      } catch (error) {
+        console.error("Error parsing stored data:", error);
+        localStorage.removeItem(storageKey);
+      }
+    }
+  };
+
+  useEffect(() => {
+    // Save session data to localStorage
+    if (sessionActive) {
+      const dataToStore = {
+        newPayment,
+        currentStep,
+        timestamp: new Date().getTime(),
+      };
+      localStorage.setItem(storageKey, JSON.stringify({ data: dataToStore, timestamp: new Date().getTime() }));
+    }
+  }, [newPayment, currentStep, sessionActive, storageKey]);
 
   const generatePaymentCode = () => {
     const code = "PAY-" + Math.random().toString(36).substring(2, 10).toUpperCase();
     setPaymentCode(code);
+  };
+
+  const resetSession = () => {
+    setNewPayment(initialPaymentState);
+    setCurrentStep(0);
+    setSessionActive(false);
+    localStorage.removeItem(storageKey);
   };
 
   return (
@@ -78,6 +125,15 @@ const PaymentPage = () => {
             {merchantDetails ? merchantDetails.name : "Loading..."}
           </h1>
           <div className="flex items-center space-x-4">
+            {sessionActive && (
+              <Button 
+                onClick={resetSession}
+                size="sm"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                New Payment
+              </Button>
+            )}
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -102,7 +158,12 @@ const PaymentPage = () => {
 
       <main className="flex-grow container mx-auto px-4 py-8">
         <div className="max-w-4xl mx-auto">
-          <Stepper initialStep={0} steps={steps}>
+          {sessionActive && (
+            <div className="mb-4 p-2 bg-blue-600 text-white rounded">
+              Session active - You can resume your previous payment
+            </div>
+          )}
+          <Stepper initialStep={currentStep} steps={steps}>
             {steps.map((stepProps, index) => (
               <Step key={stepProps.label} {...stepProps}>
                 <div className="bg-gray-800 rounded-lg shadow-lg p-6 my-6 border border-gray-700">
@@ -125,7 +186,12 @@ const PaymentPage = () => {
                 </div>
               </Step>
             ))}
-            <StepperFooter newPayment={newPayment} generatePaymentCode={generatePaymentCode} />
+            <StepperFooter 
+              newPayment={newPayment} 
+              generatePaymentCode={generatePaymentCode} 
+              setCurrentStep={setCurrentStep}
+              setSessionActive={setSessionActive}
+            />
           </Stepper>
         </div>
       </main>
@@ -133,14 +199,14 @@ const PaymentPage = () => {
   );
 };
 
-const StepperFooter = ({ newPayment, generatePaymentCode }) => {
+const StepperFooter = ({ newPayment, generatePaymentCode, setCurrentStep, setSessionActive }) => {
   const {
     nextStep,
     prevStep,
-    resetSteps,
     isDisabledStep,
     hasCompletedAllSteps,
     isLastStep,
+    activeStep,
   } = useStepper();
 
   const handleNext = () => {
@@ -148,9 +214,17 @@ const StepperFooter = ({ newPayment, generatePaymentCode }) => {
       generatePaymentCode();
     }
     nextStep();
+    setCurrentStep(activeStep + 1);
+    setSessionActive(true);
   };
-  const isAmount = !!newPayment?.amount
-  console.log(isAmount)
+
+  const handlePrev = () => {
+    prevStep();
+    setCurrentStep(activeStep - 1);
+  };
+
+  const isAmount = newPayment && !!newPayment.amount;
+
   return (
     <>
       {hasCompletedAllSteps && (
@@ -159,15 +233,11 @@ const StepperFooter = ({ newPayment, generatePaymentCode }) => {
         </div>
       )}
       <div className="w-full flex justify-end gap-2">
-        {hasCompletedAllSteps ? (
-          <Button size="sm" onClick={resetSteps} className="bg-indigo-600 hover:bg-indigo-700 text-white">
-            New Payment
-          </Button>
-        ) : (
+        {!hasCompletedAllSteps && (
           <>
             <Button
               disabled={isDisabledStep}
-              onClick={prevStep}
+              onClick={handlePrev}
               size="sm"
               className="bg-gray-700 hover:bg-gray-600 text-gray-100"
             >
