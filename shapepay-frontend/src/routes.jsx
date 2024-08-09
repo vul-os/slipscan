@@ -8,6 +8,7 @@ import MainLayout from './components/layout/main-layout';
 // Auth Pages
 import SignIn from './pages/auth/signin';
 import SignUp from './pages/auth/signup';
+import AcceptInvite from './pages/auth/accept-invite';
 
 // Protected Pages
 import Dashboard from './pages/dashboard';
@@ -18,6 +19,7 @@ import Payments from './pages/payments/payments';
 import TransactionsPage from './pages/transactions';
 import Refunds from './pages/refunds';
 import PaymentPage from './pages/payments/customer-payments';
+import SettingsPage from './pages/settings';
 
 // Components
 import ProtectedRoute from './components/auth/protected-route';
@@ -29,7 +31,8 @@ const AppRoutes = () => {
       <Route element={<BlankLayout />}>
         <Route path="/login" element={<SignIn />} />
         <Route path="/signup" element={<SignUp />} />
-        <Route path="/pay/:merchantId" element={<ProtectedRoute><PaymentPage /></ProtectedRoute>} />
+        <Route path="/pay/:merchantId" element={<PaymentPage />} />
+        <Route path="/accept-invite/:token" element={<ProtectedRoute><AcceptInvite /></ProtectedRoute>} />
       </Route>
 
       {/* Protected routes */}
@@ -42,6 +45,8 @@ const AppRoutes = () => {
         <Route path="/payments" element={<ProtectedRoute><Payments /></ProtectedRoute>} />
         <Route path="/transactions" element={<ProtectedRoute><TransactionsPage /></ProtectedRoute>} />
         <Route path="/refunds" element={<ProtectedRoute><Refunds /></ProtectedRoute>} />
+        <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+
       </Route>
 
       {/* Catch-all route */}

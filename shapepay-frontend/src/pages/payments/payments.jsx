@@ -45,28 +45,23 @@ const PaymentsPage = () => {
           status,
           created_at,
           updated_at,
-          transaction_codes (
-            code,
-            status,
-            expires_at
-          )
+
         `)
         .order('created_at', { ascending: false });
-
+  
       if (error) throw error;
-
+  
       const processedData = data.map((group) => {
-        const { transaction_codes, ...rest } = group;
-        const flattenedTransactionCode = transaction_codes?.[0] || {};
+        const paymentCode = group.payment_code_groups[0]?.payment_codes;
         return {
-          ...rest,
-          code: flattenedTransactionCode.code || 'Not available',
-          transactionCodeStatus: flattenedTransactionCode.status || 'Not available',
-          codeExpiry: flattenedTransactionCode.expires_at || null,
-          payments: [],
+          ...group,
+          code: paymentCode?.code || 'Not available',
+          paymentCodeStatus: paymentCode?.status || 'Not available',
+          codeExpiry: paymentCode?.expires_at || null,
+          payments: []
         };
       });
-
+  
       setData(processedData);
     } catch (error) {
       console.error('Error fetching payment groups with codes:', error);
@@ -107,27 +102,7 @@ const PaymentsPage = () => {
   };
 
   const handleCreatePayment = async (newPayment) => {
-    try {
-      const { data, error } = await supabase
-        .from('payments')
-        .insert([
-          {
-            amount_charged: parseFloat(newPayment.amount),
-            amount_collected: parseFloat(newPayment.amount),
-            description: newPayment.description,
-            status: 'completed',
-            txn_id: `POS_${Date.now()}`
-          }
-        ]);
 
-      if (error) throw error;
-
-      console.log('Payment created:', data);
-      setIsCreatePaymentOpen(false);
-      fetchPaymentGroupsWithCodes();
-    } catch (error) {
-      console.error('Error creating payment:', error);
-    }
   };
 
   const columns = [
@@ -154,7 +129,7 @@ const PaymentsPage = () => {
     },
     {
       accessorKey: "code",
-      header: "Transaction Code",
+      header: "Payment Code",
       cell: ({ row }) => (
         <div className="flex items-center">
           {row.getValue("code")}
@@ -163,7 +138,7 @@ const PaymentsPage = () => {
               variant="ghost"
               size="sm"
               onClick={(e) => { e.stopPropagation(); copyToClipboard(row.getValue("code")); }}
-              aria-label="Copy transaction code"
+              aria-label="Copy payment code"
               className="text-gray-300 hover:text-gray-100 hover:bg-gray-600 ml-2"
             >
               <Copy className="w-4 h-4" />
@@ -173,7 +148,7 @@ const PaymentsPage = () => {
       ),
     },
     {
-      accessorKey: "transactionCodeStatus",
+      accessorKey: "paymentCodeStatus",
       header: "Code Status",
     },
     {
@@ -340,4 +315,4 @@ const PaymentsPage = () => {
   );
 };
 
-export default PaymentsPage
+export default PaymentsPage;

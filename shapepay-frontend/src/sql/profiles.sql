@@ -9,7 +9,7 @@ CREATE TABLE profiles (
   constraint username_length check (char_length(username) >= 3)
 );
 
-ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles DISABLE ROW LEVEL SECURITY;
 
 -- Function to handle new user creation
 CREATE OR REPLACE FUNCTION public.handle_new_user()

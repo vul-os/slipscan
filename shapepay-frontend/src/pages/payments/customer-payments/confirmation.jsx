@@ -2,20 +2,23 @@ import React from "react";
 import { Copy, Phone } from "lucide-react";
 import SouthAfricanFlag from "./rsa-icon";
 
-const ConfirmationStep = ({ paymentCode, phoneNumber, handleCopyPaymentCode }) => {
+const shapNumber = "741879351"
+
+const PaymentConfoirmationStep = ({ paymentDetails }) => {
     const handleCopyCode = () => {
-        navigator.clipboard.writeText(paymentCode);
-        alert("Payment code copied to clipboard!");
-      };
+        navigator.clipboard.writeText(paymentDetails?.payment_code);
+        alert("Transaction code copied to clipboard!");
+    };
     
-      const handleCopyNumber = () => {
-        navigator.clipboard.writeText(`+27${phoneNumber}`);
-        alert("Payment code copied to clipboard!");
-      };
+    const handleCopyNumber = () => {
+        navigator.clipboard.writeText(`+27${shapNumber}`);
+        alert("Phone number copied to clipboard!");
+    };
+
   return (
     <div className="flex flex-col items-center justify-center gap-6 py-8 w-full max-w-md mx-auto">
       <h2 className="text-2xl font-semibold text-center text-gray-100 mb-4">
-        Payment Confirmation
+        Payment Information
       </h2>
       <div className="w-full space-y-6">
         <div className="flex flex-col gap-2 w-full">
@@ -28,7 +31,7 @@ const ConfirmationStep = ({ paymentCode, phoneNumber, handleCopyPaymentCode }) =
               <span className="text-gray-300 font-medium ml-2">+27</span>
             </div>
             <span id="phone-number" className="text-white font-bold px-4 py-2 flex-grow">
-              {phoneNumber}
+              {shapNumber}
             </span>
             <button
               onClick={handleCopyNumber}
@@ -45,7 +48,7 @@ const ConfirmationStep = ({ paymentCode, phoneNumber, handleCopyPaymentCode }) =
           </label>
           <div className="flex items-center bg-gray-700 rounded-md">
             <span id="payment-code" className="text-white font-bold px-4 py-2 flex-grow">
-              {paymentCode}
+              {paymentDetails?.payment_code}
             </span>
             <button
               onClick={handleCopyCode}
@@ -61,4 +64,4 @@ const ConfirmationStep = ({ paymentCode, phoneNumber, handleCopyPaymentCode }) =
   );
 };
 
-export default ConfirmationStep;
+export default PaymentConfoirmationStep;

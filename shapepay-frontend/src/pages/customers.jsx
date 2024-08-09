@@ -57,11 +57,6 @@ const CustomersPage = () => {
               Customers
             </span>
           </div>
-          {user && (
-            <Button className="bg-blue-500 hover:bg-blue-600">
-              <Plus className="w-4 h-4 mr-2" /> New Customer
-            </Button>
-          )}
         </div>
 
         <Card className="mb-6 bg-gray-800 border-gray-700">

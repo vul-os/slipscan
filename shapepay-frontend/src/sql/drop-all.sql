@@ -1,5 +1,5 @@
 -- File: drop-all-tables.sql
--- Description: Script to drop all tables in the database
+-- Description: Script to drop all tables, functions, and related objects in the database
 -- CAUTION: This will delete all data in these tables. Use with care.
 
 -- Disable row level security to allow dropping tables
@@ -25,7 +25,10 @@ ALTER TABLE IF EXISTS objects DISABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS tuples DISABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS permissions DISABLE ROW LEVEL SECURITY;
 ALTER TABLE IF EXISTS permission_cache DISABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS profiles DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS merchant_roles DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS merchant_users DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS customer_sessions DISABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS payment_codes DISABLE ROW LEVEL SECURITY;
 
 -- Drop all tables
 DROP TABLE IF EXISTS merchants CASCADE;
@@ -50,7 +53,17 @@ DROP TABLE IF EXISTS objects CASCADE;
 DROP TABLE IF EXISTS tuples CASCADE;
 DROP TABLE IF EXISTS permissions CASCADE;
 DROP TABLE IF EXISTS permission_cache CASCADE;
--- DROP TABLE IF EXISTS profiles CASCADE;
+DROP TABLE IF EXISTS merchant_roles CASCADE;
+DROP TABLE IF EXISTS merchant_users CASCADE;
+DROP TABLE IF EXISTS customer_sessions CASCADE;
+DROP TABLE IF EXISTS customer_sessions CASCADE;
+DROP TABLE IF EXISTS user_roles CASCADE;
+DROP TABLE IF EXISTS role_permissions CASCADE;
+DROP TABLE IF EXISTS roles CASCADE;
+DROP TABLE IF EXISTS customer_merchants CASCADE;
+DROP TABLE IF EXISTS merchant_invitations CASCADE;
+DROP TABLE IF EXISTS payment_codes CASCADE;
+DROP TABLE IF EXISTS payment_groups CASCADE;
 
 -- Drop custom types if any
 -- Example: DROP TYPE IF EXISTS my_custom_type CASCADE;
@@ -62,12 +75,28 @@ DROP FUNCTION IF EXISTS is_service_role() CASCADE;
 DROP FUNCTION IF EXISTS check_permission(UUID, TEXT, TEXT, TEXT) CASCADE;
 DROP FUNCTION IF EXISTS grant_permission(UUID, TEXT, TEXT, TEXT, UUID) CASCADE;
 DROP FUNCTION IF EXISTS revoke_permission(UUID, TEXT, TEXT, TEXT, UUID) CASCADE;
-DROP FUNCTION IF EXISTS handle_new_user() CASCADE;
+DROP FUNCTION IF EXISTS initialize_merchant_permissions(UUID, UUID) CASCADE;
+DROP FUNCTION IF EXISTS setup_initial_merchant(UUID, TEXT, TEXT, TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS setup_initial_customer(UUID, TEXT, TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS setup_initial_payshap_target(UUID, TEXT, TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS setup_initial_bank_account(UUID, TEXT, TEXT, TEXT, TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS create_payment_group_with_simple_payment(UUID, UUID, UUID, DECIMAL, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS find_unique_transaction_code(UUID) CASCADE;
+DROP FUNCTION IF EXISTS create_customer_session(UUID) CASCADE;
 
 -- Drop triggers
--- DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-
--- Optionally, you can also drop extensions if they're no longer needed
--- DROP EXTENSION IF EXISTS "uuid-ossp";
-
--- Note: This script does not drop schemas. If you want to drop schemas as well, you'd need to add those commands.
+DROP TRIGGER IF EXISTS update_merchant_modtime ON merchants;
+DROP TRIGGER IF EXISTS update_customer_modtime ON customers;
+DROP TRIGGER IF EXISTS update_payshap_target_modtime ON payshap_targets;
+DROP TRIGGER IF EXISTS update_txn_modtime ON txns;
+DROP TRIGGER IF EXISTS update_payment_group_modtime ON payment_groups;
+DROP TRIGGER IF EXISTS update_bank_account_modtime ON bank_accounts;
+DROP TRIGGER IF EXISTS update_bank_transaction_modtime ON bank_transactions;
+DROP TRIGGER IF EXISTS update_payment_modtime ON payments;
+DROP TRIGGER IF EXISTS update_refund_modtime ON refunds;
+DROP TRIGGER IF EXISTS update_payout_modtime ON payouts;
+DROP TRIGGER IF EXISTS update_webhook_modtime ON webhooks;
+DROP TRIGGER IF EXISTS update_api_key_modtime ON api_keys;
+DROP TRIGGER IF EXISTS update_unmatched_transaction_modtime ON unmatched_transactions;
+DROP TRIGGER IF EXISTS update_merchant_user_modtime ON merchant_users;
+DROP TRIGGER IF EXISTS update_customer_session_modtime ON customer_sessions;

@@ -1,5 +1,6 @@
 import React, { createContext, useState, useEffect } from 'react';
 import { supabase } from '../services/supabaseClient';
+import { jwtDecode } from 'jwt-decode'
 
 const AuthContext = createContext();
 
@@ -22,6 +23,10 @@ export const AuthProvider = ({ children }) => {
     initializeUser();
 
     const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (session) {
+        const jwt = jwtDecode(session.access_token)
+        console.log(jwt)
+      }
       setUser(session?.user ?? null);
     });
 
