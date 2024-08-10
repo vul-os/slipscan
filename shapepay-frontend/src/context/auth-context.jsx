@@ -7,6 +7,7 @@ const AuthContext = createContext();
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [darkMode, setDarkMode] = useState(true)
 
   useEffect(() => {
     const initializeUser = async () => {
@@ -58,8 +59,12 @@ export const AuthProvider = ({ children }) => {
     setUser(null);
   };
 
+  const toggleDarkMode = () => {
+    setDarkMode(!darkMode)
+  }
+
   return (
-    <AuthContext.Provider value={{ loading, user, signIn, signInWithGoogle, signOut }}>
+    <AuthContext.Provider value={{ loading, user, signIn, signInWithGoogle, signOut, toggleDarkMode }}>
       {children}
     </AuthContext.Provider>
   );

@@ -28,24 +28,8 @@ const SettingsPage = () => {
             <CardTitle className="text-gray-100">Settings</CardTitle>
           </CardHeader>
           <CardContent>
-            <Tabs value={activeTab} onValueChange={setActiveTab}>
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="profile" className="flex items-center">
-                  <User className="w-4 h-4 mr-2" />
-                  Profile
-                </TabsTrigger>
-                <TabsTrigger value="merchant" className="flex items-center">
-                  <Building2 className="w-4 h-4 mr-2" />
-                  Merchant
-                </TabsTrigger>
-              </TabsList>
-              <TabsContent value="profile">
-                <Profile />
-              </TabsContent>
-              <TabsContent value="merchant">
-                <Merchant />
-              </TabsContent>
-            </Tabs>
+          <Merchant />
+
           </CardContent>
         </Card>
       </div>

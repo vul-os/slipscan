@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useContext } from 'react';
-import { supabase } from '../../services/supabaseClient';
-import AuthContext from '../../context/auth-context';
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { supabase } from '../services/supabaseClient';
+import AuthContext from '../context/auth-context';
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -9,8 +9,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { PlusCircle, Edit2, Trash2, Home } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
-const Merchant = () => {
+const SettingsPage = () => {
   const { user } = useContext(AuthContext);
   const [merchant, setMerchant] = useState({
     id: '',
@@ -45,7 +47,7 @@ const Merchant = () => {
         .eq('user_id', user.id);
   
       if (merchantUsersError) throw merchantUsersError;
-      let firstMerchantId
+      let firstMerchantId;
 
       // Step 2: Select the first merchant ID (if any) and ensure it's valid
       if (merchantUsersData.length > 0) {
@@ -54,10 +56,19 @@ const Merchant = () => {
         if (!firstMerchantId || firstMerchantId === '') {
           throw new Error('Invalid Merchant ID');
         }
-  
       } else {
         throw new Error('No merchants found for this user');
       }
+
+      // Step 3: Fetch the merchant details using the firstMerchantId
+      const { data: md, error: me } = await supabase
+        .from('merchants')
+        .select('*')
+        .eq('id', firstMerchantId)
+        .single();
+
+      if (me) throw me;
+      setMerchant(md);
 
       // Step 4: Fetch the merchant details and user profiles along with roles
       const { data: userMerchantData, error: userMerchantError } = await supabase
@@ -83,16 +94,6 @@ const Merchant = () => {
       } else {
         setError('No users found for this merchant');
       }
-
-   // Step 3: Fetch the merchant details using the firstMerchantId
-   const { data: md, error: me } = await supabase
-   .from('merchants')
-   .select('*')
-   .eq('id', firstMerchantId)
-   .single();
-
-    if (me) throw me;
-      setMerchant(md)
     } catch (error) {
       console.error('Error fetching users and roles:', error);
       setError('Failed to fetch user information');
@@ -229,80 +230,105 @@ const Merchant = () => {
     }
   };
 
-  if (loading) return <div className="text-center">Loading...</div>;
+  if (loading) return <div className="text-center text-gray-300">Loading...</div>;
   if (error) return <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>;
-  console.log(merchant)
+
   return (
-    <div className="space-y-6">
-      <Card className="bg-gray-800 border-gray-700 flex items-center space-x-4 p-4">
-        <Avatar className="w-16 h-16">
-          <AvatarImage src="/path-to-avatar-image.png" alt={merchant.name} />
-          <AvatarFallback>{merchant.name[0]}</AvatarFallback>
-        </Avatar>
-        {isEditingName ? (
-          <Input
-            value={merchant.name}
-            onChange={handleMerchantNameChange}
-            onKeyDown={handleMerchantNameSubmit}
-            className="text-2xl bg-gray-700 text-white"
-          />
-        ) : (
-          <h1 onClick={handleMerchantNameClick} className="text-2xl text-white cursor-pointer">
-            {merchant.name}
-          </h1>
-        )}
-      </Card>
+    <div className="min-h-screen bg-gray-900 text-gray-100">
+      <div className="container mx-auto p-4">
+        <div className="flex items-center space-x-2 mb-4">
+          <Link to="/" className="text-blue-400 hover:text-blue-300 flex items-center">
+            <Home className="w-4 h-4 mr-1" />
+            Home
+          </Link>
+          <span>/</span>
+          <span className="flex items-center">
+            Settings
+          </span>
+        </div>
 
-      <Card className="bg-gray-800 border-gray-700">
-        <CardHeader>
-          <Button onClick={() => setInviteDialogOpen(true)} className="mb-4">
-            Invite User
-          </Button>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="text-gray-300">Email</TableHead>
-                <TableHead className="text-gray-300">Role</TableHead>
-                <TableHead className="text-gray-300">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {users.map((user) => (
-                <TableRow key={user.user_id}>
-                  <TableCell className="text-gray-300">{user?.email}</TableCell>
-                  <TableCell>
-                    <Select
-                      value={user.role_name}
-                      onValueChange={(value) => handleChangeRole(user.user_id, value)}
-                    >
-                      <SelectTrigger className="bg-gray-700 text-white">
-                        <SelectValue placeholder="Select role" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="admin">Admin</SelectItem>
-                        <SelectItem value="viewer">Viewer</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </TableCell>
-                  <TableCell>
-                    <Button variant="secondary" onClick={() => handleEditUser(user)}>
-                      Edit
-                    </Button>
-                    <Button variant="destructive" onClick={() => handleDeleteUser(user.user_id)}>
-                      Remove
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+        <Card className="bg-gray-800 border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-gray-100">Merchant Settings</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-4">
+                <Avatar className="w-16 h-16 border-2 border-gray-600">
+                  <AvatarImage src="/path-to-avatar-image.png" alt={merchant.name} />
+                  <AvatarFallback className="bg-gray-700 text-gray-300">{merchant.name[0]}</AvatarFallback>
+                </Avatar>
+                {isEditingName ? (
+                  <Input
+                    value={merchant.name}
+                    onChange={handleMerchantNameChange}
+                    onKeyDown={handleMerchantNameSubmit}
+                    className="text-2xl font-bold bg-gray-700 text-gray-100 border-gray-600"
+                  />
+                ) : (
+                  <h2 onClick={handleMerchantNameClick} className="text-2xl font-bold cursor-pointer text-gray-100">
+                    {merchant.name}
+                  </h2>
+                )}
+              </div>
+              <Button onClick={() => setInviteDialogOpen(true)} className="flex items-center bg-blue-600 hover:bg-blue-700">
+                <PlusCircle className="mr-2 h-4 w-4" />
+                Invite User
+              </Button>
+            </div>
 
+            <Card className="bg-gray-800 border-gray-700 shadow-lg">
+              <CardHeader>
+                <CardTitle className="text-gray-100">User Management</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-b border-gray-700">
+                      <TableHead className="text-gray-300">Email</TableHead>
+                      <TableHead className="text-gray-300">Role</TableHead>
+                      <TableHead className="text-right text-gray-300">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {users.map((user) => (
+                      <TableRow key={user.user_id} className="border-b border-gray-700">
+                        <TableCell className="text-gray-300">{user?.email}</TableCell>
+                        <TableCell>
+                          <Select
+                            value={user.role_name}
+                            onValueChange={(value) => handleChangeRole(user.user_id, value)}
+                          >
+                            <SelectTrigger className="w-[180px] bg-gray-700 text-gray-300 border-gray-600">
+                              <SelectValue placeholder="Select role" />
+                            </SelectTrigger>
+                            <SelectContent className="bg-gray-700 text-gray-300 border-gray-600">
+                              <SelectItem value="admin">Admin</SelectItem>
+                              <SelectItem value="viewer">Viewer</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button variant="ghost" size="sm" onClick={() => handleEditUser(user)} className="text-gray-300 hover:text-gray-100">
+                            <Edit2 className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => handleDeleteUser(user.user_id)} className="text-gray-300 hover:text-gray-100">
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Invite User Dialog */}
       <Dialog open={inviteDialogOpen} onOpenChange={setInviteDialogOpen}>
-        <DialogContent className="bg-gray-800 text-gray-100">
+        <DialogContent className="bg-gray-800 text-gray-100 border-gray-700">
           <DialogHeader>
             <DialogTitle>Invite User</DialogTitle>
           </DialogHeader>
@@ -311,28 +337,29 @@ const Merchant = () => {
               value={inviteEmail}
               onChange={(e) => setInviteEmail(e.target.value)}
               placeholder="Email"
-              className="bg-gray-700 text-white"
+              className="bg-gray-700 text-gray-100 border-gray-600"
             />
             <Select value={inviteRole} onValueChange={setInviteRole}>
-              <SelectTrigger className="bg-gray-700 text-white">
+              <SelectTrigger className="bg-gray-700 text-gray-300 border-gray-600">
                 <SelectValue placeholder="Select role" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="bg-gray-700 text-gray-300 border-gray-600">
                 <SelectItem value="admin">Admin</SelectItem>
                 <SelectItem value="viewer">Viewer</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <DialogFooter>
-            <Button onClick={handleInviteUser} disabled={loading}>
+            <Button onClick={handleInviteUser} disabled={loading} className="bg-blue-600 hover:bg-blue-700">
               {loading ? 'Sending...' : 'Send Invitation'}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
+      {/* Edit User Dialog */}
       <Dialog open={editUserDialogOpen} onOpenChange={setEditUserDialogOpen}>
-        <DialogContent className="bg-gray-800 text-gray-100">
+          <DialogContent className="bg-gray-800 text-gray-100 border-gray-700">
           <DialogHeader>
             <DialogTitle>Edit User</DialogTitle>
           </DialogHeader>
@@ -340,23 +367,23 @@ const Merchant = () => {
             <Input
               value={currentUser?.email || ''}
               disabled
-              className="bg-gray-700 text-white"
+              className="bg-gray-700 text-gray-400 border-gray-600"
             />
             <Select
               value={currentUser?.role_name || ''}
               onValueChange={(value) => setCurrentUser(prev => ({ ...prev, role_name: value }))}
             >
-              <SelectTrigger className="bg-gray-700 text-white">
+              <SelectTrigger className="bg-gray-700 text-gray-300 border-gray-600">
                 <SelectValue placeholder="Select role" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="bg-gray-700 text-gray-300 border-gray-600">
                 <SelectItem value="admin">Admin</SelectItem>
                 <SelectItem value="viewer">Viewer</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <DialogFooter>
-            <Button onClick={handleEditUserSubmit} disabled={loading}>
+            <Button onClick={handleEditUserSubmit} disabled={loading} className="bg-blue-600 hover:bg-blue-700">
               {loading ? 'Saving...' : 'Save Changes'}
             </Button>
           </DialogFooter>
@@ -366,4 +393,4 @@ const Merchant = () => {
   );
 };
 
-export default Merchant;
+export default SettingsPage;
