@@ -34,17 +34,12 @@ CREATE TABLE IF NOT EXISTS roles (
 CREATE TABLE merchant_users (
     merchant_id UUID REFERENCES merchants(id),
     user_id UUID REFERENCES public.profiles(id),
+    role_id UUID REFERENCES roles(id),  -- Adding role_id to this table
     PRIMARY KEY (merchant_id, user_id)
 );
 
--- User_Roles table (associates profiles with roles for specific merchants)
-CREATE TABLE user_roles (
-    merchant_id UUID REFERENCES merchants(id),
-    user_id UUID REFERENCES public.profiles(id),
-    role_id UUID REFERENCES roles(id),
-    PRIMARY KEY (merchant_id, user_id, role_id)
-);
-
+-- Drop user_roles table if it exists
+DROP TABLE IF EXISTS user_roles;
 
 -- Create customers table
 CREATE TABLE IF NOT EXISTS customers (

@@ -31,31 +31,22 @@ WITH profile_ids AS (
     ORDER BY name
 )
 -- Link users to merchants and assign roles
-INSERT INTO merchant_users (merchant_id, user_id)
+INSERT INTO merchant_users (merchant_id, user_id, role_id)
 SELECT 
     m.id AS merchant_id,
-    p.id AS user_id
+    p.id AS user_id,
+    CASE 
+        WHEN ROW_NUMBER() OVER (PARTITION BY m.id ORDER BY p.id) = 1 THEN 
+            (SELECT id FROM roles WHERE name = 'admin')
+        ELSE 
+            (SELECT id FROM roles WHERE name = 'viewer')
+    END AS role_id
 FROM 
     merchant_ids m
 CROSS JOIN profile_ids p
 WHERE 
     (m.name = 'Merchant One' AND p.id IN (SELECT id FROM profile_ids LIMIT 2))
     OR (m.name = 'Merchant Two' AND p.id IN (SELECT id FROM profile_ids OFFSET 2 LIMIT 2))
-ON CONFLICT DO NOTHING;
-
--- Assign roles to users for specific merchants
-INSERT INTO user_roles (merchant_id, user_id, role_id)
-SELECT 
-    mu.merchant_id,
-    mu.user_id,
-    CASE 
-        WHEN ROW_NUMBER() OVER (PARTITION BY mu.merchant_id ORDER BY mu.user_id) = 1 THEN 
-            (SELECT id FROM roles WHERE name = 'admin')
-        ELSE 
-            (SELECT id FROM roles WHERE name = 'viewer')
-    END AS role_id
-FROM 
-    merchant_users mu
 ON CONFLICT DO NOTHING;
 
 -- Insert customers

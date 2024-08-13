@@ -22,7 +22,6 @@ ALTER TABLE payment_codes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customer_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE roles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE merchant_users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE user_roles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customer_merchants ENABLE ROW LEVEL SECURITY;
 
 -- Create policies for each table
@@ -167,12 +166,7 @@ USING (
     OR public.get_user_role() = 'admin'
 );
 
--- User_Roles table policy
-CREATE POLICY user_roles_policy ON user_roles
-USING (
-    merchant_id = public.get_user_merchant_id()
-    OR public.get_user_role() = 'admin'
-);
+-- Remove User_Roles table policy as it has been dropped
 
 -- Customer_Merchants table policy
 CREATE POLICY customer_merchants_policy ON customer_merchants
@@ -207,7 +201,6 @@ GRANT SELECT ON public.payment_codes TO supabase_auth_admin;
 GRANT SELECT ON public.customer_sessions TO supabase_auth_admin;
 GRANT SELECT ON public.roles TO supabase_auth_admin;
 GRANT SELECT ON public.merchant_users TO supabase_auth_admin;
-GRANT SELECT ON public.user_roles TO supabase_auth_admin;
 GRANT SELECT ON public.customer_merchants TO supabase_auth_admin;
 
 -- Grant execute permissions to authenticated users and supabase_auth_admin
@@ -217,6 +210,4 @@ GRANT EXECUTE ON FUNCTION public.get_user_merchant_id TO authenticated, supabase
 -- Grant SELECT permissions to authenticated users
 GRANT SELECT ON public.roles TO authenticated;
 GRANT SELECT ON public.merchant_users TO authenticated;
-GRANT SELECT ON public.user_roles TO authenticated;
 GRANT SELECT ON public.customer_merchants TO authenticated;
-

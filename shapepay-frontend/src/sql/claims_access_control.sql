@@ -1,4 +1,3 @@
-
 CREATE OR REPLACE FUNCTION public.custom_access_token_hook(event jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -18,8 +17,7 @@ BEGIN
     SELECT r.name::TEXT, mu.merchant_id::UUID
     INTO user_role, merchant_id
     FROM public.merchant_users mu
-    JOIN public.user_roles ur ON mu.merchant_id = ur.merchant_id AND mu.user_id = ur.user_id
-    JOIN public.roles r ON ur.role_id = r.id
+    JOIN public.roles r ON mu.role_id = r.id
     WHERE mu.user_id = (event->>'user_id')::uuid
     ORDER BY mu.merchant_id
     LIMIT 1;
@@ -66,15 +64,13 @@ REVOKE EXECUTE ON FUNCTION public.custom_access_token_hook FROM authenticated, a
 -- Grant SELECT permissions on necessary tables
 GRANT SELECT ON public.profiles TO supabase_auth_admin;
 GRANT SELECT ON public.merchant_users TO supabase_auth_admin;
-GRANT SELECT ON public.user_roles TO supabase_auth_admin;
 GRANT SELECT ON public.roles TO supabase_auth_admin;
-
 
 -- Function to get the current user's role
 CREATE OR REPLACE FUNCTION public.get_user_role()
 RETURNS TEXT AS $$
 BEGIN
-    RETURN (auth.jwt() ->> 'role')::public.app_role;
+    RETURN (auth.jwt() ->> 'role');
 EXCEPTION
     WHEN OTHERS THEN
         RETURN NULL;
