@@ -29,68 +29,61 @@ const PaymentsPage = () => {
   const [isCreatePaymentOpen, setIsCreatePaymentOpen] = useState(false);
 
   useEffect(() => {
-    fetchPaymentGroupsWithCodes();
+    fetchPaymentGroups();
   }, []);
 
-  const fetchPaymentGroupsWithCodes = async () => {
+  const fetchPaymentGroups = async () => {
     try {
       setLoading(true);
       const { data, error } = await supabase
         .from('payment_groups')
         .select(`
           id,
-          txn_id,
           external_reference_id,
           total_amount,
           status,
           created_at,
           updated_at,
-
+          payments (
+            id,
+            amount_charged,
+            status,
+            payment_method,
+            created_at,
+            payment_codes (
+              payment_code_definitions (
+                code,
+                status,
+                expires_at
+              )
+            )
+          )
         `)
         .order('created_at', { ascending: false });
   
       if (error) throw error;
   
       const processedData = data.map((group) => {
-        const paymentCode = group.payment_code_groups[0]?.payment_codes;
+        const payment = group.payments[0];
+        const paymentCode = payment?.payment_codes[0]?.payment_code_definitions;
         return {
           ...group,
           code: paymentCode?.code || 'Not available',
           paymentCodeStatus: paymentCode?.status || 'Not available',
           codeExpiry: paymentCode?.expires_at || null,
-          payments: []
         };
       });
   
       setData(processedData);
     } catch (error) {
-      console.error('Error fetching payment groups with codes:', error);
+      console.error('Error fetching payment groups:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleRowClick = async (groupId) => {
+  const handleRowClick = (groupId) => {
     setExpandedRows(prev => ({ ...prev, [groupId]: !prev[groupId] }));
-    if (!expandedRows[groupId]) {
-      try {
-        const { data: payments, error } = await supabase
-          .from('payments')
-          .select('*')
-          .eq('payment_group_id', groupId)
-          .order('created_at', { ascending: false });
-
-        if (error) throw error;
-
-        setData(prevData =>
-          prevData.map(group =>
-            group.id === groupId ? { ...group, payments } : group
-          )
-        );
-      } catch (error) {
-        console.error('Error fetching payments:', error);
-      }
-    }
   };
 
   const copyToClipboard = (text) => {
@@ -102,14 +95,10 @@ const PaymentsPage = () => {
   };
 
   const handleCreatePayment = async (newPayment) => {
-
+    // Implementation for creating a new payment
   };
 
   const columns = [
-    {
-      accessorKey: "txn_id",
-      header: "Transaction ID",
-    },
     {
       accessorKey: "external_reference_id",
       header: "External Reference ID",
@@ -191,10 +180,10 @@ const PaymentsPage = () => {
         <CardContent>
           <div className="flex items-center py-4">
             <Input
-              placeholder="Filter emails..."
-              value={(table.getColumn("email")?.getFilterValue()) ?? ""}
+              placeholder="Filter payments..."
+              value={(table.getColumn("external_reference_id")?.getFilterValue()) ?? ""}
               onChange={(event) =>
-                table.getColumn("email")?.setFilterValue(event.target.value)
+                table.getColumn("external_reference_id")?.setFilterValue(event.target.value)
               }
               className="max-w-sm"
             />
@@ -251,8 +240,8 @@ const PaymentsPage = () => {
                                     <TableRow>
                                       <TableHead>ID</TableHead>
                                       <TableHead>Amount Charged</TableHead>
-                                      <TableHead>Amount Collected</TableHead>
                                       <TableHead>Status</TableHead>
+                                      <TableHead>Payment Method</TableHead>
                                       <TableHead>Created At</TableHead>
                                     </TableRow>
                                   </TableHeader>
@@ -261,8 +250,8 @@ const PaymentsPage = () => {
                                       <TableRow key={payment.id}>
                                         <TableCell>{payment.id}</TableCell>
                                         <TableCell>{new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(payment.amount_charged)}</TableCell>
-                                        <TableCell>{new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(payment.amount_collected)}</TableCell>
                                         <TableCell>{payment.status}</TableCell>
+                                        <TableCell>{payment.payment_method}</TableCell>
                                         <TableCell>{new Date(payment.created_at).toLocaleString()}</TableCell>
                                       </TableRow>
                                     ))}

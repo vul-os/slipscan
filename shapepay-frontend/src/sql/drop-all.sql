@@ -65,6 +65,7 @@ DROP TABLE IF EXISTS merchant_invitations CASCADE;
 DROP TABLE IF EXISTS payment_codes CASCADE;
 DROP TABLE IF EXISTS payment_groups CASCADE;
 DROP TABLE IF EXISTS payment_code_groups CASCADE;
+DROP TABLE IF EXISTS payment_code_definitions CASCADE;
 
 -- Drop custom types if any
 -- Example: DROP TYPE IF EXISTS my_custom_type CASCADE;

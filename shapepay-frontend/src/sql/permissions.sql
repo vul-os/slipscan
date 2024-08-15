@@ -18,6 +18,7 @@ ALTER TABLE api_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE unmatched_transactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reconciliation_log ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payment_code_definitions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payment_codes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customer_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE roles ENABLE ROW LEVEL SECURITY;
@@ -59,14 +60,6 @@ USING (
     ) 
     OR public.get_user_role() = 'admin'
 );
-
--- Bank_accounts table
-CREATE POLICY bank_account_policy ON bank_accounts
-USING (merchant_id = public.get_user_merchant_id() OR public.get_user_role() = 'admin');
-
--- Bank_transactions table
-CREATE POLICY bank_transaction_policy ON bank_transactions
-USING (bank_account_id IN (SELECT id FROM bank_accounts WHERE merchant_id = public.get_user_merchant_id()) OR public.get_user_role() = 'admin');
 
 -- Payments table
 CREATE POLICY payment_policy ON payments
@@ -113,31 +106,17 @@ USING (
     OR public.get_user_role() = 'admin'
 );
 
--- Unmatched_transactions table
-CREATE POLICY unmatched_transaction_policy ON unmatched_transactions
-USING (bank_transaction_id IN (SELECT id FROM bank_transactions WHERE bank_account_id IN (SELECT id FROM bank_accounts WHERE merchant_id = public.get_user_merchant_id())) OR public.get_user_role() = 'admin');
-
--- Reconciliation_log table
-CREATE POLICY reconciliation_log_policy ON reconciliation_log
-USING (
-    payment_id IN (
-        SELECT p.id 
-        FROM payments p 
-        JOIN payment_groups pg ON p.payment_group_id = pg.id 
-        JOIN customer_merchants cm ON pg.customer_id = cm.customer_id 
-        JOIN txns t ON pg.txn_id = t.id 
-        WHERE t.merchant_id = public.get_user_merchant_id()
-    ) 
-    OR public.get_user_role() = 'admin'
-);
+-- Create the policy for payment_code_definitions
+CREATE POLICY payment_code_definitions_policy ON payment_code_definitions
+USING (public.get_user_role() = 'admin');
 
 -- Create the policy for payment_codes
 CREATE POLICY payment_code_policy ON payment_codes
 USING (
-    id IN (
-        SELECT pcg.payment_code_id
-        FROM payment_code_groups pcg
-        JOIN payment_groups pg ON pcg.payment_group_id = pg.id
+    payment_id IN (
+        SELECT p.id
+        FROM payments p
+        JOIN payment_groups pg ON p.payment_group_id = pg.id
         JOIN customer_merchants cm ON pg.customer_id = cm.customer_id
         WHERE cm.merchant_id = public.get_user_merchant_id()
     ) 
@@ -166,14 +145,14 @@ USING (
     OR public.get_user_role() = 'admin'
 );
 
--- Remove User_Roles table policy as it has been dropped
-
 -- Customer_Merchants table policy
 CREATE POLICY customer_merchants_policy ON customer_merchants
 USING (
     merchant_id = public.get_user_merchant_id()
     OR public.get_user_role() = 'admin'
 );
+
+-- Note: No specific policy is created for bank_accounts as per your request
 
 -- Grant necessary permissions
 GRANT USAGE ON SCHEMA public TO supabase_auth_admin;
@@ -197,6 +176,7 @@ GRANT SELECT ON public.api_keys TO supabase_auth_admin;
 GRANT SELECT ON public.audit_log TO supabase_auth_admin;
 GRANT SELECT ON public.unmatched_transactions TO supabase_auth_admin;
 GRANT SELECT ON public.reconciliation_log TO supabase_auth_admin;
+GRANT SELECT ON public.payment_code_definitions TO supabase_auth_admin;
 GRANT SELECT ON public.payment_codes TO supabase_auth_admin;
 GRANT SELECT ON public.customer_sessions TO supabase_auth_admin;
 GRANT SELECT ON public.roles TO supabase_auth_admin;

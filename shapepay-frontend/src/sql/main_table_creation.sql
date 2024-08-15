@@ -34,12 +34,9 @@ CREATE TABLE IF NOT EXISTS roles (
 CREATE TABLE merchant_users (
     merchant_id UUID REFERENCES merchants(id),
     user_id UUID REFERENCES public.profiles(id),
-    role_id UUID REFERENCES roles(id),  -- Adding role_id to this table
+    role_id UUID REFERENCES roles(id),
     PRIMARY KEY (merchant_id, user_id)
 );
-
--- Drop user_roles table if it exists
-DROP TABLE IF EXISTS user_roles;
 
 -- Create customers table
 CREATE TABLE IF NOT EXISTS customers (
@@ -83,11 +80,10 @@ CREATE TABLE IF NOT EXISTS txns (
 -- Create payment_groups table
 CREATE TABLE IF NOT EXISTS payment_groups (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    txn_id UUID REFERENCES txns(id) ON DELETE CASCADE,
-    external_reference_id TEXT,
+    customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
     total_amount DECIMAL(10, 2) NOT NULL,
     status TEXT NOT NULL,
-    customer_id UUID REFERENCES customers(id) ON DELETE SET NULL,
+    external_reference_id TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
@@ -95,7 +91,6 @@ CREATE TABLE IF NOT EXISTS payment_groups (
 -- Create bank_accounts table
 CREATE TABLE IF NOT EXISTS bank_accounts (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    merchant_id UUID REFERENCES merchants(id) ON DELETE CASCADE,
     bank_name TEXT NOT NULL,
     account_number TEXT NOT NULL,
     account_holder TEXT NOT NULL,
@@ -104,7 +99,7 @@ CREATE TABLE IF NOT EXISTS bank_accounts (
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (merchant_id, account_number)
+    UNIQUE (account_number)
 );
 
 -- Create bank_transactions table
@@ -126,6 +121,7 @@ CREATE TABLE IF NOT EXISTS bank_transactions (
 CREATE TABLE IF NOT EXISTS payments (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     payment_group_id UUID REFERENCES payment_groups(id) ON DELETE CASCADE,
+    txn_id UUID REFERENCES txns(id) ON DELETE CASCADE,
     payshap_target_id UUID REFERENCES payshap_targets(id) ON DELETE SET NULL,
     payshap_transaction_id TEXT UNIQUE,
     amount_charged DECIMAL(10, 2) NOT NULL,
@@ -137,6 +133,25 @@ CREATE TABLE IF NOT EXISTS payments (
     customer_id UUID REFERENCES customers(id) ON DELETE SET NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create payment_code_definitions table
+CREATE TABLE IF NOT EXISTS payment_code_definitions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    code TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'inactive',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    last_used_at TIMESTAMP WITH TIME ZONE,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+-- Create payment_codes table to link payment codes with payments
+CREATE TABLE IF NOT EXISTS payment_codes (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    payment_id UUID NOT NULL REFERENCES payments(id) ON DELETE CASCADE,
+    code_id UUID NOT NULL REFERENCES payment_code_definitions(id) ON DELETE CASCADE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (payment_id, code_id)
 );
 
 -- Create refunds table
@@ -218,37 +233,6 @@ CREATE TABLE IF NOT EXISTS reconciliation_log (
     status TEXT NOT NULL,
     notes TEXT
 );
-
--- Payment_codes table
-CREATE TABLE IF NOT EXISTS payment_codes (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    code TEXT NOT NULL UNIQUE,
-    status TEXT NOT NULL DEFAULT 'inactive',
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    last_used_at TIMESTAMP WITH TIME ZONE,
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL
-);
-
--- Create payment_code_groups table to link payment codes with payment groups
-CREATE TABLE IF NOT EXISTS payment_code_groups (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    payment_code_id UUID NOT NULL REFERENCES payment_codes(id) ON DELETE CASCADE,
-    payment_group_id UUID NOT NULL REFERENCES payment_groups(id) ON DELETE CASCADE,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (payment_code_id, payment_group_id)
-);
-
--- Add foreign key constraint for payment_groups
-ALTER TABLE payment_code_groups 
-ADD CONSTRAINT fk_payment_group 
-FOREIGN KEY (payment_group_id) 
-REFERENCES payment_groups(id);
-
--- Add foreign key constraint for payment_codes
-ALTER TABLE payment_code_groups 
-ADD CONSTRAINT fk_payment_code 
-FOREIGN KEY (payment_code_id) 
-REFERENCES payment_codes(id);
 
 -- Create customer_sessions table
 CREATE TABLE IF NOT EXISTS customer_sessions (

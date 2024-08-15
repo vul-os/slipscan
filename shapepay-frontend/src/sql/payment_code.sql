@@ -2,11 +2,12 @@
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
+-- [The rest of the table creation statements remain the same as in the previous artifact]
 
 -- Create indexes for faster lookups
-CREATE INDEX IF NOT EXISTS idx_payment_codes_status_code ON payment_codes (status, code);
-CREATE INDEX IF NOT EXISTS idx_payment_codes_trgm ON payment_codes USING gin (code gin_trgm_ops);
-CREATE INDEX IF NOT EXISTS idx_payment_code_groups_payment_group_id ON payment_code_groups (payment_group_id);
+CREATE INDEX IF NOT EXISTS idx_payment_code_definitions_status_code ON payment_code_definitions (status, code);
+CREATE INDEX IF NOT EXISTS idx_payment_code_definitions_trgm ON payment_code_definitions USING gin (code gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_payment_codes_payment_id ON payment_codes (payment_id);
 
 -- Function to find a unique payment code
 CREATE OR REPLACE FUNCTION find_unique_payment_code() RETURNS TEXT AS $$
@@ -20,10 +21,10 @@ BEGIN
         unique_code := upper(substring(md5(random()::text) from 1 for 6));
         
         -- Check if this code already exists
-        IF NOT EXISTS (SELECT 1 FROM payment_codes WHERE code = unique_code) THEN
+        IF NOT EXISTS (SELECT 1 FROM payment_code_definitions WHERE code = unique_code) THEN
             -- Attempt to insert the new code
             BEGIN
-                INSERT INTO payment_codes (code, status, expires_at)
+                INSERT INTO payment_code_definitions (code, status, expires_at)
                 VALUES (unique_code, 'active', CURRENT_TIMESTAMP + INTERVAL '24 hours');
                 
                 -- If successful, return the code
@@ -41,7 +42,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-
 -- Function to generate new payment codes
 CREATE OR REPLACE FUNCTION generate_payment_codes(num_codes INTEGER) RETURNS VOID AS $$
 DECLARE
@@ -56,7 +56,7 @@ BEGIN
             
             -- Try to insert the new code
             BEGIN
-                INSERT INTO payment_codes (code, status, expires_at)
+                INSERT INTO payment_code_definitions (code, status, expires_at)
                 VALUES (new_code, 'inactive', CURRENT_TIMESTAMP + INTERVAL '1 day');
                 
                 -- If successful, exit the loop
@@ -74,13 +74,13 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Function to validate and mark a code as used
-CREATE OR REPLACE FUNCTION use_payment_code(p_code TEXT, p_payment_group_id UUID) RETURNS BOOLEAN AS $$
+CREATE OR REPLACE FUNCTION use_payment_code(p_code TEXT, p_payment_id UUID) RETURNS BOOLEAN AS $$
 DECLARE
     found_code CHAR(6);
     found_payment_code_id UUID;
 BEGIN
     -- Find and update the matching or similar code
-    UPDATE payment_codes
+    UPDATE payment_code_definitions
     SET status = 'used', last_used_at = CURRENT_TIMESTAMP
     WHERE status = 'active'
     AND similarity(code, upper(p_code)) > 0.8
@@ -88,10 +88,10 @@ BEGIN
     RETURNING id, code INTO found_payment_code_id, found_code;
 
     IF found_code IS NOT NULL THEN
-        -- Link the payment code to the payment group
-        INSERT INTO payment_code_groups (payment_code_id, payment_group_id)
-        VALUES (found_payment_code_id, p_payment_group_id)
-        ON CONFLICT (payment_code_id, payment_group_id) DO NOTHING;
+        -- Link the payment code to the payment
+        INSERT INTO payment_codes (code_id, payment_id)
+        VALUES (found_payment_code_id, p_payment_id)
+        ON CONFLICT (code_id, payment_id) DO NOTHING;
     END IF;
 
     RETURN found_code IS NOT NULL;
@@ -101,7 +101,7 @@ $$ LANGUAGE plpgsql;
 -- Function to mark a code as inactive
 CREATE OR REPLACE FUNCTION mark_code_inactive(p_code TEXT) RETURNS VOID AS $$
 BEGIN
-    UPDATE payment_codes
+    UPDATE payment_code_definitions
     SET status = 'inactive'
     WHERE similarity(code, upper(p_code)) > 0.8 AND status != 'inactive';
 END;

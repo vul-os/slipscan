@@ -1,4 +1,3 @@
-
 -- Function to generate a secure token for customer sessions
 CREATE OR REPLACE FUNCTION generate_secure_token() RETURNS TEXT AS $$
 DECLARE
