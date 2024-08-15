@@ -31,7 +31,9 @@ const Dashboard = () => {
     successfulTransactions: 0,
     successRate: 0,
     totalRevenue: 0,
-    avgTransactionValue: 0
+    avgTransactionValue: 0,
+    totalFees: 0,
+    avgFeePerTransaction: 0
   });
   const [recentTransactions, setRecentTransactions] = useState([]);
   const [dailyRevenue, setDailyRevenue] = useState([]);
@@ -79,7 +81,9 @@ const Dashboard = () => {
         successfulTransactions: data[0]?.successful_transactions || 0,
         successRate: data[0]?.success_rate || 0,
         totalRevenue: data[0]?.total_revenue || 0,
-        avgTransactionValue: data[0]?.avg_transaction_value || 0
+        avgTransactionValue: data[0]?.avg_transaction_value || 0,
+        totalFees: data[0]?.total_fees || 0,
+        avgFeePerTransaction: data[0]?.avg_fee_per_transaction || 0
       });
     }
   };
@@ -190,7 +194,7 @@ const Dashboard = () => {
           </Popover>
         </div>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="bg-gray-800 border-gray-700">
           <CardHeader>
             <CardTitle className="text-gray-300">Total Transactions</CardTitle>
@@ -221,6 +225,25 @@ const Dashboard = () => {
           </CardHeader>
           <CardContent>
             <p className="text-3xl font-bold text-white">{metrics.avgTransactionValue.toFixed(2)} ZAR</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <Card className="bg-gray-800 border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-gray-300">Total Fees</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold text-white">{metrics.totalFees.toFixed(2)} ZAR</p>
+          </CardContent>
+        </Card>
+        <Card className="bg-gray-800 border-gray-700">
+          <CardHeader>
+            <CardTitle className="text-gray-300">Avg Fee per Transaction</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-3xl font-bold text-white">{metrics.avgFeePerTransaction.toFixed(2)} ZAR</p>
           </CardContent>
         </Card>
         <Card className="bg-gray-800 border-gray-700">

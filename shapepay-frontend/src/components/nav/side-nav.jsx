@@ -9,12 +9,14 @@ import {
   Webhook,
   Key,
   Settings,
+  Banknote
 } from 'lucide-react';
 import { NavItem } from './nav-item';
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, text: 'Dashboard' },
   { to: '/payments', icon: CreditCard, text: 'Payments' },
+  { to: '/payouts', icon: Banknote, text: 'Payouts' },
   { to: '/refunds', icon: RefreshCcw, text: 'Refunds' },
   { to: '/customers', icon: Users, text: 'Customers' },
   { to: '/webhooks', icon: Webhook, text: 'Webhooks' },

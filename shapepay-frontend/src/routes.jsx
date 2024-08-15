@@ -22,6 +22,7 @@ import SettingsPage from './pages/settings';
 
 // Components
 import ProtectedRoute from './components/auth/protected-route';
+import PayoutsPage from './pages/payouts';
 
 const AppRoutes = () => {
   return (
@@ -44,6 +45,7 @@ const AppRoutes = () => {
         <Route path="/payments" element={<ProtectedRoute><Payments /></ProtectedRoute>} />
         <Route path="/refunds" element={<ProtectedRoute><Refunds /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
+        <Route path="/payouts" element={<ProtectedRoute><PayoutsPage /></ProtectedRoute>} />
 
       </Route>
 
