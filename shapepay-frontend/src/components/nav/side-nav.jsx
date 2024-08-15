@@ -14,10 +14,9 @@ import { NavItem } from './nav-item';
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, text: 'Dashboard' },
-  { to: '/customers', icon: Users, text: 'Customers' },
-  { to: '/transactions', icon: ShoppingCart, text: 'Transactions' },
   { to: '/payments', icon: CreditCard, text: 'Payments' },
   { to: '/refunds', icon: RefreshCcw, text: 'Refunds' },
+  { to: '/customers', icon: Users, text: 'Customers' },
   { to: '/webhooks', icon: Webhook, text: 'Webhooks' },
   { to: '/apikeys', icon: Key, text: 'API Keys' },
   { to: '/settings', icon: Settings, text: 'Settings' },

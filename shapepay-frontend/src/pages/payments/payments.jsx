@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useContext, useMemo } from 'react';
+import { addDays, format } from "date-fns";
 import {
   flexRender,
   getCoreRowModel,
@@ -7,7 +8,7 @@ import {
   getSortedRowModel,
   getFilteredRowModel,
 } from "@tanstack/react-table";
-import { ChevronDown, ChevronUp, Copy, Plus } from 'lucide-react';
+import { ChevronDown, ChevronUp, Copy, Plus, CalendarIcon, Search } from 'lucide-react';
 import { supabase } from '../../services/supabaseClient';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,19 +21,37 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Calendar } from "@/components/ui/calendar";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import CreatePaymentForm from './create-payment';
+import AuthContext from '../../context/auth-context';
 
 const PaymentsPage = () => {
   const [data, setData] = useState([]);
   const [expandedRows, setExpandedRows] = useState({});
   const [loading, setLoading] = useState(true);
   const [isCreatePaymentOpen, setIsCreatePaymentOpen] = useState(false);
+  const { activeMerchantId } = useContext(AuthContext);
+  const [dateRange, setDateRange] = useState({
+    from: addDays(new Date(), -30),
+    to: new Date(),
+  });
+  const [filterValue, setFilterValue] = useState("");
 
   useEffect(() => {
-    fetchPaymentGroups();
-  }, []);
+    if (dateRange?.from && dateRange?.to) {
+      fetchPaymentGroups();
+    }
+  }, [activeMerchantId, dateRange]);
 
   const fetchPaymentGroups = async () => {
+    if (!dateRange?.from || !dateRange?.to) return;
+
     try {
       setLoading(true);
       const { data, error } = await supabase
@@ -59,7 +78,10 @@ const PaymentsPage = () => {
             )
           )
         `)
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .filter('merchant_id', 'eq', activeMerchantId)
+        .gte('created_at', dateRange.from.toISOString())
+        .lte('created_at', dateRange.to.toISOString());
   
       if (error) throw error;
   
@@ -81,6 +103,28 @@ const PaymentsPage = () => {
       setLoading(false);
     }
   };
+
+  const filteredData = useMemo(() => {
+    return data.filter(item =>
+      item.external_reference_id.toLowerCase().includes(filterValue.toLowerCase()) ||
+      item.status.toLowerCase().includes(filterValue.toLowerCase())
+    );
+  }, [data, filterValue]);
+
+  const stats = useMemo(() => {
+    const totalPayments = filteredData.length;
+    const totalAmount = filteredData.reduce((sum, group) => sum + parseFloat(group.total_amount), 0);
+    const completedPayments = filteredData.filter(group => group.status === 'completed').length;
+    const pendingPayments = filteredData.filter(group => group.status === 'pending').length;
+
+    return {
+      totalPayments,
+      totalAmount,
+      completedPayments,
+      pendingPayments,
+      avgTransactionValue: totalPayments > 0 ? totalAmount / totalPayments : 0,
+    };
+  }, [filteredData]);
 
   const handleRowClick = (groupId) => {
     setExpandedRows(prev => ({ ...prev, [groupId]: !prev[groupId] }));
@@ -115,6 +159,18 @@ const PaymentsPage = () => {
     {
       accessorKey: "status",
       header: "Status",
+      cell: ({ row }) => {
+        const status = row.getValue("status").toUpperCase();
+        let statusColor = "bg-gray-200 text-gray-800";
+        if (status === "COMPLETED") statusColor = "bg-green-200 text-green-800";
+        if (status === "PENDING") statusColor = "bg-orange-200 text-orange-800";
+        if (status === "FAILED") statusColor = "bg-red-200 text-red-800";
+        return (
+          <span className={`px-2 py-1 rounded-full text-xs font-semibold ${statusColor}`}>
+            {status}
+          </span>
+        );
+      },
     },
     {
       accessorKey: "code",
@@ -156,7 +212,7 @@ const PaymentsPage = () => {
   ];
 
   const table = useReactTable({
-    data,
+    data: filteredData,
     columns,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
@@ -165,9 +221,9 @@ const PaymentsPage = () => {
   });
 
   return (
-    <div className="container mx-auto p-4">
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold">Payments</h1>
+    <div className="container mx-auto p-4 bg-gray-900 text-white">
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-3xl font-bold">Payments</h1>
         <Button onClick={() => setIsCreatePaymentOpen(true)} className="bg-blue-500 hover:bg-blue-600">
           <Plus className="w-4 h-4 mr-2" /> New Payment
         </Button>
@@ -175,37 +231,95 @@ const PaymentsPage = () => {
 
       <Card className="mb-6 bg-gray-800 border-gray-700">
         <CardHeader>
-          <CardTitle className="text-gray-100">Payments Overview</CardTitle>
+          <CardTitle className="text-xl text-gray-100">Filters and Date Range</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center py-4">
-            <Input
-              placeholder="Filter payments..."
-              value={(table.getColumn("external_reference_id")?.getFilterValue()) ?? ""}
-              onChange={(event) =>
-                table.getColumn("external_reference_id")?.setFilterValue(event.target.value)
-              }
-              className="max-w-sm"
-            />
+          <div className="flex flex-col md:flex-row items-center space-y-4 md:space-y-0 md:space-x-4">
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  id="date"
+                  variant={"outline"}
+                  className={cn(
+                    "w-[300px] justify-start text-left font-normal",
+                    !dateRange && "text-muted-foreground"
+                  )}
+                >
+                  <CalendarIcon className="mr-2 h-4 w-4" />
+                  {dateRange?.from ? (
+                    dateRange.to ? (
+                      <>
+                        {format(dateRange.from, "LLL dd, y")} -{" "}
+                        {format(dateRange.to, "LLL dd, y")}
+                      </>
+                    ) : (
+                      format(dateRange.from, "LLL dd, y")
+                    )
+                  ) : (
+                    <span>Pick a date range</span>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="w-auto p-0" align="start">
+                <Calendar
+                  initialFocus
+                  mode="range"
+                  defaultMonth={dateRange?.from}
+                  selected={dateRange}
+                  onSelect={setDateRange}
+                  numberOfMonths={2}
+                />
+              </PopoverContent>
+            </Popover>
+            <div className="relative w-full md:w-64">
+              <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 text-gray-400" size={20} />
+              <Input
+                placeholder="Filter payments..."
+                value={filterValue}
+                onChange={(e) => setFilterValue(e.target.value)}
+                className="pl-10 w-full"
+              />
+            </div>
           </div>
-          <div className="rounded-md border">
+        </CardContent>
+      </Card>
+
+      <Card className="mb-6 bg-gray-800 border-gray-700">
+        <CardHeader>
+          <CardTitle className="text-xl text-gray-100">Payment Statistics</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            <StatCard title="Total Payments" value={stats.totalPayments} />
+            <StatCard title="Total Amount" value={new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(stats.totalAmount)} />
+            <StatCard title="Completed Payments" value={stats.completedPayments} />
+            <StatCard title="Pending Payments" value={stats.pendingPayments} />
+            <StatCard title="Avg Transaction Value" value={new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(stats.avgTransactionValue)} />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="mb-6 bg-gray-800 border-gray-700">
+        <CardHeader>
+          <CardTitle className="text-xl text-gray-100">Payments Overview</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-md border border-gray-700">
             <Table>
               <TableHeader>
                 {table.getHeaderGroups().map((headerGroup) => (
                   <TableRow key={headerGroup.id}>
                     <TableHead>Expand</TableHead>
-                    {headerGroup.headers.map((header) => {
-                      return (
-                        <TableHead key={header.id}>
-                          {header.isPlaceholder
-                            ? null
-                            : flexRender(
-                                header.column.columnDef.header,
-                                header.getContext()
-                              )}
-                        </TableHead>
-                      )
-                    })}
+                    {headerGroup.headers.map((header) => (
+                      <TableHead key={header.id}>
+                        {header.isPlaceholder
+                          ? null
+                          : flexRender(
+                              header.column.columnDef.header,
+                              header.getContext()
+                            )}
+                      </TableHead>
+                    ))}
                   </TableRow>
                 ))}
               </TableHeader>
@@ -250,7 +364,11 @@ const PaymentsPage = () => {
                                       <TableRow key={payment.id}>
                                         <TableCell>{payment.id}</TableCell>
                                         <TableCell>{new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(payment.amount_charged)}</TableCell>
-                                        <TableCell>{payment.status}</TableCell>
+                                        <TableCell>
+                                          <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getStatusColor(payment.status)}`}>
+                                            {payment.status.toUpperCase()}
+                                          </span>
+                                        </TableCell>
                                         <TableCell>{payment.payment_method}</TableCell>
                                         <TableCell>{new Date(payment.created_at).toLocaleString()}</TableCell>
                                       </TableRow>
@@ -304,4 +422,26 @@ const PaymentsPage = () => {
   );
 };
 
+const StatCard = ({ title, value }) => (
+  <div className="p-4 bg-gray-700 rounded-lg">
+    <h3 className="text-lg font-semibold text-gray-300">{title}</h3>
+    <p className="text-2xl font-bold text-white">{value}</p>
+  </div>
+);
+
+const getStatusColor = (status) => {
+  const uppercaseStatus = status.toUpperCase();
+  switch (uppercaseStatus) {
+    case 'COMPLETED':
+      return 'bg-green-200 text-green-800';
+    case 'PENDING':
+      return 'bg-orange-200 text-orange-800';
+    case 'FAILED':
+      return 'bg-red-200 text-red-800';
+    default:
+      return 'bg-gray-200 text-gray-800';
+  }
+};
+
 export default PaymentsPage;
+

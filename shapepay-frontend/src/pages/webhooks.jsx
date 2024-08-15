@@ -33,106 +33,96 @@ const WebhooksPage = () => {
   const [open, setOpen] = useState(false);
   const [newWebhookUrl, setNewWebhookUrl] = useState('');
   const [newWebhookEventType, setNewWebhookEventType] = useState('');
-  const [merchantId, setMerchantId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const { user } = useContext(AuthContext);
+  const { user, activeMerchantId } = useContext(AuthContext);
 
   const eventTypes = ['payment.successful', 'payment.failed', 'refund.successful', 'payout.created'];
 
   useEffect(() => {
-    if (user) {
-      fetchMerchantId();
-    }
-  }, [user]);
-
-  useEffect(() => {
-    if (merchantId) {
+    if (user && activeMerchantId) {
       fetchWebhooks();
     }
-  }, [merchantId]);
-
-  const fetchMerchantId = async () => {
-    const { data, error } = await supabase
-      .from('merchants')
-      .select('id')
-      .eq('user_id', user.id)
-      .single();
-
-    if (error) {
-      console.error('Error fetching merchant ID:', error);
-      setError('Failed to fetch merchant information.');
-    } else {
-      setMerchantId(data.id);
-    }
-    setLoading(false);
-  };
+  }, [user, activeMerchantId]);
 
   const fetchWebhooks = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from('webhooks')
-      .select('*')
-      .eq('merchant_id', merchantId)
-      .order('created_at', { ascending: false });
+    setError(null);
+    try {
+      const { data, error } = await supabase
+        .from('webhooks')
+        .select('*')
+        .eq('merchant_id', activeMerchantId)
+        .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('Error fetching webhooks:', error);
-      setError('Failed to fetch webhooks.');
-    } else {
+      if (error) throw error;
       setWebhooks(data);
+    } catch (error) {
+      console.error('Error fetching webhooks:', error);
+      setError('Failed to fetch webhooks. Please try again later.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleCreateWebhook = async () => {
-    const { data, error } = await supabase
-      .from('webhooks')
-      .insert({
-        merchant_id: merchantId,
-        url: newWebhookUrl,
-        event_type: newWebhookEventType,
-        is_active: true
-      });
+    if (!newWebhookUrl || !newWebhookEventType) {
+      setError('Please fill in all fields.');
+      return;
+    }
+    setError(null);
+    try {
+      const { error } = await supabase
+        .from('webhooks')
+        .insert({
+          merchant_id: activeMerchantId,
+          url: newWebhookUrl,
+          event_type: newWebhookEventType,
+          is_active: true
+        });
 
-    if (error) {
-      console.error('Error creating new webhook:', error);
-      setError('Failed to create webhook.');
-    } else {
+      if (error) throw error;
       fetchWebhooks();
       setOpen(false);
       setNewWebhookUrl('');
       setNewWebhookEventType('');
+    } catch (error) {
+      console.error('Error creating new webhook:', error);
+      setError('Failed to create webhook. Please try again.');
     }
   };
 
   const handleToggleWebhook = async (id, currentStatus) => {
-    const { error } = await supabase
-      .from('webhooks')
-      .update({ is_active: !currentStatus })
-      .eq('id', id)
-      .eq('merchant_id', merchantId);
+    setError(null);
+    try {
+      const { error } = await supabase
+        .from('webhooks')
+        .update({ is_active: !currentStatus })
+        .eq('id', id)
+        .eq('merchant_id', activeMerchantId);
 
-    if (error) {
-      console.error('Error toggling webhook status:', error);
-      setError('Failed to update webhook status.');
-    } else {
+      if (error) throw error;
       fetchWebhooks();
+    } catch (error) {
+      console.error('Error toggling webhook status:', error);
+      setError('Failed to update webhook status. Please try again.');
     }
   };
 
   const handleDeleteWebhook = async (id) => {
-    const { error } = await supabase
-      .from('webhooks')
-      .delete()
-      .eq('id', id)
-      .eq('merchant_id', merchantId);
+    setError(null);
+    try {
+      const { error } = await supabase
+        .from('webhooks')
+        .delete()
+        .eq('id', id)
+        .eq('merchant_id', activeMerchantId);
 
-    if (error) {
-      console.error('Error deleting webhook:', error);
-      setError('Failed to delete webhook.');
-    } else {
+      if (error) throw error;
       fetchWebhooks();
+    } catch (error) {
+      console.error('Error deleting webhook:', error);
+      setError('Failed to delete webhook. Please try again.');
     }
   };
 
@@ -248,39 +238,43 @@ const WebhooksPage = () => {
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-b border-gray-700">
-                    <TableHead className="text-gray-300">URL</TableHead>
-                    <TableHead className="text-gray-300">Event Type</TableHead>
-                    <TableHead className="text-gray-300">Status</TableHead>
-                    <TableHead className="text-gray-300">Created At</TableHead>
-                    <TableHead className="text-gray-300">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {webhooks.map((row) => (
-                    <TableRow key={row.id} className="border-b border-gray-700">
-                      <TableCell className="text-gray-300">{row.url}</TableCell>
-                      <TableCell className="text-gray-300">{row.event_type}</TableCell>
-                      <TableCell>
-                        <Switch
-                          checked={row.is_active}
-                          onCheckedChange={() => handleToggleWebhook(row.id, row.is_active)}
-                        />
-                      </TableCell>
-                      <TableCell className="text-gray-300">{new Date(row.created_at).toLocaleString()}</TableCell>
-                      <TableCell>
-                        <Button variant="destructive" size="sm" onClick={() => handleDeleteWebhook(row.id)}>
-                          Delete
-                        </Button>
-                      </TableCell>
+            {webhooks.length === 0 ? (
+              <p className="text-gray-300">No webhooks found. Create a new webhook to get started.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-b border-gray-700">
+                      <TableHead className="text-gray-300">URL</TableHead>
+                      <TableHead className="text-gray-300">Event Type</TableHead>
+                      <TableHead className="text-gray-300">Status</TableHead>
+                      <TableHead className="text-gray-300">Created At</TableHead>
+                      <TableHead className="text-gray-300">Actions</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                  </TableHeader>
+                  <TableBody>
+                    {webhooks.map((row) => (
+                      <TableRow key={row.id} className="border-b border-gray-700">
+                        <TableCell className="text-gray-300">{row.url}</TableCell>
+                        <TableCell className="text-gray-300">{row.event_type}</TableCell>
+                        <TableCell>
+                          <Switch
+                            checked={row.is_active}
+                            onCheckedChange={() => handleToggleWebhook(row.id, row.is_active)}
+                          />
+                        </TableCell>
+                        <TableCell className="text-gray-300">{new Date(row.created_at).toLocaleString()}</TableCell>
+                        <TableCell>
+                          <Button variant="destructive" size="sm" onClick={() => handleDeleteWebhook(row.id)}>
+                            Delete
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

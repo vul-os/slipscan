@@ -7,13 +7,18 @@ const AuthContext = createContext();
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [darkMode, setDarkMode] = useState(true)
+  const [darkMode, setDarkMode] = useState(true);
+  const [merchants, setMerchants] = useState([]);
+  const [activeMerchantId, setActiveMerchantId] = useState(null);
 
   useEffect(() => {
     const initializeUser = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
         setUser(session?.user ?? null);
+        if (session?.user) {
+          fetchMerchants(session.user.id);
+        }
       } catch (error) {
         console.error('Error fetching session:', error);
       } finally {
@@ -27,8 +32,13 @@ export const AuthProvider = ({ children }) => {
       if (session) {
         const jwt = jwtDecode(session.access_token)
         console.log(jwt)
+        setUser(session.user);
+        fetchMerchants(session.user.id);
+      } else {
+        setUser(null);
+        setMerchants([]);
+        setActiveMerchantId(null);
       }
-      setUser(session?.user ?? null);
     });
 
     return () => {
@@ -37,6 +47,33 @@ export const AuthProvider = ({ children }) => {
       }
     };
   }, []);
+
+  const fetchMerchants = async (userId) => {
+    try {
+      const { data, error } = await supabase
+        .from('merchant_users')
+        .select(`
+          merchant_id,
+          merchants (*)
+        `)
+        .eq('user_id', userId);
+  
+      if (error) throw error;
+  
+      // Ensure data is always an array
+      const dataArray = Array.isArray(data) ? data : [data];
+  
+      const merchantsList = dataArray.map(item => item.merchants);
+      setMerchants(merchantsList);
+  
+      // Set the first merchant as active if there's no active merchant
+      if (merchantsList.length > 0 && !activeMerchantId) {
+        setActiveMerchantId(merchantsList[0].id);
+      }
+    } catch (error) {
+      console.error('Error fetching merchants:', error);
+    }
+  };
 
   const signIn = async (email, password) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
@@ -57,14 +94,26 @@ export const AuthProvider = ({ children }) => {
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
     setUser(null);
+    setMerchants([]);
+    setActiveMerchantId(null);
   };
 
   const toggleDarkMode = () => {
-    setDarkMode(!darkMode)
-  }
+    setDarkMode(!darkMode);
+  };
 
   return (
-    <AuthContext.Provider value={{ loading, user, signIn, signInWithGoogle, signOut, toggleDarkMode }}>
+    <AuthContext.Provider value={{ 
+      loading, 
+      user, 
+      signIn, 
+      signInWithGoogle, 
+      signOut, 
+      toggleDarkMode,
+      merchants,
+      activeMerchantId,
+      setActiveMerchantId
+    }}>
       {children}
     </AuthContext.Provider>
   );

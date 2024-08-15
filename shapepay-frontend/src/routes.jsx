@@ -16,7 +16,6 @@ import Customers from './pages/customers';
 import APIKeys from './pages/apikeys';
 import Webhooks from './pages/webhooks';
 import Payments from './pages/payments/payments';
-import TransactionsPage from './pages/transactions';
 import Refunds from './pages/refunds';
 import PaymentPage from './pages/payments/customer-payments';
 import SettingsPage from './pages/settings';
@@ -43,7 +42,6 @@ const AppRoutes = () => {
         <Route path="/apikeys" element={<ProtectedRoute><APIKeys /></ProtectedRoute>} />
         <Route path="/webhooks" element={<ProtectedRoute><Webhooks /></ProtectedRoute>} />
         <Route path="/payments" element={<ProtectedRoute><Payments /></ProtectedRoute>} />
-        <Route path="/transactions" element={<ProtectedRoute><TransactionsPage /></ProtectedRoute>} />
         <Route path="/refunds" element={<ProtectedRoute><Refunds /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
 

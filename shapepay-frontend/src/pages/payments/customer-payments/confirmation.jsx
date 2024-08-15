@@ -1,8 +1,9 @@
 import React from "react";
 import { Copy, Phone } from "lucide-react";
 import SouthAfricanFlag from "./rsa-icon";
+import PayshapLogo from "./payshap-logo";
 
-const shapNumber = "741879351"
+const shapNumber = "+27000000000@NEDBANK"
 
 const PaymentConfoirmationStep = ({ paymentDetails }) => {
     const handleCopyCode = () => {
@@ -18,17 +19,16 @@ const PaymentConfoirmationStep = ({ paymentDetails }) => {
   return (
     <div className="flex flex-col items-center justify-center gap-6 py-8 w-full max-w-md mx-auto">
       <h2 className="text-2xl font-semibold text-center text-gray-100 mb-4">
-        Payment Information
+        Payshap Payment Details
       </h2>
       <div className="w-full space-y-6">
         <div className="flex flex-col gap-2 w-full">
           <label htmlFor="phone-number" className="text-sm font-medium text-gray-300">
-            Phone Number
+            ShapID
           </label>
           <div className="flex items-center bg-gray-700 rounded-md">
             <div className="flex items-center bg-gray-800 border-r border-gray-600 rounded-l-md px-3 py-2">
-              <SouthAfricanFlag />
-              <span className="text-gray-300 font-medium ml-2">+27</span>
+              <PayshapLogo />
             </div>
             <span id="phone-number" className="text-white font-bold px-4 py-2 flex-grow">
               {shapNumber}
@@ -44,7 +44,7 @@ const PaymentConfoirmationStep = ({ paymentDetails }) => {
         </div>
         <div className="flex flex-col gap-2 w-full">
           <label htmlFor="payment-code" className="text-sm font-medium text-gray-300">
-            Payment Code
+            Reference
           </label>
           <div className="flex items-center bg-gray-700 rounded-md">
             <span id="payment-code" className="text-white font-bold px-4 py-2 flex-grow">

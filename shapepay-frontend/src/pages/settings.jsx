@@ -13,7 +13,7 @@ import { PlusCircle, Edit2, Trash2, Home } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const SettingsPage = () => {
-  const { user } = useContext(AuthContext);
+  const { user, activeMerchantId} = useContext(AuthContext);
   const [merchant, setMerchant] = useState({
     id: '',
     name: '',
@@ -39,32 +39,12 @@ const SettingsPage = () => {
   const fetchMerchantAndUsers = async () => {
     try {
       setLoading(true);
-  
-      // Step 1: Fetch all merchants associated with the current user
-      const { data: merchantUsersData, error: merchantUsersError } = await supabase
-        .from('merchant_users')
-        .select('merchant_id')
-        .eq('user_id', user.id);
-  
-      if (merchantUsersError) throw merchantUsersError;
-      let firstMerchantId;
 
-      // Step 2: Select the first merchant ID (if any) and ensure it's valid
-      if (merchantUsersData.length > 0) {
-        firstMerchantId = merchantUsersData[0].merchant_id;
-        // Check if the fetched merchant_id is valid and not empty
-        if (!firstMerchantId || firstMerchantId === '') {
-          throw new Error('Invalid Merchant ID');
-        }
-      } else {
-        throw new Error('No merchants found for this user');
-      }
-
-      // Step 3: Fetch the merchant details using the firstMerchantId
+      // Step 3: Fetch the merchant details using the activeMerchantId
       const { data: md, error: me } = await supabase
         .from('merchants')
         .select('*')
-        .eq('id', firstMerchantId)
+        .eq('id', activeMerchantId)
         .single();
 
       if (me) throw me;
@@ -78,7 +58,7 @@ const SettingsPage = () => {
           profiles:user_id (email),
           roles:role_id (name)
         `)
-        .eq('merchant_id', firstMerchantId);
+        .eq('merchant_id', activeMerchantId);
   
       if (userMerchantError) throw userMerchantError;
   

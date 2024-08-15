@@ -28,7 +28,7 @@ const MainLayout = () => {
         
         <main
           className={cn(
-            "flex-grow transition-all duration-300 ease-in-out bg-gray-100 text-black",
+            "flex-grow transition-all duration-300 ease-in-out bg-gray-900 text-black",
             isMobile ? "mt-14" : "mt-16",
             isExpanded || !isMobile ? `ml-[${DRAWER_WIDTH}px]` : 'ml-16'
           )}

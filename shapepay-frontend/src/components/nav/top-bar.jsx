@@ -1,23 +1,32 @@
-// TopBar.js
 import React, { useState, useRef, useEffect, useContext } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
-import { Menu, User } from 'lucide-react';
+import { Menu, User, ChevronDown } from 'lucide-react';
 import AuthContext from '../../context/auth-context'; // Ensure this path is correct
 
 const TopBar = ({ onMenuClick }) => {
-  const { user, signOut } = useContext(AuthContext);
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const dropdownRef = useRef(null);
+  const { user, signOut, merchants, activeMerchantId, setActiveMerchantId } = useContext(AuthContext);
+  const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const [merchantDropdownOpen, setMerchantDropdownOpen] = useState(false);
+  const userDropdownRef = useRef(null);
+  const merchantDropdownRef = useRef(null);
 
-  // Toggle the dropdown
-  const toggleDropdown = () => {
-    setDropdownOpen(!dropdownOpen);
+  // Toggle the user dropdown
+  const toggleUserDropdown = () => {
+    setUserDropdownOpen(!userDropdownOpen);
   };
 
-  // Handle clicking outside the dropdown to close it
+  // Toggle the merchant dropdown
+  const toggleMerchantDropdown = () => {
+    setMerchantDropdownOpen(!merchantDropdownOpen);
+  };
+
+  // Handle clicking outside the dropdowns to close them
   const handleClickOutside = (event) => {
-    if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-      setDropdownOpen(false);
+    if (userDropdownRef.current && !userDropdownRef.current.contains(event.target)) {
+      setUserDropdownOpen(false);
+    }
+    if (merchantDropdownRef.current && !merchantDropdownRef.current.contains(event.target)) {
+      setMerchantDropdownOpen(false);
     }
   };
 
@@ -30,42 +39,71 @@ const TopBar = ({ onMenuClick }) => {
 
   const handleSignOut = () => {
     signOut();
-    setDropdownOpen(false);
+    setUserDropdownOpen(false);
   };
+
+  const handleMerchantChange = (merchantId) => {
+    setActiveMerchantId(merchantId);
+    setMerchantDropdownOpen(false);
+  };
+
+  const activeMerchant = merchants.find(m => m.id === activeMerchantId);
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 bg-gray-900 text-white shadow-md h-16 flex justify-between items-center px-6 border-b border-gray-700">
       <div className="flex items-center">
-        {/* Hamburger Menu Button for opening the SideNav */}
         <button
           className="mr-2 text-white hover:text-primary focus:outline-none md:hidden"
           onClick={onMenuClick}
           aria-label="Open navigation menu"
         >
-          <Menu size={24} /> {/* Hamburger icon */}
+          <Menu size={24} />
         </button>
-
-        {/* Application Title */}
-        <h1 className="text-lg font-semibold">Shape Pay</h1>
       </div>
 
-      {/* User Section */}
       <div className="flex items-center relative">
+        {user && (
+          <div className="mr-4 relative">
+            <button
+              onClick={toggleMerchantDropdown}
+              className="flex items-center gap-2 focus:outline-none hover:text-primary"
+              aria-label="Select merchant"
+            >
+              <span>{activeMerchant ? activeMerchant.name : 'Select Merchant'}</span>
+              <ChevronDown size={16} />
+            </button>
+            {merchantDropdownOpen && (
+              <div
+                ref={merchantDropdownRef}
+                className="absolute mt-1 w-48 bg-white border border-gray-200 shadow-lg rounded-md z-10"
+                style={{ top: 'calc(100% + 16px)', right: '0' }}
+              >
+                {merchants.map(merchant => (
+                  <button
+                    key={merchant.id}
+                    onClick={() => handleMerchantChange(merchant.id)}
+                    className="w-full text-left px-4 py-2 text-gray-800 hover:bg-gray-100"
+                  >
+                    {merchant.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+        
         {user ? (
           <>
-            {/* Avatar Button */}
             <button
-              onClick={toggleDropdown}
+              onClick={toggleUserDropdown}
               className="flex items-center gap-2 focus:outline-none hover:text-primary"
               aria-label="User menu"
             >
               <User size={24} className="text-white" />
             </button>
-
-            {/* Dropdown Menu */}
-            {dropdownOpen && (
+            {userDropdownOpen && (
               <div
-                ref={dropdownRef}
+                ref={userDropdownRef}
                 className="absolute mt-1 w-48 bg-white border border-gray-200 shadow-lg rounded-md z-10"
                 style={{ top: 'calc(100% + 16px)', right: '0' }}
               >
@@ -75,7 +113,7 @@ const TopBar = ({ onMenuClick }) => {
                 <RouterLink
                   to="/account"
                   className="block px-4 py-2 text-gray-800 hover:bg-gray-100"
-                  onClick={() => setDropdownOpen(false)}
+                  onClick={() => setUserDropdownOpen(false)}
                 >
                   Account
                 </RouterLink>

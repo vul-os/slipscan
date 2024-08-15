@@ -7,93 +7,91 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Key, Home, Plus } from 'lucide-react';
+import { Key, Home, Plus, Copy, Check } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const APIKeysPage = () => {
   const [keys, setKeys] = useState([]);
   const [open, setOpen] = useState(false);
   const [newKeyName, setNewKeyName] = useState('');
-  const [merchantId, setMerchantId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const { user } = useContext(AuthContext);
+  const [copiedKey, setCopiedKey] = useState(null);
+  const { user, activeMerchantId } = useContext(AuthContext);
 
   useEffect(() => {
-    if (user) {
-      fetchMerchantId();
-    } 
-  }, [user]);
-
-  useEffect(() => {
-    if (merchantId) {
+    if (user && activeMerchantId) {
       fetchAPIKeys();
     }
-  }, [merchantId]);
-
-  const fetchMerchantId = async () => {
-    const { data, error } = await supabase
-      .from('merchants')
-      .select('id')
-      .eq('user_id', user.id)
-      .single();
-
-    if (error) {
-      console.error('Error fetching merchant ID:', error);
-      setError('Failed to fetch merchant information.');
-    } else {
-      setMerchantId(data.id);
-    }
-    setLoading(false);
-  };
+  }, [user, activeMerchantId]);
 
   const fetchAPIKeys = async () => {
     setLoading(true);
-    const { data, error } = await supabase
-      .from('api_keys')
-      .select('*')
-      .eq('merchant_id', merchantId)
-      .order('created_at', { ascending: false });
+    setError(null);
+    try {
+      const { data, error } = await supabase
+        .from('api_keys')
+        .select('*')
+        .eq('merchant_id', activeMerchantId)
+        .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('Error fetching API keys:', error);
-      setError('Failed to fetch API keys.');
-    } else {
+      if (error) throw error;
       setKeys(data);
+    } catch (error) {
+      console.error('Error fetching API keys:', error);
+      setError('Failed to fetch API keys. Please try again later.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleCreateKey = async () => {
-    const { data, error } = await supabase.rpc('create_api_key', {
-      p_merchant_id: merchantId,
-      p_name: newKeyName,
-      p_expires_at: null
-    });
+    if (!newKeyName.trim()) {
+      setError('Please provide a name for the API key.');
+      return;
+    }
+    setError(null);
+    try {
+      const { data, error } = await supabase.rpc('create_api_key', {
+        p_merchant_id: activeMerchantId,
+        p_name: newKeyName.trim(),
+        p_expires_at: null
+      });
 
-    if (error) {
-      console.error('Error creating new API key:', error);
-      setError('Failed to create API key.');
-    } else {
+      if (error) throw error;
       fetchAPIKeys();
       setOpen(false);
       setNewKeyName('');
+    } catch (error) {
+      console.error('Error creating new API key:', error);
+      setError('Failed to create API key. Please try again.');
     }
   };
 
   const handleRevokeKey = async (id) => {
-    const { error } = await supabase
-      .from('api_keys')
-      .delete()
-      .eq('id', id)
-      .eq('merchant_id', merchantId);
+    setError(null);
+    try {
+      const { error } = await supabase
+        .from('api_keys')
+        .delete()
+        .eq('id', id)
+        .eq('merchant_id', activeMerchantId);
 
-    if (error) {
-      console.error('Error revoking API key:', error);
-      setError('Failed to revoke API key.');
-    } else {
+      if (error) throw error;
       fetchAPIKeys();
+    } catch (error) {
+      console.error('Error revoking API key:', error);
+      setError('Failed to revoke API key. Please try again.');
     }
+  };
+
+  const handleCopyKey = (key) => {
+    navigator.clipboard.writeText(key)
+      .then(() => {
+        setCopiedKey(key);
+        setTimeout(() => setCopiedKey(null), 2000);
+      })
+      .catch(err => console.error('Failed to copy text: ', err));
   };
 
   if (!user) {
@@ -153,30 +151,44 @@ const APIKeysPage = () => {
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow className="border-b border-gray-700">
-                    <TableHead className="text-gray-300">Name</TableHead>
-                    <TableHead className="text-gray-300">Key</TableHead>
-                    <TableHead className="text-gray-300">Created At</TableHead>
-                    <TableHead className="text-gray-300">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {keys.map((row) => (
-                    <TableRow key={row.id} className="border-b border-gray-700">
-                      <TableCell className="text-gray-300">{row.name}</TableCell>
-                      <TableCell className="text-gray-300">{row.key}</TableCell>
-                      <TableCell className="text-gray-300">{new Date(row.created_at).toLocaleString()}</TableCell>
-                      <TableCell>
-                        <Button variant="destructive" size="sm" onClick={() => handleRevokeKey(row.id)}>Revoke</Button>
-                      </TableCell>
+            {keys.length === 0 ? (
+              <p className="text-gray-300">No API keys found. Create a new key to get started.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-b border-gray-700">
+                      <TableHead className="text-gray-300">Name</TableHead>
+                      <TableHead className="text-gray-300">Key</TableHead>
+                      <TableHead className="text-gray-300">Created At</TableHead>
+                      <TableHead className="text-gray-300">Actions</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                  </TableHeader>
+                  <TableBody>
+                    {keys.map((row) => (
+                      <TableRow key={row.id} className="border-b border-gray-700">
+                        <TableCell className="text-gray-300">{row.name}</TableCell>
+                        <TableCell className="text-gray-300 flex items-center">
+                          <span className="mr-2">{row.key}</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleCopyKey(row.key)}
+                            className="p-1"
+                          >
+                            {copiedKey === row.key ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                          </Button>
+                        </TableCell>
+                        <TableCell className="text-gray-300">{new Date(row.created_at).toLocaleString()}</TableCell>
+                        <TableCell>
+                          <Button variant="destructive" size="sm" onClick={() => handleRevokeKey(row.id)}>Revoke</Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
           </CardContent>
         </Card>
 

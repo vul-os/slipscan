@@ -4,11 +4,11 @@ import AuthContext from '../context/auth-context';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Home, Users, ChevronDown, ChevronUp, Plus } from 'lucide-react';
+import { Home, Users, ChevronDown, ChevronUp, User, Mail, Calendar, Phone, MapPin } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const CustomersPage = () => {
-  const { user, signInWithGoogle } = useContext(AuthContext);
+  const { user, signInWithGoogle, activeMerchantId } = useContext(AuthContext);
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -16,17 +16,23 @@ const CustomersPage = () => {
 
   useEffect(() => {
     fetchCustomers();
-  }, [user]);
+  }, [user, activeMerchantId]);
 
   const fetchCustomers = async () => {
-    if (user) {
+    if (user && activeMerchantId) {
       try {
         setLoading(true);
         const { data, error } = await supabase
           .from('customers')
-          .select('*')
-          .order('created_at', { ascending: false });
-
+          .select(`
+            *,
+            customer_merchants!inner (
+              merchant:merchants (*)
+            )
+          `)
+          .order('created_at', { ascending: false })
+          .filter('customer_merchants.merchant.id', 'eq', activeMerchantId);
+  
         if (error) throw error;
         setCustomers(data);
       } catch (error) {
@@ -109,14 +115,39 @@ const CustomersPage = () => {
                             <TableCell colSpan="5" className="p-0">
                               <Card className="m-2 bg-gray-700 border-gray-600">
                                 <CardHeader>
-                                  <CardTitle className="text-gray-100">Customer Details</CardTitle>
+                                  <CardTitle className="text-gray-100 flex items-center">
+                                    <User className="w-5 h-5 mr-2" />
+                                    Customer Details
+                                  </CardTitle>
                                 </CardHeader>
                                 <CardContent>
-                                  <p className="text-gray-300">ID: {customer.id}</p>
-                                  <p className="text-gray-300">Name: {customer.name}</p>
-                                  <p className="text-gray-300">Email: {customer.email}</p>
-                                  <p className="text-gray-300">Created At: {new Date(customer.created_at).toLocaleString()}</p>
-                                  {/* Add more customer details here */}
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <div className="flex items-center space-x-2 text-gray-300">
+                                      <User className="w-5 h-5 text-blue-400" />
+                                      <span className="font-semibold">Name:</span>
+                                      <span>{customer.name}</span>
+                                    </div>
+                                    <div className="flex items-center space-x-2 text-gray-300">
+                                      <Mail className="w-5 h-5 text-green-400" />
+                                      <span className="font-semibold">Email:</span>
+                                      <span>{customer.email}</span>
+                                    </div>
+                                    <div className="flex items-center space-x-2 text-gray-300">
+                                      <Calendar className="w-5 h-5 text-yellow-400" />
+                                      <span className="font-semibold">Created At:</span>
+                                      <span>{new Date(customer.created_at).toLocaleString()}</span>
+                                    </div>
+                                    <div className="flex items-center space-x-2 text-gray-300">
+                                      <Phone className="w-5 h-5 text-purple-400" />
+                                      <span className="font-semibold">Phone:</span>
+                                      <span>{customer.phone || 'N/A'}</span>
+                                    </div>
+                                    <div className="flex items-center space-x-2 text-gray-300">
+                                      <MapPin className="w-5 h-5 text-red-400" />
+                                      <span className="font-semibold">Address:</span>
+                                      <span>{customer.address || 'N/A'}</span>
+                                    </div>
+                                  </div>
                                 </CardContent>
                               </Card>
                             </TableCell>
