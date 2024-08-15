@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,11 +19,13 @@ import (
 )
 
 const (
-	url        = "https://fnb.co.za"
-	username   = "exolutionza"
-	password   = "***REMOVED***"
-	dbURL      = "user=postgres.zkimqgkcwxaeyibtjwnt password=***REMOVED*** host=aws-0-eu-central-1.pooler.supabase.com port=6543 dbname=postgres"
-	cookieFile = "./cookies.json"
+	url                = "https://secured.nedbank.co.za/"
+	username           = "imran.paruk"
+	password           = "***REMOVED***"
+	dbURL              = "user=postgres.wmpyolgckopmwhhlaiye password=***REMOVED*** host=aws-0-eu-central-1.pooler.supabase.com port=6543 dbname=postgres"
+	cookieFile         = "./cookies.json"
+	localStorageFile   = "./localStorage.json"
+	sessionStorageFile = "./sessionStorage.json"
 )
 
 var dbPool *pgxpool.Pool
@@ -38,12 +41,13 @@ func main() {
 	log.Println("DEBUG: Connected to database")
 
 	// Initialize rod browser with headless mode off
-	u := launcher.New().MustLaunch()
+	u := launcher.New().Headless(false).MustLaunch()
 	browser := rod.New().ControlURL(u).MustConnect()
 	defer browser.MustClose()
 
 	for {
 		log.Println("DEBUG: Starting new iteration in main loop")
+		page := browser.MustPage(url)
 
 		log.Println("DEBUG: Loading cookies")
 		cookies, err := loadCookies()
@@ -51,11 +55,21 @@ func main() {
 			log.Println("No saved cookies found or error loading cookies:", err)
 		}
 
-		page := browser.MustPage(url)
+		log.Println("DEBUG: Loading storage")
+		if err := loadStorage(page); err != nil {
+			log.Printf("Error loading storage: %v", err)
+		}
+
 		if err := login(page, cookies); err != nil {
 			log.Printf("Login failed: %v", err)
 			log.Println("DEBUG: Waiting 5 seconds before retrying login")
-			time.Sleep(5 * time.Second)
+			continue
+		}
+
+		log.Println("DEBUG: Clicking on account row")
+		err = clickAccountRow(page)
+		if err != nil {
+			fmt.Errorf("error clicking account row: %w", err)
 			continue
 		}
 
@@ -82,53 +96,35 @@ func runLoop(page *rod.Page) error {
 	for {
 		log.Println("DEBUG: Starting new iteration in runLoop")
 
-		log.Println("DEBUG: Checking logout status")
-		loggedOut, err := checkLogout(page)
+		// Wait for transaction table to load
+		log.Println("DEBUG: Waiting for transaction table to load")
+		err := page.MustElement("div.transactions-list-container").WaitVisible()
 		if err != nil {
-			return fmt.Errorf("error checking logout status: %w", err)
+			return fmt.Errorf("error waiting for transaction table: %w", err)
 		}
 
-		if loggedOut {
-			log.Println("DEBUG: Logged out detected")
-			return fmt.Errorf("logged out")
-		}
-
-		log.Println("DEBUG: Navigating to transaction history")
-
-		// Click on "Accounts" link
-		accountElement, err := page.ElementR("span.shortCutLink", "Accounts")
+		log.Println("DEBUG: Clicking on Failed transactions tab")
+		failedTransactionsSelector := `label.tab-label[data-content="Failed"]`
+		err = page.MustElement(failedTransactionsSelector).Click(proto.InputMouseButtonLeft, 1)
 		if err != nil {
-			return fmt.Errorf("error finding Accounts link: %w", err)
-		}
-		if err := accountElement.Click(proto.InputMouseButtonLeft, 1); err != nil {
-			return fmt.Errorf("error clicking on Accounts link: %w", err)
+			return fmt.Errorf("error clicking Failed transactions tab: %w", err)
 		}
 
-		// Click on "Gold Business Account" link
-		businessAccountElement, err := page.ElementR("#nickname_0 a", "Gold Business Account")
+		// Wait for failed transactions to load
+		time.Sleep(2 * time.Second)
+
+		log.Println("DEBUG: Clicking on All transactions tab")
+		allTransactionsSelector := `label.tab-label[data-content="All transactions"]`
+		err = page.MustElement(allTransactionsSelector).Click(proto.InputMouseButtonLeft, 1)
 		if err != nil {
-			return fmt.Errorf("error finding Gold Business Account link: %w", err)
-		}
-		if err := businessAccountElement.Click(proto.InputMouseButtonLeft, 1); err != nil {
-			return fmt.Errorf("error clicking on Gold Business Account link: %w", err)
+			return fmt.Errorf("error clicking All transactions tab: %w", err)
 		}
 
-		// Click on "Transaction History" link
-		transactionHistoryElement, err := page.ElementR("div.subTabButton", "Transaction History")
-		if err != nil {
-			return fmt.Errorf("error finding Transaction History link: %w", err)
-		}
-		if err := transactionHistoryElement.Click(proto.InputMouseButtonLeft, 1); err != nil {
-			return fmt.Errorf("error clicking on Transaction History link: %w", err)
-		}
-
-		log.Println("DEBUG: Clicking transaction history to update table")
-		if err := page.MustElement(`#transactionHistoryTables_tableContent`).WaitVisible(); err != nil {
-			return fmt.Errorf("error updating transaction history: %w", err)
-		}
+		// Wait for all transactions to load
+		time.Sleep(2 * time.Second)
 
 		log.Println("DEBUG: Extracting transaction data")
-		tableHTML, err := page.MustElement(`#transactionHistoryTables_tableContent`).HTML()
+		tableHTML, err := page.MustElement("div.transactions-list-container").HTML()
 		if err != nil {
 			return fmt.Errorf("error extracting transaction history: %w", err)
 		}
@@ -142,57 +138,136 @@ func runLoop(page *rod.Page) error {
 		}
 
 		log.Println("Transaction history updated and saved successfully")
+
+		log.Println("DEBUG: Saving storage")
+		if err := saveStorage(page); err != nil {
+			log.Printf("Error saving storage: %v", err)
+		}
+
 		log.Println("DEBUG: Waiting 5 seconds before next iteration")
 		time.Sleep(5 * time.Second)
 	}
 }
 
-func checkLogout(page *rod.Page) (bool, error) {
-	text, err := page.MustElement("body").Text()
+func clickAccountRow(page *rod.Page) error {
+	log.Println("DEBUG: Finding account row")
+	accountRow, err := page.Element("div.account-row")
 	if err != nil {
-		return false, fmt.Errorf("error getting page text: %w", err)
+		return fmt.Errorf("error finding account row: %w", err)
 	}
-	if strings.Contains(text, "You have successfully logged out of banking") {
-		return true, nil
+
+	log.Println("DEBUG: Clicking account row")
+	err = accountRow.Click(proto.InputMouseButtonLeft, 1)
+	if err != nil {
+		return fmt.Errorf("error clicking account row: %w", err)
 	}
-	return false, nil
+
+	return nil
+}
+
+func checkLogout(page *rod.Page) (bool, error) {
+	// Check for the presence of the login form
+	loginForm, _, err := page.Has("form.gd-form")
+	if err != nil {
+		return false, fmt.Errorf("error checking for login form: %w", err)
+	}
+
+	// Check for the presence of the "Log in with your Nedbank ID" text
+	loginText, _, err := page.Has("h4.login-title")
+	if err != nil {
+		return false, fmt.Errorf("error checking for login title: %w", err)
+	}
+
+	// Check for the presence of the username and password input fields
+	usernameInput, _, err := page.Has("#username")
+	if err != nil {
+		return false, fmt.Errorf("error checking for username input: %w", err)
+	}
+
+	passwordInput, _, err := page.Has("#password")
+	if err != nil {
+		return false, fmt.Errorf("error checking for password input: %w", err)
+	}
+
+	// If all these elements are present, we're on the login page
+	return loginForm && loginText && usernameInput && passwordInput, nil
 }
 
 func login(page *rod.Page, cookies []*proto.NetworkCookieParam) error {
 	log.Println("DEBUG: Starting login function")
+
 	if len(cookies) > 0 {
 		log.Println("DEBUG: Setting cookies")
 		page.MustSetCookies(cookies...)
 	}
 
-	page.MustNavigate(url)
-	if err := handleCookieBanner(page); err != nil {
-		return err
+	log.Printf("DEBUG: Navigating to URL: %s", url)
+	err := page.Navigate(url)
+	if err != nil {
+		return fmt.Errorf("error navigating to URL: %w", err)
+	}
+
+	log.Println("DEBUG: Waiting for navigation to complete")
+	err = page.WaitLoad()
+	if err != nil {
+		return fmt.Errorf("error waiting for page to load: %w", err)
 	}
 
 	log.Println("DEBUG: Checking if logged in")
-	loggedIn := page.MustHas(`span.shortCutLink`)
+	loggedIn, _, err := page.Has("div.account-name")
+	if err != nil {
+		return fmt.Errorf("error checking if logged in: %w", err)
+	}
+
 	if !loggedIn {
 		log.Println("DEBUG: Not logged in, performing login")
-		page.MustElement(`#user`).MustWaitVisible()
-		page.MustElement(`#user`).MustInput(username)
-		page.MustElement(`#pass`).MustInput(password)
-		page.MustElement(`#OBSubmit`).MustClick()
-		page.MustElement(`span.shortCutLink`).MustWaitVisible()
+
+		log.Println("DEBUG: Waiting for username field")
+		err = page.MustElement("#username").WaitVisible()
+		if err != nil {
+			return fmt.Errorf("error waiting for username field: %w", err)
+		}
+
+		log.Println("DEBUG: Inputting username")
+		err = page.MustElement("#username").Input(username)
+		if err != nil {
+			return fmt.Errorf("error inputting username: %w", err)
+		}
+
+		log.Println("DEBUG: Inputting password")
+		err = page.MustElement("#password").Input(password)
+		if err != nil {
+			return fmt.Errorf("error inputting password: %w", err)
+		}
+
+		log.Println("DEBUG: Clicking login button")
+		err = page.MustElement("#log_in").Click(proto.InputMouseButtonLeft, 1)
+		if err != nil {
+			return fmt.Errorf("error clicking login button: %w", err)
+		}
+
+		log.Println("DEBUG: Waiting for navigation to complete")
+		err = page.WaitLoad()
+		if err != nil {
+			return fmt.Errorf("error waiting for page to load: %w", err)
+		}
+
+		log.Println("DEBUG: Saving cookies and storage")
+		newCookies := page.MustCookies()
+		if err := saveCookies(newCookies); err != nil {
+			log.Printf("Error saving cookies: %v", err)
+		}
+		if err := saveStorage(page); err != nil {
+			log.Printf("Error saving storage: %v", err)
+		}
+
+		log.Println("DEBUG: Waiting for account name to be visible")
+		err = page.MustElement("div.account-name").WaitLoad()
+		if err != nil {
+			return fmt.Errorf("error waiting for account name: %w", err)
+		}
 	}
 
-	log.Println("DEBUG: Saving cookies")
-	newCookies := page.MustCookies()
-	return saveCookies(newCookies)
-}
-
-func handleCookieBanner(page *rod.Page) error {
-	cookieBannerVisible := page.MustHas(`.cookieBanner`)
-	if cookieBannerVisible {
-		page.MustElement(`button.js-accept-cookies.s-btn__primary`).MustClick()
-		page.MustElement(`.cookieBanner`).MustWaitVisible()
-		log.Println("Cookie banner accepted")
-	}
 	return nil
 }
 
@@ -215,6 +290,60 @@ func saveCookies(cookies []*proto.NetworkCookie) error {
 	return os.WriteFile(cookieFile, data, 0644)
 }
 
+func loadStorage(page *rod.Page) error {
+	// Load localStorage
+	localStorageData, err := os.ReadFile(localStorageFile)
+	if err == nil {
+		var localStorage map[string]string
+		if err := json.Unmarshal(localStorageData, &localStorage); err == nil {
+			for key, value := range localStorage {
+				page.MustEval(`(key, value) => localStorage.setItem(key, value)`, key, value)
+			}
+		}
+	}
+
+	// Load sessionStorage
+	sessionStorageData, err := os.ReadFile(sessionStorageFile)
+	if err == nil {
+		var sessionStorage map[string]string
+		if err := json.Unmarshal(sessionStorageData, &sessionStorage); err == nil {
+			for key, value := range sessionStorage {
+				page.MustEval(`(key, value) => sessionStorage.setItem(key, value)`, key, value)
+			}
+		}
+	}
+
+	return nil
+}
+
+func saveStorage(page *rod.Page) error {
+	// Save localStorage
+	localStorage, err := page.Eval(`() => JSON.stringify(localStorage)`)
+	if err == nil {
+		var localStorageMap map[string]string
+		if err := json.Unmarshal([]byte(localStorage.Value.String()), &localStorageMap); err == nil {
+			localStorageData, _ := json.Marshal(localStorageMap)
+			if err := os.WriteFile(localStorageFile, localStorageData, 0644); err != nil {
+				log.Printf("Error writing localStorage: %v", err)
+			}
+		}
+	}
+
+	// Save sessionStorage
+	sessionStorage, err := page.Eval(`() => JSON.stringify(sessionStorage)`)
+	if err == nil {
+		var sessionStorageMap map[string]string
+		if err := json.Unmarshal([]byte(sessionStorage.Value.String()), &sessionStorageMap); err == nil {
+			sessionStorageData, _ := json.Marshal(sessionStorageMap)
+			if err := os.WriteFile(sessionStorageFile, sessionStorageData, 0644); err != nil {
+				log.Printf("Error writing sessionStorage: %v", err)
+			}
+		}
+	}
+
+	return nil
+}
+
 func parseTableHTML(tableHTML string) []map[string]string {
 	reader := strings.NewReader(tableHTML)
 	doc, err := goquery.NewDocumentFromReader(reader)
@@ -224,24 +353,12 @@ func parseTableHTML(tableHTML string) []map[string]string {
 
 	var transactions []map[string]string
 
-	doc.Find(".tableRow.tableDataRow").Each(func(i int, s *goquery.Selection) {
+	doc.Find("tr.selectable").Each(func(i int, s *goquery.Selection) {
 		transaction := make(map[string]string)
-		s.Find(".tableCellItem").Each(func(j int, cell *goquery.Selection) {
-			switch j {
-			case 0:
-				transaction["date"] = strings.TrimSpace(cell.Text())
-			case 1:
-				transaction["description"] = strings.TrimSpace(cell.Text())
-			case 2:
-				transaction["reference"] = strings.TrimSpace(cell.Text())
-			case 3:
-				transaction["service_fee"] = strings.TrimSpace(cell.Text())
-			case 4:
-				transaction["amount"] = strings.TrimSpace(cell.Text())
-			case 5:
-				transaction["balance"] = strings.TrimSpace(cell.Text())
-			}
-		})
+		transaction["date"] = s.Find("td.date").Text()
+		transaction["description"] = s.Find("div.title").Text()
+		transaction["amount"] = s.Find("td.amount").Text()
+		transaction["balance"] = s.Find("td.balance").Text()
 		transactions = append(transactions, transaction)
 	})
 
@@ -249,51 +366,101 @@ func parseTableHTML(tableHTML string) []map[string]string {
 }
 
 func saveToSupabase(pool *pgxpool.Pool, transactions []map[string]string) error {
+	myUuid := uuid.MustParse("***REMOVED***")
 	ctx := context.Background()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("error beginning transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
 	for _, t := range transactions {
-		// Check if transaction already exists
-		var exists bool
-		err = tx.QueryRow(ctx, `
-			SELECT EXISTS (
-				SELECT 1
-				FROM bank_transactions
-				WHERE date = $1 AND description = $2 AND reference = $3 AND service_fee = $4 AND amount = $5 AND balance = $6
-			)
-		`,
-			t["date"],
-			t["description"],
-			t["reference"],
-			t["service_fee"],
-			t["amount"],
-			t["balance"],
-		).Scan(&exists)
+		// Log raw transaction data for debugging
+		log.Printf("Raw transaction data: %+v", t)
+
+		// Parse date
+		cleanDateString := strings.TrimSpace(t["date"])
+		bankDate, err := time.Parse("02 Jan 2006", cleanDateString)
 		if err != nil {
-			return err
+			return fmt.Errorf("error parsing date '%s': %w", cleanDateString, err)
+		}
+
+		// Parse amount and balance
+		log.Printf("Raw amount: %s", t["amount"])
+		amount, err := parseAmount(t["amount"])
+		if err != nil {
+			return fmt.Errorf("error parsing amount: %w", err)
+		}
+
+		log.Printf("Raw balance: %s", t["balance"])
+		balance, err := parseAmount(t["balance"])
+		if err != nil {
+			return fmt.Errorf("error parsing balance: %w", err)
+		}
+
+		// Check if transaction already exists
+		var count int
+		err = tx.QueryRow(ctx, fmt.Sprintf(`
+            SELECT COUNT(*) 
+            FROM bank_transactions
+            WHERE bank_date = '%s' AND description = $1 AND amount = %f AND balance = %f
+        `, bankDate.Format("2006-01-02"), amount, balance),
+			t["description"],
+		).Scan(&count)
+		if err != nil {
+			fmt.Errorf("error checking existing transaction: %w", err)
 		}
 
 		// If transaction does not exist, insert it
-		if !exists {
-			_, err := tx.Exec(ctx,
-				`INSERT INTO bank_transactions (id, date, description, reference, service_fee, amount, balance) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-				uuid.New().String(),
-				t["date"],
+		if count == 0 {
+			_, err := tx.Exec(ctx, fmt.Sprintf(`
+                INSERT INTO bank_transactions (
+                    bank_account_id, bank_date, description, reference, 
+                    service_fee, amount, balance, detected_date
+                ) VALUES ('%s', '%s', '%s', '%s', %f, %f, %f, '%s')`,
+				myUuid,
+				bankDate.Format("2006-01-02"),
 				t["description"],
 				t["reference"],
-				t["service_fee"],
-				t["amount"],
-				t["balance"],
-			)
+				0.00, // Assuming service_fee is not provided in the transaction data
+				amount,
+				balance,
+				time.Now().Format("2006-01-02 15:04:05"),
+			))
 			if err != nil {
-				return err
+				return fmt.Errorf("error inserting transaction: %w", err)
 			}
 		}
 	}
 
 	return tx.Commit(ctx)
+}
+
+func parseAmount(s string) (float64, error) {
+	// Remove any whitespace
+	s = strings.TrimSpace(s)
+
+	// Check if the amount is negative
+	isNegative := strings.HasPrefix(s, "-")
+	if isNegative {
+		s = strings.TrimPrefix(s, "-")
+	}
+
+	// Remove 'R' prefix and any thousands separators
+	s = strings.ReplaceAll(s, "R", "")
+	s = strings.ReplaceAll(s, ",", "")
+	s = strings.TrimSpace(s) // Remove any remaining whitespace
+
+	// Parse the float
+	amount, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, fmt.Errorf("error parsing amount '%s': %w", s, err)
+	}
+
+	// Make the amount negative if necessary
+	if isNegative {
+		amount = -amount
+	}
+
+	return amount, nil
 }
