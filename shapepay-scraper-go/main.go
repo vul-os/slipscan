@@ -77,7 +77,7 @@ func main() {
 		if err := runLoop(page); err != nil {
 			log.Printf("Error during loop: %v", err)
 			if strings.Contains(err.Error(), "logged out") {
-				waitTime := 5 * time.Second
+				waitTime := 1 * time.Second
 				if strings.Contains(err.Error(), "concurrent") {
 					waitTime = 15 * time.Second
 				}
