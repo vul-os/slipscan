@@ -15,6 +15,7 @@ export const AuthProvider = ({ children }) => {
     const initializeUser = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
+        console.log(session)
         setUser(session?.user ?? null);
         if (session?.user) {
           fetchMerchants(session.user.id);
@@ -60,19 +61,29 @@ export const AuthProvider = ({ children }) => {
   
       if (error) throw error;
   
-      // Ensure data is always an array
       const dataArray = Array.isArray(data) ? data : [data];
   
       const merchantsList = dataArray.map(item => item.merchants);
       setMerchants(merchantsList);
   
-      // Set the first merchant as active if there's no active merchant
       if (merchantsList.length > 0 && !activeMerchantId) {
         setActiveMerchantId(merchantsList[0].id);
       }
     } catch (error) {
       console.error('Error fetching merchants:', error);
     }
+  };
+
+  const signUp = async (email, password) => {
+    const { data, error } = await supabase.auth.signUp({ 
+      email, 
+      password,
+      options: {
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
+      },
+    });
+    if (error) throw error;
+    return data;
   };
 
   const signIn = async (email, password) => {
@@ -85,9 +96,16 @@ export const AuthProvider = ({ children }) => {
   const signInWithGoogle = async () => {
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
+      options: {
+        redirectTo: 'http://localhost:5173/',
+      },
     });
-    if (error) throw error;
-    return data;
+    console.log(data, error)
+    if (error) {
+      throw error
+    }
+    setUser(data.user);
+    return data.user;
   };
 
   const signOut = async () => {
@@ -106,6 +124,7 @@ export const AuthProvider = ({ children }) => {
     <AuthContext.Provider value={{ 
       loading, 
       user, 
+      signUp,
       signIn, 
       signInWithGoogle, 
       signOut, 
