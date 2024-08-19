@@ -1,6 +1,6 @@
-import React, { createContext, useState, useEffect } from 'react';
+import React, { createContext, useState, useEffect, useCallback } from 'react';
 import { supabase } from '../services/supabaseClient';
-import { jwtDecode } from 'jwt-decode'
+import { jwtDecode } from 'jwt-decode';
 
 const AuthContext = createContext();
 
@@ -11,45 +11,7 @@ export const AuthProvider = ({ children }) => {
   const [merchants, setMerchants] = useState([]);
   const [activeMerchantId, setActiveMerchantId] = useState(null);
 
-  useEffect(() => {
-    const initializeUser = async () => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        console.log(session)
-        setUser(session?.user ?? null);
-        if (session?.user) {
-          fetchMerchants(session.user.id);
-        }
-      } catch (error) {
-        console.error('Error fetching session:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    initializeUser();
-
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session) {
-        const jwt = jwtDecode(session.access_token)
-        console.log(jwt)
-        setUser(session.user);
-        fetchMerchants(session.user.id);
-      } else {
-        setUser(null);
-        setMerchants([]);
-        setActiveMerchantId(null);
-      }
-    });
-
-    return () => {
-      if (authListener && authListener.unsubscribe) {
-        authListener.unsubscribe();
-      }
-    };
-  }, []);
-
-  const fetchMerchants = async (userId) => {
+  const fetchMerchants = useCallback(async (userId) => {
     try {
       const { data, error } = await supabase
         .from('merchant_users')
@@ -72,7 +34,48 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error('Error fetching merchants:', error);
     }
-  };
+  }, [activeMerchantId]);
+
+  const initializeUser = useCallback(async () => {
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      console.log('Initial session check:', session, error);
+      if (session?.user) {
+        setUser(session.user);
+        await fetchMerchants(session.user.id);
+      } else {
+        setUser(null);
+      }
+    } catch (error) {
+      console.error('Error fetching session:', error);
+    } finally {
+      setLoading(false);
+    }
+  }, [fetchMerchants]);
+
+  useEffect(() => {
+    initializeUser();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log('Auth state changed:', event, session);
+      if (session) {
+        const jwt = jwtDecode(session.access_token);
+        console.log('Decoded JWT:', jwt);
+        setUser(session.user);
+        await fetchMerchants(session.user.id);
+      } else {
+        setUser(null);
+        setMerchants([]);
+        setActiveMerchantId(null);
+      }
+    });
+
+    return () => {
+      if (authListener && authListener.unsubscribe) {
+        authListener.unsubscribe();
+      }
+    };
+  }, [initializeUser, fetchMerchants]);
 
   const signUp = async (email, password) => {
     const { data, error } = await supabase.auth.signUp({ 
@@ -94,18 +97,16 @@ export const AuthProvider = ({ children }) => {
   };
 
   const signInWithGoogle = async () => {
+    console.log('Sign in with Google initiated');
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: 'https://app.shapepay.co.za/#',
-      },
+        redirectTo: `${window.location.origin}`,
+      }
     });
-    console.log(data, error)
-    if (error) {
-      throw error
-    }
-    setUser(data.user);
-    return data.user;
+    console.log('Sign in with Google result:', data, error);
+    if (error) throw error;
+    return data;
   };
 
   const signOut = async () => {
