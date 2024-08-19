@@ -6,6 +6,7 @@ import SideNav from '../nav/side-nav';
 import TopBar from '../nav/top-bar';
 
 const DRAWER_WIDTH = 250;
+const TOP_BAR_HEIGHT = '4rem';
 
 const MainLayout = () => {
   const isMobile = useMediaQuery({ maxWidth: 640 });
@@ -44,30 +45,32 @@ const MainLayout = () => {
     <div className="flex flex-col h-screen">
       <TopBar onMenuClick={handleDrawerToggle} toggleButtonRef={toggleButtonRef} />
       
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden" style={{ marginTop: TOP_BAR_HEIGHT }}>
         {!isMobile && (
           <aside 
             className="w-[250px] h-full overflow-y-auto bg-gray-800 shadow-lg"
-            style={{ top: '4rem' }}
           >
             <SideNav isExpanded={true} isMobile={false} />
           </aside>
         )}
 
         <main 
-          className="flex-grow overflow-y-auto transition-all duration-300 ease-in-out bg-gray-900 text-black"
+          className="flex-grow overflow-y-auto transition-all duration-300 ease-in-out bg-gray-900 text-black p-4 relative"
         >
           <Outlet />
+          {isMobile && isExpanded && (
+            <div className="absolute inset-0 bg-black bg-opacity-50 z-10" onClick={() => setIsExpanded(false)} />
+          )}
         </main>
 
         {isMobile && (
           <aside 
             ref={sidenavRef}
             className={cn(
-              "fixed inset-y-0 left-0 z-20 h-full overflow-y-auto transition-all duration-300 ease-in-out bg-white shadow-lg",
-              isExpanded ? "w-full" : "w-0"
+              "fixed inset-y-0 left-0 z-20 h-full overflow-y-auto transition-all duration-300 ease-in-out bg-gray-800 bg-opacity-95 shadow-lg",
+              isExpanded ? "w-3/4" : "w-0"
             )}
-            style={{ top: '3.5rem' }}
+            style={{ top: TOP_BAR_HEIGHT }}
           >
             <SideNav isExpanded={isExpanded} isMobile={true} />
           </aside>
