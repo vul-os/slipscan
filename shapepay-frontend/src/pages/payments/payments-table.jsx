@@ -26,6 +26,10 @@ const PaymentsTable = ({ data, filterValue, loading }) => {
     {
       accessorKey: "external_reference_id",
       header: "External Reference ID",
+      cell: ({ row }) => {
+        const value = row.getValue("external_reference_id");
+        return value ? value : <span className="text-gray-400 italic">Not available</span>;
+      },
     },
     {
       accessorKey: "total_amount",
@@ -90,7 +94,7 @@ const PaymentsTable = ({ data, filterValue, loading }) => {
 
   const filteredData = useMemo(() => {
     return data.filter(item =>
-      item.external_reference_id.toLowerCase().includes(filterValue.toLowerCase()) ||
+      item.external_reference_id?.toLowerCase().includes(filterValue.toLowerCase()) ||
       item.status.toLowerCase().includes(filterValue.toLowerCase())
     );
   }, [data, filterValue]);

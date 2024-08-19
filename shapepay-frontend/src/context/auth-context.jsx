@@ -9,6 +9,10 @@ export function AuthProvider({ children }) {
   const [merchants, setMerchants] = useState([]);
   const [activeMerchantId, setActiveMerchantId] = useState(null);
 
+  window.addEventListener('unhandledrejection', function(event) {
+    console.error('Unhandled rejection (promise: ', event.promise, ', reason: ', event.reason, ').');
+  });
+
   const fetchMerchants = useCallback(async (userId) => {
     try {
       const { data, error } = await supabase
@@ -33,60 +37,52 @@ export function AuthProvider({ children }) {
     }
   }, [activeMerchantId]);
 
-  const initializeUser = useCallback(async () => {
-    console.log('initializeUser started');
-    setLoading(true);
-    try {
-      console.log('Fetching session');
-      const { data: { session }, error } = await supabase.auth.getSession();
-      if (error) {
-        console.error('Error fetching session:', error);
-        throw error;
-      }
-      console.log('Session fetched:', session);
-  
-      if (session?.user) {
-        console.log('User found in session, setting user');
-        setUser(session.user);
-        console.log('Fetching merchants');
-        await fetchMerchants(session.user.id);
-        console.log('Merchants fetched');
-      } else {
-        console.log('No user in session, resetting states');
+  const handleAuthStateChange = useCallback((event, session) => {
+    console.log('Auth state changed:', event);
+    
+    // Use setTimeout to avoid potential deadlocks
+    setTimeout(async () => {
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        if (session?.user) {
+          setUser(session.user);
+          await fetchMerchants(session.user.id);
+        }
+      } else if (event === 'SIGNED_OUT' || event === 'USER_DELETED') {
         setUser(null);
         setMerchants([]);
         setActiveMerchantId(null);
+      } else if (event === 'USER_UPDATED') {
+        setUser(session?.user ?? null);
       }
-    } catch (error) {
-      console.error('Error in initializeUser:', error);
-    } finally {
-      console.log('Setting loading to false');
-      setLoading(false);
-    }
-    console.log('initializeUser completed');
+    }, 0);
   }, [fetchMerchants]);
 
   useEffect(() => {
-    initializeUser();
+    const initializeAuth = async () => {
+      setLoading(true);
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        if (error) throw error;
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (session) {
-        const jwt = jwtDecode(session.access_token);
-        setUser(session.user);
-        await fetchMerchants(session.user.id);
-      } else {
-        setUser(null);
-        setMerchants([]);
-        setActiveMerchantId(null);
+        if (session) {
+          setUser(session.user);
+          await fetchMerchants(session.user.id);
+        }
+      } catch (error) {
+        console.error('Error initializing auth:', error);
+      } finally {
+        setLoading(false);
       }
-    });
+    };
+
+    initializeAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(handleAuthStateChange);
 
     return () => {
       subscription.unsubscribe();
     };
-  }, [initializeUser, fetchMerchants]);
+  }, [fetchMerchants, handleAuthStateChange]);
 
   const signUp = async (email, password) => {
     const { data, error } = await supabase.auth.signUp({
@@ -103,7 +99,6 @@ export function AuthProvider({ children }) {
   const signIn = async (email, password) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
-    setUser(data.user);
     return data.user;
   };
 
@@ -121,9 +116,6 @@ export function AuthProvider({ children }) {
   const signOut = async () => {
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
-    setUser(null);
-    setMerchants([]);
-    setActiveMerchantId(null);
   };
 
   const contextValue = useMemo(() => ({
@@ -138,17 +130,11 @@ export function AuthProvider({ children }) {
     setActiveMerchantId
   }), [loading, user, merchants, activeMerchantId]);
 
-  try {
-    return (
-      <AuthContext.Provider value={contextValue}>
-        {children}
-      </AuthContext.Provider>
-    );
-  } catch (error) {
-    console.error('Error rendering AuthProvider:', error); // Catch any rendering errors
-    return null; // or some fallback UI
-  }
+  return (
+    <AuthContext.Provider value={contextValue}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
-// Add a default export
 export default AuthProvider;

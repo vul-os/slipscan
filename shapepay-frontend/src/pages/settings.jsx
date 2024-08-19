@@ -13,7 +13,7 @@ import { PlusCircle, Edit2, Trash2, Home } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const SettingsPage = () => {
-  const { user, activeMerchantId} = useContext(AuthContext);
+  const { user, activeMerchantId } = useContext(AuthContext);
   const [merchant, setMerchant] = useState({
     id: '',
     name: '',
@@ -21,6 +21,7 @@ const SettingsPage = () => {
     phone: ''
   });
   const [users, setUsers] = useState([]);
+  const [invitations, setInvitations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isEditingName, setIsEditingName] = useState(false);
   const [inviteDialogOpen, setInviteDialogOpen] = useState(false);
@@ -32,15 +33,15 @@ const SettingsPage = () => {
 
   useEffect(() => {
     if (user) {
-      fetchMerchantAndUsers();
+      fetchMerchantUsersAndInvitations();
     }
   }, [user]);
 
-  const fetchMerchantAndUsers = async () => {
+  const fetchMerchantUsersAndInvitations = async () => {
     try {
       setLoading(true);
 
-      // Step 3: Fetch the merchant details using the activeMerchantId
+      // Fetch merchant details
       const { data: md, error: me } = await supabase
         .from('merchants')
         .select('*')
@@ -50,7 +51,7 @@ const SettingsPage = () => {
       if (me) throw me;
       setMerchant(md);
 
-      // Step 4: Fetch the merchant details and user profiles along with roles
+      // Fetch users
       const { data: userMerchantData, error: userMerchantError } = await supabase
         .from('merchant_users')
         .select(`
@@ -62,7 +63,6 @@ const SettingsPage = () => {
   
       if (userMerchantError) throw userMerchantError;
   
-      // Step 5: Process the data
       if (userMerchantData.length > 0) {
         const usersWithRoles = userMerchantData.map(user => ({
           user_id: user?.user_id,
@@ -71,12 +71,21 @@ const SettingsPage = () => {
         }));
   
         setUsers(usersWithRoles);
-      } else {
-        setError('No users found for this merchant');
       }
+
+      // Fetch invitations
+      const { data: invitationsData, error: invitationsError } = await supabase
+        .from('merchant_invitations')
+        .select('email, role_name')
+        .eq('merchant_id', activeMerchantId);
+
+      if (invitationsError) throw invitationsError;
+
+      setInvitations(invitationsData);
+
     } catch (error) {
-      console.error('Error fetching users and roles:', error);
-      setError('Failed to fetch user information');
+      console.error('Error fetching data:', error);
+      setError('Failed to fetch information');
     } finally {
       setLoading(false);
     }
@@ -124,7 +133,7 @@ const SettingsPage = () => {
       setInviteDialogOpen(false);
       setInviteEmail('');
       setInviteRole('');
-      fetchMerchantAndUsers();
+      fetchMerchantUsersAndInvitations();
     } catch (error) {
       console.error('Error inviting user:', error);
       alert('Error sending invitation');
@@ -150,7 +159,7 @@ const SettingsPage = () => {
 
       if (error) throw error;
       alert('User role updated successfully!');
-      fetchMerchantAndUsers();
+      fetchMerchantUsersAndInvitations();
     } catch (error) {
       console.error('Error updating user role:', error);
       alert('Error updating user role');
@@ -171,10 +180,32 @@ const SettingsPage = () => {
 
         if (error) throw error;
         alert('User removed successfully!');
-        fetchMerchantAndUsers();
+        fetchMerchantUsersAndInvitations();
       } catch (error) {
         console.error('Error removing user:', error);
         alert('Error removing user');
+      } finally {
+        setLoading(false);
+      }
+    }
+  };
+
+  const handleRemoveInvitation = async (email) => {
+    if (window.confirm('Are you sure you want to remove this invitation?')) {
+      try {
+        setLoading(true);
+        const { error } = await supabase
+          .from('merchant_invitations')
+          .delete()
+          .eq('email', email)
+          .eq('merchant_id', merchant.id);
+
+        if (error) throw error;
+        alert('Invitation removed successfully!');
+        fetchMerchantUsersAndInvitations();
+      } catch (error) {
+        console.error('Error removing invitation:', error);
+        alert('Error removing invitation');
       } finally {
         setLoading(false);
       }
@@ -201,7 +232,7 @@ const SettingsPage = () => {
 
       alert('User updated successfully!');
       setEditUserDialogOpen(false);
-      fetchMerchantAndUsers();
+      fetchMerchantUsersAndInvitations();
     } catch (error) {
       console.error('Error updating user:', error);
       alert('Error updating user');
@@ -302,6 +333,41 @@ const SettingsPage = () => {
                 </Table>
               </CardContent>
             </Card>
+
+            <Card className="bg-gray-800 border-gray-700 shadow-lg mt-6">
+              <CardHeader>
+                <CardTitle className="text-gray-100">Pending Invitations</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow className="border-b border-gray-700">
+                      <TableHead className="text-gray-300">Email</TableHead>
+                      <TableHead className="text-gray-300">Role</TableHead>
+                      <TableHead className="text-right text-gray-300">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {invitations.map((invitation, index) => (
+                      <TableRow key={index} className="border-b border-gray-700">
+                        <TableCell className="text-gray-300">{invitation.email}</TableCell>
+                        <TableCell className="text-gray-300">{invitation.role_name}</TableCell>
+                        <TableCell className="text-right">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleRemoveInvitation(invitation.email)}
+                            className="text-gray-300 hover:text-gray-100"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
           </CardContent>
         </Card>
       </div>
@@ -339,7 +405,7 @@ const SettingsPage = () => {
 
       {/* Edit User Dialog */}
       <Dialog open={editUserDialogOpen} onOpenChange={setEditUserDialogOpen}>
-          <DialogContent className="bg-gray-800 text-gray-100 border-gray-700">
+        <DialogContent className="bg-gray-800 text-gray-100 border-gray-700">
           <DialogHeader>
             <DialogTitle>Edit User</DialogTitle>
           </DialogHeader>
@@ -373,4 +439,4 @@ const SettingsPage = () => {
   );
 };
 
-export default SettingsPage;
+export default SettingsPage;      

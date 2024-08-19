@@ -1,4 +1,4 @@
-import React, { useState, useContext } from 'react';
+import React, { useState, useContext, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AuthContext } from '../../context/use-auth';
 import { Button } from "@/components/ui/button"
@@ -8,7 +8,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Separator } from "@/components/ui/separator"
 
 const SignIn = () => {
-  const { signIn, signInWithGoogle } = useContext(AuthContext);
+  const { user, signIn, signInWithGoogle } = useContext(AuthContext);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -23,6 +23,12 @@ const SignIn = () => {
       setError(error.message);
     }
   };
+
+  useEffect(() => {
+    if (user) {
+      navigate('/dashboard'); // Navigate to / on successful login
+    }
+  }, [user])
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-gray-100">

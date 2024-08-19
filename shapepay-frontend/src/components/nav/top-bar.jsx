@@ -110,13 +110,13 @@ const TopBar = ({ onMenuClick }) => {
                 <div className="px-4 py-2 text-gray-800 font-medium">
                   {user.email}
                 </div>
-                <RouterLink
+                {/* <RouterLink
                   to="/account"
                   className="block px-4 py-2 text-gray-800 hover:bg-gray-100"
                   onClick={() => setUserDropdownOpen(false)}
                 >
                   Account
-                </RouterLink>
+                </RouterLink> */}
                 <button
                   onClick={handleSignOut}
                   className="w-full text-left px-4 py-2 text-gray-800 hover:bg-gray-100"

@@ -11,7 +11,7 @@ const StatCard = ({ title, value }) => (
 const PaymentStatistics = ({ data, filterValue }) => {
   const stats = useMemo(() => {
     const filteredData = data.filter(item =>
-      item.external_reference_id.toLowerCase().includes(filterValue.toLowerCase()) ||
+      item.external_reference_id?.toLowerCase().includes(filterValue.toLowerCase()) ||
       item.status.toLowerCase().includes(filterValue.toLowerCase())
     );
 
