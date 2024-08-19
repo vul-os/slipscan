@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { supabase } from '../services/supabaseClient';
-import AuthContext from '../context/auth-context';
+import { AuthContext } from '../context/use-auth';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";

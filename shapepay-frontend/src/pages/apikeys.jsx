@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useContext } from 'react';
-import AuthContext from '../context/auth-context';
+import { AuthContext } from '../context/use-auth';
 import { supabase } from '../services/supabaseClient';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";

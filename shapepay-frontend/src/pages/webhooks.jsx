@@ -25,7 +25,7 @@ import { Progress } from "@/components/ui/progress"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Webhook, Home, Plus } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import AuthContext from '../context/auth-context';
+import { AuthContext } from '../context/use-auth';
 import { supabase } from '../services/supabaseClient';
 
 const WebhooksPage = () => {

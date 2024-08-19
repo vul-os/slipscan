@@ -3,7 +3,7 @@ import { addDays } from "date-fns";
 import { Plus } from 'lucide-react';
 import { supabase } from '../../services/supabaseClient';
 import { Button } from "@/components/ui/button";
-import AuthContext from '../../context/auth-context';
+import { AuthContext } from '../../context/use-auth';
 import PaymentFilters from './payments-filters';
 import PaymentStatistics from './payments-statistics';
 import PaymentsTable from './payments-table';

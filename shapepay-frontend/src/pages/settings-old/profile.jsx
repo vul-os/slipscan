@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 import { supabase } from '../../services/supabaseClient';
-import AuthContext from '../../context/auth-context';
+import { AuthContext } from '../../context/use-auth';
 
 const Profile = () => {
   const { user } = useContext(AuthContext);

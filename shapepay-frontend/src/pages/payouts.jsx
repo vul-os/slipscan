@@ -28,7 +28,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import AuthContext from '../context/auth-context';
+import { AuthContext } from '../context/use-auth';
 
 const PayoutsPage = () => {
   const [data, setData] = useState([]);

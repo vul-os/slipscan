@@ -1,10 +1,9 @@
-import React, { createContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { jwtDecode } from 'jwt-decode';
+import { AuthContext } from './use-auth';
 
-export const AuthContext = createContext(null);
-
-export const AuthProvider = ({ children }) => {
+export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [merchants, setMerchants] = useState([]);
@@ -20,7 +19,6 @@ export const AuthProvider = ({ children }) => {
         `)
         .eq('user_id', userId);
         
-
       if (error) throw error;
 
       const merchantsList = Array.isArray(data) ? data.map(item => item.merchants) : [];
@@ -36,31 +34,44 @@ export const AuthProvider = ({ children }) => {
   }, [activeMerchantId]);
 
   const initializeUser = useCallback(async () => {
+    console.log('initializeUser started');
     setLoading(true);
     try {
+      console.log('Fetching session');
       const { data: { session }, error } = await supabase.auth.getSession();
-      if (error) throw error;
-
+      if (error) {
+        console.error('Error fetching session:', error);
+        throw error;
+      }
+      console.log('Session fetched:', session);
+  
       if (session?.user) {
+        console.log('User found in session, setting user');
         setUser(session.user);
+        console.log('Fetching merchants');
         await fetchMerchants(session.user.id);
+        console.log('Merchants fetched');
       } else {
+        console.log('No user in session, resetting states');
         setUser(null);
         setMerchants([]);
         setActiveMerchantId(null);
       }
     } catch (error) {
-      console.error('Error initializing user:', error);
-      // TODO: Implement user-facing error handling
+      console.error('Error in initializeUser:', error);
     } finally {
+      console.log('Setting loading to false');
       setLoading(false);
     }
+    console.log('initializeUser completed');
   }, [fetchMerchants]);
 
   useEffect(() => {
     initializeUser();
 
-    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (session) {
         const jwt = jwtDecode(session.access_token);
         setUser(session.user);
@@ -73,7 +84,7 @@ export const AuthProvider = ({ children }) => {
     });
 
     return () => {
-      authListener?.unsubscribe();
+      subscription.unsubscribe();
     };
   }, [initializeUser, fetchMerchants]);
 
@@ -127,11 +138,17 @@ export const AuthProvider = ({ children }) => {
     setActiveMerchantId
   }), [loading, user, merchants, activeMerchantId]);
 
-  return (
-    <AuthContext.Provider value={contextValue}>
-      {children}
-    </AuthContext.Provider>
-  );
-};
+  try {
+    return (
+      <AuthContext.Provider value={contextValue}>
+        {children}
+      </AuthContext.Provider>
+    );
+  } catch (error) {
+    console.error('Error rendering AuthProvider:', error); // Catch any rendering errors
+    return null; // or some fallback UI
+  }
+}
 
+// Add a default export
 export default AuthProvider;

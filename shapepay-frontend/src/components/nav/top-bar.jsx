@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useContext } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import { Menu, User, ChevronDown } from 'lucide-react';
-import AuthContext from '../../context/auth-context'; // Ensure this path is correct
+import { AuthContext } from '../../context/use-auth';
 
 const TopBar = ({ onMenuClick }) => {
   const { user, signOut, merchants, activeMerchantId, setActiveMerchantId } = useContext(AuthContext);

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { supabase } from '../services/supabaseClient';
-import AuthContext from '../context/auth-context';
+import { AuthContext } from '../context/use-auth';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
