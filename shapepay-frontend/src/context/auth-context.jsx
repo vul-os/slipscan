@@ -39,7 +39,6 @@ export const AuthProvider = ({ children }) => {
   const initializeUser = useCallback(async () => {
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
-      console.log('Initial session check:', session, error);
       if (session?.user) {
         setUser(session.user);
         await fetchMerchants(session.user.id);
@@ -57,10 +56,8 @@ export const AuthProvider = ({ children }) => {
     initializeUser();
 
     const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
-      console.log('Auth state changed:', event, session);
       if (session) {
         const jwt = jwtDecode(session.access_token);
-        console.log('Decoded JWT:', jwt);
         setUser(session.user);
         await fetchMerchants(session.user.id);
       } else {
@@ -97,14 +94,12 @@ export const AuthProvider = ({ children }) => {
   };
 
   const signInWithGoogle = async () => {
-    console.log('Sign in with Google initiated');
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}`,
+        redirectTo: `${window.location.origin}/dashboard`,
       }
     });
-    console.log('Sign in with Google result:', data, error);
     if (error) throw error;
     return data;
   };
