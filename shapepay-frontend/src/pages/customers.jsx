@@ -15,6 +15,7 @@ const CustomersPage = () => {
   const [expandedCustomerId, setExpandedCustomerId] = useState(null);
 
   useEffect(() => {
+    setCustomers([])
     fetchCustomers();
   }, [user, activeMerchantId]);
 
@@ -31,7 +32,7 @@ const CustomersPage = () => {
             )
           `)
           .order('created_at', { ascending: false })
-          .filter('customer_merchants.merchant.id', 'eq', activeMerchantId);
+          .filter('customer_merchants.merchant_id', 'eq', activeMerchantId);
   
         if (error) throw error;
         setCustomers(data);

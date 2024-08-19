@@ -187,7 +187,7 @@ const PaymentPage = () => {
               {error}
             </div>
           )}
-          <Stepper initialStep={currentStep} steps={steps}>
+          <Stepper initialStep={currentStep} key={sessionActive ? 'active' : 'inactive'} steps={steps}>
             {steps.map((stepProps, index) => (
               <Step key={stepProps.label} {...stepProps}>
                 <div className="bg-gray-800 rounded-lg shadow-lg p-6 my-6 border border-gray-700">

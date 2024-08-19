@@ -27,7 +27,7 @@ export function AuthProvider({ children }) {
 
       const merchantsList = Array.isArray(data) ? data.map(item => item.merchants) : [];
       setMerchants(merchantsList);
-
+          console.log(merchantsList)
       if (merchantsList.length > 0 && !activeMerchantId) {
         setActiveMerchantId(merchantsList[0].id);
       }

@@ -11,7 +11,7 @@ import SignUp from './pages/auth/signup';
 import AcceptInvite from './pages/auth/accept-invite';
 
 // Protected Pages
-import Dashboard from './pages/dashboard';
+import Dashboard from './pages/dashboard/dashboard';
 import Customers from './pages/customers';
 import APIKeys from './pages/apikeys';
 import Webhooks from './pages/webhooks';

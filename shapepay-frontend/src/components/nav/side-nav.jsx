@@ -1,4 +1,3 @@
-// SideNav.js
 import React from 'react';
 import {
   LayoutDashboard,
@@ -24,31 +23,22 @@ const navItems = [
   { to: '/settings', icon: Settings, text: 'Settings' },
 ];
 
-const SideNav = ({ isExpanded, setIsExpanded, isMobile }) => {
-  const handleMouseEnter = () => {
-    if (!isMobile) {
-      setIsExpanded(true); // Expand sidebar on desktop hover
-    }
-  };
-
-  const handleMouseLeave = () => {
-    if (!isMobile) {
-      setIsExpanded(false); // Collapse sidebar on desktop mouse leave
-    }
-  };
-
+const SideNav = ({ isExpanded, isMobile }) => {
   return (
     <div
       className={`fixed top-16 left-0 h-[calc(100vh-4rem)] bg-gray-800 text-white shadow-md transition-all duration-300 ${
-        isExpanded ? 'w-60' : 'w-16'
+        isExpanded ? 'w-60' : isMobile ? 'w-0' : 'w-16'
       }`}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={handleMouseLeave}
     >
       <div className="mt-9">
         <ul className="space-y-1">
           {navItems.map((item) => (
-            <NavItem key={item.to} {...item} isExpanded={isExpanded} />
+            <NavItem 
+              key={item.to} 
+              {...item} 
+              isExpanded={isExpanded} 
+              isMobile={isMobile}
+            />
           ))}
         </ul>
       </div>
