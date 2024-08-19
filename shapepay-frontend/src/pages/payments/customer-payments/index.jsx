@@ -109,7 +109,7 @@ const PaymentPage = () => {
         p_customer_name: newPayment.customerName,
         p_customer_email: newPayment.customerEmail,
         p_customer_phone: newPayment.customerPhone,
-        p_total_amount: parseFloat(newPayment.amount),
+        p_total_amount: 0, //parseFloat(newPayment.amount),
         p_currency: 'ZAR',
         p_payment_method: 'PayShap'
       });
@@ -179,7 +179,7 @@ const PaymentPage = () => {
         <div className="max-w-4xl mx-auto">
           {sessionActive && (
             <div className="mb-4 p-2 bg-blue-600 text-white rounded">
-              Session active - You can resume your previous payment
+              Resuming previous payment
             </div>
           )}
           {error && (
@@ -279,7 +279,7 @@ const StepperFooter = ({
     setCurrentStep(activeStep - 1);
   };
 
-  const isFormValid = newPayment && !!newPayment.amount 
+  const isFormValid = true //newPayment && !!newPayment.amount 
   const isLastStepValid = currentStep === 1 && paymentDetails
 
   return (

@@ -16,30 +16,6 @@ const PaymentDetailsStep = ({ merchantDetails, newPayment, setNewPayment }) => {
           <span className="text-gray-300 font-medium">Merchant ID</span>
           <span className="text-white font-bold">{merchantDetails?.id}</span>
         </div>
-        <div className="relative">
-          <Label
-            htmlFor="amount"
-            className="block text-sm font-medium text-gray-300 mb-2"
-          >
-            Amount
-          </Label>
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 text-2xl font-bold">
-              R
-            </span>
-            <Input
-              id="amount"
-              type="number"
-              step="0.01"
-              value={newPayment.amount}
-              onChange={(e) =>
-                setNewPayment({ ...newPayment, amount: e.target.value })
-              }
-              className="w-full bg-gray-700 text-gray-100 p-2 pl-10 rounded-md border border-gray-600 text-xl"
-              required
-            />
-          </div>
-        </div>
         <div>
           <Label
             htmlFor="referenceCode"
@@ -51,7 +27,7 @@ const PaymentDetailsStep = ({ merchantDetails, newPayment, setNewPayment }) => {
             id="referenceCode"
             value={newPayment.referenceCode}
             onChange={(e) =>
-              setNewPayment({ ...newPayment, referenceCode: e.target.value })
+              setNewPayment({ ...newPayment, referenceCode: e.target.value})
             }
             className="w-full bg-gray-700 text-gray-100 p-2 rounded-md border border-gray-600"
           />

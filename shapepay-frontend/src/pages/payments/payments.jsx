@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useContext } from 'react';
-import { addDays } from "date-fns";
+import React, { useState, useEffect, useContext, useCallback } from 'react';
+import { addDays, endOfDay } from "date-fns";
 import { Plus } from 'lucide-react';
 import { supabase } from '../../services/supabaseClient';
 import { Button } from "@/components/ui/button";
@@ -16,17 +16,11 @@ const PaymentsPage = () => {
   const { activeMerchantId } = useContext(AuthContext);
   const [dateRange, setDateRange] = useState({
     from: addDays(new Date(), -30),
-    to: new Date(),
+    to: endOfDay(new Date()),
   });
   const [filterValue, setFilterValue] = useState("");
 
-  useEffect(() => {
-    if (dateRange?.from && dateRange?.to) {
-      fetchPaymentGroups();
-    }
-  }, [activeMerchantId, dateRange]);
-
-  const fetchPaymentGroups = async () => {
+  const fetchPaymentGroups = useCallback(async () => {
     if (!dateRange?.from || !dateRange?.to) return;
 
     try {
@@ -72,33 +66,54 @@ const PaymentsPage = () => {
           codeExpiry: paymentCode?.expires_at || null,
         };
       });
-  
+
       setData(processedData);
     } catch (error) {
       console.error('Error fetching payment groups:', error);
-      // Here you might want to set an error state and display it to the user
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (dateRange?.from && dateRange?.to) {
+      fetchPaymentGroups();
+    }
+  }, [fetchPaymentGroups]);
+
+  useEffect(() => {
+    const subscription = supabase
+      .channel('payment_groups_changes')
+      .on('postgres_changes', 
+        { 
+          event: '*', 
+          schema: 'public', 
+          table: 'payment_groups',
+          filter: `merchant_id=eq.${activeMerchantId}`
+        },
+        (payload) => {
+          console.log('Change received!', payload);
+          fetchPaymentGroups();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [activeMerchantId, fetchPaymentGroups]);
 
   const handleCreatePayment = async (newPayment) => {
-    // try {
-    //   // Implementation for creating a new payment
-    //   // This is a placeholder and should be replaced with actual logic
-    //   console.log('Creating new payment:', newPayment);
+    try {
+      // Implementation for creating a new payment
+      console.log('Creating new payment:', newPayment);
       
-    //   // After successfully creating the payment, you might want to:
-    //   // 1. Close the create payment form
-    //   setIsCreatePaymentOpen(false);
-    //   // 2. Refresh the payment data
-    //   await fetchPaymentGroups();
-    //   // 3. Show a success message to the user
-    //   // You might want to implement a toast or notification system for this
-    // } catch (error) {
-    //   console.error('Error creating payment:', error);
-    //   // Handle the error, perhaps by showing an error message to the user
-    // }
+      // After successfully creating the payment:
+      setIsCreatePaymentOpen(false);
+      // The table will update automatically due to the real-time subscription
+    } catch (error) {
+      console.error('Error creating payment:', error);
+    }
   };
 
   return (
