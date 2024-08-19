@@ -18,7 +18,7 @@ const SignIn = () => {
     event.preventDefault();
     try {
       await signIn(email, password);
-      // navigate('/'); // Navigate to / on successful login
+      navigate('/dashboard'); // Navigate to / on successful login
     } catch (error) {
       setError(error.message);
     }

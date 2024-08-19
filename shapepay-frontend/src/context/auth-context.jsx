@@ -1,13 +1,12 @@
-import React, { createContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { jwtDecode } from 'jwt-decode';
 
-const AuthContext = createContext();
+export const AuthContext = createContext(null);
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [darkMode, setDarkMode] = useState(true);
   const [merchants, setMerchants] = useState([]);
   const [activeMerchantId, setActiveMerchantId] = useState(null);
 
@@ -20,33 +19,39 @@ export const AuthProvider = ({ children }) => {
           merchants (*)
         `)
         .eq('user_id', userId);
-  
+        
+
       if (error) throw error;
-  
-      const dataArray = Array.isArray(data) ? data : [data];
-  
-      const merchantsList = dataArray.map(item => item.merchants);
+
+      const merchantsList = Array.isArray(data) ? data.map(item => item.merchants) : [];
       setMerchants(merchantsList);
-  
+
       if (merchantsList.length > 0 && !activeMerchantId) {
         setActiveMerchantId(merchantsList[0].id);
       }
     } catch (error) {
       console.error('Error fetching merchants:', error);
+      // TODO: Implement user-facing error handling
     }
   }, [activeMerchantId]);
 
   const initializeUser = useCallback(async () => {
+    setLoading(true);
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
+      if (error) throw error;
+
       if (session?.user) {
         setUser(session.user);
         await fetchMerchants(session.user.id);
       } else {
         setUser(null);
+        setMerchants([]);
+        setActiveMerchantId(null);
       }
     } catch (error) {
-      console.error('Error fetching session:', error);
+      console.error('Error initializing user:', error);
+      // TODO: Implement user-facing error handling
     } finally {
       setLoading(false);
     }
@@ -68,15 +73,13 @@ export const AuthProvider = ({ children }) => {
     });
 
     return () => {
-      if (authListener && authListener.unsubscribe) {
-        authListener.unsubscribe();
-      }
+      authListener?.unsubscribe();
     };
   }, [initializeUser, fetchMerchants]);
 
   const signUp = async (email, password) => {
-    const { data, error } = await supabase.auth.signUp({ 
-      email, 
+    const { data, error } = await supabase.auth.signUp({
+      email,
       password,
       options: {
         emailRedirectTo: `${window.location.origin}/auth/callback`,
@@ -112,26 +115,23 @@ export const AuthProvider = ({ children }) => {
     setActiveMerchantId(null);
   };
 
-  const toggleDarkMode = () => {
-    setDarkMode(!darkMode);
-  };
+  const contextValue = useMemo(() => ({
+    loading,
+    user,
+    signUp,
+    signIn,
+    signInWithGoogle,
+    signOut,
+    merchants,
+    activeMerchantId,
+    setActiveMerchantId
+  }), [loading, user, merchants, activeMerchantId]);
 
   return (
-    <AuthContext.Provider value={{ 
-      loading, 
-      user, 
-      signUp,
-      signIn, 
-      signInWithGoogle, 
-      signOut, 
-      toggleDarkMode,
-      merchants,
-      activeMerchantId,
-      setActiveMerchantId
-    }}>
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );
 };
 
-export default AuthContext;
+export default AuthProvider;
