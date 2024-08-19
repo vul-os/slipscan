@@ -226,60 +226,62 @@ const Dashboard = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2 bg-gray-800 border-gray-700">
           <CardHeader>
-            <CardTitle className="text-gray-300">Daily Revenue and Payout</CardTitle>
+            <CardTitle className="text-gray-100 text-xl font-bold">Daily Revenue and Payout</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="h-[300px] sm:h-[400px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={dailyRevenue}
-                  margin={{ top: 20, right: 30, left: 20, bottom: 10 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.1} />
+                <LineChart 
+                  data={dailyRevenue}
+                  margin={{ top: 20, right: 30, left: 20, bottom: 10 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#4B5563" opacity={0.2} />
                   <XAxis 
                     dataKey="date" 
-                    stroke="#9CA3AF" 
-                    tick={{ fill: '#9CA3AF', fontSize: 10 }}
-                    tickLine={{ stroke: '#4B5563' }}
+                    stroke="#D1D5DB" 
+                    tick={{ fill: '#D1D5DB', fontSize: 12 }}
+                    tickLine={{ stroke: '#6B7280' }}
                   />
                   <YAxis 
-                    stroke="#9CA3AF"
-                    tick={{ fill: '#9CA3AF', fontSize: 10 }}
-                    tickLine={{ stroke: '#4B5563' }}
+                    stroke="#D1D5DB"
+                    tick={{ fill: '#D1D5DB', fontSize: 12 }}
+                    tickLine={{ stroke: '#6B7280' }}
                   />
                   <Tooltip 
                     contentStyle={{ 
-                      backgroundColor: 'rgba(17, 24, 39, 0.8)', 
+                      backgroundColor: 'rgba(31, 41, 55, 0.9)', 
                       border: 'none', 
-                      borderRadius: '0.375rem',
-                      boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)'
+                      borderRadius: '0.5rem',
+                      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)'
                     }}
-                    itemStyle={{ color: '#E5E7EB' }}
-                    labelStyle={{ color: '#9CA3AF', fontWeight: 'bold' }}
-                    cursor={{ stroke: '#6B7280', strokeWidth: 1 }}
+                    itemStyle={{ color: '#F3F4F6', fontSize: 14 }}
+                    labelStyle={{ color: '#D1D5DB', fontWeight: 'bold', fontSize: 16 }}
+                    cursor={{ stroke: '#9CA3AF', strokeWidth: 2 }}
                   />
                   <Line 
                     type="monotone" 
                     dataKey="total_amount" 
-                    stroke="#3B82F6" 
-                    strokeWidth={2}
+                    stroke="#60A5FA" 
+                    strokeWidth={3}
                     name="Total Amount" 
-                    dot={{ r: 3, strokeWidth: 2, fill: '#1E3A8A' }}
-                    activeDot={{ r: 6, strokeWidth: 0, fill: '#60A5FA' }}
+                    dot={{ r: 5, strokeWidth: 3, fill: '#2563EB' }}
+                    activeDot={{ r: 8, strokeWidth: 0, fill: '#3B82F6' }}
                   />
                   <Line 
                     type="monotone" 
                     dataKey="payout_amount" 
-                    stroke="#10B981" 
-                    strokeWidth={2}
+                    stroke="#34D399" 
+                    strokeWidth={3}
                     name="Payout Amount" 
-                    dot={{ r: 3, strokeWidth: 2, fill: '#065F46' }}
-                    activeDot={{ r: 6, strokeWidth: 0, fill: '#34D399' }}
+                    dot={{ r: 5, strokeWidth: 3, fill: '#059669' }}
+                    activeDot={{ r: 8, strokeWidth: 0, fill: '#10B981' }}
                   />
                 </LineChart>
               </ResponsiveContainer>
             </div>
           </CardContent>
         </Card>
-
+      
         <Card className="bg-gray-800 border-gray-700">
           <CardHeader>
             <CardTitle className="text-gray-300">Recent Transactions</CardTitle>
