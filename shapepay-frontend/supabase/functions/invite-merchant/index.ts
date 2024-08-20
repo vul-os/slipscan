@@ -68,8 +68,8 @@ Deno.serve(async (req) => {
 
     // Send email regardless of whether the user is new or existing
     const inviteUrl = is_new
-      ? `http://localhost:5173/accept-invite/${invitation_token}`
-      : `http://localhost:5173/login`; // Assuming you have a login page
+      ? `https://app.shapepay.co.za/accept-invite/${invitation_token}`
+      : `http://app.shapepay.co.za/login`; // Assuming you have a login page
 
     const emailContent = is_new
       ? `

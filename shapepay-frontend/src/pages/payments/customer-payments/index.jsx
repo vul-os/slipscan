@@ -11,11 +11,10 @@ import CustomerInformationStep from "./customer-information";
 import PaymentConfoirmationStep from "./confirmation";
 
 const steps = [
-  { label: "Payment Details" },
-  { label: "Customer Information" },
-  { label: "Payment Information" },
-  { label: "Completion" },
-
+  { label: "Payment" },
+  { label: "Customer" },
+  { label: "Confirm" },
+  { label: "Complete" },
 ];
 
 const STORAGE_KEY_PREFIX = 'paymentSessionData_';
@@ -30,7 +29,7 @@ const initialPaymentState = {
 };
 
 const PaymentPage = () => {
-  const { merchantId } = useParams();
+  const { merchantHandle } = useParams();
   const [newPayment, setNewPayment] = useState(initialPaymentState);
   const [paymentDetails, setPaymentDetails] = useState(null);
   const [merchantDetails, setMerchantDetails] = useState(null);
@@ -39,23 +38,22 @@ const PaymentPage = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const storageKey = `${STORAGE_KEY_PREFIX}${merchantId}`;
+  const storageKey = `${STORAGE_KEY_PREFIX}${merchantHandle}`;
 
   useEffect(() => {
     const fetchMerchantDetails = async () => {
       try {
-        const { data: merchantData, error: merchantError } = await supabase
-          .from('merchants')
-          .select('*')
-          .eq('id', merchantId)
-          .single();
+        const { data, error } = await supabase
+          .rpc('get_merchant', { p_merchant_handle: merchantHandle });
 
-        if (merchantError) throw merchantError;
-        if (merchantData) {
+        if (error) throw error;
+        if (data && data.length > 0) {
           setMerchantDetails({
-            ...merchantData,
+            ...data[0],
             avatarUrl: "",
           });
+        } else {
+          throw new Error("Merchant not found");
         }
       } catch (error) {
         console.error("Error fetching merchant details:", error);
@@ -63,11 +61,11 @@ const PaymentPage = () => {
       }
     };
 
-    if (merchantId) {
+    if (merchantHandle) {
       fetchMerchantDetails();
       loadSessionData();
     }
-  }, [merchantId]);
+  }, [merchantHandle]);
 
   const loadSessionData = () => {
     const storedData = localStorage.getItem(storageKey);
@@ -105,10 +103,10 @@ const PaymentPage = () => {
     setError(null);
     try {
       const { data, error } = await supabase.rpc('create_simple_payment', {
-        p_merchant_id: merchantId,
-        p_customer_name: newPayment.customerName,
-        p_customer_email: newPayment.customerEmail,
-        p_customer_phone: newPayment.customerPhone,
+        p_merchant_id: merchantDetails?.id,
+        p_customer_name: newPayment?.customerName,
+        p_customer_email: newPayment?.customerEmail,
+        p_customer_phone: newPayment?.customerPhone,
         p_total_amount: 0, //parseFloat(newPayment.amount),
         p_currency: 'ZAR',
         p_payment_method: 'PayShap'
@@ -138,17 +136,17 @@ const PaymentPage = () => {
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col">
-      <header className="bg-gray-800 p-4 shadow-md">
-        <div className="container mx-auto flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-indigo-300">
+      <header className="bg-gray-800 p-4 md:p-6 shadow-md">
+        <div className="container mx-auto flex flex-col sm:flex-row justify-between items-center">
+          <h1 className="text-xl sm:text-2xl md:text-3xl lg:text-4xl font-bold text-indigo-300 mb-2 sm:mb-0">
             {merchantDetails ? merchantDetails.name : "Loading..."}
           </h1>
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2 sm:space-x-4 md:space-x-6">
             {sessionActive && (
               <Button 
                 onClick={resetSession}
                 size="sm"
-                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm md:text-base"
               >
                 New Payment
               </Button>
@@ -157,16 +155,16 @@ const PaymentPage = () => {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button className="text-gray-400 hover:text-indigo-300 transition-colors">
-                    <Info className="w-6 h-6" />
+                    <Info className="w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8" />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent className="bg-gray-700 text-gray-100">
+                <TooltipContent className="bg-gray-700 text-gray-100 text-sm md:text-base">
                   <p>Pay through your banking app. Choose PayShap.</p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
             {merchantDetails && (
-              <Avatar>
+              <Avatar className="w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12">
                 <AvatarImage src={merchantDetails.avatarUrl} alt={merchantDetails.name} />
                 <AvatarFallback>{merchantDetails.name.charAt(0)}</AvatarFallback>
               </Avatar>
@@ -175,22 +173,22 @@ const PaymentPage = () => {
         </div>
       </header>
 
-      <main className="flex-grow container mx-auto px-4 py-8">
-        <div className="max-w-4xl mx-auto">
+      <main className="flex-grow container mx-auto px-4 py-6 sm:py-8 md:py-12 lg:py-16">
+        <div className="max-w-lg md:max-w-xl lg:max-w-2xl mx-auto">
           {sessionActive && (
-            <div className="mb-4 p-2 bg-blue-600 text-white rounded">
+            <div className="mb-4 p-2 md:p-3 bg-blue-600 text-white rounded text-sm md:text-base">
               Resuming previous payment
             </div>
           )}
           {error && (
-            <div className="mb-4 p-2 bg-red-600 text-white rounded">
+            <div className="mb-4 p-2 md:p-3 bg-red-600 text-white rounded text-sm md:text-base">
               {error}
             </div>
           )}
           <Stepper initialStep={currentStep} key={sessionActive ? 'active' : 'inactive'} steps={steps}>
             {steps.map((stepProps, index) => (
               <Step key={stepProps.label} {...stepProps}>
-                <div className="bg-gray-800 rounded-lg shadow-lg p-6 my-6 border border-gray-700">
+                <div className="bg-gray-800 rounded-lg shadow-lg p-4 sm:p-6 md:p-8 lg:p-10 my-4 sm:my-6 md:my-8 border border-gray-700">
                   {index === 0 && (
                     <PaymentDetailsStep
                       newPayment={newPayment}
@@ -224,6 +222,8 @@ const PaymentPage = () => {
               setCurrentStep={setCurrentStep}
               setSessionActive={setSessionActive}
               loading={loading}
+              currentStep={currentStep}
+              paymentDetails={paymentDetails}
             />
           </Stepper>
         </div>
@@ -234,9 +234,8 @@ const PaymentPage = () => {
 
 const CompletionStep = ({ paymentDetails }) => {
   return (
-    <div className="h-40 flex items-center justify-center my-2 border border-green-600 bg-green-900 text-green-100 rounded-md">
-      <h1 className="text-xl">Payment Completed Successfully! 🎉</h1>
-      {/* Add more details from paymentDetails if needed */}
+    <div className="h-32 sm:h-40 md:h-48 lg:h-56 flex items-center justify-center my-2 border border-green-600 bg-green-900 text-green-100 rounded-md">
+      <h1 className="text-lg sm:text-xl md:text-2xl lg:text-3xl text-center px-4">Payment Completed Successfully! 🎉</h1>
     </div>
   );
 };
@@ -260,7 +259,6 @@ const StepperFooter = ({
   } = useStepper();
 
   const handleNext = async () => {
-    console.log(activeStep)
     if (activeStep === 1) {
       const paymentResult = await createSimplePayment();
       if (paymentResult) {
@@ -279,35 +277,30 @@ const StepperFooter = ({
     setCurrentStep(activeStep - 1);
   };
 
-  const isFormValid = true //newPayment && !!newPayment.amount 
-  const isLastStepValid = currentStep === 1 && paymentDetails
+  const isFormValid = true;
+  const isLastStepValid = currentStep === 1 && paymentDetails;
 
   return (
-    <>
-      <div className="w-full flex justify-end gap-2">       
-          <>
-            <Button
-              disabled={isDisabledStep || loading}
-              onClick={handlePrev}
-              size="sm"
-              className="bg-gray-700 hover:bg-gray-600 text-gray-100"
-            >
-              Previous
-            </Button>
-            {(isFormValid || isLastStepValid) && !isLastStep && (
-              <Button 
-                size="sm" 
-                onClick={handleNext} 
-                className="bg-indigo-600 hover:bg-indigo-700 text-white"
-                disabled={loading}
-              >
-                {loading ? "Processing..." : "Next"}
-              </Button>
-            )}
-          </>
-        
-      </div>
-    </>
+    <div className="w-full flex justify-end gap-2 md:gap-4 mt-4 md:mt-6">       
+      <Button
+        disabled={isDisabledStep || loading}
+        onClick={handlePrev}
+        size="sm"
+        className="bg-gray-700 hover:bg-gray-600 text-gray-100 text-xs sm:text-sm md:text-base px-4 py-2 md:px-6 md:py-3"
+      >
+        Previous
+      </Button>
+      {(isFormValid || isLastStepValid) && !isLastStep && (
+        <Button 
+          size="sm" 
+          onClick={handleNext} 
+          className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm md:text-base px-4 py-2 md:px-6 md:py-3"
+          disabled={loading}
+        >
+          {loading ? "Processing..." : "Next"}
+        </Button>
+      )}
+    </div>
   );
 };
 

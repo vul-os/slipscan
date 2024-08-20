@@ -151,7 +151,7 @@ const WebhooksPage = () => {
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
-      <div className="container mx-auto p-4">
+      <div className="container mx-auto px-2 sm:px-4 py-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center space-x-2">
             <Link to="/" className="text-blue-400 hover:text-blue-300 flex items-center">
@@ -167,8 +167,8 @@ const WebhooksPage = () => {
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button className="bg-blue-500 hover:bg-blue-600">
-                <Plus className="mr-2 h-4 w-4" />
-                New Webhook
+                <Plus className="h-4 w-4 sm:mr-2" />
+                <span className="hidden sm:inline">New Webhook</span>
               </Button>
             </DialogTrigger>
             <DialogContent className="sm:max-w-[425px] bg-gray-800 text-gray-100">
@@ -218,65 +218,67 @@ const WebhooksPage = () => {
           </Dialog>
         </div>
 
-        <Card className="mb-6 bg-gray-800 border-gray-700">
-          <CardHeader>
-            <CardTitle className="text-gray-100">Webhooks Overview</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-gray-300">Manage your webhooks here. You can create, activate, deactivate, and delete webhooks as needed.</p>
-          </CardContent>
-        </Card>
+        <div className="space-y-6">
+          <Card className="bg-gray-800 border-gray-700">
+            <CardHeader>
+              <CardTitle className="text-gray-100">Webhooks Overview</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-gray-300">Manage your webhooks here. You can create, activate, deactivate, and delete webhooks as needed.</p>
+            </CardContent>
+          </Card>
 
-        <Card className="bg-gray-800 border-gray-700">
-          <CardHeader>
-            <CardTitle className="text-gray-100">Your Webhooks</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {error && (
-              <Alert variant="destructive" className="mb-4">
-                <AlertTitle>Error</AlertTitle>
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-            {webhooks.length === 0 ? (
-              <p className="text-gray-300">No webhooks found. Create a new webhook to get started.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-b border-gray-700">
-                      <TableHead className="text-gray-300">URL</TableHead>
-                      <TableHead className="text-gray-300">Event Type</TableHead>
-                      <TableHead className="text-gray-300">Status</TableHead>
-                      <TableHead className="text-gray-300">Created At</TableHead>
-                      <TableHead className="text-gray-300">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {webhooks.map((row) => (
-                      <TableRow key={row.id} className="border-b border-gray-700">
-                        <TableCell className="text-gray-300">{row.url}</TableCell>
-                        <TableCell className="text-gray-300">{row.event_type}</TableCell>
-                        <TableCell>
-                          <Switch
-                            checked={row.is_active}
-                            onCheckedChange={() => handleToggleWebhook(row.id, row.is_active)}
-                          />
-                        </TableCell>
-                        <TableCell className="text-gray-300">{new Date(row.created_at).toLocaleString()}</TableCell>
-                        <TableCell>
-                          <Button variant="destructive" size="sm" onClick={() => handleDeleteWebhook(row.id)}>
-                            Delete
-                          </Button>
-                        </TableCell>
+          <Card className="bg-gray-800 border-gray-700">
+            <CardHeader>
+              <CardTitle className="text-gray-100">Your Webhooks</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {error && (
+                <Alert variant="destructive" className="mb-4">
+                  <AlertTitle>Error</AlertTitle>
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+              {webhooks.length === 0 ? (
+                <p className="text-gray-300">No webhooks found. Create a new webhook to get started.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-b border-gray-700">
+                        <TableHead className="text-gray-300">URL</TableHead>
+                        <TableHead className="text-gray-300">Event Type</TableHead>
+                        <TableHead className="text-gray-300">Status</TableHead>
+                        <TableHead className="text-gray-300">Created At</TableHead>
+                        <TableHead className="text-gray-300">Actions</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                    </TableHeader>
+                    <TableBody>
+                      {webhooks.map((row) => (
+                        <TableRow key={row.id} className="border-b border-gray-700">
+                          <TableCell className="text-gray-300">{row.url}</TableCell>
+                          <TableCell className="text-gray-300">{row.event_type}</TableCell>
+                          <TableCell>
+                            <Switch
+                              checked={row.is_active}
+                              onCheckedChange={() => handleToggleWebhook(row.id, row.is_active)}
+                            />
+                          </TableCell>
+                          <TableCell className="text-gray-300">{new Date(row.created_at).toLocaleString()}</TableCell>
+                          <TableCell>
+                            <Button variant="destructive" size="sm" onClick={() => handleDeleteWebhook(row.id)}>
+                              Delete
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
       </div>
     </div>
   );

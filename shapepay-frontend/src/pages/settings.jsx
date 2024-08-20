@@ -246,7 +246,7 @@ const SettingsPage = () => {
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
-      <div className="container mx-auto p-4">
+      <div className="container mx-auto px-2 sm:px-4 py-4">
         <div className="flex items-center space-x-2 mb-4">
           <Link to="/" className="text-blue-400 hover:text-blue-300 flex items-center">
             <Home className="w-4 h-4 mr-1" />
@@ -263,8 +263,8 @@ const SettingsPage = () => {
             <CardTitle className="text-gray-100">Merchant Settings</CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-4">
+            <div className="flex flex-col sm:flex-row items-center justify-between space-y-4 sm:space-y-0 sm:space-x-4">
+              <div className="flex flex-col sm:flex-row items-center space-y-2 sm:space-y-0 sm:space-x-4">
                 <Avatar className="w-16 h-16 border-2 border-gray-600">
                   <AvatarImage src="/path-to-avatar-image.png" alt={merchant.name} />
                   <AvatarFallback className="bg-gray-700 text-gray-300">{merchant.name[0]}</AvatarFallback>
@@ -274,15 +274,15 @@ const SettingsPage = () => {
                     value={merchant.name}
                     onChange={handleMerchantNameChange}
                     onKeyDown={handleMerchantNameSubmit}
-                    className="text-2xl font-bold bg-gray-700 text-gray-100 border-gray-600"
+                    className="text-xl sm:text-2xl font-bold bg-gray-700 text-gray-100 border-gray-600"
                   />
                 ) : (
-                  <h2 onClick={handleMerchantNameClick} className="text-2xl font-bold cursor-pointer text-gray-100">
+                  <h2 onClick={handleMerchantNameClick} className="text-xl sm:text-2xl font-bold cursor-pointer text-gray-100">
                     {merchant.name}
                   </h2>
                 )}
               </div>
-              <Button onClick={() => setInviteDialogOpen(true)} className="flex items-center bg-blue-600 hover:bg-blue-700">
+              <Button onClick={() => setInviteDialogOpen(true)} className="w-full sm:w-auto flex items-center justify-center bg-blue-600 hover:bg-blue-700">
                 <PlusCircle className="mr-2 h-4 w-4" />
                 Invite User
               </Button>
@@ -292,7 +292,7 @@ const SettingsPage = () => {
               <CardHeader>
                 <CardTitle className="text-gray-100">User Management</CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow className="border-b border-gray-700">
@@ -310,7 +310,7 @@ const SettingsPage = () => {
                             value={user.role_name}
                             onValueChange={(value) => handleChangeRole(user.user_id, value)}
                           >
-                            <SelectTrigger className="w-[180px] bg-gray-700 text-gray-300 border-gray-600">
+                            <SelectTrigger className="w-[120px] sm:w-[180px] bg-gray-700 text-gray-300 border-gray-600">
                               <SelectValue placeholder="Select role" />
                             </SelectTrigger>
                             <SelectContent className="bg-gray-700 text-gray-300 border-gray-600">
@@ -320,10 +320,10 @@ const SettingsPage = () => {
                           </Select>
                         </TableCell>
                         <TableCell className="text-right">
-                          <Button variant="ghost" size="sm" onClick={() => handleEditUser(user)} className="text-gray-300 hover:text-gray-100">
+                          <Button variant="ghost" size="sm" onClick={() => handleEditUser(user)} className="text-gray-300 hover:text-gray-100 p-1 sm:p-2">
                             <Edit2 className="h-4 w-4" />
                           </Button>
-                          <Button variant="ghost" size="sm" onClick={() => handleDeleteUser(user.user_id)} className="text-gray-300 hover:text-gray-100">
+                          <Button variant="ghost" size="sm" onClick={() => handleDeleteUser(user.user_id)} className="text-gray-300 hover:text-gray-100 p-1 sm:p-2">
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         </TableCell>
@@ -338,7 +338,7 @@ const SettingsPage = () => {
               <CardHeader>
                 <CardTitle className="text-gray-100">Pending Invitations</CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow className="border-b border-gray-700">
@@ -357,7 +357,7 @@ const SettingsPage = () => {
                             variant="ghost"
                             size="sm"
                             onClick={() => handleRemoveInvitation(invitation.email)}
-                            className="text-gray-300 hover:text-gray-100"
+                            className="text-gray-300 hover:text-gray-100 p-1 sm:p-2"
                           >
                             <Trash2 className="h-4 w-4" />
                           </Button>
@@ -396,7 +396,7 @@ const SettingsPage = () => {
             </Select>
           </div>
           <DialogFooter>
-            <Button onClick={handleInviteUser} disabled={loading} className="bg-blue-600 hover:bg-blue-700">
+            <Button onClick={handleInviteUser} disabled={loading} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700">
               {loading ? 'Sending...' : 'Send Invitation'}
             </Button>
           </DialogFooter>
@@ -429,7 +429,7 @@ const SettingsPage = () => {
             </Select>
           </div>
           <DialogFooter>
-            <Button onClick={handleEditUserSubmit} disabled={loading} className="bg-blue-600 hover:bg-blue-700">
+            <Button onClick={handleEditUserSubmit} disabled={loading} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700">
               {loading ? 'Saving...' : 'Save Changes'}
             </Button>
           </DialogFooter>
@@ -439,4 +439,4 @@ const SettingsPage = () => {
   );
 };
 
-export default SettingsPage;      
+export default SettingsPage;

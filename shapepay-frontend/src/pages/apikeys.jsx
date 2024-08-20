@@ -114,7 +114,7 @@ const APIKeysPage = () => {
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100">
-      <div className="container mx-auto p-4">
+      <div className="container mx-auto px-2 sm:px-4 py-4">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center space-x-2">
             <Link to="/" className="text-blue-400 hover:text-blue-300 flex items-center">
@@ -128,69 +128,72 @@ const APIKeysPage = () => {
             </span>
           </div>
           <Button onClick={() => setOpen(true)} className="bg-blue-500 hover:bg-blue-600">
-            <Plus className="mr-2 h-4 w-4" /> New API Key
+            <Plus className="h-4 w-4 sm:mr-2" />
+            <span className="hidden sm:inline">New API Key</span>
           </Button>
         </div>
 
-        <Card className="mb-6 bg-gray-800 border-gray-700">
-          <CardHeader>
-            <CardTitle className="text-gray-100">API Keys Overview</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-gray-300">Manage your API keys here. You can create new keys and revoke existing ones as needed.</p>
-          </CardContent>
-        </Card>
+        <div className="space-y-6">
+          <Card className="bg-gray-800 border-gray-700">
+            <CardHeader>
+              <CardTitle className="text-gray-100">API Keys Overview</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-gray-300">Manage your API keys here. You can create new keys and revoke existing ones as needed.</p>
+            </CardContent>
+          </Card>
 
-        <Card className="bg-gray-800 border-gray-700">
-          <CardHeader>
-            <CardTitle className="text-gray-100">Your API Keys</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {error && (
-              <Alert variant="destructive" className="mb-4">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-            {keys.length === 0 ? (
-              <p className="text-gray-300">No API keys found. Create a new key to get started.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="border-b border-gray-700">
-                      <TableHead className="text-gray-300">Name</TableHead>
-                      <TableHead className="text-gray-300">Key</TableHead>
-                      <TableHead className="text-gray-300">Created At</TableHead>
-                      <TableHead className="text-gray-300">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {keys.map((row) => (
-                      <TableRow key={row.id} className="border-b border-gray-700">
-                        <TableCell className="text-gray-300">{row.name}</TableCell>
-                        <TableCell className="text-gray-300 flex items-center">
-                          <span className="mr-2">{row.key}</span>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => handleCopyKey(row.key)}
-                            className="p-1"
-                          >
-                            {copiedKey === row.key ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
-                          </Button>
-                        </TableCell>
-                        <TableCell className="text-gray-300">{new Date(row.created_at).toLocaleString()}</TableCell>
-                        <TableCell>
-                          <Button variant="destructive" size="sm" onClick={() => handleRevokeKey(row.id)}>Revoke</Button>
-                        </TableCell>
+          <Card className="bg-gray-800 border-gray-700">
+            <CardHeader>
+              <CardTitle className="text-gray-100">Your API Keys</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {error && (
+                <Alert variant="destructive" className="mb-4">
+                  <AlertDescription>{error}</AlertDescription>
+                </Alert>
+              )}
+              {keys.length === 0 ? (
+                <p className="text-gray-300">No API keys found. Create a new key to get started.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-b border-gray-700">
+                        <TableHead className="text-gray-300">Name</TableHead>
+                        <TableHead className="text-gray-300">Key</TableHead>
+                        <TableHead className="text-gray-300">Created At</TableHead>
+                        <TableHead className="text-gray-300">Actions</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                    </TableHeader>
+                    <TableBody>
+                      {keys.map((row) => (
+                        <TableRow key={row.id} className="border-b border-gray-700">
+                          <TableCell className="text-gray-300">{row.name}</TableCell>
+                          <TableCell className="text-gray-300 flex items-center">
+                            <span className="mr-2">{row.key}</span>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleCopyKey(row.key)}
+                              className="p-1"
+                            >
+                              {copiedKey === row.key ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                            </Button>
+                          </TableCell>
+                          <TableCell className="text-gray-300">{new Date(row.created_at).toLocaleString()}</TableCell>
+                          <TableCell>
+                            <Button variant="destructive" size="sm" onClick={() => handleRevokeKey(row.id)}>Revoke</Button>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
 
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogContent className="bg-gray-800 text-gray-100">

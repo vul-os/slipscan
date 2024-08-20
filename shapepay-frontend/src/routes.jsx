@@ -31,7 +31,7 @@ const AppRoutes = () => {
       <Route element={<BlankLayout />}>
         <Route path="/login" element={<SignIn />} />
         <Route path="/signup" element={<SignUp />} />
-        <Route path="/pay/:merchantId" element={<PaymentPage />} />
+        <Route path="/pay/:merchantHandle" element={<PaymentPage />} />
         <Route path="/accept-invite/:token" element={<ProtectedRoute><AcceptInvite /></ProtectedRoute>} />
       </Route>
 

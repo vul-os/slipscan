@@ -73,13 +73,13 @@ const PaymentsPage = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeMerchantId, dateRange]);
 
   useEffect(() => {
     if (dateRange?.from && dateRange?.to) {
       fetchPaymentGroups();
     }
-  }, [fetchPaymentGroups]);
+  }, [fetchPaymentGroups, dateRange]);
 
   useEffect(() => {
     const subscription = supabase
@@ -117,28 +117,30 @@ const PaymentsPage = () => {
   };
 
   return (
-    <div className="container mx-auto p-4 bg-gray-900 text-white">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-3xl font-bold">Payments</h1>
-        <Button onClick={() => setIsCreatePaymentOpen(true)} className="bg-blue-500 hover:bg-blue-600">
+    <div className="container mx-auto px-2 sm:px-4 py-4 bg-gray-900 text-white">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6">
+        <h1 className="text-2xl sm:text-3xl font-bold mb-4 sm:mb-0">Payments</h1>
+        <Button onClick={() => setIsCreatePaymentOpen(true)} className="bg-blue-500 hover:bg-blue-600 w-full sm:w-auto">
           <Plus className="w-4 h-4 mr-2" /> New Payment
         </Button>
       </div>
 
-      <PaymentFilters 
-        dateRange={dateRange} 
-        setDateRange={setDateRange}
-        filterValue={filterValue}
-        setFilterValue={setFilterValue}
-      />
+      <div className="space-y-6">
+        <PaymentFilters 
+          dateRange={dateRange} 
+          setDateRange={setDateRange}
+          filterValue={filterValue}
+          setFilterValue={setFilterValue}
+        />
 
-      <PaymentStatistics data={data} filterValue={filterValue} />
+        <PaymentStatistics data={data} filterValue={filterValue} />
 
-      <PaymentsTable 
-        data={data} 
-        filterValue={filterValue} 
-        loading={loading}
-      />
+        <PaymentsTable 
+          data={data} 
+          filterValue={filterValue} 
+          loading={loading}
+        />
+      </div>
 
       <CreatePaymentForm
         isOpen={isCreatePaymentOpen}

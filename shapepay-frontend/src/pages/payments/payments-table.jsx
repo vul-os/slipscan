@@ -122,18 +122,18 @@ const PaymentsTable = ({ data, filterValue, loading }) => {
 
   return (
     <Card className="mb-6 bg-gray-800 border-gray-700">
-      <CardHeader>
-        <CardTitle className="text-xl text-gray-100">Payments Overview</CardTitle>
+      <CardHeader className="px-0">
+        <CardTitle className="text-xl text-gray-100 px-2">Payments Overview</CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="p-0">
         <div className="rounded-md border border-gray-700">
           <Table>
             <TableHeader>
               {table.getHeaderGroups().map((headerGroup) => (
                 <TableRow key={headerGroup.id}>
-                  <TableHead>Expand</TableHead>
+                  <TableHead className="px-2">Expand</TableHead>
                   {headerGroup.headers.map((header) => (
-                    <TableHead key={header.id}>
+                    <TableHead key={header.id} className="px-2">
                       {header.isPlaceholder
                         ? null
                         : flexRender(
@@ -154,45 +154,45 @@ const PaymentsTable = ({ data, filterValue, loading }) => {
                       onClick={() => handleRowClick(row.original.id)}
                       className="cursor-pointer hover:bg-gray-700 transition-colors duration-150"
                     >
-                      <TableCell>
+                      <TableCell className="px-2">
                         {expandedRows[row.original.id] ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                       </TableCell>
                       {row.getVisibleCells().map((cell) => (
-                        <TableCell key={cell.id}>
+                        <TableCell key={cell.id} className="px-2">
                           {flexRender(cell.column.columnDef.cell, cell.getContext())}
                         </TableCell>
                       ))}
                     </TableRow>
                     {expandedRows[row.original.id] && (
                       <TableRow>
-                        <TableCell colSpan={columns.length + 1}>
+                        <TableCell colSpan={columns.length + 1} className="p-0">
                           <Card className="m-2 bg-gray-700 border-gray-600">
-                            <CardHeader>
+                            <CardHeader className="px-2">
                               <CardTitle className="text-gray-100">Payments for Group {row.original.id}</CardTitle>
                             </CardHeader>
-                            <CardContent>
+                            <CardContent className="p-0">
                               <Table>
                                 <TableHeader>
                                   <TableRow>
-                                    <TableHead>ID</TableHead>
-                                    <TableHead>Amount Charged</TableHead>
-                                    <TableHead>Status</TableHead>
-                                    <TableHead>Payment Method</TableHead>
-                                    <TableHead>Created At</TableHead>
+                                    <TableHead className="px-2">ID</TableHead>
+                                    <TableHead className="px-2">Amount Charged</TableHead>
+                                    <TableHead className="px-2">Status</TableHead>
+                                    <TableHead className="px-2">Payment Method</TableHead>
+                                    <TableHead className="px-2">Created At</TableHead>
                                   </TableRow>
                                 </TableHeader>
                                 <TableBody>
                                   {row.original.payments.map((payment) => (
                                     <TableRow key={payment.id}>
-                                      <TableCell>{payment.id}</TableCell>
-                                      <TableCell>{new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(payment.amount_charged)}</TableCell>
-                                      <TableCell>
+                                      <TableCell className="px-2">{payment.id}</TableCell>
+                                      <TableCell className="px-2">{new Intl.NumberFormat('en-ZA', { style: 'currency', currency: 'ZAR' }).format(payment.amount_charged)}</TableCell>
+                                      <TableCell className="px-2">
                                         <span className={`px-2 py-1 rounded-full text-xs font-semibold ${getStatusColor(payment.status)}`}>
                                           {payment.status.toUpperCase()}
                                         </span>
                                       </TableCell>
-                                      <TableCell>{payment.payment_method}</TableCell>
-                                      <TableCell>{new Date(payment.created_at).toLocaleString()}</TableCell>
+                                      <TableCell className="px-2">{payment.payment_method}</TableCell>
+                                      <TableCell className="px-2">{new Date(payment.created_at).toLocaleString()}</TableCell>
                                     </TableRow>
                                   ))}
                                 </TableBody>
@@ -214,7 +214,7 @@ const PaymentsTable = ({ data, filterValue, loading }) => {
             </TableBody>
           </Table>
         </div>
-        <div className="flex items-center justify-end space-x-2 py-4">
+        <div className="flex items-center justify-end space-x-2 py-4 px-2">
           <Button
             variant="outline"
             size="sm"
