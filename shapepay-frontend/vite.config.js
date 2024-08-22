@@ -11,7 +11,3 @@ export default defineConfig({
         },
     },
 });
-
-// screen -dmS scraper -L -Logfile scraper_log.txt go run main.go
-//  tail -f scraper_log.txt
-// screen -ls | grep Detached | cut -d. -f1 | awk '{print $1}' | xargs -I % screen -S % -X quit

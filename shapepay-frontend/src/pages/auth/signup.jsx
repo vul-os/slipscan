@@ -14,22 +14,6 @@ const SignUp = () => {
   const location = useLocation();
   const { toast } = useToast()
 
-  useEffect(() => {
-    if (user) {
-      handleSuccessfulSignUp();
-    }
-  }, [user]);
-
-  const handleSuccessfulSignUp = () => {
-    const searchParams = new URLSearchParams(location.search);
-    const returnUrl = searchParams.get('returnUrl');
-    if (returnUrl) {
-      navigate(returnUrl + '?returning=true');
-    } else {
-      navigate('/dashboard');
-    }
-  };
-
   const handleSubmit = async (event) => {
     event.preventDefault();
     try {

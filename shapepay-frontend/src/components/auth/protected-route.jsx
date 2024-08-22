@@ -1,11 +1,34 @@
-import React, { useContext } from 'react';
-import { Navigate } from 'react-router-dom';
+import React, { useContext, useEffect, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Progress } from "@/components/ui/progress"
-import { Alert, AlertDescription } from "@/components/ui/alert"
 import { AuthContext } from '../../context/use-auth';
 
 const ProtectedRoute = ({ children }) => {
   const { user, loading } = useContext(AuthContext);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const isMounted = useRef(false);
+
+  useEffect(() => {
+    if (!user && !loading && isMounted.current) {
+      console.log("No User", location.pathname);
+      
+      // Save the current path to localStorage
+      localStorage.setItem('redirectUrl', location.pathname);
+      
+      navigate('/login');
+    } else if (user && !loading) {
+      // Check if there's a saved redirect URL
+      const redirectUrl = localStorage.getItem('redirectUrl');
+      if (redirectUrl) {
+        // Remove the redirect URL from localStorage
+        localStorage.removeItem('redirectUrl');
+        // Redirect to the saved URL
+        navigate(redirectUrl);
+      }
+    }
+    isMounted.current = true;
+  }, [user, loading, navigate, location]);
 
   if (loading) {
     return (
@@ -15,20 +38,7 @@ const ProtectedRoute = ({ children }) => {
     );
   }
 
-  if (!user) {
-    return (
-      <>
-        <Alert variant="destructive" className="mb-4">
-          <AlertDescription>
-            You must be logged in to access this page. Redirecting to login...
-          </AlertDescription>
-        </Alert>
-        <Navigate to="/login" />
-      </>
-    );
-  }
-
-  return children;
+  return user ? children : null;
 };
 
 export default ProtectedRoute;
