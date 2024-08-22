@@ -6,11 +6,12 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { PlusCircle, Edit2, Trash2, Home } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { useToast } from "@/components/ui/use-toast";
 
 const SettingsPage = () => {
   const { user, activeMerchantId } = useContext(AuthContext);
@@ -30,6 +31,13 @@ const SettingsPage = () => {
   const [editUserDialogOpen, setEditUserDialogOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState(null);
   const [error, setError] = useState(null);
+  const { toast } = useToast();
+
+  // New state for confirmation dialogs
+  const [deleteUserDialogOpen, setDeleteUserDialogOpen] = useState(false);
+  const [deleteInvitationDialogOpen, setDeleteInvitationDialogOpen] = useState(false);
+  const [userToDelete, setUserToDelete] = useState(null);
+  const [invitationToDelete, setInvitationToDelete] = useState(null);
 
   useEffect(() => {
     if (user) {
@@ -86,6 +94,12 @@ const SettingsPage = () => {
     } catch (error) {
       console.error('Error fetching data:', error);
       setError('Failed to fetch information');
+      toast({
+        title: "Error",
+        description: "Failed to fetch information",
+        variant: "destructive",
+        duration: 5000,
+      });
     } finally {
       setLoading(false);
     }
@@ -111,10 +125,19 @@ const SettingsPage = () => {
         if (error) throw error;
 
         setIsEditingName(false);
-        alert('Merchant name updated successfully!');
+        toast({
+          title: "Success",
+          description: "Merchant name updated successfully!",
+          duration: 3000,
+        });
       } catch (error) {
         console.error('Error updating merchant name:', error);
-        alert('Error updating merchant name');
+        toast({
+          title: "Error",
+          description: "Error updating merchant name",
+          variant: "destructive",
+          duration: 5000,
+        });
       } finally {
         setLoading(false);
       }
@@ -129,14 +152,23 @@ const SettingsPage = () => {
       });
 
       if (error) throw error;
-      alert('Invitation sent successfully!');
+      toast({
+        title: "Success",
+        description: "Invitation sent successfully!",
+        duration: 3000,
+      });
       setInviteDialogOpen(false);
       setInviteEmail('');
       setInviteRole('');
       fetchMerchantUsersAndInvitations();
     } catch (error) {
       console.error('Error inviting user:', error);
-      alert('Error sending invitation');
+      toast({
+        title: "Error",
+        description: "Error sending invitation",
+        variant: "destructive",
+        duration: 5000,
+      });
     } finally {
       setLoading(false);
     }
@@ -158,57 +190,94 @@ const SettingsPage = () => {
         .eq('merchant_id', merchant.id);
 
       if (error) throw error;
-      alert('User role updated successfully!');
+      toast({
+        title: "Success",
+        description: "User role updated successfully!",
+        duration: 3000,
+      });
       fetchMerchantUsersAndInvitations();
     } catch (error) {
       console.error('Error updating user role:', error);
-      alert('Error updating user role');
+      toast({
+        title: "Error",
+        description: "Error updating user role",
+        variant: "destructive",
+        duration: 5000,
+      });
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDeleteUser = async (userId) => {
-    if (window.confirm('Are you sure you want to remove this user?')) {
-      try {
-        setLoading(true);
-        const { error } = await supabase
-          .from('merchant_users')
-          .delete()
-          .eq('user_id', userId)
-          .eq('merchant_id', merchant.id);
+  const handleDeleteUser = (userId) => {
+    setUserToDelete(userId);
+    setDeleteUserDialogOpen(true);
+  };
 
-        if (error) throw error;
-        alert('User removed successfully!');
-        fetchMerchantUsersAndInvitations();
-      } catch (error) {
-        console.error('Error removing user:', error);
-        alert('Error removing user');
-      } finally {
-        setLoading(false);
-      }
+  const confirmDeleteUser = async () => {
+    try {
+      setLoading(true);
+      const { error } = await supabase
+        .from('merchant_users')
+        .delete()
+        .eq('user_id', userToDelete)
+        .eq('merchant_id', merchant.id);
+
+      if (error) throw error;
+      toast({
+        title: "Success",
+        description: "User removed successfully!",
+        duration: 3000,
+      });
+      fetchMerchantUsersAndInvitations();
+    } catch (error) {
+      console.error('Error removing user:', error);
+      toast({
+        title: "Error",
+        description: "Error removing user",
+        variant: "destructive",
+        duration: 5000,
+      });
+    } finally {
+      setLoading(false);
+      setDeleteUserDialogOpen(false);
+      setUserToDelete(null);
     }
   };
 
-  const handleRemoveInvitation = async (email) => {
-    if (window.confirm('Are you sure you want to remove this invitation?')) {
-      try {
-        setLoading(true);
-        const { error } = await supabase
-          .from('merchant_invitations')
-          .delete()
-          .eq('email', email)
-          .eq('merchant_id', merchant.id);
+  const handleRemoveInvitation = (email) => {
+    setInvitationToDelete(email);
+    setDeleteInvitationDialogOpen(true);
+  };
 
-        if (error) throw error;
-        alert('Invitation removed successfully!');
-        fetchMerchantUsersAndInvitations();
-      } catch (error) {
-        console.error('Error removing invitation:', error);
-        alert('Error removing invitation');
-      } finally {
-        setLoading(false);
-      }
+  const confirmRemoveInvitation = async () => {
+    try {
+      setLoading(true);
+      const { error } = await supabase
+        .from('merchant_invitations')
+        .delete()
+        .eq('email', invitationToDelete)
+        .eq('merchant_id', merchant.id);
+
+      if (error) throw error;
+      toast({
+        title: "Success",
+        description: "Invitation removed successfully!",
+        duration: 3000,
+      });
+      fetchMerchantUsersAndInvitations();
+    } catch (error) {
+      console.error('Error removing invitation:', error);
+      toast({
+        title: "Error",
+        description: "Error removing invitation",
+        variant: "destructive",
+        duration: 5000,
+      });
+    } finally {
+      setLoading(false);
+      setDeleteInvitationDialogOpen(false);
+      setInvitationToDelete(null);
     }
   };
 
@@ -230,12 +299,21 @@ const SettingsPage = () => {
 
       if (error) throw error;
 
-      alert('User updated successfully!');
+      toast({
+        title: "Success",
+        description: "User updated successfully!",
+        duration: 3000,
+      });
       setEditUserDialogOpen(false);
       fetchMerchantUsersAndInvitations();
     } catch (error) {
       console.error('Error updating user:', error);
-      alert('Error updating user');
+      toast({
+        title: "Error",
+        description: "Error updating user",
+        variant: "destructive",
+        duration: 5000,
+      });
     } finally {
       setLoading(false);
     }
@@ -302,7 +380,7 @@ const SettingsPage = () => {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {users.map((user) => (
+                  {users.map((user) => (
                       <TableRow key={user.user_id} className="border-b border-gray-700">
                         <TableCell className="text-gray-300">{user?.email}</TableCell>
                         <TableCell>
@@ -431,6 +509,46 @@ const SettingsPage = () => {
           <DialogFooter>
             <Button onClick={handleEditUserSubmit} disabled={loading} className="w-full sm:w-auto bg-blue-600 hover:bg-blue-700">
               {loading ? 'Saving...' : 'Save Changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete User Confirmation Dialog */}
+      <Dialog open={deleteUserDialogOpen} onOpenChange={setDeleteUserDialogOpen}>
+        <DialogContent className="bg-gray-800 text-gray-100 border-gray-700">
+          <DialogHeader>
+            <DialogTitle>Confirm User Removal</DialogTitle>
+          </DialogHeader>
+          <DialogDescription className="text-gray-300">
+            Are you sure you want to remove this user? This action cannot be undone.
+          </DialogDescription>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteUserDialogOpen(false)} className="bg-gray-700 text-gray-300 hover:bg-gray-600">
+              Cancel
+            </Button>
+            <Button onClick={confirmDeleteUser} disabled={loading} className="bg-red-600 hover:bg-red-700">
+              {loading ? 'Removing...' : 'Remove User'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Invitation Confirmation Dialog */}
+      <Dialog open={deleteInvitationDialogOpen} onOpenChange={setDeleteInvitationDialogOpen}>
+        <DialogContent className="bg-gray-800 text-gray-100 border-gray-700">
+          <DialogHeader>
+            <DialogTitle>Confirm Invitation Removal</DialogTitle>
+          </DialogHeader>
+          <DialogDescription className="text-gray-300">
+            Are you sure you want to remove this invitation? This action cannot be undone.
+          </DialogDescription>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteInvitationDialogOpen(false)} className="bg-gray-700 text-gray-300 hover:bg-gray-600">
+              Cancel
+            </Button>
+            <Button onClick={confirmRemoveInvitation} disabled={loading} className="bg-red-600 hover:bg-red-700">
+              {loading ? 'Removing...' : 'Remove Invitation'}
             </Button>
           </DialogFooter>
         </DialogContent>
