@@ -89,7 +89,7 @@ export function AuthProvider({ children }) {
       email,
       password,
       options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: `${window.location.origin}`,
       },
     });
     if (error) throw error;
@@ -100,6 +100,16 @@ export function AuthProvider({ children }) {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) throw error;
     return data.user;
+  };
+
+  const forgotPassword = async (email) => {
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email);
+      if (error) throw error;
+      return { error: null };
+    } catch (error) {
+      return { error };
+    }
   };
 
   const signInWithGoogle = async () => {
@@ -125,6 +135,7 @@ export function AuthProvider({ children }) {
     signIn,
     signInWithGoogle,
     signOut,
+    forgotPassword,
     merchants,
     activeMerchantId,
     setActiveMerchantId

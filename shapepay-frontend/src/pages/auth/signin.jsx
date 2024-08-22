@@ -19,6 +19,7 @@ const SignIn = () => {
     event.preventDefault();
     try {
       await signIn(email, password);
+      navigate('/')
     } catch (error) {
       setError(error.message);
     }
@@ -84,9 +85,12 @@ const SignIn = () => {
             Sign in with Google
           </Button>
         </CardContent>
-        <CardFooter className="flex justify-center">
+        <CardFooter className="flex flex-col space-y-2">
           <Button variant="link" className="text-sm text-muted-foreground" onClick={() => navigate('/signup')}>
             Don't have an account? Sign Up
+          </Button>
+          <Button variant="link" className="text-sm text-muted-foreground" onClick={() => navigate('/password-reset')}>
+            Forgot your password?
           </Button>
         </CardFooter>
       </Card>

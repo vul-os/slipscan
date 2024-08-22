@@ -9,6 +9,7 @@ import MainLayout from './components/layout/main-layout';
 import SignIn from './pages/auth/signin';
 import SignUp from './pages/auth/signup';
 import AcceptInvite from './pages/auth/accept-invite';
+import ForgotPassword from './pages/auth/forgot-password';
 
 // Protected Pages
 import Dashboard from './pages/dashboard/dashboard';
@@ -19,6 +20,7 @@ import Payments from './pages/payments/payments';
 import Refunds from './pages/refunds';
 import PaymentPage from './pages/payments/customer-payments';
 import SettingsPage from './pages/settings';
+import NotFound from './pages/not-found';
 
 // Components
 import ProtectedRoute from './components/auth/protected-route';
@@ -31,13 +33,15 @@ const AppRoutes = () => {
       <Route element={<BlankLayout />}>
         <Route path="/login" element={<SignIn />} />
         <Route path="/signup" element={<SignUp />} />
+        <Route path="/password-reset" element={<ForgotPassword />} />
+
         <Route path="/pay/:merchantHandle" element={<PaymentPage />} />
         <Route path="/accept-invite/:token" element={<ProtectedRoute><AcceptInvite /></ProtectedRoute>} />
       </Route>
 
       {/* Protected routes */}
       <Route element={<MainLayout />}>
-        <Route path="/" element={<Navigate to="/dashboard" replace />} />
+        <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/customers" element={<ProtectedRoute><Customers /></ProtectedRoute>} />
         <Route path="/apikeys" element={<ProtectedRoute><APIKeys /></ProtectedRoute>} />
@@ -46,11 +50,9 @@ const AppRoutes = () => {
         <Route path="/refunds" element={<ProtectedRoute><Refunds /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
         <Route path="/payouts" element={<ProtectedRoute><PayoutsPage /></ProtectedRoute>} />
-
+        <Route path="*" element={<ProtectedRoute><NotFound /></ProtectedRoute>} />
       </Route>
 
-      {/* Catch-all route */}
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );
 };

@@ -71,20 +71,76 @@ Deno.serve(async (req) => {
       ? `https://app.shapepay.co.za/accept-invite/${invitation_token}`
       : `http://app.shapepay.co.za/login`; // Assuming you have a login page
 
-    const emailContent = is_new
-      ? `
-        <h1>You've been invited to join as a merchant</h1>
-        <p>You've been invited by ${inviterEmail} to join as a ${roleName} for a merchant.</p>
-        <p>Click the link below to accept the invitation:</p>
-        <a href="${inviteUrl}">Accept Invitation</a>
-        <p>This invitation expires in 7 days.</p>
-      `
-      : `
-        <h1>You've been added to a merchant account</h1>
-        <p>You've been added by ${inviterEmail} as a ${roleName} for a merchant.</p>
-        <p>Click the link below to log in to your account:</p>
-        <a href="${inviteUrl}">Log In</a>
-      `;
+    const emailContent = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${is_new ? 'Invitation to ShapePay' : 'Welcome to ShapePay'}</title>
+        <style>
+          body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+          }
+          .container {
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            padding: 30px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+          }
+          h1 {
+            color: #2c3e50;
+            margin-bottom: 20px;
+          }
+          .button {
+            display: inline-block;
+            background-color: #3498db;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+            margin-top: 20px;
+          }
+          .button:hover {
+            background-color: #2980b9;
+          }
+          .footer {
+            margin-top: 30px;
+            font-size: 0.9em;
+            color: #7f8c8d;
+            text-align: center;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>${is_new ? 'You\'ve been invited to join ShapePay!' : 'Welcome to ShapePay!'}</h1>
+          <p>Hello,</p>
+          <p>${is_new 
+              ? `You've been invited by ${inviterEmail} to join as a ${roleName} for a merchant on ShapePay.` 
+              : `You've been added by ${inviterEmail} as a ${roleName} for a merchant on ShapePay.`
+            }</p>
+          <p>${is_new
+              ? 'To get started, click the button below to accept your invitation:'
+              : 'To access your account, click the button below to log in:'
+            }</p>
+          <a href="${inviteUrl}" class="button">${is_new ? 'Accept Invitation' : 'Log In'}</a>
+          ${is_new ? '<p>This invitation expires in 7 days.</p>' : ''}
+          <p>If you have any questions, please don't hesitate to contact our support team.</p>
+          <p>Best regards,<br>The ShapePay Team</p>
+        </div>
+        <div class="footer">
+          <p>This email was sent by ShapePay. Please do not reply to this email.</p>
+        </div>
+      </body>
+      </html>
+    `;
 
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -95,7 +151,7 @@ Deno.serve(async (req) => {
       body: JSON.stringify({
         from: 'invitations@updates.shapepay.co.za',
         to: inviteeEmail,
-        subject: is_new ? 'Invitation to join as a merchant' : 'You\'ve been added to a merchant account',
+        subject: is_new ? 'Invitation to join ShapePay' : 'Welcome to ShapePay',
         html: emailContent,
       }),
     });
