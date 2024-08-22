@@ -68,7 +68,7 @@ const MainLayout = () => {
             ref={sidenavRef}
             className={cn(
               "fixed inset-y-0 left-0 z-20 h-full overflow-y-auto transition-all duration-300 ease-in-out bg-gray-800 bg-opacity-95 shadow-lg",
-              isExpanded ? "w-3/4" : "w-0"
+              isExpanded ? "w-60" : "w-0"
             )}
             style={{ top: TOP_BAR_HEIGHT }}
           >
