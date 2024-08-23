@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -9,90 +10,116 @@ import (
 )
 
 const (
-	maxConcurrentAccounts = 2
-	maxInactiveTime       = 60 * time.Second
-	mainLoopInterval      = 5 * time.Second
-	iterationInterval     = 1 * time.Second
+	MaxInactiveTime    = 10 * time.Minute
+	RestartDelay       = 5 * time.Minute
+	JobMonitorInterval = 1 * time.Minute
+	RetryDelay         = 3 * time.Minute
+	AccountFetchRetry  = 1 * time.Minute
+	IterationInterval  = 1 * time.Second
 )
 
-type accountScraper struct {
+type AccountScraper struct {
 	account      Account
 	browser      *rod.Browser
 	page         *rod.Page
 	lastActivity time.Time
+	stopChan     chan struct{}
 }
 
 type Job struct {
-	ID          string
-	Scraper     *accountScraper
-	Timeout     time.Duration
-	Interval    time.Duration
-	MaxInactive time.Duration
+	ID       string
+	Scraper  *AccountScraper
+	StopChan chan struct{}
 }
 
 type JobManager struct {
-	jobs     map[string]*Job
-	stopChan chan struct{}
-	wg       sync.WaitGroup
-	mu       sync.Mutex
+	Jobs     map[string]*Job
+	JobMutex sync.Mutex
 }
 
 func NewJobManager() *JobManager {
 	return &JobManager{
-		jobs:     make(map[string]*Job),
-		stopChan: make(chan struct{}),
+		Jobs: make(map[string]*Job),
 	}
 }
 
 func (jm *JobManager) AddJob(job *Job) {
-	jm.mu.Lock()
-	defer jm.mu.Unlock()
-	jm.jobs[job.ID] = job
+	jm.JobMutex.Lock()
+	defer jm.JobMutex.Unlock()
+	jm.Jobs[job.ID] = job
 }
 
 func (jm *JobManager) Start() {
-	for _, job := range jm.jobs {
-		jm.wg.Add(1)
+	for _, job := range jm.Jobs {
 		go jm.runJob(job)
 	}
 }
 
-func (jm *JobManager) Stop() {
-	close(jm.stopChan)
-	jm.wg.Wait()
-}
-
 func (jm *JobManager) runJob(job *Job) {
-	defer jm.wg.Done()
 	for {
 		select {
-		case <-jm.stopChan:
+		case <-job.StopChan:
+			log.Printf("Job for account %s stopped", job.Scraper.account.Username)
 			return
 		default:
-			if time.Since(job.Scraper.lastActivity) > job.MaxInactive {
-				log.Printf("Job %s (Account: %s) has been inactive for too long, restarting...", job.ID, job.Scraper.account.Username)
-				job.Scraper.lastActivity = time.Now()
-			}
+			done := make(chan struct{})
+			var err error
 
-			done := make(chan bool)
 			go func() {
-				err := runAccount(job.Scraper)
-				if err != nil {
-					log.Printf("Job %s (Account: %s) error: %v", job.ID, job.Scraper.account.Username, err)
-				}
-				done <- true
+				defer func() {
+					if r := recover(); r != nil {
+						log.Printf("Recovered from panic in runAccount for account %s: %v", job.Scraper.account.Username, r)
+						err = fmt.Errorf("panic in runAccount: %v", r)
+					}
+					close(done)
+				}()
+
+				err = runAccount(job.Scraper)
 			}()
 
-			select {
-			case <-done:
-				job.Scraper.lastActivity = time.Now()
-			case <-time.After(job.Timeout):
-				log.Printf("Job %s (Account: %s) timed out, restarting...", job.ID, job.Scraper.account.Username)
-			}
+			<-done
 
-			time.Sleep(job.Interval)
+			if err != nil {
+				log.Printf("Error running account %s: %v", job.Scraper.account.Username, err)
+				time.Sleep(RetryDelay)
+			}
 		}
 	}
+}
+
+func (jm *JobManager) MonitorJobs() {
+	for {
+		time.Sleep(JobMonitorInterval)
+		jm.JobMutex.Lock()
+		for _, job := range jm.Jobs {
+			if time.Since(job.Scraper.lastActivity) > MaxInactiveTime {
+				log.Printf("Job for account %s seems to be hanging. Forcing stop and scheduling restart...", job.Scraper.account.Username)
+
+				forceStopJob(job)
+				close(job.StopChan)
+
+				newStopChan := make(chan struct{})
+				job.StopChan = newStopChan
+
+				go func(j *Job) {
+					time.Sleep(RestartDelay)
+					log.Printf("Restarting job for account %s", j.Scraper.account.Username)
+					jm.runJob(j)
+				}(job)
+			}
+		}
+		jm.JobMutex.Unlock()
+	}
+}
+
+func forceStopJob(job *Job) {
+	if job.Scraper.browser != nil {
+		job.Scraper.browser.MustClose()
+		job.Scraper.browser = nil
+	}
+	job.Scraper.page = nil
+	job.Scraper.lastActivity = time.Now()
+	log.Printf("Forced stop of job %s (Account: %s)", job.ID, job.Scraper.account.Username)
 }
 
 func main() {
@@ -102,27 +129,29 @@ func main() {
 	defer dbPool.Close()
 
 	jobManager := NewJobManager()
+	go jobManager.MonitorJobs()
+
+	maxConcurrentAccounts := 10 // Adjust as needed
 
 	for {
 		accounts, err := getAvailableAccounts(maxConcurrentAccounts)
 		if err != nil {
-			log.Printf("Error getting available accounts: %v. Retrying in 1 minute.", err)
-			time.Sleep(1 * time.Minute)
+			log.Printf("Error getting available accounts: %v. Retrying in %v.", err, AccountFetchRetry)
+			time.Sleep(AccountFetchRetry)
 			continue
 		}
 
 		for _, account := range accounts {
-			scraper := &accountScraper{
+			scraper := &AccountScraper{
 				account:      account,
 				lastActivity: time.Now(),
+				stopChan:     make(chan struct{}),
 			}
 
 			job := &Job{
-				ID:          account.ID,
-				Scraper:     scraper,
-				Timeout:     5 * time.Minute,
-				Interval:    iterationInterval,
-				MaxInactive: maxInactiveTime,
+				ID:       fmt.Sprintf("job-%s", account.ID),
+				Scraper:  scraper,
+				StopChan: scraper.stopChan,
 			}
 
 			jobManager.AddJob(job)
@@ -130,13 +159,7 @@ func main() {
 
 		jobManager.Start()
 
-		// Wait for some time before checking for new accounts
-		time.Sleep(15 * time.Minute)
-
-		// Stop all jobs
-		jobManager.Stop()
-
-		// Clear the jobs for the next iteration
-		jobManager = NewJobManager()
+		// Run indefinitely
+		select {}
 	}
 }

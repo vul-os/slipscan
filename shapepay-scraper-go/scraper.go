@@ -16,7 +16,7 @@ const (
 	url = "https://fnb.co.za"
 )
 
-func runAccount(as *accountScraper) error {
+func runAccount(as *AccountScraper) error {
 	log.Printf("DEBUG: Starting new session for account %s (Bank Account ID: %s)", as.account.Username, as.account.BankAccountID)
 
 	var err error
@@ -52,9 +52,9 @@ func runAccount(as *accountScraper) error {
 			log.Printf("Error during loop for account %s (Bank Account ID: %s): %v", as.account.Username, as.account.BankAccountID, err)
 			return err
 		}
-
-		log.Printf("DEBUG: Waiting for %v before next iteration", iterationInterval)
-		time.Sleep(iterationInterval)
+		as.lastActivity = time.Now()
+		log.Printf("DEBUG: Waiting for %v before next iteration", IterationInterval)
+		time.Sleep(IterationInterval)
 	}
 }
 
@@ -71,23 +71,46 @@ func initializeBrowser() (*rod.Browser, error) {
 
 func login(page *rod.Page, account Account) error {
 	log.Printf("DEBUG: Starting login for account %s (Bank Account ID: %s)", account.Username, account.BankAccountID)
-	page.MustNavigate(url)
+
+	if err := page.Navigate(url); err != nil {
+		return fmt.Errorf("failed to navigate to login page: %w", err)
+	}
+
 	if err := handleCookieBanner(page); err != nil {
-		return err
+		return fmt.Errorf("failed to handle cookie banner: %w", err)
 	}
 
 	log.Println("DEBUG: Checking if logged in")
-	loggedIn := page.MustHas(`span.shortCutLink`)
+	var loggedIn bool
+	err := rod.Try(func() {
+		loggedIn = page.MustHas("span.shortCutLink")
+	})
+	if err != nil {
+		return fmt.Errorf("failed to check login status: %w", err)
+	}
+
 	if !loggedIn {
 		log.Println("DEBUG: Not logged in, performing login")
-		page.MustElement(`#user`).MustWaitVisible()
-		page.MustElement(`#user`).MustInput(account.Username)
-		page.MustElement(`#pass`).MustInput(account.Password)
-		page.MustElement(`#OBSubmit`).MustClick()
-		page.MustElement(`span.shortCutLink`).MustWaitVisible()
+
+		if err := performLogin(page, account); err != nil {
+			return fmt.Errorf("login failed: %w", err)
+		}
 	}
 
 	log.Printf("DEBUG: Login successful for account %s (Bank Account ID: %s)", account.Username, account.BankAccountID)
+	return nil
+}
+
+func performLogin(page *rod.Page, account Account) error {
+	err := rod.Try(func() {
+		page.MustElement("#user").MustWaitVisible().MustInput(account.Username)
+		page.MustElement("#pass").MustInput(account.Password)
+		page.MustElement("#OBSubmit").MustClick()
+		page.MustElement("span.shortCutLink").MustWaitVisible()
+	})
+	if err != nil {
+		return fmt.Errorf("login process failed: %w", err)
+	}
 	return nil
 }
 
@@ -162,6 +185,9 @@ func runLoop(page *rod.Page, account Account) error {
 }
 
 func checkLogout(page *rod.Page) (bool, error) {
+	if page == nil {
+		return true, fmt.Errorf("page is nil")
+	}
 	text, err := page.MustElement("body").Text()
 	if err != nil {
 		return false, fmt.Errorf("error getting page text: %w", err)
