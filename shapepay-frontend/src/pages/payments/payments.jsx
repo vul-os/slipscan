@@ -120,9 +120,9 @@ const PaymentsPage = () => {
     <div className="container mx-auto px-2 sm:px-4 py-4 bg-gray-900 text-white">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6">
         <h1 className="text-2xl sm:text-3xl font-bold mb-4 sm:mb-0">Payments</h1>
-        <Button onClick={() => setIsCreatePaymentOpen(true)} className="bg-blue-500 hover:bg-blue-600 w-full sm:w-auto">
+        {/* <Button onClick={() => setIsCreatePaymentOpen(true)} className="bg-blue-500 hover:bg-blue-600 w-full sm:w-auto">
           <Plus className="w-4 h-4 mr-2" /> New Payment
-        </Button>
+        </Button> */}
       </div>
 
       <div className="space-y-6">
