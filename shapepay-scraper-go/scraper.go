@@ -143,14 +143,30 @@ func runLoop(page *rod.Page, account Account) error {
 		return fmt.Errorf("error clicking on Accounts link: %w", err)
 	}
 
-	// Click on "Gold Business Account" link
-	businessAccountElement, err := page.ElementR("#nickname_0 a", "Gold Business Account")
+	// Find the row containing "Gold Business Account"
+	goldAccountRow, err := page.ElementR("div.tableRowInner", "Gold Business Account")
 	if err != nil {
-		return fmt.Errorf("error finding Gold Business Account link: %w", err)
+		return fmt.Errorf("error finding Gold Business Account row: %w", err)
 	}
-	if err := businessAccountElement.Click(proto.InputMouseButtonLeft, 1); err != nil {
-		return fmt.Errorf("error clicking on Gold Business Account link: %w", err)
+
+	// Within that row, find and click on the available balance link
+	availableBalanceElement, err := goldAccountRow.Element("div[id^='availablebalance_'] a")
+	if err != nil {
+		return fmt.Errorf("error finding available balance link for Gold Business Account: %w", err)
 	}
+
+	if err := availableBalanceElement.Click(proto.InputMouseButtonLeft, 1); err != nil {
+		return fmt.Errorf("error clicking on available balance link for Gold Business Account: %w", err)
+	}
+
+	// // Click on "Gold Business Account" link
+	// businessAccountElement, err := page.ElementR("#nickname_0 a", "Gold Business Account")
+	// if err != nil {
+	// 	return fmt.Errorf("error finding Gold Business Account link: %w", err)
+	// }
+	// if err := businessAccountElement.Click(proto.InputMouseButtonLeft, 1); err != nil {
+	// 	return fmt.Errorf("error clicking on Gold Business Account link: %w", err)
+	// }
 
 	// Click on "Transaction History" link
 	transactionHistoryElement, err := page.ElementR("div.subTabButton", "Transaction History")

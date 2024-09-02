@@ -13,9 +13,10 @@ const (
 	MaxInactiveTime    = 10 * time.Minute
 	RestartDelay       = 5 * time.Minute
 	JobMonitorInterval = 1 * time.Minute
-	RetryDelay         = 3 * time.Minute
 	AccountFetchRetry  = 1 * time.Minute
 	IterationInterval  = 1 * time.Second
+	InitialRetryDelay  = 1 * time.Minute
+	MaxRetryDelay      = 10 * time.Minute
 )
 
 type AccountScraper struct {
@@ -56,6 +57,7 @@ func (jm *JobManager) Start() {
 }
 
 func (jm *JobManager) runJob(job *Job) {
+	retryDelay := InitialRetryDelay
 	for {
 		select {
 		case <-job.StopChan:
@@ -80,8 +82,17 @@ func (jm *JobManager) runJob(job *Job) {
 			<-done
 
 			if err != nil {
-				log.Printf("Error running account %s: %v", job.Scraper.account.Username, err)
-				time.Sleep(RetryDelay)
+				log.Printf("Error running account %s: %v. Retrying in %v", job.Scraper.account.Username, err, retryDelay)
+				time.Sleep(retryDelay)
+
+				// Increase retry delay
+				retryDelay += time.Minute
+				if retryDelay > MaxRetryDelay {
+					retryDelay = MaxRetryDelay
+				}
+			} else {
+				// Reset retry delay on successful run
+				retryDelay = InitialRetryDelay
 			}
 		}
 	}
