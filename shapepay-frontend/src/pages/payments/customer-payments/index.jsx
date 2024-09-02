@@ -110,6 +110,12 @@ const PaymentPage = () => {
     }
   }, [paymentDetails?.payment_group_id, supabase]);
 
+  useEffect(() => {
+    if (paymentStatus === "completed") {
+      localStorage.removeItem(storageKey);
+    }
+  }, [paymentStatus]);
+
   const loadSessionData = () => {
     const storedData = localStorage.getItem(storageKey);
     if (storedData) {
@@ -120,7 +126,7 @@ const PaymentPage = () => {
           setNewPayment(data.newPayment || initialPaymentState);
           setCurrentStep(data.currentStep || 0);
           setSessionActive(true);
-          setPaymentDetails(data.paymentDetails || null);  // Add this line
+          setPaymentDetails(data.paymentDetails || null);
         } else {
           localStorage.removeItem(storageKey);
         }
@@ -136,12 +142,12 @@ const PaymentPage = () => {
       const dataToStore = {
         newPayment,
         currentStep,
-        paymentDetails,  // Add this line
+        paymentDetails,
         timestamp: new Date().getTime(),
       };
       localStorage.setItem(storageKey, JSON.stringify({ data: dataToStore, timestamp: new Date().getTime() }));
     }
-  }, [newPayment, currentStep, sessionActive, storageKey, paymentDetails]);  // Add paymentDetails to the dependency array
+  }, [newPayment, currentStep, sessionActive, storageKey, paymentDetails]);
 
   const createSimplePayment = async () => {
     setLoading(true);
@@ -152,7 +158,7 @@ const PaymentPage = () => {
         p_customer_name: newPayment?.customerName,
         p_customer_email: newPayment?.customerEmail,
         p_customer_phone: newPayment?.customerPhone,
-        p_total_amount: 0, //parseFloat(newPayment.amount),
+        p_total_amount: 0,
         p_currency: 'ZAR',
         p_payment_method: 'PayShap'
       });
@@ -225,7 +231,7 @@ const PaymentPage = () => {
         <div className="max-w-lg md:max-w-xl lg:max-w-2xl mx-auto">
           {sessionActive && (
             <div className="mb-4 p-2 md:p-3 bg-blue-600 text-white rounded text-sm md:text-base">
-              Resuming previous payment
+              Active Payment
             </div>
           )}
           {error && (
@@ -274,6 +280,7 @@ const PaymentPage = () => {
               loading={loading}
               currentStep={currentStep}
               paymentDetails={paymentDetails}
+              paymentStatus={paymentStatus}
             />
           </Stepper>
         </div>
