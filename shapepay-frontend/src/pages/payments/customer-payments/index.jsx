@@ -2,13 +2,15 @@ import React, { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
 import { Step, Stepper, useStepper } from "@/components/stepper";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { Info } from "lucide-react";
+import { Info, CheckCircle, Loader2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { supabase } from "../../../services/supabaseClient"
 import PaymentDetailsStep from "./payment-details";
 import CustomerInformationStep from "./customer-information";
 import PaymentConfoirmationStep from "./confirmation";
+import StepperFooter from "./stepper-footer";
+import CompletionStep from "./completion";
 
 const steps = [
   { label: "Payment" },
@@ -37,6 +39,8 @@ const PaymentPage = () => {
   const [sessionActive, setSessionActive] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [paymentStatus, setPaymentStatus] = useState("pending");
+  const [paymentAmount, setPaymentAmount] = useState(0);
 
   const storageKey = `${STORAGE_KEY_PREFIX}${merchantHandle}`;
 
@@ -67,6 +71,45 @@ const PaymentPage = () => {
     }
   }, [merchantHandle]);
 
+  useEffect(() => {
+    if (paymentDetails?.payment_group_id) {
+      const fetchInitialStatus = async () => {
+        const { data, error } = await supabase
+          .from('payment_groups')
+          .select('status, total_amount')
+          .eq('id', paymentDetails.payment_group_id)
+          .single();
+
+        if (error) {
+          console.error('Error fetching initial payment status:', error);
+          return;
+        }
+        console.log(data)
+        setPaymentStatus(data.status);
+        setPaymentAmount(data.total_amount);
+      };
+
+      fetchInitialStatus();
+
+      const subscription = supabase
+        .channel(`payment_${paymentDetails.payment_group_id}`)
+        .on('postgres_changes', {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'payment_groups',
+          filter: `id=eq.${paymentDetails.payment_group_id}`
+        }, (payload) => {
+          setPaymentStatus(payload.new.status);
+          setPaymentAmount(payload.new.total_amount);
+        })
+        .subscribe();
+
+      return () => {
+        subscription.unsubscribe();
+      };
+    }
+  }, [paymentDetails?.payment_group_id, supabase]);
+
   const loadSessionData = () => {
     const storedData = localStorage.getItem(storageKey);
     if (storedData) {
@@ -77,6 +120,7 @@ const PaymentPage = () => {
           setNewPayment(data.newPayment || initialPaymentState);
           setCurrentStep(data.currentStep || 0);
           setSessionActive(true);
+          setPaymentDetails(data.paymentDetails || null);  // Add this line
         } else {
           localStorage.removeItem(storageKey);
         }
@@ -92,11 +136,12 @@ const PaymentPage = () => {
       const dataToStore = {
         newPayment,
         currentStep,
+        paymentDetails,  // Add this line
         timestamp: new Date().getTime(),
       };
       localStorage.setItem(storageKey, JSON.stringify({ data: dataToStore, timestamp: new Date().getTime() }));
     }
-  }, [newPayment, currentStep, sessionActive, storageKey]);
+  }, [newPayment, currentStep, sessionActive, storageKey, paymentDetails]);  // Add paymentDetails to the dependency array
 
   const createSimplePayment = async () => {
     setLoading(true);
@@ -114,8 +159,9 @@ const PaymentPage = () => {
 
       if (error) throw error;
       const d = data.length > 0 ? data[0] : data
-      console.log(d)
       setPaymentDetails(d);
+      setPaymentStatus(d.status);
+      setPaymentAmount(d.total_amount);
       return data;
     } catch (error) {
       console.error("Error creating payment:", error);
@@ -131,6 +177,8 @@ const PaymentPage = () => {
     setCurrentStep(0);
     setSessionActive(false);
     setPaymentDetails(null);
+    setPaymentStatus("pending");
+    setPaymentAmount(0);
     localStorage.removeItem(storageKey);
   };
 
@@ -210,7 +258,9 @@ const PaymentPage = () => {
                   )}
                    {index === 3 && (
                     <CompletionStep 
-                      paymentDetails={paymentDetails} 
+                      paymentDetails={paymentDetails}
+                      paymentStatus={paymentStatus}
+                      paymentAmount={paymentAmount}
                     />
                   )}
                 </div>
@@ -228,78 +278,6 @@ const PaymentPage = () => {
           </Stepper>
         </div>
       </main>
-    </div>
-  );
-};
-
-const CompletionStep = ({ paymentDetails }) => {
-  return (
-    <div className="h-32 sm:h-40 md:h-48 lg:h-56 flex items-center justify-center my-2 border border-green-600 bg-green-900 text-green-100 rounded-md">
-      <h1 className="text-lg sm:text-xl md:text-2xl lg:text-3xl text-center px-4">Payment Completed Successfully! 🎉</h1>
-    </div>
-  );
-};
-
-const StepperFooter = ({ 
-  newPayment, 
-  createSimplePayment, 
-  setCurrentStep, 
-  setSessionActive, 
-  loading, 
-  currentStep,
-  paymentDetails
-}) => {
-  const {
-    nextStep,
-    prevStep,
-    isDisabledStep,
-    hasCompletedAllSteps,
-    isLastStep,
-    activeStep,
-  } = useStepper();
-
-  const handleNext = async () => {
-    if (activeStep === 1) {
-      const paymentResult = await createSimplePayment();
-      if (paymentResult) {
-        nextStep();
-        setCurrentStep(activeStep + 1);
-      }
-    } else {
-      nextStep();
-      setCurrentStep(activeStep + 1);
-    }
-    setSessionActive(true);
-  };
-
-  const handlePrev = () => {
-    prevStep();
-    setCurrentStep(activeStep - 1);
-  };
-
-  const isFormValid = true;
-  const isLastStepValid = currentStep === 1 && paymentDetails;
-
-  return (
-    <div className="w-full flex justify-end gap-2 md:gap-4 mt-4 md:mt-6">       
-      <Button
-        disabled={isDisabledStep || loading}
-        onClick={handlePrev}
-        size="sm"
-        className="bg-gray-700 hover:bg-gray-600 text-gray-100 text-xs sm:text-sm md:text-base px-4 py-2 md:px-6 md:py-3"
-      >
-        Previous
-      </Button>
-      {(isFormValid || isLastStepValid) && !isLastStep && (
-        <Button 
-          size="sm" 
-          onClick={handleNext} 
-          className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm md:text-base px-4 py-2 md:px-6 md:py-3"
-          disabled={loading}
-        >
-          {loading ? "Processing..." : "Next"}
-        </Button>
-      )}
     </div>
   );
 };
