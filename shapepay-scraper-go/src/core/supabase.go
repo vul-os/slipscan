@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"context"
@@ -26,10 +26,10 @@ type Account struct {
 	Password      string
 }
 
-func initDB() error {
+func InitDB() (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
-		return fmt.Errorf("unable to parse database URL: %w", err)
+		return nil, fmt.Errorf("unable to parse database URL: %w", err)
 	}
 
 	// Configure the pool to prefer simple protocol
@@ -38,13 +38,13 @@ func initDB() error {
 	// Connect to the database
 	dbPool, err = pgxpool.ConnectConfig(context.Background(), config)
 	if err != nil {
-		return fmt.Errorf("unable to connect to database: %w", err)
+		return nil, fmt.Errorf("unable to connect to database: %w", err)
 	}
 
-	return nil
+	return dbPool, nil
 }
 
-func getAvailableAccounts(limit int) ([]Account, error) {
+func GetAvailableAccounts(limit int) ([]Account, error) {
 	ctx := context.Background()
 	query := `
 		UPDATE bank_account_logins
@@ -88,7 +88,7 @@ func getAvailableAccounts(limit int) ([]Account, error) {
 	return accounts, nil
 }
 
-func updateAccountActivity(accountID string) error {
+func UpdateAccountActivity(accountID string) error {
 	ctx := context.Background()
 	query := `
         UPDATE bank_account_logins
@@ -99,7 +99,7 @@ func updateAccountActivity(accountID string) error {
 	return err
 }
 
-func resetAccount(accountID string) error {
+func ResetAccount(accountID string) error {
 	ctx := context.Background()
 	query := `
 		UPDATE bank_account_logins
@@ -114,7 +114,7 @@ func resetAccount(accountID string) error {
 	return nil
 }
 
-func insertAccount(username, password string, bankAccountID uuid.UUID) error {
+func InsertAccount(username, password string, bankAccountID uuid.UUID) error {
 	encryptedUsername, err := Encrypt(username)
 	if err != nil {
 		return err
@@ -132,7 +132,7 @@ func insertAccount(username, password string, bankAccountID uuid.UUID) error {
 	return err
 }
 
-func saveToSupabase(transactions []map[string]string, bankAccountID uuid.UUID) error {
+func SaveToSupabase(transactions []map[string]string, bankAccountID uuid.UUID) error {
 	ctx := context.Background()
 	tx, err := dbPool.Begin(ctx)
 	if err != nil {
@@ -218,7 +218,7 @@ func saveToSupabase(transactions []map[string]string, bankAccountID uuid.UUID) e
 	return tx.Commit(ctx)
 }
 
-func getLastActivityTime(accountID string) (time.Time, error) {
+func GetLastActivityTime(accountID string) (time.Time, error) {
 	ctx := context.Background()
 	var lastActivityTime sql.NullTime
 
@@ -235,7 +235,7 @@ func getLastActivityTime(accountID string) (time.Time, error) {
 	}
 }
 
-func getAllRunningAccounts() ([]Account, error) {
+func GetAllRunningAccounts() ([]Account, error) {
 	ctx := context.Background()
 	rows, err := dbPool.Query(ctx, "SELECT id, bank_account_id, encrypted_username, encrypted_password FROM bank_account_logins WHERE is_running = TRUE")
 	if err != nil {

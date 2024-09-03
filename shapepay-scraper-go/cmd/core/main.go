@@ -1,4 +1,4 @@
-package main
+package main_core
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-rod/rod"
+	"github.com/exolutionza/shapepay-scraper-go/src/core"
 )
 
 const (
@@ -19,17 +19,13 @@ const (
 	MaxRetryDelay      = 10 * time.Minute
 )
 
-type AccountScraper struct {
-	account      Account
-	browser      *rod.Browser
-	page         *rod.Page
-	lastActivity time.Time
-	stopChan     chan struct{}
-}
+const (
+	url = "https://fnb.co.za"
+)
 
 type Job struct {
 	ID       string
-	Scraper  *AccountScraper
+	Scraper  *core.AccountScraper
 	StopChan chan struct{}
 }
 
@@ -61,7 +57,7 @@ func (jm *JobManager) runJob(job *Job) {
 	for {
 		select {
 		case <-job.StopChan:
-			log.Printf("Job for account %s stopped", job.Scraper.account.Username)
+			log.Printf("Job for account %s stopped", job.Scraper.Account.Username)
 			return
 		default:
 			done := make(chan struct{})
@@ -70,19 +66,19 @@ func (jm *JobManager) runJob(job *Job) {
 			go func() {
 				defer func() {
 					if r := recover(); r != nil {
-						log.Printf("Recovered from panic in runAccount for account %s: %v", job.Scraper.account.Username, r)
+						log.Printf("Recovered from panic in runAccount for account %s: %v", job.Scraper.Account.Username, r)
 						err = fmt.Errorf("panic in runAccount: %v", r)
 					}
 					close(done)
 				}()
 
-				err = runAccount(job.Scraper)
+				err = core.RunAccount(job.Scraper, IterationInterval, url)
 			}()
 
 			<-done
 
 			if err != nil {
-				log.Printf("Error running account %s: %v. Retrying in %v", job.Scraper.account.Username, err, retryDelay)
+				log.Printf("Error running account %s: %v. Retrying in %v", job.Scraper.Account.Username, err, retryDelay)
 				time.Sleep(retryDelay)
 
 				// Increase retry delay
@@ -103,8 +99,8 @@ func (jm *JobManager) MonitorJobs() {
 		time.Sleep(JobMonitorInterval)
 		jm.JobMutex.Lock()
 		for _, job := range jm.Jobs {
-			if time.Since(job.Scraper.lastActivity) > MaxInactiveTime {
-				log.Printf("Job for account %s seems to be hanging. Forcing stop and scheduling restart...", job.Scraper.account.Username)
+			if time.Since(job.Scraper.LastActivity) > MaxInactiveTime {
+				log.Printf("Job for account %s seems to be hanging. Forcing stop and scheduling restart...", job.Scraper.Account.Username)
 
 				forceStopJob(job)
 				close(job.StopChan)
@@ -114,7 +110,7 @@ func (jm *JobManager) MonitorJobs() {
 
 				go func(j *Job) {
 					time.Sleep(RestartDelay)
-					log.Printf("Restarting job for account %s", j.Scraper.account.Username)
+					log.Printf("Restarting job for account %s", j.Scraper.Account.Username)
 					jm.runJob(j)
 				}(job)
 			}
@@ -124,17 +120,19 @@ func (jm *JobManager) MonitorJobs() {
 }
 
 func forceStopJob(job *Job) {
-	if job.Scraper.browser != nil {
-		job.Scraper.browser.MustClose()
-		job.Scraper.browser = nil
+	if job.Scraper.Browser != nil {
+		job.Scraper.Browser.MustClose()
+		job.Scraper.Browser = nil
 	}
-	job.Scraper.page = nil
-	job.Scraper.lastActivity = time.Now()
-	log.Printf("Forced stop of job %s (Account: %s)", job.ID, job.Scraper.account.Username)
+	job.Scraper.Page = nil
+	job.Scraper.LastActivity = time.Now()
+	log.Printf("Forced stop of job %s (Account: %s)", job.ID, job.Scraper.Account.Username)
 }
 
 func main() {
-	if err := initDB(); err != nil {
+	dbPool, err := core.InitDB()
+
+	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer dbPool.Close()
@@ -145,7 +143,7 @@ func main() {
 	maxConcurrentAccounts := 10 // Adjust as needed
 
 	for {
-		accounts, err := getAvailableAccounts(maxConcurrentAccounts)
+		accounts, err := core.GetAvailableAccounts(maxConcurrentAccounts)
 		if err != nil {
 			log.Printf("Error getting available accounts: %v. Retrying in %v.", err, AccountFetchRetry)
 			time.Sleep(AccountFetchRetry)
@@ -153,16 +151,16 @@ func main() {
 		}
 
 		for _, account := range accounts {
-			scraper := &AccountScraper{
-				account:      account,
-				lastActivity: time.Now(),
-				stopChan:     make(chan struct{}),
+			scraper := &core.AccountScraper{
+				Account:      account,
+				LastActivity: time.Now(),
+				StopChan:     make(chan struct{}),
 			}
 
 			job := &Job{
 				ID:       fmt.Sprintf("job-%s", account.ID),
 				Scraper:  scraper,
-				StopChan: scraper.stopChan,
+				StopChan: scraper.StopChan,
 			}
 
 			jobManager.AddJob(job)

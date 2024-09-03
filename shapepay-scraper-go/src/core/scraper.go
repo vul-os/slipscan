@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -12,49 +12,53 @@ import (
 	"github.com/go-rod/rod/lib/proto"
 )
 
-const (
-	url = "https://fnb.co.za"
-)
+type AccountScraper struct {
+	Account      Account
+	Browser      *rod.Browser
+	Page         *rod.Page
+	LastActivity time.Time
+	StopChan     chan struct{}
+}
 
-func runAccount(as *AccountScraper) error {
-	log.Printf("DEBUG: Starting new session for account %s (Bank Account ID: %s)", as.account.Username, as.account.BankAccountID)
+func RunAccount(as *AccountScraper, iterationInterval time.Duration, url string) error {
+	log.Printf("DEBUG: Starting new session for account %s (Bank Account ID: %s)", as.Account.Username, as.Account.BankAccountID)
 
 	var err error
-	if as.browser == nil {
-		as.browser, err = initializeBrowser()
+	if as.Browser == nil {
+		as.Browser, err = initializeBrowser()
 		if err != nil {
 			return fmt.Errorf("failed to initialize browser: %w", err)
 		}
-		as.page = as.browser.MustPage(url)
+		as.Page = as.Browser.MustPage(url)
 
-		if err := login(as.page, as.account); err != nil {
-			log.Printf("Login failed for account %s (Bank Account ID: %s): %v", as.account.Username, as.account.BankAccountID, err)
-			as.browser.Close()
-			as.browser = nil
-			as.page = nil
+		if err := login(as.Page, as.Account, url); err != nil {
+			log.Printf("Login failed for account %s (Bank Account ID: %s): %v", as.Account.Username, as.Account.BankAccountID, err)
+			as.Browser.Close()
+			as.Browser = nil
+			as.Page = nil
 			return err
 		}
 	}
 
 	for {
-		if err := runLoop(as.page, as.account); err != nil {
+		if err := runLoop(as.Page, as.Account); err != nil {
 			if strings.Contains(err.Error(), "logged out") {
-				log.Printf("Logged out detected for account %s (Bank Account ID: %s). Attempting to log in again.", as.account.Username, as.account.BankAccountID)
-				if loginErr := login(as.page, as.account); loginErr != nil {
-					log.Printf("Re-login failed for account %s (Bank Account ID: %s): %v", as.account.Username, as.account.BankAccountID, loginErr)
-					as.browser.Close()
-					as.browser = nil
-					as.page = nil
+				log.Printf("Logged out detected for account %s (Bank Account ID: %s). Attempting to log in again.", as.Account.Username, as.Account.BankAccountID)
+				if loginErr := login(as.Page, as.Account, url); loginErr != nil {
+					log.Printf("Re-login failed for account %s (Bank Account ID: %s): %v", as.Account.Username, as.Account.BankAccountID, loginErr)
+					as.Browser.Close()
+					as.Browser = nil
+					as.Page = nil
 					return loginErr
 				}
 				continue
 			}
-			log.Printf("Error during loop for account %s (Bank Account ID: %s): %v", as.account.Username, as.account.BankAccountID, err)
+			log.Printf("Error during loop for account %s (Bank Account ID: %s): %v", as.Account.Username, as.Account.BankAccountID, err)
 			return err
 		}
-		as.lastActivity = time.Now()
-		log.Printf("DEBUG: Waiting for %v before next iteration", IterationInterval)
-		time.Sleep(IterationInterval)
+		as.LastActivity = time.Now()
+		log.Printf("DEBUG: Waiting for %v before next iteration", iterationInterval)
+		time.Sleep(iterationInterval)
 	}
 }
 
@@ -69,7 +73,7 @@ func initializeBrowser() (*rod.Browser, error) {
 	return browser, nil
 }
 
-func login(page *rod.Page, account Account) error {
+func login(page *rod.Page, account Account, url string) error {
 	log.Printf("DEBUG: Starting login for account %s (Bank Account ID: %s)", account.Username, account.BankAccountID)
 
 	if err := page.Navigate(url); err != nil {
@@ -117,7 +121,7 @@ func performLogin(page *rod.Page, account Account) error {
 func runLoop(page *rod.Page, account Account) error {
 	log.Printf("DEBUG: Starting new iteration in runLoop for account %s (Bank Account ID: %s)", account.Username, account.BankAccountID)
 
-	if err := updateAccountActivity(account.ID); err != nil {
+	if err := UpdateAccountActivity(account.ID); err != nil {
 		return fmt.Errorf("error updating account activity: %w", err)
 	}
 
@@ -192,7 +196,7 @@ func runLoop(page *rod.Page, account Account) error {
 	transactions := parseTableHTML(tableHTML)
 
 	log.Println("DEBUG: Saving to Supabase")
-	if err := saveToSupabase(transactions, account.BankAccountID); err != nil {
+	if err := SaveToSupabase(transactions, account.BankAccountID); err != nil {
 		return fmt.Errorf("error saving to database: %w", err)
 	}
 
