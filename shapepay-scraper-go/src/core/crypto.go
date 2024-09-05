@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"crypto/aes"
@@ -16,6 +16,18 @@ const (
 	encryptionKey = "***REMOVED***"
 	cookieFile    = "./cookies.json"
 )
+
+func getUsernamePassword(encryptedUsername, encryptedPassword []byte) (string, string, error) {
+	username, err := Decrypt(encryptedUsername)
+	if err != nil {
+		return "", "", fmt.Errorf("error decrypting username: %w", err)
+	}
+	password, err := Decrypt(encryptedPassword)
+	if err != nil {
+		return "", "", fmt.Errorf("error decrypting password: %w", err)
+	}
+	return username, password, nil
+}
 
 func Encrypt(plaintext string) ([]byte, error) {
 	block, err := aes.NewCipher([]byte(encryptionKey))

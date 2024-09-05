@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -16,7 +16,7 @@ const (
 	url = "https://fnb.co.za"
 )
 
-func runAccount(as *AccountScraper) error {
+func runAccount(as *AccountScraper, iterationIterval time.Duration) error {
 	log.Printf("DEBUG: Starting new session for account %s (Bank Account ID: %s)", as.account.Username, as.account.BankAccountID)
 
 	var err error
@@ -53,8 +53,8 @@ func runAccount(as *AccountScraper) error {
 			return err
 		}
 		as.lastActivity = time.Now()
-		log.Printf("DEBUG: Waiting for %v before next iteration", IterationInterval)
-		time.Sleep(IterationInterval)
+		log.Printf("DEBUG: Waiting for %v before next iteration", iterationIterval)
+		time.Sleep(iterationIterval)
 	}
 }
 

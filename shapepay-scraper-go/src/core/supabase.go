@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"context"
@@ -9,39 +9,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/exolutionza/shapepay-scraper-go/src/db"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v4/pgxpool"
 )
-
-const (
-	dbURL = "user=postgres.wmpyolgckopmwhhlaiye password=***REMOVED*** host=aws-0-eu-central-1.pooler.supabase.com port=6543 dbname=postgres"
-)
-
-var dbPool *pgxpool.Pool
 
 type Account struct {
 	ID            string
 	BankAccountID uuid.UUID
 	Username      string
 	Password      string
-}
-
-func initDB() error {
-	config, err := pgxpool.ParseConfig(dbURL)
-	if err != nil {
-		return fmt.Errorf("unable to parse database URL: %w", err)
-	}
-
-	// Configure the pool to prefer simple protocol
-	config.ConnConfig.PreferSimpleProtocol = true
-
-	// Connect to the database
-	dbPool, err = pgxpool.ConnectConfig(context.Background(), config)
-	if err != nil {
-		return fmt.Errorf("unable to connect to database: %w", err)
-	}
-
-	return nil
 }
 
 func getAvailableAccounts(limit int) ([]Account, error) {
@@ -57,8 +33,7 @@ func getAvailableAccounts(limit int) ([]Account, error) {
 		RETURNING id, bank_account_id, encrypted_username, encrypted_password
 	`
 
-	// Use QueryRow instead of Query to avoid prepared statement issues
-	rows, err := dbPool.Query(ctx, query, limit)
+	rows, err := db.Pool.Query(ctx, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("error querying available accounts: %w", err)
 	}
@@ -71,13 +46,9 @@ func getAvailableAccounts(limit int) ([]Account, error) {
 		if err := rows.Scan(&account.ID, &account.BankAccountID, &encryptedUsername, &encryptedPassword); err != nil {
 			return nil, fmt.Errorf("error scanning account row: %w", err)
 		}
-		account.Username, err = Decrypt(encryptedUsername)
+		account.Username, account.Password, err = getUsernamePassword(encryptedUsername, encryptedPassword)
 		if err != nil {
-			return nil, fmt.Errorf("error decrypting username: %w", err)
-		}
-		account.Password, err = Decrypt(encryptedPassword)
-		if err != nil {
-			return nil, fmt.Errorf("error decrypting password: %w", err)
+			return nil, err
 		}
 		accounts = append(accounts, account)
 	}
@@ -95,7 +66,7 @@ func updateAccountActivity(accountID string) error {
         SET last_activity_time = NOW()
         WHERE id = $1
     `
-	_, err := dbPool.Exec(ctx, query, accountID)
+	_, err := db.Pool.Exec(ctx, query, accountID)
 	return err
 }
 
@@ -106,7 +77,7 @@ func resetAccount(accountID string) error {
 		SET is_running = FALSE, last_activity_time = NULL
 		WHERE id = $1
 	`
-	_, err := dbPool.Exec(ctx, query, accountID)
+	_, err := db.Pool.Exec(ctx, query, accountID)
 	if err != nil {
 		return fmt.Errorf("error resetting account %s: %w", accountID, err)
 	}
@@ -125,7 +96,7 @@ func insertAccount(username, password string, bankAccountID uuid.UUID) error {
 	}
 
 	ctx := context.Background()
-	_, err = dbPool.Exec(ctx, `
+	_, err = db.Pool.Exec(ctx, `
 		INSERT INTO bank_account_logins (bank_account_id, encrypted_username, encrypted_password)
 		VALUES ($1, $2, $3)
 	`, bankAccountID, encryptedUsername, encryptedPassword)
@@ -134,7 +105,7 @@ func insertAccount(username, password string, bankAccountID uuid.UUID) error {
 
 func saveToSupabase(transactions []map[string]string, bankAccountID uuid.UUID) error {
 	ctx := context.Background()
-	tx, err := dbPool.Begin(ctx)
+	tx, err := db.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error beginning transaction: %w", err)
 	}
@@ -222,7 +193,7 @@ func getLastActivityTime(accountID string) (time.Time, error) {
 	ctx := context.Background()
 	var lastActivityTime sql.NullTime
 
-	err := dbPool.QueryRow(ctx, "SELECT last_activity_time FROM bank_account_logins WHERE id = $1", accountID).Scan(&lastActivityTime)
+	err := db.Pool.QueryRow(ctx, "SELECT last_activity_time FROM bank_account_logins WHERE id = $1", accountID).Scan(&lastActivityTime)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -237,7 +208,7 @@ func getLastActivityTime(accountID string) (time.Time, error) {
 
 func getAllRunningAccounts() ([]Account, error) {
 	ctx := context.Background()
-	rows, err := dbPool.Query(ctx, "SELECT id, bank_account_id, encrypted_username, encrypted_password FROM bank_account_logins WHERE is_running = TRUE")
+	rows, err := db.Pool.Query(ctx, "SELECT id, bank_account_id, encrypted_username, encrypted_password FROM bank_account_logins WHERE is_running = TRUE")
 	if err != nil {
 		return nil, err
 	}
@@ -250,11 +221,7 @@ func getAllRunningAccounts() ([]Account, error) {
 		if err := rows.Scan(&account.ID, &account.BankAccountID, &encryptedUsername, &encryptedPassword); err != nil {
 			return nil, err
 		}
-		account.Username, err = Decrypt(encryptedUsername)
-		if err != nil {
-			return nil, err
-		}
-		account.Password, err = Decrypt(encryptedPassword)
+		account.Username, account.Password, err = getUsernamePassword(encryptedUsername, encryptedPassword)
 		if err != nil {
 			return nil, err
 		}

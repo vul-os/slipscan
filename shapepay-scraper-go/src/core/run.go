@@ -1,4 +1,4 @@
-package main
+package core
 
 import (
 	"fmt"
@@ -6,8 +6,25 @@ import (
 	"sync"
 	"time"
 
+	"github.com/exolutionza/shapepay-scraper-go/src/db"
 	"github.com/go-rod/rod"
 )
+
+type Config struct {
+	MaxConcurrentAccounts int
+	InitialRetryDelay     time.Duration
+	IterationInterval     time.Duration
+	MaxRetryDelay         time.Duration
+	JobMonitorInterval    time.Duration
+	MaxInactiveTime       time.Duration
+	RestartDelay          time.Duration
+	AccountFetchRetry     time.Duration
+}
+
+type Core struct {
+	JobManager *JobManager
+	Config     Config
+}
 
 type AccountScraper struct {
 	account      Account
@@ -28,6 +45,24 @@ type JobManager struct {
 	JobMutex sync.Mutex
 }
 
+func NewCore(config Config) *Core {
+	return &Core{
+		JobManager: NewJobManager(),
+		Config:     config,
+	}
+}
+
+func (c *Core) Init() error {
+	// Initialize database connection
+	if err := db.InitDB(); err != nil {
+		return fmt.Errorf("failed to initialize database: %w", err)
+	}
+
+	// Any other initialization can go here
+
+	return nil
+}
+
 func NewJobManager() *JobManager {
 	return &JobManager{
 		Jobs: make(map[string]*Job),
@@ -40,14 +75,14 @@ func (jm *JobManager) AddJob(job *Job) {
 	jm.Jobs[job.ID] = job
 }
 
-func (jm *JobManager) Start() {
-	for _, job := range jm.Jobs {
-		go jm.runJob(job)
+func (c *Core) Start() {
+	for _, job := range c.JobManager.Jobs {
+		go c.runJob(job)
 	}
 }
 
-func (jm *JobManager) runJob(job *Job) {
-	retryDelay := InitialRetryDelay
+func (c *Core) runJob(job *Job) {
+	retryDelay := c.Config.InitialRetryDelay
 	for {
 		select {
 		case <-job.StopChan:
@@ -66,7 +101,7 @@ func (jm *JobManager) runJob(job *Job) {
 					close(done)
 				}()
 
-				err = runAccount(job.Scraper)
+				err = runAccount(job.Scraper, c.Config.IterationInterval)
 			}()
 
 			<-done
@@ -77,43 +112,43 @@ func (jm *JobManager) runJob(job *Job) {
 
 				// Increase retry delay
 				retryDelay += time.Minute
-				if retryDelay > MaxRetryDelay {
-					retryDelay = MaxRetryDelay
+				if retryDelay > c.Config.MaxRetryDelay {
+					retryDelay = c.Config.MaxRetryDelay
 				}
 			} else {
 				// Reset retry delay on successful run
-				retryDelay = InitialRetryDelay
+				retryDelay = c.Config.InitialRetryDelay
 			}
 		}
 	}
 }
 
-func (jm *JobManager) MonitorJobs() {
+func (c *Core) MonitorJobs() {
 	for {
-		time.Sleep(JobMonitorInterval)
-		jm.JobMutex.Lock()
-		for _, job := range jm.Jobs {
-			if time.Since(job.Scraper.lastActivity) > MaxInactiveTime {
+		time.Sleep(c.Config.JobMonitorInterval)
+		c.JobManager.JobMutex.Lock()
+		for _, job := range c.JobManager.Jobs {
+			if time.Since(job.Scraper.lastActivity) > c.Config.MaxInactiveTime {
 				log.Printf("Job for account %s seems to be hanging. Forcing stop and scheduling restart...", job.Scraper.account.Username)
 
-				forceStopJob(job)
+				c.forceStopJob(job)
 				close(job.StopChan)
 
 				newStopChan := make(chan struct{})
 				job.StopChan = newStopChan
 
 				go func(j *Job) {
-					time.Sleep(RestartDelay)
+					time.Sleep(c.Config.RestartDelay)
 					log.Printf("Restarting job for account %s", j.Scraper.account.Username)
-					jm.runJob(j)
+					c.runJob(j)
 				}(job)
 			}
 		}
-		jm.JobMutex.Unlock()
+		c.JobManager.JobMutex.Unlock()
 	}
 }
 
-func forceStopJob(job *Job) {
+func (c *Core) forceStopJob(job *Job) {
 	if job.Scraper.browser != nil {
 		job.Scraper.browser.MustClose()
 		job.Scraper.browser = nil
@@ -123,12 +158,12 @@ func forceStopJob(job *Job) {
 	log.Printf("Forced stop of job %s (Account: %s)", job.ID, job.Scraper.account.Username)
 }
 
-func Run(jobManager *JobManager, maxConcurrentAccounts int) {
+func (c *Core) Run() {
 	for {
-		accounts, err := getAvailableAccounts(maxConcurrentAccounts)
+		accounts, err := getAvailableAccounts(c.Config.MaxConcurrentAccounts)
 		if err != nil {
-			log.Printf("Error getting available accounts: %v. Retrying in %v.", err, AccountFetchRetry)
-			time.Sleep(AccountFetchRetry)
+			log.Printf("Error getting available accounts: %v. Retrying in %v.", err, c.Config.AccountFetchRetry)
+			time.Sleep(c.Config.AccountFetchRetry)
 			continue
 		}
 
@@ -145,10 +180,10 @@ func Run(jobManager *JobManager, maxConcurrentAccounts int) {
 				StopChan: scraper.stopChan,
 			}
 
-			jobManager.AddJob(job)
+			c.JobManager.AddJob(job)
 		}
 
-		jobManager.Start()
+		c.Start()
 
 		// Run indefinitely
 		select {}
