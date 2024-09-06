@@ -3,6 +3,7 @@ package core
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -19,6 +20,7 @@ type Config struct {
 	MaxInactiveTime       time.Duration
 	RestartDelay          time.Duration
 	AccountFetchRetry     time.Duration
+	RandomResetInterval   time.Duration
 }
 
 type Core struct {
@@ -148,6 +150,38 @@ func (c *Core) MonitorJobs() {
 	}
 }
 
+func (c *Core) RandomJobReset() {
+	for {
+		time.Sleep(c.Config.RandomResetInterval)
+		c.JobManager.JobMutex.Lock()
+		jobs := make([]*Job, 0, len(c.JobManager.Jobs))
+		for _, job := range c.JobManager.Jobs {
+			jobs = append(jobs, job)
+		}
+		c.JobManager.JobMutex.Unlock()
+
+		if len(jobs) > 0 {
+			randomIndex := rand.Intn(len(jobs))
+			job := jobs[randomIndex]
+
+			log.Printf("Randomly resetting job for account %s", job.Scraper.account.Username)
+
+			c.forceStopJob(job)
+			close(job.StopChan)
+
+			newStopChan := make(chan struct{})
+			job.StopChan = newStopChan
+
+			go func(j *Job) {
+				restartDelay := c.Config.RestartDelay + time.Duration(rand.Intn(int(time.Minute*5)))
+				time.Sleep(restartDelay)
+				log.Printf("Restarting randomly reset job for account %s", j.Scraper.account.Username)
+				c.runJob(j)
+			}(job)
+		}
+	}
+}
+
 func (c *Core) forceStopJob(job *Job) {
 	if job.Scraper.browser != nil {
 		job.Scraper.browser.MustClose()
@@ -159,6 +193,12 @@ func (c *Core) forceStopJob(job *Job) {
 }
 
 func (c *Core) Run() {
+	// Start the job monitor
+	go c.MonitorJobs()
+
+	// Start the random job reset
+	go c.RandomJobReset()
+
 	for {
 		accounts, err := getAvailableAccounts(c.Config.MaxConcurrentAccounts)
 		if err != nil {
