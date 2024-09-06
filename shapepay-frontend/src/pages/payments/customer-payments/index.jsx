@@ -6,11 +6,11 @@ import { Info, CheckCircle, Loader2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { supabase } from "../../../services/supabaseClient"
-import PaymentDetailsStep from "./payment-details";
-import CustomerInformationStep from "./customer-information";
-import PaymentConfoirmationStep from "./confirmation";
+import PaymentDetails from "./payment-details";
+import CustomerInformation from "./customer-information";
+import PaymentConfoirmation from "./confirmation";
+import Completion from "./completion";
 import StepperFooter from "./stepper-footer";
-import CompletionStep from "./completion";
 
 const steps = [
   { label: "Payment" },
@@ -244,26 +244,26 @@ const PaymentPage = () => {
               <Step key={stepProps.label} {...stepProps}>
                 <div className="bg-gray-800 rounded-lg shadow-lg p-4 sm:p-6 md:p-8 lg:p-10 my-4 sm:my-6 md:my-8 border border-gray-700">
                   {index === 0 && (
-                    <PaymentDetailsStep
+                    <PaymentDetails
                       newPayment={newPayment}
                       setNewPayment={setNewPayment}
                       merchantDetails={merchantDetails}
                     />
                   )}
                   {index === 1 && (
-                    <CustomerInformationStep
+                    <CustomerInformation
                       newPayment={newPayment}
                       setNewPayment={setNewPayment}
                     />
                   )}
                   {index === 2 && (
-                    <PaymentConfoirmationStep 
+                    <PaymentConfoirmation 
                       paymentDetails={paymentDetails} 
                       newPayment={newPayment}
                     />
                   )}
                    {index === 3 && (
-                    <CompletionStep 
+                    <Completion
                       paymentDetails={paymentDetails}
                       paymentStatus={paymentStatus}
                       paymentAmount={paymentAmount}

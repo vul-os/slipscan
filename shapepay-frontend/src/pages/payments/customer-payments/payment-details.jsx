@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-const PaymentDetailsStep = ({ merchantDetails, newPayment, setNewPayment }) => {
+const PaymentDetails = ({ merchantDetails, newPayment, setNewPayment }) => {
   return (
     <div className="flex flex-col items-center justify-center w-full">
       <h2 className="text-xl sm:text-2xl font-bold text-indigo-300 mb-4 sm:mb-6">
@@ -36,4 +36,4 @@ const PaymentDetailsStep = ({ merchantDetails, newPayment, setNewPayment }) => {
   );
 };
 
-export default PaymentDetailsStep;
+export default PaymentDetails;

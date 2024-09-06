@@ -4,7 +4,7 @@ import PayshapLogo from "./payshap-logo";
 
 const shapNumber = "+2779048662@FNB"
 
-const PaymentConfoirmationStep = ({ paymentDetails }) => {
+const PaymentConfoirmation = ({ paymentDetails }) => {
     const handleCopyCode = () => {
         navigator.clipboard.writeText(paymentDetails?.payment_code);
         alert("Transaction code copied to clipboard!");
@@ -63,4 +63,4 @@ const PaymentConfoirmationStep = ({ paymentDetails }) => {
   );
 };
 
-export default PaymentConfoirmationStep;
+export default PaymentConfoirmation;

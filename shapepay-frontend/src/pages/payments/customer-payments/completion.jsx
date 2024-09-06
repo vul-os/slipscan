@@ -1,7 +1,7 @@
 import React from "react";
 import { CheckCircle, Loader2, AlertTriangle } from "lucide-react";
 
-const CompletionStep = ({ paymentDetails, paymentStatus, paymentAmount }) => {
+const Completion = ({ paymentDetails, paymentStatus, paymentAmount }) => {
   const getStatusContent = () => {
     switch (paymentStatus) {
       case "completed":
@@ -53,4 +53,4 @@ const CompletionStep = ({ paymentDetails, paymentStatus, paymentAmount }) => {
   );
 };
 
-export default CompletionStep;
+export default Completion;

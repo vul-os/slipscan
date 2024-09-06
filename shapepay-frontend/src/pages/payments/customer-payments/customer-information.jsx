@@ -3,7 +3,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import SouthAfricanFlag from "./rsa-icon";
 
-const CustomerInformationStep = ({ newPayment, setNewPayment }) => {
+const CustomerInformation = ({ newPayment, setNewPayment }) => {
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setNewPayment((prevPayment) => ({
@@ -82,4 +82,4 @@ const CustomerInformationStep = ({ newPayment, setNewPayment }) => {
   );
 };
 
-export default CustomerInformationStep;
+export default CustomerInformation;
