@@ -12,15 +12,20 @@ import (
 )
 
 type Config struct {
-	MaxConcurrentAccounts int
-	InitialRetryDelay     time.Duration
-	IterationInterval     time.Duration
-	MaxRetryDelay         time.Duration
-	JobMonitorInterval    time.Duration
-	MaxInactiveTime       time.Duration
-	RestartDelay          time.Duration
-	AccountFetchRetry     time.Duration
-	RandomResetInterval   time.Duration
+	MaxConcurrentAccounts   int
+	InitialRetryDelay       time.Duration
+	IterationInterval       time.Duration
+	MaxRetryDelay           time.Duration
+	JobMonitorInterval      time.Duration
+	MaxInactiveTime         time.Duration
+	RestartDelay            time.Duration
+	AccountFetchRetry       time.Duration
+	MinRandomResetInterval  time.Duration
+	MaxRandomResetInterval  time.Duration
+	InitialRandomResetDelay time.Duration
+	MaxRandomResetDelay     time.Duration
+	MinJobStartDelay        time.Duration
+	InitialJobStartDelay    time.Duration
 }
 
 type Core struct {
@@ -34,6 +39,7 @@ type AccountScraper struct {
 	page         *rod.Page
 	lastActivity time.Time
 	stopChan     chan struct{}
+	resetTimer   *time.Timer
 }
 
 type Job struct {
@@ -55,13 +61,9 @@ func NewCore(config Config) *Core {
 }
 
 func (c *Core) Init() error {
-	// Initialize database connection
 	if err := db.InitDB(); err != nil {
 		return fmt.Errorf("failed to initialize database: %w", err)
 	}
-
-	// Any other initialization can go here
-
 	return nil
 }
 
@@ -78,13 +80,31 @@ func (jm *JobManager) AddJob(job *Job) {
 }
 
 func (c *Core) Start() {
+	c.JobManager.JobMutex.Lock()
+	defer c.JobManager.JobMutex.Unlock()
+
+	isFirstJob := true
 	for _, job := range c.JobManager.Jobs {
-		go c.runJob(job)
+		if isFirstJob {
+			go c.runJob(job)
+			isFirstJob = false
+		} else {
+			go c.delayedStart(job)
+		}
 	}
+}
+
+func (c *Core) delayedStart(job *Job) {
+	delay := c.Config.MinJobStartDelay + time.Duration(rand.Int63n(int64(c.Config.InitialJobStartDelay-c.Config.MinJobStartDelay)))
+	log.Printf("Delaying start of job for account %s by %v", job.Scraper.account.Username, delay)
+	time.Sleep(delay)
+	c.runJob(job)
 }
 
 func (c *Core) runJob(job *Job) {
 	retryDelay := c.Config.InitialRetryDelay
+	c.scheduleReset(job)
+
 	for {
 		select {
 		case <-job.StopChan:
@@ -112,17 +132,42 @@ func (c *Core) runJob(job *Job) {
 				log.Printf("Error running account %s: %v. Retrying in %v", job.Scraper.account.Username, err, retryDelay)
 				time.Sleep(retryDelay)
 
-				// Increase retry delay
 				retryDelay += time.Minute
 				if retryDelay > c.Config.MaxRetryDelay {
 					retryDelay = c.Config.MaxRetryDelay
 				}
 			} else {
-				// Reset retry delay on successful run
 				retryDelay = c.Config.InitialRetryDelay
 			}
 		}
 	}
+}
+
+func (c *Core) scheduleReset(job *Job) {
+	resetInterval := c.Config.MinRandomResetInterval +
+		time.Duration(rand.Int63n(int64(c.Config.MaxRandomResetInterval-c.Config.MinRandomResetInterval)))
+
+	job.Scraper.resetTimer = time.AfterFunc(resetInterval, func() {
+		c.resetJob(job)
+	})
+}
+
+func (c *Core) resetJob(job *Job) {
+	log.Printf("Resetting job for account %s", job.Scraper.account.Username)
+
+	c.forceStopJob(job)
+	close(job.StopChan)
+
+	newStopChan := make(chan struct{})
+	job.StopChan = newStopChan
+
+	resetDelay := c.Config.InitialRandomResetDelay +
+		time.Duration(rand.Int63n(int64(c.Config.MaxRandomResetDelay-c.Config.InitialRandomResetDelay)))
+
+	time.AfterFunc(resetDelay, func() {
+		log.Printf("Restarting reset job for account %s", job.Scraper.account.Username)
+		go c.runJob(job)
+	})
 }
 
 func (c *Core) MonitorJobs() {
@@ -132,57 +177,17 @@ func (c *Core) MonitorJobs() {
 		for _, job := range c.JobManager.Jobs {
 			if time.Since(job.Scraper.lastActivity) > c.Config.MaxInactiveTime {
 				log.Printf("Job for account %s seems to be hanging. Forcing stop and scheduling restart...", job.Scraper.account.Username)
-
-				c.forceStopJob(job)
-				close(job.StopChan)
-
-				newStopChan := make(chan struct{})
-				job.StopChan = newStopChan
-
-				go func(j *Job) {
-					time.Sleep(c.Config.RestartDelay)
-					log.Printf("Restarting job for account %s", j.Scraper.account.Username)
-					c.runJob(j)
-				}(job)
+				c.resetJob(job)
 			}
 		}
 		c.JobManager.JobMutex.Unlock()
 	}
 }
 
-func (c *Core) RandomJobReset() {
-	for {
-		time.Sleep(c.Config.RandomResetInterval)
-		c.JobManager.JobMutex.Lock()
-		jobs := make([]*Job, 0, len(c.JobManager.Jobs))
-		for _, job := range c.JobManager.Jobs {
-			jobs = append(jobs, job)
-		}
-		c.JobManager.JobMutex.Unlock()
-
-		if len(jobs) > 0 {
-			randomIndex := rand.Intn(len(jobs))
-			job := jobs[randomIndex]
-
-			log.Printf("Randomly resetting job for account %s", job.Scraper.account.Username)
-
-			c.forceStopJob(job)
-			close(job.StopChan)
-
-			newStopChan := make(chan struct{})
-			job.StopChan = newStopChan
-
-			go func(j *Job) {
-				restartDelay := c.Config.RestartDelay + time.Duration(rand.Intn(int(time.Minute*5)))
-				time.Sleep(restartDelay)
-				log.Printf("Restarting randomly reset job for account %s", j.Scraper.account.Username)
-				c.runJob(j)
-			}(job)
-		}
-	}
-}
-
 func (c *Core) forceStopJob(job *Job) {
+	if job.Scraper.resetTimer != nil {
+		job.Scraper.resetTimer.Stop()
+	}
 	if job.Scraper.browser != nil {
 		job.Scraper.browser.MustClose()
 		job.Scraper.browser = nil
@@ -193,11 +198,7 @@ func (c *Core) forceStopJob(job *Job) {
 }
 
 func (c *Core) Run() {
-	// Start the job monitor
 	go c.MonitorJobs()
-
-	// Start the random job reset
-	go c.RandomJobReset()
 
 	for {
 		accounts, err := getAvailableAccounts(c.Config.MaxConcurrentAccounts)
@@ -225,7 +226,6 @@ func (c *Core) Run() {
 
 		c.Start()
 
-		// Run indefinitely
 		select {}
 	}
 }
