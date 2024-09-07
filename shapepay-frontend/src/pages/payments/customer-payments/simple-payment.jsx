@@ -23,26 +23,53 @@ const PaymentPage = () => {
 
   const storageKey = `${STORAGE_KEY_PREFIX}${merchantHandle}`;
 
+  // Fetch merchant details
   useEffect(() => {
-    const initializePaymentPage = async () => {
+    const fetchMerchantDetails = async () => {
+      try {
+        const { data, error } = await supabase
+          .rpc('get_merchant', { p_merchant_handle: merchantHandle });
+
+        if (error) throw error;
+        if (data && data.length > 0) {
+          setMerchantDetails({
+            ...data[0],
+            avatarUrl: "",
+          });
+        } else {
+          throw new Error("Merchant not found");
+        }
+      } catch (error) {
+        console.error("Error fetching merchant details:", error);
+        setError("Failed to load merchant details. Please try again.");
+      }
+    };
+
+    fetchMerchantDetails();
+  }, [merchantHandle]);
+
+  // Load session or create new payment
+  useEffect(() => {
+    const initializePayment = async () => {
+      if (!merchantDetails) return; // Wait for merchant details
+
       setLoading(true);
       setError(null);
       try {
-        await fetchMerchantDetails();
         const sessionLoaded = await loadSessionData();
         if (!sessionLoaded) {
           await createSimplePayment();
         }
       } catch (error) {
-        console.error("Error initializing payment page:", error);
+        console.error("Error initializing payment:", error);
         setError("Failed to initialize payment. Please try again.");
       } finally {
         setLoading(false);
       }
     };
 
-    initializePaymentPage();
-  }, [merchantHandle]);
+    initializePayment();
+  }, [merchantDetails]); // Dependency on merchantDetails ensures we wait for it
 
   useEffect(() => {
     if (paymentDetails?.payment_group_id) {
@@ -92,26 +119,6 @@ const PaymentPage = () => {
     }
   }, [sessionActive, storageKey, paymentDetails]);
 
-  const fetchMerchantDetails = async () => {
-    try {
-      const { data, error } = await supabase
-        .rpc('get_merchant', { p_merchant_handle: merchantHandle });
-
-      if (error) throw error;
-      if (data && data.length > 0) {
-        setMerchantDetails({
-          ...data[0],
-          avatarUrl: "",
-        });
-      } else {
-        throw new Error("Merchant not found");
-      }
-    } catch (error) {
-      console.error("Error fetching merchant details:", error);
-      throw new Error("Failed to load merchant details. Please try again.");
-    }
-  };
-
   const loadSessionData = async () => {
     const storedData = localStorage.getItem(storageKey);
     if (storedData) {
@@ -135,7 +142,9 @@ const PaymentPage = () => {
 
   const createSimplePayment = async () => {
     if (!merchantDetails || !merchantDetails.id) {
-      throw new Error("Merchant details not available");
+      console.error("Merchant details not available");
+      setError("Unable to create payment. Merchant details not available.");
+      return null;
     }
 
     try {
@@ -158,7 +167,8 @@ const PaymentPage = () => {
       return d;
     } catch (error) {
       console.error("Error creating payment:", error);
-      throw new Error("Failed to create payment. Please try again.");
+      setError("Failed to create payment. Please try again.");
+      return null;
     }
   };
 
