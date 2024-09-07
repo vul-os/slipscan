@@ -1,29 +1,49 @@
 import React, { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
+import { Step, Stepper, useStepper } from "@/components/stepper";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { Info } from "lucide-react";
+import { Info, CheckCircle, Loader2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { supabase } from "../../../services/supabaseClient";
-import PaymentConfirmation from "./confirmation";
+import { supabase } from "../../../services/supabaseClient"
+import PaymentDetails from "./payment-details";
+import CustomerInformation from "./customer-information";
+import PaymentConfoirmation from "./confirmation";
 import Completion from "./completion";
+import StepperFooter from "./stepper-footer";
+
+const steps = [
+  { label: "Payment" },
+  { label: "Customer" },
+  { label: "Confirm" },
+  { label: "Complete" },
+];
 
 const STORAGE_KEY_PREFIX = 'paymentSessionData_';
 const EXPIRATION_TIME = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 
+const initialPaymentState = {
+  amount: "",
+  customerName: "",
+  customerEmail: "",
+  customerPhone: "",
+  transactionCode: ""
+};
+
 const PaymentPage = () => {
   const { merchantHandle } = useParams();
-  const [merchantDetails, setMerchantDetails] = useState(null);
+  const [newPayment, setNewPayment] = useState(initialPaymentState);
   const [paymentDetails, setPaymentDetails] = useState(null);
+  const [merchantDetails, setMerchantDetails] = useState(null);
+  const [currentStep, setCurrentStep] = useState(0);
+  const [sessionActive, setSessionActive] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
   const [paymentStatus, setPaymentStatus] = useState("pending");
   const [paymentAmount, setPaymentAmount] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [sessionActive, setSessionActive] = useState(false);
 
   const storageKey = `${STORAGE_KEY_PREFIX}${merchantHandle}`;
 
-  // Fetch merchant details
   useEffect(() => {
     const fetchMerchantDetails = async () => {
       try {
@@ -45,31 +65,11 @@ const PaymentPage = () => {
       }
     };
 
-    fetchMerchantDetails();
+    if (merchantHandle) {
+      fetchMerchantDetails();
+      loadSessionData();
+    }
   }, [merchantHandle]);
-
-  // Load session or create new payment
-  useEffect(() => {
-    const initializePayment = async () => {
-      if (!merchantDetails) return; // Wait for merchant details
-
-      setLoading(true);
-      setError(null);
-      try {
-        const sessionLoaded = await loadSessionData();
-        if (!sessionLoaded) {
-          await createSimplePayment();
-        }
-      } catch (error) {
-        console.error("Error initializing payment:", error);
-        setError("Failed to initialize payment. Please try again.");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    initializePayment();
-  }, [merchantDetails]); // Dependency on merchantDetails ensures we wait for it
 
   useEffect(() => {
     if (paymentDetails?.payment_group_id) {
@@ -84,6 +84,7 @@ const PaymentPage = () => {
           console.error('Error fetching initial payment status:', error);
           return;
         }
+        console.log(data)
         setPaymentStatus(data.status);
         setPaymentAmount(data.total_amount);
       };
@@ -107,28 +108,25 @@ const PaymentPage = () => {
         subscription.unsubscribe();
       };
     }
-  }, [paymentDetails?.payment_group_id]);
+  }, [paymentDetails?.payment_group_id, supabase]);
 
   useEffect(() => {
-    if (sessionActive && paymentDetails) {
-      const dataToStore = {
-        paymentDetails,
-        timestamp: new Date().getTime(),
-      };
-      localStorage.setItem(storageKey, JSON.stringify(dataToStore));
+    if (paymentStatus === "completed") {
+      localStorage.removeItem(storageKey);
     }
-  }, [sessionActive, storageKey, paymentDetails]);
+  }, [paymentStatus]);
 
-  const loadSessionData = async () => {
+  const loadSessionData = () => {
     const storedData = localStorage.getItem(storageKey);
     if (storedData) {
       try {
-        const { paymentDetails, timestamp } = JSON.parse(storedData);
+        const { data, timestamp } = JSON.parse(storedData);
         const now = new Date().getTime();
         if (now - timestamp < EXPIRATION_TIME) {
-          setPaymentDetails(paymentDetails || null);
+          setNewPayment(data.newPayment || initialPaymentState);
+          setCurrentStep(data.currentStep || 0);
           setSessionActive(true);
-          return true;
+          setPaymentDetails(data.paymentDetails || null);
         } else {
           localStorage.removeItem(storageKey);
         }
@@ -137,71 +135,72 @@ const PaymentPage = () => {
         localStorage.removeItem(storageKey);
       }
     }
-    return false;
   };
 
-  const createSimplePayment = async () => {
-    if (!merchantDetails || !merchantDetails.id) {
-      console.error("Merchant details not available");
-      setError("Unable to create payment. Merchant details not available.");
-      return null;
+  useEffect(() => {
+    if (sessionActive) {
+      const dataToStore = {
+        newPayment,
+        currentStep,
+        paymentDetails,
+        timestamp: new Date().getTime(),
+      };
+      localStorage.setItem(storageKey, JSON.stringify({ data: dataToStore, timestamp: new Date().getTime() }));
     }
+  }, [newPayment, currentStep, sessionActive, storageKey, paymentDetails]);
 
+  const createSimplePayment = async () => {
+    setLoading(true);
+    setError(null);
     try {
       const { data, error } = await supabase.rpc('create_simple_payment', {
-        p_merchant_id: merchantDetails.id,
-        p_customer_name: "",
-        p_customer_email: "",
-        p_customer_phone: "",
+        p_merchant_id: merchantDetails?.id,
+        p_customer_name: newPayment?.customerName,
+        p_customer_email: newPayment?.customerEmail,
+        p_customer_phone: newPayment?.customerPhone,
         p_total_amount: 0,
         p_currency: 'ZAR',
         p_payment_method: 'PayShap'
       });
 
       if (error) throw error;
-      const d = data.length > 0 ? data[0] : data;
+      const d = data.length > 0 ? data[0] : data
       setPaymentDetails(d);
       setPaymentStatus(d.status);
       setPaymentAmount(d.total_amount);
-      setSessionActive(true);
-      return d;
+      return data;
     } catch (error) {
       console.error("Error creating payment:", error);
       setError("Failed to create payment. Please try again.");
       return null;
-    }
-  };
-
-  const resetSession = async () => {
-    setLoading(true);
-    setError(null);
-    setPaymentDetails(null);
-    setPaymentStatus("pending");
-    setPaymentAmount(0);
-    setSessionActive(false);
-    localStorage.removeItem(storageKey);
-    try {
-      await createSimplePayment();
-    } catch (error) {
-      setError(error.message);
     } finally {
       setLoading(false);
     }
   };
 
+  const resetSession = () => {
+    setNewPayment(initialPaymentState);
+    setCurrentStep(0);
+    setSessionActive(false);
+    setPaymentDetails(null);
+    setPaymentStatus("pending");
+    setPaymentAmount(0);
+    localStorage.removeItem(storageKey);
+  };
+
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col">
-      <header className="bg-gray-800 p-4 shadow-md">
-        <div className="container mx-auto flex justify-between items-center">
-          <h1 className="text-xl font-bold text-indigo-300">
+      <header className="bg-gray-800 p-4 md:p-6 shadow-md">
+        <div className="container mx-auto flex flex-col sm:flex-row justify-between items-center">
+          <h1 className="text-xl sm:text-2xl md:text-3xl lg:text-4xl font-bold text-indigo-300 mb-2 sm:mb-0">
             {merchantDetails ? merchantDetails.name : "Loading..."}
           </h1>
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center space-x-2 sm:space-x-4 md:space-x-6">
             {sessionActive && (
               <Button 
                 onClick={resetSession}
                 size="sm"
-                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm md:text-base"
               >
                 New Payment
               </Button>
@@ -210,16 +209,16 @@ const PaymentPage = () => {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <button className="text-gray-400 hover:text-indigo-300 transition-colors">
-                    <Info className="w-5 h-5" />
+                    <Info className="w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8" />
                   </button>
                 </TooltipTrigger>
-                <TooltipContent className="bg-gray-700 text-gray-100 text-sm">
+                <TooltipContent className="bg-gray-700 text-gray-100 text-sm md:text-base">
                   <p>Pay through your banking app. Choose PayShap.</p>
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
             {merchantDetails && (
-              <Avatar className="w-8 h-8">
+              <Avatar className="w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12">
                 <AvatarImage src={merchantDetails.avatarUrl} alt={merchantDetails.name} />
                 <AvatarFallback>{merchantDetails.name.charAt(0)}</AvatarFallback>
               </Avatar>
@@ -228,36 +227,62 @@ const PaymentPage = () => {
         </div>
       </header>
 
-      <main className="flex-grow container mx-auto px-4 py-6">
-        <div className="max-w-md mx-auto">
+      <main className="flex-grow container mx-auto px-4 py-6 sm:py-8 md:py-12 lg:py-16">
+        <div className="max-w-lg md:max-w-xl lg:max-w-2xl mx-auto">
           {sessionActive && (
-            <div className="mb-4 p-2 bg-blue-600 text-white rounded text-sm">
-              Active Payment Session
+            <div className="mb-4 p-2 md:p-3 bg-blue-600 text-white rounded text-sm md:text-base">
+              Active Payment
             </div>
           )}
           {error && (
-            <div className="mb-4 p-2 bg-red-600 text-white rounded text-sm">
+            <div className="mb-4 p-2 md:p-3 bg-red-600 text-white rounded text-sm md:text-base">
               {error}
             </div>
           )}
-          {loading ? (
-            <div className="text-center">Loading...</div>
-          ) : (
-            <>
-              <div className="bg-gray-800 rounded-lg shadow-lg p-4 my-4 border border-gray-700">
-                <PaymentConfirmation
-                  paymentDetails={paymentDetails} 
-                />
-              </div>
-              <div className="bg-gray-800 rounded-lg shadow-lg p-4 my-4 border border-gray-700">
-                <Completion
-                  paymentDetails={paymentDetails}
-                  paymentStatus={paymentStatus}
-                  paymentAmount={paymentAmount}
-                />
-              </div>
-            </>
-          )}
+          <Stepper initialStep={currentStep} key={sessionActive ? 'active' : 'inactive'} steps={steps}>
+            {steps.map((stepProps, index) => (
+              <Step key={stepProps.label} {...stepProps}>
+                <div className="bg-gray-800 rounded-lg shadow-lg p-4 sm:p-6 md:p-8 lg:p-10 my-4 sm:my-6 md:my-8 border border-gray-700">
+                  {index === 0 && (
+                    <PaymentDetails
+                      newPayment={newPayment}
+                      setNewPayment={setNewPayment}
+                      merchantDetails={merchantDetails}
+                    />
+                  )}
+                  {index === 1 && (
+                    <CustomerInformation
+                      newPayment={newPayment}
+                      setNewPayment={setNewPayment}
+                    />
+                  )}
+                  {index === 2 && (
+                    <PaymentConfoirmation 
+                      paymentDetails={paymentDetails} 
+                      newPayment={newPayment}
+                    />
+                  )}
+                   {index === 3 && (
+                    <Completion
+                      paymentDetails={paymentDetails}
+                      paymentStatus={paymentStatus}
+                      paymentAmount={paymentAmount}
+                    />
+                  )}
+                </div>
+              </Step>
+            ))}
+            <StepperFooter 
+              newPayment={newPayment} 
+              createSimplePayment={createSimplePayment}
+              setCurrentStep={setCurrentStep}
+              setSessionActive={setSessionActive}
+              loading={loading}
+              currentStep={currentStep}
+              paymentDetails={paymentDetails}
+              paymentStatus={paymentStatus}
+            />
+          </Stepper>
         </div>
       </main>
     </div>
