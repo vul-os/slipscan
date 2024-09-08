@@ -5,7 +5,7 @@ import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/comp
 import { Info, CheckCircle, Loader2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { supabase } from "../../../services/supabaseClient"
+import { createSupabaseClient } from "../../../services/supabaseClient";
 import PaymentDetails from "./payment-details";
 import CustomerInformation from "./customer-information";
 import PaymentConfoirmation from "./confirmation";
@@ -41,6 +41,8 @@ const PaymentPage = () => {
   const [error, setError] = useState(null);
   const [paymentStatus, setPaymentStatus] = useState("pending");
   const [paymentAmount, setPaymentAmount] = useState(0);
+  const [supabase, setSupabase] = useState(createSupabaseClient());
+  const [sessionToken, setSessionToken] = useState(null);
 
   const storageKey = `${STORAGE_KEY_PREFIX}${merchantHandle}`;
 
@@ -114,7 +116,7 @@ const PaymentPage = () => {
     if (paymentStatus === "completed") {
       localStorage.removeItem(storageKey);
     }
-  }, [paymentStatus]);
+  }, [paymentStatus, storageKey]);
 
   const loadSessionData = () => {
     const storedData = localStorage.getItem(storageKey);
@@ -127,6 +129,10 @@ const PaymentPage = () => {
           setCurrentStep(data.currentStep || 0);
           setSessionActive(true);
           setPaymentDetails(data.paymentDetails || null);
+          if (data.sessionToken) {
+            setSessionToken(data.sessionToken);
+            setSupabase(createSupabaseClient(data.sessionToken));
+          }
         } else {
           localStorage.removeItem(storageKey);
         }
@@ -143,11 +149,12 @@ const PaymentPage = () => {
         newPayment,
         currentStep,
         paymentDetails,
+        sessionToken,
         timestamp: new Date().getTime(),
       };
       localStorage.setItem(storageKey, JSON.stringify({ data: dataToStore, timestamp: new Date().getTime() }));
     }
-  }, [newPayment, currentStep, sessionActive, storageKey, paymentDetails]);
+  }, [newPayment, currentStep, sessionActive, storageKey, paymentDetails, sessionToken]);
 
   const createSimplePayment = async () => {
     setLoading(true);
@@ -164,10 +171,17 @@ const PaymentPage = () => {
       });
 
       if (error) throw error;
-      const d = data.length > 0 ? data[0] : data
+      const d = data.length > 0 ? data[0] : data;
       setPaymentDetails(d);
       setPaymentStatus(d.status);
       setPaymentAmount(d.total_amount);
+      
+      if (d.session_token) {
+        setSessionToken(d.session_token);
+        const newSupabaseClient = createSupabaseClient(d.session_token);
+        setSupabase(newSupabaseClient);
+      }
+      
       return data;
     } catch (error) {
       console.error("Error creating payment:", error);
@@ -185,6 +199,8 @@ const PaymentPage = () => {
     setPaymentDetails(null);
     setPaymentStatus("pending");
     setPaymentAmount(0);
+    setSessionToken(null);
+    setSupabase(createSupabaseClient()); // Reset to default client
     localStorage.removeItem(storageKey);
   };
 
