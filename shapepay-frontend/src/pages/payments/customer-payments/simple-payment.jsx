@@ -4,7 +4,7 @@ import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/comp
 import { Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { supabase } from "../../../services/supabaseClient";
+import { supabase } from "../../../services/supabaseClient"; // Import the supabase instance directly
 import PaymentConfirmation from "./confirmation";
 import Completion from "./completion";
 
@@ -22,6 +22,19 @@ const PaymentPage = () => {
   const [sessionActive, setSessionActive] = useState(false);
 
   const storageKey = `${STORAGE_KEY_PREFIX}${merchantHandle}`;
+
+  // Anonymous sign-in
+  useEffect(() => {
+    const signInAnonymously = async () => {
+      const { error } = await supabase.auth.signInAnonymously();
+      if (error) {
+        console.error("Error signing in anonymously:", error);
+        setError("Failed to initialize session. Please try again.");
+      }
+    };
+
+    signInAnonymously();
+  }, []);
 
   // Fetch merchant details
   useEffect(() => {
@@ -69,7 +82,7 @@ const PaymentPage = () => {
     };
 
     initializePayment();
-  }, [merchantDetails]); // Dependency on merchantDetails ensures we wait for it
+  }, [merchantDetails]);
 
   useEffect(() => {
     if (paymentDetails?.payment_group_id) {
@@ -164,6 +177,7 @@ const PaymentPage = () => {
       setPaymentStatus(d.status);
       setPaymentAmount(d.total_amount);
       setSessionActive(true);
+
       return d;
     } catch (error) {
       console.error("Error creating payment:", error);
@@ -180,13 +194,21 @@ const PaymentPage = () => {
     setPaymentAmount(0);
     setSessionActive(false);
     localStorage.removeItem(storageKey);
-    try {
-      await createSimplePayment();
-    } catch (error) {
-      setError(error.message);
-    } finally {
-      setLoading(false);
+
+    // Sign out the current anonymous user and sign in a new one
+    await supabase.auth.signOut();
+    const { error } = await supabase.auth.signInAnonymously();
+    if (error) {
+      console.error("Error resetting anonymous session:", error);
+      setError("Failed to reset session. Please try again.");
+    } else {
+      try {
+        await createSimplePayment();
+      } catch (error) {
+        setError(error.message);
+      }
     }
+    setLoading(false);
   };
 
   return (

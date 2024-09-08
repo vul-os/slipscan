@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
-import { Step, Stepper, useStepper } from "@/components/stepper";
+import { Step, Stepper } from "@/components/stepper";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
-import { Info, CheckCircle, Loader2, AlertTriangle } from "lucide-react";
+import { Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { supabase } from "../../../services/supabaseClient"
+import { supabase } from "../../../services/supabaseClient"; // Import the supabase instance directly
 import PaymentDetails from "./payment-details";
 import CustomerInformation from "./customer-information";
 import PaymentConfoirmation from "./confirmation";
@@ -43,6 +43,18 @@ const PaymentPage = () => {
   const [paymentAmount, setPaymentAmount] = useState(0);
 
   const storageKey = `${STORAGE_KEY_PREFIX}${merchantHandle}`;
+
+  useEffect(() => {
+    const signInAnonymously = async () => {
+      const { error } = await supabase.auth.signInAnonymously();
+      if (error) {
+        console.error("Error signing in anonymously:", error);
+        setError("Failed to initialize session. Please try again.");
+      }
+    };
+
+    signInAnonymously();
+  }, []);
 
   useEffect(() => {
     const fetchMerchantDetails = async () => {
@@ -108,13 +120,13 @@ const PaymentPage = () => {
         subscription.unsubscribe();
       };
     }
-  }, [paymentDetails?.payment_group_id, supabase]);
+  }, [paymentDetails?.payment_group_id]);
 
   useEffect(() => {
     if (paymentStatus === "completed") {
       localStorage.removeItem(storageKey);
     }
-  }, [paymentStatus]);
+  }, [paymentStatus, storageKey]);
 
   const loadSessionData = () => {
     const storedData = localStorage.getItem(storageKey);
@@ -164,10 +176,11 @@ const PaymentPage = () => {
       });
 
       if (error) throw error;
-      const d = data.length > 0 ? data[0] : data
+      const d = data.length > 0 ? data[0] : data;
       setPaymentDetails(d);
       setPaymentStatus(d.status);
       setPaymentAmount(d.total_amount);
+      
       return data;
     } catch (error) {
       console.error("Error creating payment:", error);
@@ -178,7 +191,7 @@ const PaymentPage = () => {
     }
   };
 
-  const resetSession = () => {
+  const resetSession = async () => {
     setNewPayment(initialPaymentState);
     setCurrentStep(0);
     setSessionActive(false);
@@ -186,6 +199,14 @@ const PaymentPage = () => {
     setPaymentStatus("pending");
     setPaymentAmount(0);
     localStorage.removeItem(storageKey);
+
+    // Sign out the current anonymous user and sign in a new one
+    await supabase.auth.signOut();
+    const { error } = await supabase.auth.signInAnonymously();
+    if (error) {
+      console.error("Error resetting anonymous session:", error);
+      setError("Failed to reset session. Please try again.");
+    }
   };
 
   return (
