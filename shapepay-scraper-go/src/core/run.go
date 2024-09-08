@@ -164,8 +164,8 @@ func (c *Core) resetJob(job *Job) {
 	resetDelay := c.Config.InitialRandomResetDelay +
 		time.Duration(rand.Int63n(int64(c.Config.MaxRandomResetDelay-c.Config.InitialRandomResetDelay)))
 
-	time.AfterFunc(resetDelay, func() {
-		log.Printf("Restarting reset job for account %s", job.Scraper.account.Username)
+	time.AfterFunc(resetDelay+c.Config.RestartDelay, func() {
+		log.Printf("Restarting reset job for account %s after cool-down", job.Scraper.account.Username)
 		go c.runJob(job)
 	})
 }

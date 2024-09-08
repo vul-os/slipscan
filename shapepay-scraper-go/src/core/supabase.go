@@ -175,9 +175,10 @@ func saveToSupabase(transactions []map[string]string, bankAccountID uuid.UUID) e
 				balance,
 				time.Now(),
 			)
-			if err != nil {
-				return fmt.Errorf("error inserting transaction: %w", err)
-			}
+			fmt.Println("error inserting transaction: %w", err)
+			// if err != nil {
+			// 	return fmt.Errorf("error inserting transaction: %w", err)
+			// }
 			log.Printf("Inserted new transaction: date=%s, description=%s, amount=%.2f, bank_account_id=%s",
 				bankDate.Format("2006-01-02"), t["description"], amount, bankAccountID)
 		} else {

@@ -37,6 +37,7 @@ func runAccount(as *AccountScraper, iterationIterval time.Duration) error {
 	}
 
 	for {
+		as.lastActivity = time.Now()
 		if err := runLoop(as.page, as.account); err != nil {
 			if strings.Contains(err.Error(), "logged out") {
 				log.Printf("Logged out detected for account %s (Bank Account ID: %s). Attempting to log in again.", as.account.Username, as.account.BankAccountID)
