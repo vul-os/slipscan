@@ -19,6 +19,7 @@ const (
 func runAccount(as *AccountScraper, iterationIterval time.Duration) error {
 	log.Printf("DEBUG: Starting new session for account %s (Bank Account ID: %s)", as.account.Username, as.account.BankAccountID)
 
+	as.lastActivity = time.Now()
 	var err error
 	if as.browser == nil {
 		as.browser, err = initializeBrowser()
@@ -26,7 +27,7 @@ func runAccount(as *AccountScraper, iterationIterval time.Duration) error {
 			return fmt.Errorf("failed to initialize browser: %w", err)
 		}
 		as.page = as.browser.MustPage(url)
-
+		as.lastActivity = time.Now()
 		if err := login(as.page, as.account); err != nil {
 			log.Printf("Login failed for account %s (Bank Account ID: %s): %v", as.account.Username, as.account.BankAccountID, err)
 			as.browser.Close()

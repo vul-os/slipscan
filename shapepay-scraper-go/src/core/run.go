@@ -155,12 +155,27 @@ func (c *Core) scheduleReset(job *Job) {
 func (c *Core) resetJob(job *Job) {
 	log.Printf("Resetting job for account %s", job.Scraper.account.Username)
 
+	// Stop the current job
 	c.forceStopJob(job)
-	close(job.StopChan)
 
+	// Close the old stop channel and create a new one
+	if job.StopChan != nil {
+		close(job.StopChan)
+	}
 	newStopChan := make(chan struct{})
 	job.StopChan = newStopChan
 
+	// Create a new AccountScraper instance
+	newScraper := &AccountScraper{
+		account:      job.Scraper.account,
+		lastActivity: time.Now(),
+		stopChan:     newStopChan,
+	}
+
+	// Update the job with the new scraper
+	job.Scraper = newScraper
+
+	// Schedule the job restart with a delay
 	resetDelay := c.Config.InitialRandomResetDelay +
 		time.Duration(rand.Int63n(int64(c.Config.MaxRandomResetDelay-c.Config.InitialRandomResetDelay)))
 
@@ -168,6 +183,21 @@ func (c *Core) resetJob(job *Job) {
 		log.Printf("Restarting reset job for account %s after cool-down", job.Scraper.account.Username)
 		go c.runJob(job)
 	})
+}
+
+func (c *Core) forceStopJob(job *Job) {
+	if job.Scraper.resetTimer != nil {
+		job.Scraper.resetTimer.Stop()
+	}
+	if job.Scraper.browser != nil {
+		err := job.Scraper.browser.Close()
+		if err != nil {
+			log.Printf("Error closing browser for account %s: %v", job.Scraper.account.Username, err)
+		}
+		job.Scraper.browser = nil
+	}
+	job.Scraper.page = nil
+	log.Printf("Forced stop of job %s (Account: %s)", job.ID, job.Scraper.account.Username)
 }
 
 func (c *Core) MonitorJobs() {
@@ -182,19 +212,6 @@ func (c *Core) MonitorJobs() {
 		}
 		c.JobManager.JobMutex.Unlock()
 	}
-}
-
-func (c *Core) forceStopJob(job *Job) {
-	if job.Scraper.resetTimer != nil {
-		job.Scraper.resetTimer.Stop()
-	}
-	if job.Scraper.browser != nil {
-		job.Scraper.browser.MustClose()
-		job.Scraper.browser = nil
-	}
-	job.Scraper.page = nil
-	job.Scraper.lastActivity = time.Now()
-	log.Printf("Forced stop of job %s (Account: %s)", job.ID, job.Scraper.account.Username)
 }
 
 func (c *Core) Run() {
