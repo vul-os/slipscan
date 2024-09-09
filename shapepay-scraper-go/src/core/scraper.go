@@ -26,16 +26,18 @@ func runAccount(as *AccountScraper, iterationIterval time.Duration) error {
 		if err != nil {
 			return fmt.Errorf("failed to initialize browser: %w", err)
 		}
-		as.page = as.browser.MustPage(url)
-		as.lastActivity = time.Now()
-		if err := login(as.page, as.account); err != nil {
-			log.Printf("Login failed for account %s (Bank Account ID: %s): %v", as.account.Username, as.account.BankAccountID, err)
-			as.browser.Close()
-			as.browser = nil
-			as.page = nil
-			return err
-		}
 	}
+
+	as.lastActivity = time.Now()
+	as.page = as.browser.MustPage(url)
+	if err := login(as.page, as.account); err != nil {
+		log.Printf("Login failed for account %s (Bank Account ID: %s): %v", as.account.Username, as.account.BankAccountID, err)
+		as.browser.Close()
+		as.browser = nil
+		as.page = nil
+		return err
+	}
+	as.lastActivity = time.Now()
 
 	for {
 		as.lastActivity = time.Now()

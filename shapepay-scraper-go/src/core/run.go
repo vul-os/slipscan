@@ -1,15 +1,14 @@
 package core
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math/rand"
-	"runtime/debug"
 	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/google/uuid"
 )
 
 // AccountScraper handles the scraping process for an individual account
@@ -21,228 +20,157 @@ type AccountScraper struct {
 	stopChan     chan struct{}
 }
 
-// Config holds all configurable time constants
+// Config holds the configuration for the parallel scraper
 type Config struct {
-	MaxInactivityDuration  time.Duration
-	ResetCooldownDuration  time.Duration
-	JobIterationInterval   time.Duration
-	InitialJobDelay        time.Duration
-	JobStatusCheckInterval time.Duration
-	JobMaxRuntime          time.Duration
-	MinTickerDuration      time.Duration
-	JobMonitoringInterval  time.Duration
-	MaxConcurrentAccounts  int
-	MinJobStartDelay       time.Duration
-	MaxJobStartDelay       time.Duration
+	MinInitialDelay   time.Duration
+	MaxInitialDelay   time.Duration
+	MinResetInterval  time.Duration
+	MaxResetInterval  time.Duration
+	HeartbeatTimeout  time.Duration
+	IterationInterval time.Duration
+	PostResetDelay    time.Duration
+	AccountLimit      int // Limit for getAvailableAccounts
 }
 
-// Job represents an individual account scraping job
-type Job struct {
-	account       Account
-	scraper       *AccountScraper
-	isRunning     bool
-	resetCooldown time.Time
-	startTime     time.Time
-}
-
-// JobManager manages the execution of account scraping jobs
-type JobManager struct {
+// ParallelScraper manages parallel account scraping jobs
+type ParallelScraper struct {
 	config Config
-	jobs   map[uuid.UUID]*Job
-	mutex  sync.Mutex
-	wg     sync.WaitGroup
+	mu     sync.Mutex
+	jobs   map[string]*AccountScraper
 }
 
-// NewJobManager creates a new JobManager with the given configuration
-func NewJobManager(config Config) *JobManager {
-	log.Println("Creating new JobManager")
-	return &JobManager{
+// NewParallelScraper creates a new ParallelScraper with the given configuration
+func NewParallelScraper(config Config) *ParallelScraper {
+	log.Printf("Initializing ParallelScraper with config: %+v", config)
+	return &ParallelScraper{
 		config: config,
-		jobs:   make(map[uuid.UUID]*Job),
+		jobs:   make(map[string]*AccountScraper),
 	}
 }
 
-// Run retrieves available accounts and starts running jobs for each account
-func (jm *JobManager) Run() error {
-	log.Println("JobManager Run started")
-	accounts, err := getAvailableAccounts(jm.config.MaxConcurrentAccounts)
+// Run starts the parallel scraping process
+func (ps *ParallelScraper) Run(ctx context.Context) error {
+	log.Printf("Starting parallel scraping process with limit: %d", ps.config.AccountLimit)
+	accounts, err := getAvailableAccounts(ps.config.AccountLimit)
 	if err != nil {
+		log.Printf("Error getting available accounts: %v", err)
 		return fmt.Errorf("failed to get available accounts: %w", err)
 	}
-	log.Printf("Retrieved %d accounts", len(accounts))
+	log.Printf("Retrieved %d accounts for scraping", len(accounts))
 
-	for _, account := range accounts {
-		jm.AddJob(account)
+	var wg sync.WaitGroup
+
+	for i, account := range accounts {
+		account := account // Capture loop variable
+		initialDelay := 0 * time.Second
+		if i > 0 {
+			initialDelay = ps.getRandomDuration(ps.config.MinInitialDelay, ps.config.MaxInitialDelay)
+			log.Printf("Scheduling job for account %s with initial delay of %v", account.Username, initialDelay)
+			time.Sleep(initialDelay)
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := ps.runAccountJob(ctx, account); err != nil {
+				log.Printf("Error in account job for %s: %v", account.Username, err)
+			}
+		}()
 	}
 
-	log.Println("Starting job monitor")
-	go jm.monitorJobs()
-
-	log.Println("Starting jobs")
-	jm.Start()
-
-	log.Println("Waiting for jobs to complete")
-	jm.Wait()
-
-	log.Println("JobManager Run completed")
+	log.Println("All account jobs have been started")
+	wg.Wait()
 	return nil
 }
 
-// AddJob adds a new job to the manager
-func (jm *JobManager) AddJob(account Account) {
-	jm.mutex.Lock()
-	defer jm.mutex.Unlock()
-
-	if _, exists := jm.jobs[account.BankAccountID]; !exists {
-		log.Printf("Adding job for account %s", account.BankAccountID)
-		jm.jobs[account.BankAccountID] = &Job{
-			account: account,
-			scraper: NewAccountScraper(account),
-		}
-	}
-}
-
-// Start begins running all jobs with random delays
-func (jm *JobManager) Start() {
-	isFirst := true
-	for id, job := range jm.jobs {
-		jm.wg.Add(1)
-		if isFirst {
-			log.Printf("Starting first job for account %s immediately", id)
-			go jm.runJob(id, job)
-			isFirst = false
-		} else {
-			delay := randomDuration(jm.config.MinJobStartDelay, jm.config.MaxJobStartDelay)
-			log.Printf("Scheduling job for account %s with delay %v", id, delay)
-			go func(id uuid.UUID, job *Job, delay time.Duration) {
-				time.Sleep(delay)
-				jm.runJob(id, job)
-			}(id, job, delay)
-		}
-	}
-}
-
-// Wait waits for all jobs to complete
-func (jm *JobManager) Wait() {
-	jm.wg.Wait()
-}
-
-func (jm *JobManager) monitorJobs() {
-	log.Println("Job monitor started")
-	tickerDuration := jm.config.JobMonitoringInterval
-	if tickerDuration < jm.config.MinTickerDuration {
-		tickerDuration = jm.config.MinTickerDuration
-	}
-	ticker := time.NewTicker(tickerDuration)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		jm.mutex.Lock()
-		for id, job := range jm.jobs {
-			if job.isRunning && time.Since(job.scraper.lastActivity) > jm.config.MaxInactivityDuration {
-				log.Printf("Job %s has hung. Resetting...", id)
-				job.scraper.Reset()
-				job.isRunning = false
-				job.resetCooldown = time.Now()
-			}
-		}
-		jm.mutex.Unlock()
-	}
-}
-
-func (jm *JobManager) runJob(id uuid.UUID, job *Job) {
-	defer jm.wg.Done()
-	defer jm.recoverFromPanic(id)
-
-	log.Printf("Job %s: Initial delay of %v", id, jm.config.InitialJobDelay)
-	time.Sleep(jm.config.InitialJobDelay)
-
-	for {
-		if !job.isRunning && time.Since(job.resetCooldown) > jm.config.ResetCooldownDuration {
-			job.isRunning = true
-			job.startTime = time.Now()
-			job.scraper.lastActivity = time.Now()
-			log.Printf("Job %s: Starting execution", id)
-			go jm.executeJob(id, job)
-		}
-
-		time.Sleep(jm.config.JobStatusCheckInterval)
-	}
-}
-
-func (jm *JobManager) executeJob(id uuid.UUID, job *Job) {
-	defer func() {
-		job.isRunning = false
-		job.resetCooldown = time.Now()
-	}()
-	defer jm.recoverFromPanic(id)
-
-	log.Printf("Starting job execution for account %s", id)
-
-	done := make(chan bool)
-	go func() {
-		defer jm.recoverFromPanic(id)
-		for {
-			log.Printf("Job %s: Running account", id)
-			err := runAccount(job.scraper, jm.config.JobIterationInterval)
-			if err != nil {
-				log.Printf("Error in job %s: %v", id, err)
-			}
-
-			job.scraper.lastActivity = time.Now()
-			log.Printf("Job %s: Updated lastActivity", id)
-
-			if time.Since(job.startTime) >= jm.config.JobMaxRuntime {
-				log.Printf("Job %s has reached max runtime. Resetting...", id)
-				break
-			}
-
-			log.Printf("Job %s: Sleeping for %v", id, jm.config.JobIterationInterval)
-			time.Sleep(jm.config.JobIterationInterval)
-		}
-		done <- true
-	}()
-
-	select {
-	case <-done:
-		log.Printf("Job completed for account %s", id)
-	case <-time.After(jm.config.MaxInactivityDuration):
-		log.Printf("Job %s has hung. Resetting...", id)
-		job.scraper.Reset()
-	}
-}
-
-func (jm *JobManager) recoverFromPanic(id uuid.UUID) {
-	if r := recover(); r != nil {
-		log.Printf("Recovered from panic in job %s: %v\nStack Trace:\n%s", id, r, debug.Stack())
-	}
-}
-
-// NewAccountScraper creates a new AccountScraper
-func NewAccountScraper(account Account) *AccountScraper {
-	return &AccountScraper{
+func (ps *ParallelScraper) runAccountJob(ctx context.Context, account Account) error {
+	log.Printf("Starting job for account %s", account.Username)
+	scraper := &AccountScraper{
 		account:      account,
 		lastActivity: time.Now(),
 		stopChan:     make(chan struct{}),
 	}
+
+	ps.mu.Lock()
+	ps.jobs[account.Username] = scraper
+	ps.mu.Unlock()
+
+	defer func() {
+		ps.mu.Lock()
+		delete(ps.jobs, account.Username)
+		ps.mu.Unlock()
+		close(scraper.stopChan)
+		log.Printf("Job for account %s has finished", account.Username)
+	}()
+
+	ticker := time.NewTicker(100 * time.Millisecond) // Fast ticker for responsive shutdown
+	defer ticker.Stop()
+
+	resetTimer := time.NewTimer(ps.getRandomDuration(ps.config.MinResetInterval, ps.config.MaxResetInterval))
+	defer resetTimer.Stop()
+
+	log.Printf("Job for account %s initialized", account.Username)
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Context cancelled for account %s", account.Username)
+			return ctx.Err()
+		case <-resetTimer.C:
+			log.Printf("Scheduled reset triggered for account %s", account.Username)
+			if err := ps.resetJob(scraper); err != nil {
+				log.Printf("Error resetting job for account %s: %v", account.Username, err)
+			}
+			resetTimer.Reset(ps.getRandomDuration(ps.config.MinResetInterval, ps.config.MaxResetInterval))
+			log.Printf("Waiting for post-reset delay of %v for account %s", ps.config.PostResetDelay, account.Username)
+			time.Sleep(ps.config.PostResetDelay)
+		case <-ticker.C:
+			if time.Since(scraper.lastActivity) > ps.config.HeartbeatTimeout {
+				log.Printf("Heartbeat timeout detected for account %s. Last activity: %v", account.Username, scraper.lastActivity)
+				if err := ps.resetJob(scraper); err != nil {
+					log.Printf("Error resetting job for account %s: %v", account.Username, err)
+				}
+				resetTimer.Reset(ps.getRandomDuration(ps.config.MinResetInterval, ps.config.MaxResetInterval))
+				log.Printf("Waiting for post-reset delay of %v for account %s", ps.config.PostResetDelay, account.Username)
+				time.Sleep(ps.config.PostResetDelay)
+				continue
+			}
+
+			if err := runAccount(scraper, ps.config.IterationInterval); err != nil {
+				log.Printf("Error running account job for %s: %v", account.Username, err)
+				if err := ps.resetJob(scraper); err != nil {
+					log.Printf("Error resetting job for account %s: %v", account.Username, err)
+				}
+				resetTimer.Reset(ps.getRandomDuration(ps.config.MinResetInterval, ps.config.MaxResetInterval))
+				log.Printf("Waiting for post-reset delay of %v for account %s", ps.config.PostResetDelay, account.Username)
+				time.Sleep(ps.config.PostResetDelay)
+				continue
+			}
+			log.Printf("Successfully completed iteration for account %s", account.Username)
+		}
+	}
 }
 
-// Reset resets the AccountScraper
-func (as *AccountScraper) Reset() {
-	if as.browser != nil {
-		as.browser.Close()
+func (ps *ParallelScraper) resetJob(scraper *AccountScraper) error {
+	log.Printf("Resetting job for account %s", scraper.account.Username)
+	if scraper.browser != nil {
+		scraper.browser.Close()
+		scraper.browser = nil
 	}
-	as.browser = nil
-	as.page = nil
-	close(as.stopChan)
-	as.stopChan = make(chan struct{})
-	as.lastActivity = time.Now()
+
+	newBrowser, err := initializeBrowser()
+	if err != nil {
+		return fmt.Errorf("failed to initialize new browser: %w", err)
+	}
+
+	scraper.browser = newBrowser
+	scraper.page = nil
+	scraper.lastActivity = time.Now()
+	log.Printf("Job reset complete for account %s", scraper.account.Username)
+
+	return nil
 }
 
-// randomDuration returns a random duration between min and max
-func randomDuration(min, max time.Duration) time.Duration {
-	if min >= max {
-		return min
-	}
+func (ps *ParallelScraper) getRandomDuration(min, max time.Duration) time.Duration {
 	return min + time.Duration(rand.Int63n(int64(max-min)))
 }

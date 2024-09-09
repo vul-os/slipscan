@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -9,7 +10,16 @@ import (
 )
 
 func main() {
-	log.Println("Starting application")
+	config := core.Config{
+		MinInitialDelay:   20 * time.Minute,
+		MaxInitialDelay:   50 * time.Minute,
+		MinResetInterval:  3 * time.Hour,
+		MaxResetInterval:  4 * time.Hour,
+		HeartbeatTimeout:  5 * time.Minute,
+		IterationInterval: 1 * time.Second,
+		PostResetDelay:    2 * time.Minute,
+		AccountLimit:      2,
+	}
 
 	// Initialize the database
 	if err := db.InitDB(); err != nil {
@@ -17,27 +27,12 @@ func main() {
 	}
 	log.Println("Database initialized")
 
-	config := core.Config{
-		MaxConcurrentAccounts:  2,
-		MaxInactivityDuration:  5 * time.Minute,
-		ResetCooldownDuration:  5 * time.Minute,
-		JobIterationInterval:   10 * time.Second,
-		InitialJobDelay:        5 * time.Second,
-		JobStatusCheckInterval: 30 * time.Second,
-		JobMaxRuntime:          30 * time.Minute,
-		MinTickerDuration:      1 * time.Second,
-		JobMonitoringInterval:  5 * time.Second,
-		MinJobStartDelay:       15 * time.Minute,
-		MaxJobStartDelay:       45 * time.Minute,
+	scraper := core.NewParallelScraper(config)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := scraper.Run(ctx); err != nil {
+		log.Fatalf("Scraper error: %v", err)
 	}
-
-	log.Println("Creating JobManager")
-	jobManager := core.NewJobManager(config)
-
-	log.Println("Running JobManager")
-	if err := jobManager.Run(); err != nil {
-		log.Fatalf("Failed to run job manager: %v", err)
-	}
-
-	log.Println("Application completed")
 }
