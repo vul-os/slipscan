@@ -107,18 +107,21 @@ const PaymentPage = () => {
   useEffect(() => {
     if (paymentDetails?.payment_group_id) {
       const fetchInitialStatus = async () => {
-        const { data, error } = await supabase
-          .from('payment_groups')
-          .select('status, total_amount')
-          .eq('id', paymentDetails.payment_group_id)
-          .single();
-
-        if (error) {
+        try {
+          const { data, error } = await supabase
+            .rpc('get_payment_group_details', { payment_group_id: paymentDetails.payment_group_id })
+            .single();
+      
+          if (error) {
+            throw error;
+          }
+      
+          console.log(data);
+          setPaymentStatus(data.status);
+          setPaymentAmount(data.total_amount);
+        } catch (error) {
           console.error('Error fetching initial payment status:', error);
-          return;
         }
-        setPaymentStatus(data.status);
-        setPaymentAmount(data.total_amount);
       };
 
       fetchInitialStatus();
