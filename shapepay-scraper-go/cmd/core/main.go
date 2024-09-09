@@ -5,31 +5,39 @@ import (
 	"time"
 
 	"github.com/exolutionza/shapepay-scraper-go/src/core"
+	"github.com/exolutionza/shapepay-scraper-go/src/db"
 )
 
 func main() {
+	log.Println("Starting application")
+
+	// Initialize the database
+	if err := db.InitDB(); err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
+	}
+	log.Println("Database initialized")
+
 	config := core.Config{
-		MaxConcurrentAccounts:   2,
-		MaxInactiveTime:         5 * time.Minute,
-		RestartDelay:            5 * time.Minute,
-		JobMonitorInterval:      1 * time.Minute,
-		AccountFetchRetry:       1 * time.Minute,
-		IterationInterval:       1 * time.Second,
-		InitialRetryDelay:       3 * time.Minute,
-		MaxRetryDelay:           10 * time.Minute,
-		MinRandomResetInterval:  3 * time.Hour,
-		MaxRandomResetInterval:  4 * time.Hour,
-		InitialRandomResetDelay: 3 * time.Minute,
-		MaxRandomResetDelay:     10 * time.Minute,
-		MinJobStartDelay:        3 * time.Minute,
-		InitialJobStartDelay:    10 * time.Minute,
+		MaxConcurrentAccounts:  2,
+		MaxInactivityDuration:  5 * time.Minute,
+		ResetCooldownDuration:  5 * time.Minute,
+		JobIterationInterval:   10 * time.Second,
+		InitialJobDelay:        5 * time.Second,
+		JobStatusCheckInterval: 30 * time.Second,
+		JobMaxRuntime:          30 * time.Minute,
+		MinTickerDuration:      1 * time.Second,
+		JobMonitoringInterval:  5 * time.Second,
+		MinJobStartDelay:       15 * time.Minute,
+		MaxJobStartDelay:       45 * time.Minute,
 	}
 
-	c := core.NewCore(config)
+	log.Println("Creating JobManager")
+	jobManager := core.NewJobManager(config)
 
-	if err := c.Init(); err != nil {
-		log.Fatalf("Failed to initialize core: %v", err)
+	log.Println("Running JobManager")
+	if err := jobManager.Run(); err != nil {
+		log.Fatalf("Failed to run job manager: %v", err)
 	}
 
-	c.Run()
+	log.Println("Application completed")
 }
