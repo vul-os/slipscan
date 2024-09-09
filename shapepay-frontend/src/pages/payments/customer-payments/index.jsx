@@ -9,6 +9,7 @@ import PaymentConfirmation from "./confirmation";
 import Completion from "./completion";
 
 const STORAGE_KEY_PREFIX = 'paymentSessionData_';
+const SESSION_KEY = 'supabaseSession';
 const EXPIRATION_TIME = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 
 const PaymentPage = () => {
@@ -23,18 +24,37 @@ const PaymentPage = () => {
 
   const storageKey = `${STORAGE_KEY_PREFIX}${merchantHandle}`;
 
-  // Anonymous sign-in
+  const [sessionChecked, setSessionChecked] = useState(false);
+
+  // Check for existing session or sign in anonymously
   useEffect(() => {
-    const signInAnonymously = async () => {
-      const { error } = await supabase.auth.signInAnonymously();
+    const checkSession = async () => {
+      if (sessionChecked) return; // Skip if session has already been checked
+
+      const existingSession = localStorage.getItem(SESSION_KEY);
+      if (existingSession) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          console.log(session);
+          console.log("Existing session found");
+          setSessionChecked(true);
+          return;
+        }
+      }
+      
+      console.log("No existing session, signing in anonymously");
+      const { data, error } = await supabase.auth.signInAnonymously();
       if (error) {
         console.error("Error signing in anonymously:", error);
         setError("Failed to initialize session. Please try again.");
+      } else {
+        localStorage.setItem(SESSION_KEY, JSON.stringify(data.session));
       }
+      setSessionChecked(true);
     };
 
-    signInAnonymously();
-  }, []);
+    checkSession();
+  }, [sessionChecked]); // Add sessionChecked to the dependency array
 
   // Fetch merchant details
   useEffect(() => {
@@ -194,14 +214,16 @@ const PaymentPage = () => {
     setPaymentAmount(0);
     setSessionActive(false);
     localStorage.removeItem(storageKey);
+    localStorage.removeItem(SESSION_KEY);
 
-    // Sign out the current anonymous user and sign in a new one
+    // Sign out the current user and sign in a new anonymous user
     await supabase.auth.signOut();
-    const { error } = await supabase.auth.signInAnonymously();
+    const { data, error } = await supabase.auth.signInAnonymously();
     if (error) {
       console.error("Error resetting anonymous session:", error);
       setError("Failed to reset session. Please try again.");
     } else {
+      localStorage.setItem(SESSION_KEY, JSON.stringify(data.session));
       try {
         await createSimplePayment();
       } catch (error) {

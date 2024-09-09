@@ -97,28 +97,29 @@ const PaymentPage = () => {
           console.error('Error fetching initial payment status:', error);
           return;
         }
+        console.log(data)
         setPaymentStatus(data.status);
         setPaymentAmount(data.total_amount);
       };
 
       fetchInitialStatus();
 
-      const subscription = supabase
-        .channel(`payment_${paymentDetails.payment_group_id}`)
-        .on('postgres_changes', {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'payment_groups',
-          filter: `id=eq.${paymentDetails.payment_group_id}`
-        }, (payload) => {
-          setPaymentStatus(payload.new.status);
-          setPaymentAmount(payload.new.total_amount);
-        })
-        .subscribe();
+      // const subscription = supabase
+      //   .channel(`payment_${paymentDetails.payment_group_id}`)
+      //   .on('postgres_changes', {
+      //     event: 'UPDATE',
+      //     schema: 'public',
+      //     table: 'payment_groups',
+      //     filter: `id=eq.${paymentDetails.payment_group_id}`
+      //   }, (payload) => {
+      //     setPaymentStatus(payload.new.status);
+      //     setPaymentAmount(payload.new.total_amount);
+      //   })
+      //   .subscribe();
 
-      return () => {
-        subscription.unsubscribe();
-      };
+      // return () => {
+      //   subscription.unsubscribe();
+      // };
     }
   }, [paymentDetails?.payment_group_id]);
 
