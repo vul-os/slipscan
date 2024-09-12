@@ -1,176 +1,215 @@
 package core
 
 import (
-	"context"
+	"container/list"
 	"fmt"
-	"log"
-	"math/rand"
 	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/google/uuid"
 )
 
-// AccountScraper handles the scraping process for an individual account
-type AccountScraper struct {
-	account      Account
-	browser      *rod.Browser
-	page         *rod.Page
-	lastActivity time.Time
-	stopChan     chan struct{}
-}
-
-// Config holds the configuration for the parallel scraper
 type Config struct {
-	MinInitialDelay   time.Duration
-	MaxInitialDelay   time.Duration
-	MinResetInterval  time.Duration
-	MaxResetInterval  time.Duration
-	HeartbeatTimeout  time.Duration
+	MaxJobDuration    time.Duration
+	HeartbeatInterval time.Duration
 	IterationInterval time.Duration
-	PostResetDelay    time.Duration
-	AccountLimit      int // Limit for getAvailableAccounts
+	MaxInactivityTime time.Duration
+	RestartDelay      time.Duration
+	MaxExecutionTime  time.Duration
+	MaxBackoffTime    time.Duration
 }
 
-// ParallelScraper manages parallel account scraping jobs
-type ParallelScraper struct {
-	config Config
-	mu     sync.Mutex
-	jobs   map[string]*AccountScraper
+type Account struct {
+	ID            string
+	BankAccountID uuid.UUID
+	Username      string
+	Password      string
 }
 
-// NewParallelScraper creates a new ParallelScraper with the given configuration
-func NewParallelScraper(config Config) *ParallelScraper {
-	log.Printf("Initializing ParallelScraper with config: %+v", config)
-	return &ParallelScraper{
-		config: config,
-		jobs:   make(map[string]*AccountScraper),
+type AccountScraper struct {
+	Account      Account
+	Browser      *rod.Browser
+	Page         *rod.Page
+	LastActivity time.Time
+	StopChan     chan struct{}
+}
+
+type Job struct {
+	ID              string
+	AccountID       string
+	Priority        int
+	StartTime       time.Time
+	Scraper         *AccountScraper
+	FailureCount    int
+	LastFailureTime time.Time
+}
+
+type Scheduler struct {
+	jobs        *list.List
+	runningJobs map[string]*list.Element
+	accountJobs map[string]*list.Element
+	mu          sync.Mutex
+	config      Config
+}
+
+func NewScheduler(config Config) *Scheduler {
+	return &Scheduler{
+		jobs:        list.New(),
+		runningJobs: make(map[string]*list.Element),
+		accountJobs: make(map[string]*list.Element),
+		config:      config,
 	}
 }
 
-// Run starts the parallel scraping process
-func (ps *ParallelScraper) Run(ctx context.Context) error {
-	log.Printf("Starting parallel scraping process with limit: %d", ps.config.AccountLimit)
-	accounts, err := getAvailableAccounts(ps.config.AccountLimit)
-	if err != nil {
-		log.Printf("Error getting available accounts: %v", err)
-		return fmt.Errorf("failed to get available accounts: %w", err)
+func (s *Scheduler) AddJob(job *Job) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if existingJob, exists := s.accountJobs[job.AccountID]; exists {
+		s.jobs.Remove(existingJob)
 	}
-	log.Printf("Retrieved %d accounts for scraping", len(accounts))
+	elem := s.jobs.PushBack(job)
+	s.accountJobs[job.AccountID] = elem
+}
 
-	var wg sync.WaitGroup
+func (s *Scheduler) UpdateHeartbeat(jobID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	for i, account := range accounts {
-		account := account // Capture loop variable
-		initialDelay := 0 * time.Second
-		if i > 0 {
-			initialDelay = ps.getRandomDuration(ps.config.MinInitialDelay, ps.config.MaxInitialDelay)
-			log.Printf("Scheduling job for account %s with initial delay of %v", account.Username, initialDelay)
-			time.Sleep(initialDelay)
+	if elem, exists := s.runningJobs[jobID]; exists {
+		job := elem.Value.(*Job)
+		job.Scraper.LastActivity = time.Now()
+	}
+}
+
+func (s *Scheduler) cleanupJob(job *Job) {
+	if job.Scraper.Browser != nil {
+		job.Scraper.Browser.Close()
+	}
+	job.Scraper.Browser = nil
+	job.Scraper.Page = nil
+}
+
+func (s *Scheduler) requeueJob(job *Job) {
+	if job.FailureCount > 0 {
+		backoffTime := time.Duration(job.FailureCount) * time.Minute
+		if backoffTime > s.config.MaxBackoffTime {
+			backoffTime = s.config.MaxBackoffTime
 		}
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := ps.runAccountJob(ctx, account); err != nil {
-				log.Printf("Error in account job for %s: %v", account.Username, err)
-			}
-		}()
+		time.AfterFunc(backoffTime, func() {
+			s.AddJob(job)
+		})
+	} else {
+		time.AfterFunc(s.config.RestartDelay, func() {
+			s.AddJob(job)
+		})
 	}
-
-	log.Println("All account jobs have been started")
-	wg.Wait()
-	return nil
 }
 
-func (ps *ParallelScraper) runAccountJob(ctx context.Context, account Account) error {
-	log.Printf("Starting job for account %s", account.Username)
-	scraper := &AccountScraper{
-		account:      account,
-		lastActivity: time.Now(),
-		stopChan:     make(chan struct{}),
-	}
-
-	ps.mu.Lock()
-	ps.jobs[account.Username] = scraper
-	ps.mu.Unlock()
-
-	defer func() {
-		ps.mu.Lock()
-		delete(ps.jobs, account.Username)
-		ps.mu.Unlock()
-		close(scraper.stopChan)
-		log.Printf("Job for account %s has finished", account.Username)
-	}()
-
-	ticker := time.NewTicker(100 * time.Millisecond) // Fast ticker for responsive shutdown
+func (s *Scheduler) MonitorJobs() {
+	ticker := time.NewTicker(s.config.HeartbeatInterval)
 	defer ticker.Stop()
 
-	resetTimer := time.NewTimer(ps.getRandomDuration(ps.config.MinResetInterval, ps.config.MaxResetInterval))
-	defer resetTimer.Stop()
-
-	log.Printf("Job for account %s initialized", account.Username)
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("Context cancelled for account %s", account.Username)
-			return ctx.Err()
-		case <-resetTimer.C:
-			log.Printf("Scheduled reset triggered for account %s", account.Username)
-			if err := ps.resetJob(scraper); err != nil {
-				log.Printf("Error resetting job for account %s: %v", account.Username, err)
+	for range ticker.C {
+		s.mu.Lock()
+		now := time.Now()
+		for id, elem := range s.runningJobs {
+			job := elem.Value.(*Job)
+			if now.Sub(job.Scraper.LastActivity) > s.config.MaxInactivityTime {
+				fmt.Printf("Job %s has been inactive for too long. Stopping and rescheduling...\n", id)
+				job.Scraper.StopChan <- struct{}{}
+				s.cleanupJob(job)
+				delete(s.runningJobs, id)
+				s.requeueJob(job)
+			} else if now.Sub(job.StartTime) > s.config.MaxJobDuration {
+				fmt.Printf("Job %s has exceeded max duration. Stopping and rescheduling...\n", id)
+				job.Scraper.StopChan <- struct{}{}
+				s.cleanupJob(job)
+				delete(s.runningJobs, id)
+				s.requeueJob(job)
 			}
-			resetTimer.Reset(ps.getRandomDuration(ps.config.MinResetInterval, ps.config.MaxResetInterval))
-			log.Printf("Waiting for post-reset delay of %v for account %s", ps.config.PostResetDelay, account.Username)
-			time.Sleep(ps.config.PostResetDelay)
-		case <-ticker.C:
-			if time.Since(scraper.lastActivity) > ps.config.HeartbeatTimeout {
-				log.Printf("Heartbeat timeout detected for account %s. Last activity: %v", account.Username, scraper.lastActivity)
-				if err := ps.resetJob(scraper); err != nil {
-					log.Printf("Error resetting job for account %s: %v", account.Username, err)
-				}
-				resetTimer.Reset(ps.getRandomDuration(ps.config.MinResetInterval, ps.config.MaxResetInterval))
-				log.Printf("Waiting for post-reset delay of %v for account %s", ps.config.PostResetDelay, account.Username)
-				time.Sleep(ps.config.PostResetDelay)
-				continue
-			}
-
-			if err := runAccount(scraper, ps.config.IterationInterval); err != nil {
-				log.Printf("Error running account job for %s: %v", account.Username, err)
-				if err := ps.resetJob(scraper); err != nil {
-					log.Printf("Error resetting job for account %s: %v", account.Username, err)
-				}
-				resetTimer.Reset(ps.getRandomDuration(ps.config.MinResetInterval, ps.config.MaxResetInterval))
-				log.Printf("Waiting for post-reset delay of %v for account %s", ps.config.PostResetDelay, account.Username)
-				time.Sleep(ps.config.PostResetDelay)
-				continue
-			}
-			log.Printf("Successfully completed iteration for account %s", account.Username)
 		}
+		s.mu.Unlock()
+
+		// Run next job to ensure continuous processing
+		s.RunNextJob()
 	}
 }
 
-func (ps *ParallelScraper) resetJob(scraper *AccountScraper) error {
-	log.Printf("Resetting job for account %s", scraper.account.Username)
-	if scraper.browser != nil {
-		scraper.browser.Close()
-		scraper.browser = nil
+func (s *Scheduler) RunNextJob() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.jobs.Len() == 0 {
+		return
 	}
 
-	newBrowser, err := initializeBrowser()
+	elem := s.jobs.Front()
+	job := elem.Value.(*Job)
+	s.jobs.Remove(elem)
+	delete(s.accountJobs, job.AccountID)
+	s.runningJobs[job.ID] = elem
+
+	go func() {
+		job.StartTime = time.Now()
+		job.Scraper.LastActivity = time.Now()
+
+		done := make(chan error)
+		go func() {
+			err := runAccount(job.Scraper, s.config.IterationInterval)
+			done <- err
+		}()
+
+		var err error
+		select {
+		case err = <-done:
+		case <-time.After(s.config.MaxExecutionTime):
+			fmt.Printf("Job %s exceeded max execution time. Stopping...\n", job.ID)
+			job.Scraper.StopChan <- struct{}{}
+			err = fmt.Errorf("job exceeded max execution time")
+		}
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		if err != nil {
+			fmt.Printf("Error executing job %s: %v\n", job.ID, err)
+			job.FailureCount++
+			job.LastFailureTime = time.Now()
+		} else {
+			job.FailureCount = 0
+		}
+
+		s.cleanupJob(job)
+		delete(s.runningJobs, job.ID)
+		s.requeueJob(job)
+	}()
+}
+
+func (s *Scheduler) LoadJobs(limit int) error {
+	accounts, err := getAvailableAccounts(limit)
 	if err != nil {
-		return fmt.Errorf("failed to initialize new browser: %w", err)
+		return fmt.Errorf("failed to get available accounts: %w", err)
 	}
 
-	scraper.browser = newBrowser
-	scraper.page = nil
-	scraper.lastActivity = time.Now()
-	log.Printf("Job reset complete for account %s", scraper.account.Username)
+	for _, account := range accounts {
+		scraper := &AccountScraper{
+			Account:      account,
+			Browser:      rod.New(),
+			StopChan:     make(chan struct{}),
+			LastActivity: time.Now(),
+		}
+
+		job := &Job{
+			ID:        uuid.New().String(),
+			AccountID: account.ID,
+			Priority:  1,
+			Scraper:   scraper,
+		}
+
+		s.AddJob(job)
+	}
 
 	return nil
-}
-
-func (ps *ParallelScraper) getRandomDuration(min, max time.Duration) time.Duration {
-	return min + time.Duration(rand.Int63n(int64(max-min)))
 }

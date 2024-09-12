@@ -13,13 +13,6 @@ import (
 	"github.com/google/uuid"
 )
 
-type Account struct {
-	ID            string
-	BankAccountID uuid.UUID
-	Username      string
-	Password      string
-}
-
 func getAvailableAccounts(limit int) ([]Account, error) {
 	ctx := context.Background()
 	query := `

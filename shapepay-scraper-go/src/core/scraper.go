@@ -17,46 +17,45 @@ const (
 )
 
 func runAccount(as *AccountScraper, iterationIterval time.Duration) error {
-	log.Printf("DEBUG: Starting new session for account %s (Bank Account ID: %s)", as.account.Username, as.account.BankAccountID)
+	log.Printf("DEBUG: Starting new session for account %s (Bank Account ID: %s)", as.Account.Username, as.Account.BankAccountID)
 
-	as.lastActivity = time.Now()
+	as.LastActivity = time.Now()
 	var err error
-	if as.browser == nil {
-		as.browser, err = initializeBrowser()
+
+	if as.Browser == nil {
+		as.Browser, err = initializeBrowser()
 		if err != nil {
 			return fmt.Errorf("failed to initialize browser: %w", err)
 		}
 	}
 
-	as.lastActivity = time.Now()
-	as.page = as.browser.MustPage(url)
-	if err := login(as.page, as.account); err != nil {
-		log.Printf("Login failed for account %s (Bank Account ID: %s): %v", as.account.Username, as.account.BankAccountID, err)
-		as.browser.Close()
-		as.browser = nil
-		as.page = nil
+	as.LastActivity = time.Now()
+	as.Page = as.Browser.MustPage(url)
+	if err := login(as.Page, as.Account); err != nil {
+		log.Printf("Login failed for account %s (Bank Account ID: %s): %v", as.Account.Username, as.Account.BankAccountID, err)
+		as.Browser.Close()
+		as.Browser = nil
+		as.Page = nil
 		return err
 	}
-	as.lastActivity = time.Now()
-
 	for {
-		as.lastActivity = time.Now()
-		if err := runLoop(as.page, as.account); err != nil {
+		as.LastActivity = time.Now()
+		if err := runLoop(as.Page, as.Account); err != nil {
 			if strings.Contains(err.Error(), "logged out") {
-				log.Printf("Logged out detected for account %s (Bank Account ID: %s). Attempting to log in again.", as.account.Username, as.account.BankAccountID)
-				if loginErr := login(as.page, as.account); loginErr != nil {
-					log.Printf("Re-login failed for account %s (Bank Account ID: %s): %v", as.account.Username, as.account.BankAccountID, loginErr)
-					as.browser.Close()
-					as.browser = nil
-					as.page = nil
+				log.Printf("Logged out detected for account %s (Bank Account ID: %s). Attempting to log in again.", as.Account.Username, as.Account.BankAccountID)
+				if loginErr := login(as.Page, as.Account); loginErr != nil {
+					log.Printf("Re-login failed for account %s (Bank Account ID: %s): %v", as.Account.Username, as.Account.BankAccountID, loginErr)
+					as.Browser.Close()
+					as.Browser = nil
+					as.Page = nil
 					return loginErr
 				}
 				continue
 			}
-			log.Printf("Error during loop for account %s (Bank Account ID: %s): %v", as.account.Username, as.account.BankAccountID, err)
+			log.Printf("Error during loop for account %s (Bank Account ID: %s): %v", as.Account.Username, as.Account.BankAccountID, err)
 			return err
 		}
-		as.lastActivity = time.Now()
+		as.LastActivity = time.Now()
 		log.Printf("DEBUG: Waiting for %v before next iteration", iterationIterval)
 		time.Sleep(iterationIterval)
 	}
@@ -163,15 +162,6 @@ func runLoop(page *rod.Page, account Account) error {
 		return fmt.Errorf("error clicking on available balance link for Gold Business Account: %w", err)
 	}
 
-	// // Click on "Gold Business Account" link
-	// businessAccountElement, err := page.ElementR("#nickname_0 a", "Gold Business Account")
-	// if err != nil {
-	// 	return fmt.Errorf("error finding Gold Business Account link: %w", err)
-	// }
-	// if err := businessAccountElement.Click(proto.InputMouseButtonLeft, 1); err != nil {
-	// 	return fmt.Errorf("error clicking on Gold Business Account link: %w", err)
-	// }
-
 	// Click on "Transaction History" link
 	transactionHistoryElement, err := page.ElementR("div.subTabButton", "Transaction History")
 	if err != nil {
@@ -206,7 +196,7 @@ func runLoop(page *rod.Page, account Account) error {
 
 func checkLogout(page *rod.Page) (bool, error) {
 	if page == nil {
-		return true, fmt.Errorf("page is nil")
+		return false, fmt.Errorf("page is nil")
 	}
 	text, err := page.MustElement("body").Text()
 	if err != nil {
