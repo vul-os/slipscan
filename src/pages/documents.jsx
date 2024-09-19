@@ -59,15 +59,17 @@ const DocumentList = () => {
   };
 
   const handleDelete = async (id) => {
-    const { error } = await supabase
-      .from('documents')
-      .delete()
-      .eq('id', id);
+    try {
+      // Start a Supabase transaction
+      const { error } = await supabase.rpc('delete_document_and_files', { doc_id: id });
 
-    if (error) {
-      console.error('Error deleting document:', error);
-    } else {
+      if (error) throw error;
+
+      // If successful, refresh the documents list
       fetchDocuments();
+    } catch (error) {
+      console.error('Error deleting document and associated files:', error);
+      // Handle the error appropriately (e.g., show an error message to the user)
     }
   };
 
@@ -85,7 +87,7 @@ const DocumentList = () => {
       return <File {...iconProps} />;
     }
   };
-  
+
   const groupDocumentsBySession = () => {
     const groups = {};
     documents.forEach(doc => {

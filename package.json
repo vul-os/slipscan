@@ -29,6 +29,7 @@
         "@supabase/supabase-js": "^2.45.4",
         "@tabler/icons-react": "^2.39.0",
         "axios": "^1.5.1",
+        "browser-image-compression": "^2.0.2",
         "class-variance-authority": "^0.7.0",
         "clsx": "^2.0.0",
         "lucide-react": "^0.441.0",
