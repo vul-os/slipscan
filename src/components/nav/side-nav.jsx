@@ -6,6 +6,8 @@ import { NavItem } from './nav-item';
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, text: 'Dashboard' },
+  { to: '/documents', icon: LayoutDashboard, text: 'Documents' },
+
 ];
 
 const SideNav = ({ isExpanded, isMobile }) => {
