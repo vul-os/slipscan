@@ -81,7 +81,6 @@ const DocumentList = () => {
     }
   };
 
-
   const handleDeleteFile = async (file, groupId) => {
     try {
       // Delete the file from storage
@@ -188,7 +187,7 @@ const DocumentList = () => {
   };
 
   return (
-    <Card className="w-full">
+    <Card className="w-full max-w-[1200px] mx-auto">
       <CardHeader>
         <CardTitle className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-2 sm:space-y-0">
           <span>My Documents</span>
@@ -218,11 +217,11 @@ const DocumentList = () => {
           </div>
         </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="p-0"> {/* Remove default padding */}
         <Accordion type="single" collapsible className="w-full">
           {documentGroups.map((group) => (
-            <AccordionItem value={group.id} key={group.id}>
-              <AccordionTrigger>
+            <AccordionItem value={group.id} key={group.id} className="px-6"> {/* Add horizontal padding here */}
+              <AccordionTrigger className="py-4"> {/* Adjust vertical padding */}
                 <div className="flex items-center justify-between w-full">
                   <div className="flex items-center">
                     <Folder className="mr-2 h-4 w-4" />
@@ -230,22 +229,24 @@ const DocumentList = () => {
                   </div>
                 </div>
               </AccordionTrigger>
-              <AccordionContent>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              <AccordionContent className="pt-4 pb-6"> {/* Adjust padding */}
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                   {group.document_files.map((file) => (
-                    <Card key={file.id} className="flex flex-col">
-                      <CardContent className="flex-grow p-4">
+                    <div key={file.id} className="flex flex-col max-w-[200px]">
+                      <div className="w-full aspect-square">
                         <FilePreview file={file} signedUrl={file.signedUrl} />
-                        <h3 className="font-semibold truncate mt-2">{file.file_name}</h3>
-                        <p className="text-sm text-gray-500">
+                      </div>
+                      <div className="mt-2">
+                        <h3 className="font-semibold text-sm truncate">{file.file_name}</h3>
+                        <p className="text-xs text-gray-500">
                           {new Date(group.document_timestamp).toLocaleString()}
                         </p>
-                      </CardContent>
-                      <div className="flex justify-end p-4 pt-0">
-                        <Button variant="ghost" onClick={() => handleOpen(file)}><Eye className="h-4 w-4" /></Button>
-                        <Button variant="ghost" onClick={() => handleDeleteFile(file, group.id)}><Trash2 className="h-4 w-4" /></Button>
                       </div>
-                    </Card>
+                      <div className="flex justify-end mt-2">
+                        <Button variant="ghost" size="sm" onClick={() => handleOpen(file)}><Eye className="h-4 w-4" /></Button>
+                        <Button variant="ghost" size="sm" onClick={() => handleDeleteFile(file, group.id)}><Trash2 className="h-4 w-4" /></Button>
+                      </div>
+                    </div>
                   ))}
                 </div>
                 <div className="flex justify-end mt-4 space-x-2">
