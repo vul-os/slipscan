@@ -42,8 +42,16 @@ const FileUploadModal = ({ isOpen, onClose, onUploadComplete, userId }) => {
     setProgress(0);
 
     const documentGroupId = uuidv4();
-    const sessionFolder = new Date().toISOString().replace(/[-:]/g, '').split('.')[0];
-
+    const sessionFolder = new Date().toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    }).replace(/,/g, '').replace(/:/g, '-');
+    
     try {
       // Create a new document group
       const { data: groupData, error: groupError } = await supabase
