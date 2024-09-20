@@ -1,15 +1,40 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js';
-import { serve } from 'https://deno.land/std/http/server.ts';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { encode } from "https://deno.land/std@0.177.0/encoding/base64.ts";
 
-// Define CORS headers to allow all origins
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
-async function sendClaudeRequest(imageUrls: string[]) {
+async function getSignedUrls(supabase, documentGroupId, userId) {
+  const { data: documentGroup, error: documentGroupError } = await supabase
+    .from('document_groups')
+    .select('id, document_files(id, bucket_name, file_path)')
+    .eq('id', documentGroupId)
+    .single();
+
+  if (documentGroupError) throw documentGroupError;
+
+  const signedUrls = [];
+  for (const file of documentGroup.document_files) {
+    console.log("file", file);
+
+    const { data, error } = await supabase.storage
+      .from('snaps')
+      .createSignedUrl(file.file_path, 60);
+    console.log("error", error);
+    if (error) throw error;
+
+    signedUrls.push(data.signedUrl);
+  }
+  console.log("signedUrls, ", signedUrls);
+
+  return signedUrls;
+}
+
+async function sendClaudeRequest(imageUrls) {
   const apiKey = "***REMOVED***"
   
   const contentArray = [];
@@ -71,14 +96,21 @@ async function sendClaudeRequest(imageUrls: string[]) {
   }
 }
 
-async function processImage(imageUrls: string[], extractedData: any, supabase: any) {
+async function processImage(extractedData, supabase, documentGroupId) {
   console.log('1. Starting processImage function');
-  // console.log('userId:', userId);
-  const userId = "00000000-0000-0000-0000-000000000000"
   if (!extractedData) {
     console.error('2. No data received from the API');
     return;
   }
+
+  const { data: documentGroup, error: documentGroupError } = await supabase
+    .from('document_groups')
+    .select('user_id')
+    .eq('id', documentGroupId)
+    .single();
+
+  if (documentGroupError) throw documentGroupError;
+  const userId = documentGroup.user_id;
 
   const { merchant, receipt, items, payment_methods, receipt_type } = extractedData;
   console.log('3. Extracted data:', { merchant, receipt, items, payment_methods, receipt_type });
@@ -140,106 +172,27 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
   }
   console.log('13. Document Type ID:', documentTypeId);
 
-  // Document group
-  console.log('14. Creating document group');
-  const { data: documentGroup, error: documentGroupError } = await supabase
+  // Update document_group
+  console.log('16. Processing document group');
+  const { error: updateDocumentGroupError } = await supabase
     .from('document_groups')
-    .insert({ user_id: userId, name: `Receipt ${receipt.transaction_number}` })
-    .select('id')
-    .single();
+    .update({
+      merchant_id: merchantId,
+      document_type_id: documentTypeId,
+      transaction_number: receipt.transaction_number,
+      document_timestamp: receipt.receipt_timestamp || null,
+      cashier_name: receipt.cashier_name,
+      till_number: receipt.till_number,
+      subtotal: receipt.subtotal,
+      tax_amount: receipt.tax_amount,
+      total_amount: receipt.total_amount,
+      barcode: receipt.barcode,
+      ocr_processed: true,
+    })
+    .eq('id', documentGroupId);
 
-  console.log('15. Document group creation result:', { documentGroup, documentGroupError });
-  if (documentGroupError) throw documentGroupError;
-  const documentGroupId = documentGroup.id;
-
-  // Document
-  console.log('16. Processing document');
-  const { data: existingDocument, error: existingDocumentError } = await supabase
-    .from('documents')
-    .select('id')
-    .eq('user_id', userId)
-    .eq('transaction_number', receipt.transaction_number)
-    .eq('merchant_id', merchantId)
-    .single();
-
-  console.log('17. Existing document query result:', { existingDocument, existingDocumentError });
-
-  let documentId;
-  if (existingDocumentError) {
-    console.log('18. Inserting new document');
-    const { data: insertedDocument, error: insertDocumentError } = await supabase
-      .from('documents')
-      .insert({
-        user_id: userId,
-        document_group_id: documentGroupId,
-        merchant_id: merchantId,
-        document_type_id: documentTypeId,
-        transaction_number: receipt.transaction_number,
-        document_timestamp: receipt.receipt_timestamp || null,
-        cashier_name: receipt.cashier_name,
-        till_number: receipt.till_number,
-        subtotal: receipt.subtotal,
-        tax_amount: receipt.tax_amount,
-        total_amount: receipt.total_amount,
-        barcode: receipt.barcode,
-        ocr_processed: true,
-      })
-      .select('id')
-      .single();
-
-    console.log('19. Insert document result:', { insertedDocument, insertDocumentError });
-    if (insertDocumentError) throw insertDocumentError;
-    documentId = insertedDocument.id;
-  } else {
-    documentId = existingDocument.id;
-    console.log('20. Updating existing document');
-    const { error: updateDocumentError } = await supabase
-      .from('documents')
-      .update({
-        document_group_id: documentGroupId,
-        document_type_id: documentTypeId,
-        document_timestamp: receipt.receipt_timestamp || null,
-        cashier_name: receipt.cashier_name,
-        till_number: receipt.till_number,
-        subtotal: receipt.subtotal,
-        tax_amount: receipt.tax_amount,
-        total_amount: receipt.total_amount,
-        barcode: receipt.barcode,
-        ocr_processed: true,
-      })
-      .eq('id', documentId);
-
-    console.log('21. Update document result:', { updateDocumentError });
-    if (updateDocumentError) throw updateDocumentError;
-  }
-  console.log('22. Document ID:', documentId);
-
-  // Document files
-  console.log('23. Processing document files');
-  const { error: deleteFilesError } = await supabase
-    .from('document_files')
-    .delete()
-    .eq('user_id', userId)
-    .eq('document_id', documentId);
-
-  console.log('24. Delete existing files result:', { deleteFilesError });
-  if (deleteFilesError) throw deleteFilesError;
-
-  for (const imageUrl of imageUrls) {
-    console.log('25. Inserting document file:', imageUrl);
-    const { error: documentFileError } = await supabase
-      .from('document_files')
-      .insert({
-        user_id: userId,
-        document_id: documentId,
-        bucket_name: 'receipts',
-        file_path: imageUrl,
-        file_name: imageUrl.split('/').pop(),
-      });
-
-    console.log('26. Insert document file result:', { documentFileError });
-    if (documentFileError) throw documentFileError;
-  }
+  console.log('17. Update document group result:', { updateDocumentGroupError });
+  if (updateDocumentGroupError) throw updateDocumentGroupError;
 
   // OCR results
   console.log('27. Processing OCR results');
@@ -247,7 +200,7 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
     .from('ocr_results')
     .delete()
     .eq('user_id', userId)
-    .eq('document_id', documentId);
+    .eq('document_group_id', documentGroupId);
 
   console.log('28. Delete existing OCR results:', { deleteOcrResultsError });
   if (deleteOcrResultsError) throw deleteOcrResultsError;
@@ -256,7 +209,7 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
     .from('ocr_results')
     .insert({
       user_id: userId,
-      document_id: documentId,
+      document_group_id: documentGroupId,
       raw_text: JSON.stringify(extractedData),
       confidence_score: 1,
     });
@@ -367,7 +320,7 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
     .from('document_payments')
     .delete()
     .eq('user_id', userId)
-    .eq('document_id', documentId);
+    .eq('document_group_id', documentGroupId);
 
   console.log('42. Delete existing payment methods result:', { deletePaymentMethodsError });
   if (deletePaymentMethodsError) throw deletePaymentMethodsError;
@@ -405,7 +358,7 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
         .from('document_payments')
         .insert({
           user_id: userId,
-          document_id: documentId,
+          document_group_id: documentGroupId,
           payment_method_id: paymentMethodId,
           amount: paymentMethod.amount,
         });
@@ -417,11 +370,10 @@ async function processImage(imageUrls: string[], extractedData: any, supabase: a
 
   console.log('49. processImage function completed');
 }
-
+  
 serve(async (req) => {
-  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders })
+    return new Response('ok', { headers: corsHeaders });
   }
 
   try {
@@ -431,22 +383,32 @@ serve(async (req) => {
     );
 
     if (req.method === 'POST') {
-      const { imageUrls } = await req.json();
+      const { documentGroupId } = await req.json();
 
-      if (!imageUrls || imageUrls.length === 0) {
-        return new Response('No image URLs provided', { 
+      if (!documentGroupId) {
+        return new Response('No document group ID provided', { 
           status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
       }
 
-      const extractedData = await sendClaudeRequest(imageUrls);
-      const ied = extractedData['content'][0].text;
-      const ej = JSON.parse(ied);
-      console.log(ej);
-
       try {
-        await processImage(imageUrls, ej, supabase);
+        const { data: documentGroup, error: documentGroupError } = await supabase
+          .from('document_groups')
+          .select('user_id')
+          .eq('id', documentGroupId)
+          .single();
+
+        if (documentGroupError) throw documentGroupError;
+        const userId = documentGroup.user_id;
+
+        const signedUrls = await getSignedUrls(supabase, documentGroupId, userId);
+        const extractedData = await sendClaudeRequest(signedUrls);
+        const ied = extractedData['content'][0].text;
+        const ej = JSON.parse(ied);
+        console.log(ej);
+
+        await processImage(ej, supabase, documentGroupId);
 
         return new Response(JSON.stringify(ej), {
           status: 200,
