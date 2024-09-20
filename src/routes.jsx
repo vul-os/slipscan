@@ -11,12 +11,13 @@ import ForgotPassword from './pages/auth/forgot-password';
 
 // Protected Pages
 import Dashboard from './pages/dashboard';
+import Documents from './pages/documents/documents';
+import Items from './pages/items'; 
 
 // Components
 import ProtectedRoute from './components/auth/protected-route';
 
 import NotFound from './pages/not-found';
-import Documents from './pages/documents';
 
 const AppRoutes = () => {
   return (
@@ -25,7 +26,6 @@ const AppRoutes = () => {
       <Route element={<BlankLayout />}>
         <Route path="/login" element={<SignIn />} />
         <Route path="/password-reset" element={<ForgotPassword />} />
-
       </Route>
 
       {/* Protected routes */}
@@ -33,9 +33,10 @@ const AppRoutes = () => {
         <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/documents" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
+        <Route path="/items" element={<ProtectedRoute><Items /></ProtectedRoute>} />
+        <Route path="/items/:groupId" element={<ProtectedRoute><Items /></ProtectedRoute>} />
         <Route path="*" element={<ProtectedRoute><NotFound /></ProtectedRoute>} />
       </Route>
-
     </Routes>
   );
 };
