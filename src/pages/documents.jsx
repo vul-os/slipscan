@@ -7,9 +7,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Trash2, FilePlus, Eye, Folder, FileText, FileImage, File } from 'lucide-react';
 import FileUploadModal from './file-upload';
+import { toast } from "@/components/ui/use-toast";
 
 const DocumentList = () => {
-  const [documents, setDocuments] = useState([]);
+  const [documentGroups, setDocumentGroups] = useState([]);
   const [sortBy, setSortBy] = useState('date');
   const [sortOrder, setSortOrder] = useState('desc');
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
@@ -17,26 +18,37 @@ const DocumentList = () => {
 
   useEffect(() => {
     if (user) {
-      fetchDocuments();
+      fetchDocumentGroups();
     }
   }, [user, sortBy, sortOrder]);
 
-  const fetchDocuments = async () => {
+  const fetchDocumentGroups = async () => {
     const { data, error } = await supabase
-      .from('documents')
+      .from('document_groups')
       .select(`
         id,
-        transaction_number,
-        document_timestamp,
-        document_files (id, bucket_name, file_path, file_name, content_type)
+        name,
+        description,
+        created_at,
+        documents (
+          id,
+          transaction_number,
+          document_timestamp,
+          document_files (id, bucket_name, file_path, file_name, content_type)
+        )
       `)
       .eq('user_id', user.id)
-      .order(sortBy === 'name' ? 'transaction_number' : 'document_timestamp', { ascending: sortOrder === 'asc' });
+      .order(sortBy === 'name' ? 'name' : 'created_at', { ascending: sortOrder === 'asc' });
      
     if (error) {
-      console.error('Error fetching documents:', error);
+      console.error('Error fetching document groups:', error);
+      toast({
+        title: "Error",
+        description: "Failed to fetch documents. Please try again.",
+        variant: "destructive",
+      });
     } else {
-      setDocuments(data);
+      setDocumentGroups(data);
     }
   };
 
@@ -45,38 +57,75 @@ const DocumentList = () => {
       try {
         const { data, error } = await supabase.storage
           .from('snaps')
-          .createSignedUrl(document.document_files[0].file_path, 60); // URL valid for 60 seconds
+          .createSignedUrl(document.document_files[0].file_path, 60);
 
         if (error) throw error;
 
         window.open(data.signedUrl, '_blank');
       } catch (error) {
         console.error('Error creating signed URL:', error);
+        toast({
+          title: "Error",
+          description: "Failed to open the document. Please try again.",
+          variant: "destructive",
+        });
       }
     } else {
       console.error('No file associated with this document');
+      toast({
+        title: "Error",
+        description: "No file associated with this document.",
+        variant: "destructive",
+      });
     }
   };
 
   const handleDelete = async (id) => {
     try {
-      // Start a Supabase transaction
-      const { error } = await supabase.rpc('delete_document_and_files', { doc_id: id });
+      const { data, error } = await supabase.rpc('delete_document_and_files', { doc_id: id });
 
       if (error) throw error;
 
-      // If successful, refresh the documents list
-      fetchDocuments();
+      fetchDocumentGroups();
+      toast({
+        title: "Success",
+        description: "Document deleted successfully.",
+      });
     } catch (error) {
-      console.error('Error deleting document and associated files:', error);
-      // Handle the error appropriately (e.g., show an error message to the user)
+      console.error('Error deleting document:', error);
+      toast({
+        title: "Error",
+        description: "Failed to delete the document. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDeleteGroup = async (groupId) => {
+    try {
+      const { data, error } = await supabase.rpc('delete_document_group_and_associated_data', { group_id: groupId });
+
+      if (error) throw error;
+
+      fetchDocumentGroups();
+      toast({
+        title: "Success",
+        description: "Document group deleted successfully.",
+      });
+    } catch (error) {
+      console.error('Error deleting document group:', error);
+      toast({
+        title: "Error",
+        description: "Failed to delete the document group. Please try again.",
+        variant: "destructive",
+      });
     }
   };
 
   const getFileIcon = (contentType) => {
     const iconProps = {
-      className: "h-16 w-16 text-blue-600", // Increased size and changed color to blue
-      strokeWidth: 1.5 // Slightly thicker lines for better visibility
+      className: "h-16 w-16 text-blue-600",
+      strokeWidth: 1.5
     };
 
     if (contentType.startsWith('image/')) {
@@ -87,23 +136,6 @@ const DocumentList = () => {
       return <File {...iconProps} />;
     }
   };
-
-  const groupDocumentsBySession = () => {
-    const groups = {};
-    documents.forEach(doc => {
-      const filePath = doc.document_files[0]?.file_path;
-      if (filePath) {
-        const [, sessionFolder] = filePath.split('/');
-        if (!groups[sessionFolder]) {
-          groups[sessionFolder] = [];
-        }
-        groups[sessionFolder].push(doc);
-      }
-    });
-    return groups;
-  };
-
-  const documentGroups = groupDocumentsBySession();
 
   return (
     <Card className="w-full">
@@ -138,17 +170,27 @@ const DocumentList = () => {
       </CardHeader>
       <CardContent>
         <Accordion type="single" collapsible className="w-full">
-          {Object.entries(documentGroups).map(([sessionFolder, docs]) => (
-            <AccordionItem value={sessionFolder} key={sessionFolder}>
+          {documentGroups.map((group) => (
+            <AccordionItem value={group.id} key={group.id}>
               <AccordionTrigger>
-                <div className="flex items-center">
-                  <Folder className="mr-2 h-4 w-4" />
-                  <span>{formatSessionFolder(sessionFolder)}</span>
+                <div className="flex items-center justify-between w-full">
+                  <div className="flex items-center">
+                    <Folder className="mr-2 h-4 w-4" />
+                    <span>{group.name || `Group ${group.id}`}</span>
+                  </div>
                 </div>
               </AccordionTrigger>
               <AccordionContent>
+                <div className="flex justify-end mb-2">
+                  <Button
+                    variant="ghost"
+                    onClick={() => handleDeleteGroup(group.id)}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" /> Delete Group
+                  </Button>
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {docs.map((doc) => (
+                  {group.documents.map((doc) => (
                     <Card key={doc.id} className="flex flex-col">
                       <CardContent className="flex-grow p-4">
                         <div className="aspect-square mb-2 overflow-hidden rounded-md flex items-center justify-center bg-gray-100">
@@ -159,7 +201,7 @@ const DocumentList = () => {
                         </div>
                         <h3 className="font-semibold truncate">{doc.transaction_number}</h3>
                         <p className="text-sm text-gray-500">
-                          {new Date(doc.document_timestamp).toLocaleTimeString()}
+                          {new Date(doc.document_timestamp).toLocaleString()}
                         </p>
                       </CardContent>
                       <div className="flex justify-end p-4 pt-0">
@@ -177,24 +219,11 @@ const DocumentList = () => {
       <FileUploadModal
         isOpen={isUploadModalOpen}
         onClose={() => setIsUploadModalOpen(false)}
-        onUploadComplete={fetchDocuments}
+        onUploadComplete={fetchDocumentGroups}
         userId={user.id}
       />
     </Card>
   );
-};
-
-const formatSessionFolder = (folder) => {
-  const date = new Date(folder.slice(0, 4), folder.slice(4, 6) - 1, folder.slice(6, 8), 
-                        folder.slice(9, 11), folder.slice(11, 13), folder.slice(13, 15));
-  return date.toLocaleString('en-US', { 
-    year: 'numeric', 
-    month: 'long', 
-    day: 'numeric', 
-    hour: '2-digit', 
-    minute: '2-digit', 
-    second: '2-digit' 
-  });
 };
 
 export default DocumentList;

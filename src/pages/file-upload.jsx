@@ -13,7 +13,12 @@ const FileUploadModal = ({ isOpen, onClose, onUploadComplete, userId }) => {
   const [progress, setProgress] = useState(0);
 
   const handleFileChange = (event) => {
-    setFiles(Array.from(event.target.files));
+    const newFiles = Array.from(event.target.files);
+    setFiles(prevFiles => [...prevFiles, ...newFiles]);
+  };
+
+  const removeFile = (index) => {
+    setFiles(prevFiles => prevFiles.filter((_, i) => i !== index));
   };
 
   const compressImage = async (file) => {
@@ -36,65 +41,78 @@ const FileUploadModal = ({ isOpen, onClose, onUploadComplete, userId }) => {
     setUploading(true);
     setProgress(0);
 
+    const documentGroupId = uuidv4();
     const sessionFolder = new Date().toISOString().replace(/[-:]/g, '').split('.')[0];
 
-    for (let i = 0; i < files.length; i++) {
-      let file = files[i];
-      const fileExt = file.name.split('.').pop().toLowerCase();
-
-      if (['jpg', 'jpeg', 'png'].includes(fileExt)) {
-        file = await compressImage(file);
-      }
-
-      const fileName = `${uuidv4()}.${fileExt}`;
-      const filePath = `${userId}/${sessionFolder}/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from('snaps')
-        .upload(filePath, file);
-
-      if (uploadError) {
-        console.error('Error uploading file:', uploadError);
-        continue;
-      }
-
-      const { data, error: insertError } = await supabase
-        .from('documents')
+    try {
+      // Create a new document group
+      const { data: groupData, error: groupError } = await supabase
+        .from('document_groups')
         .insert({
+          id: documentGroupId,
           user_id: userId,
-          transaction_number: file.name,
-          document_timestamp: new Date().toISOString(),
+          name: `${sessionFolder}`,
         })
         .select()
         .single();
 
-      if (insertError) {
-        console.error('Error inserting document:', insertError);
-        continue;
+      if (groupError) throw groupError;
+
+      for (let i = 0; i < files.length; i++) {
+        let file = files[i];
+        const fileExt = file.name.split('.').pop().toLowerCase();
+
+        if (['jpg', 'jpeg', 'png'].includes(fileExt)) {
+          file = await compressImage(file);
+        }
+
+        const fileName = `${uuidv4()}.${fileExt}`;
+        const filePath = `${userId}/${sessionFolder}/${fileName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from('snaps')
+          .upload(filePath, file);
+
+        if (uploadError) throw uploadError;
+
+        const { data, error: insertError } = await supabase
+          .from('documents')
+          .insert({
+            user_id: userId,
+            document_group_id: documentGroupId,
+            transaction_number: file.name,
+            document_timestamp: new Date().toISOString(),
+          })
+          .select()
+          .single();
+
+        if (insertError) throw insertError;
+
+        const { error: fileError } = await supabase
+          .from('document_files')
+          .insert({
+            user_id: userId,
+            document_id: data.id,
+            bucket_name: 'slips',
+            file_path: filePath,
+            file_name: fileName,
+            content_type: file.type,
+            file_size: file.size,
+          });
+
+        if (fileError) throw fileError;
+
+        setProgress(Math.round(((i + 1) / files.length) * 100));
       }
 
-      const { error: fileError } = await supabase
-        .from('document_files')
-        .insert({
-          user_id: userId,
-          document_id: data.id,
-          bucket_name: 'slips',
-          file_path: filePath,
-          file_name: fileName,
-          content_type: file.type,
-          file_size: file.size,
-        });
-
-      if (fileError) {
-        console.error('Error inserting document file:', fileError);
-      }
-
-      setProgress(Math.round(((i + 1) / files.length) * 100));
+      onUploadComplete();
+      onClose();
+    } catch (error) {
+      console.error('Error during upload process:', error);
+      // Here you might want to add some user-facing error handling
+    } finally {
+      setUploading(false);
     }
-
-    setUploading(false);
-    onUploadComplete();
-    onClose();
   };
 
   return (
@@ -105,7 +123,7 @@ const FileUploadModal = ({ isOpen, onClose, onUploadComplete, userId }) => {
         </DialogHeader>
         <div className="grid gap-6 py-4">
           <div className="flex items-center gap-4">
-            <label htmlFor="file-upload" className="cursor-pointer">
+            <label htmlFor="file-upload" className="cursor-pointer w-full">
               <div className="flex items-center justify-center w-full h-32 px-4 transition bg-white border-2 border-gray-300 border-dashed rounded-md appearance-none hover:border-gray-400 focus:outline-none">
                 <span className="flex items-center space-x-2">
                   <Upload className="w-6 h-6 text-gray-600" />
@@ -125,33 +143,40 @@ const FileUploadModal = ({ isOpen, onClose, onUploadComplete, userId }) => {
               </div>
             </label>
           </div>
+          
+          {files.length > 0 && (
+            <div className="mt-4">
+              <h3 className="text-lg font-semibold mb-2">Selected Files:</h3>
+              <div className="max-h-[200px] overflow-y-auto space-y-2 bg-gray-50 p-3 rounded-md">
+                {files.map((file, index) => (
+                  <div key={index} className="flex items-center justify-between py-2 px-3 bg-white rounded-md shadow-sm">
+                    <div className="flex items-center space-x-2 flex-1 min-w-0">
+                      <FileIcon className="w-4 h-4 text-gray-400 flex-shrink-0" />
+                      <span className="text-sm font-medium text-gray-700 truncate">
+                        {file.name}
+                      </span>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => removeFile(index)}
+                      disabled={uploading}
+                      className="text-gray-500 hover:text-gray-700 flex-shrink-0"
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {uploading && (
             <div className="space-y-2">
               <div className="text-sm font-medium text-gray-500">Uploading...</div>
               <Progress value={progress} className="w-full" />
             </div>
           )}
-          <div className="max-h-[200px] overflow-y-auto space-y-2">
-            {files.map((file, index) => (
-              <div key={index} className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-md">
-                <div className="flex items-center space-x-2">
-                  <FileIcon className="w-4 h-4 text-gray-400" />
-                  <span className="text-sm font-medium text-gray-700 truncate max-w-[300px]">
-                    {file.name}
-                  </span>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setFiles(files.filter((_, i) => i !== index))}
-                  disabled={uploading}
-                  className="text-gray-500 hover:text-gray-700"
-                >
-                  <X className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
-          </div>
         </div>
         <DialogFooter>
           <Button onClick={onClose} variant="outline" disabled={uploading}>
@@ -159,7 +184,7 @@ const FileUploadModal = ({ isOpen, onClose, onUploadComplete, userId }) => {
           </Button>
           <Button onClick={handleUpload} disabled={uploading || files.length === 0}>
             <Upload className="mr-2 h-4 w-4" />
-            Upload
+            Upload {files.length} file{files.length !== 1 ? 's' : ''}
           </Button>
         </DialogFooter>
       </DialogContent>
