@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { Trash2, FilePlus, Eye, Folder } from 'lucide-react';
+import { Trash2, FilePlus, Eye, Folder, ScanEye } from 'lucide-react';
 import FileUploadModal from './file-upload';
 import { toast } from "@/components/ui/use-toast";
 import FilePreview from './file-preview';
@@ -31,12 +31,9 @@ const DocumentList = () => {
         name,
         description,
         created_at,
-        documents (
-          id,
-          transaction_number,
-          document_timestamp,
-          document_files (id, bucket_name, file_path, file_name, content_type)
-        )
+        transaction_number,
+        document_timestamp,
+        document_files (id, bucket_name, file_path, file_name, content_type)
       `)
       .eq('user_id', user.id)
       .order(sortBy === 'name' ? 'name' : 'created_at', { ascending: sortOrder === 'asc' });
@@ -49,54 +46,77 @@ const DocumentList = () => {
         variant: "destructive",
       });
     } else {
-      setDocumentGroups(data);
+      // Generate signed URLs for each file
+      const groupsWithSignedUrls = await Promise.all(data.map(async (group) => {
+        const filesWithSignedUrls = await Promise.all(group.document_files.map(async (file) => {
+          const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+            .from('snaps')
+            .createSignedUrl(file.file_path, 3600); // URL valid for 1 hour
+
+          if (signedUrlError) {
+            console.error('Error creating signed URL:', signedUrlError);
+            return { ...file, signedUrl: null };
+          }
+
+          return { ...file, signedUrl: signedUrlData.signedUrl };
+        }));
+
+        return { ...group, document_files: filesWithSignedUrls };
+      }));
+
+      setDocumentGroups(groupsWithSignedUrls);
     }
   };
 
-  const handleOpen = async (document) => {
-    if (document.document_files && document.document_files[0]) {
-      try {
-        const { data, error } = await supabase.storage
-          .from('snaps')
-          .createSignedUrl(document.document_files[0].file_path, 60);
-
-        if (error) throw error;
-
-        window.open(data.signedUrl, '_blank');
-      } catch (error) {
-        console.error('Error creating signed URL:', error);
-        toast({
-          title: "Error",
-          description: "Failed to open the document. Please try again.",
-          variant: "destructive",
-        });
-      }
+  const handleOpen = (file) => {
+    if (file.signedUrl) {
+      window.open(file.signedUrl, '_blank');
     } else {
-      console.error('No file associated with this document');
+      console.error('No signed URL available for this file');
       toast({
         title: "Error",
-        description: "No file associated with this document.",
+        description: "Failed to open the document. Please try again.",
         variant: "destructive",
       });
     }
   };
 
-  const handleDelete = async (id) => {
+
+  const handleDeleteFile = async (file, groupId) => {
     try {
-      const { data, error } = await supabase.rpc('delete_document_and_files', { doc_id: id });
+      // Delete the file from storage
+      const { error: storageError } = await supabase.storage
+        .from('snaps')
+        .remove([file.file_path]);
 
-      if (error) throw error;
+      if (storageError) throw storageError;
 
-      fetchDocumentGroups();
+      // Delete the file record from the database
+      const { error: dbError } = await supabase
+        .from('document_files')
+        .delete()
+        .eq('id', file.id);
+
+      if (dbError) throw dbError;
+
+      // Update the state
+      setDocumentGroups(prevGroups =>
+        prevGroups.map(group =>
+          group.id === groupId
+            ? { ...group, document_files: group.document_files.filter(f => f.id !== file.id) }
+            : group
+        )
+      );
+
       toast({
         title: "Success",
-        description: "Document deleted successfully.",
+        description: "File deleted successfully.",
       });
     } catch (error) {
-      console.error('Error deleting document:', error);
+      console.error('Error deleting file:', error);
       toast({
         title: "Error",
-        description: "Failed to delete the document. Please try again.",
+        description: "Failed to delete the file. Please try again.",
         variant: "destructive",
       });
     }
@@ -104,20 +124,64 @@ const DocumentList = () => {
 
   const handleDeleteGroup = async (groupId) => {
     try {
-      const { data, error } = await supabase.rpc('delete_document_group_and_associated_data', { group_id: groupId });
+      // Fetch all files in the group
+      const { data: groupFiles, error: fetchError } = await supabase
+        .from('document_files')
+        .select('file_path')
+        .eq('document_group_id', groupId);
 
-      if (error) throw error;
+      if (fetchError) throw fetchError;
 
-      fetchDocumentGroups();
+      // Delete all files from storage
+      if (groupFiles && groupFiles.length > 0) {
+        const filePaths = groupFiles.map(file => file.file_path);
+        const { error: storageError } = await supabase.storage
+          .from('snaps')
+          .remove(filePaths);
+
+        if (storageError) throw storageError;
+      }
+
+      // Delete the group and associated data from the database
+      const { error: deleteError } = await supabase.rpc('delete_document_group_and_associated_data', { group_id: groupId });
+
+      if (deleteError) throw deleteError;
+
+      // Update the state
+      setDocumentGroups(prevGroups => prevGroups.filter(group => group.id !== groupId));
+
       toast({
         title: "Success",
-        description: "Document group deleted successfully.",
+        description: "Document group and associated files deleted successfully.",
       });
     } catch (error) {
       console.error('Error deleting document group:', error);
       toast({
         title: "Error",
         description: "Failed to delete the document group. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleProcessImages = async (groupId) => {
+    try {
+      const { data, error } = await supabase.functions.invoke('scan-images', {
+        body: { documentGroupId: groupId },
+      });
+  
+      if (error) throw error;
+
+      toast({
+        title: "Success",
+        description: "Documents processed successfully.",
+      });
+  
+    } catch (error) {
+      console.error('Error processing images:', error);
+      toast({
+        title: "Error",
+        description: `Failed to process images: ${error.message}`,
         variant: "destructive",
       });
     }
@@ -168,23 +232,30 @@ const DocumentList = () => {
               </AccordionTrigger>
               <AccordionContent>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                  {group.documents.map((doc) => (
-                    <Card key={doc.id} className="flex flex-col">
+                  {group.document_files.map((file) => (
+                    <Card key={file.id} className="flex flex-col">
                       <CardContent className="flex-grow p-4">
-                        <FilePreview doc={doc} />
-                        <h3 className="font-semibold truncate mt-2">{doc.transaction_number}</h3>
+                        <FilePreview file={file} signedUrl={file.signedUrl} />
+                        <h3 className="font-semibold truncate mt-2">{file.file_name}</h3>
                         <p className="text-sm text-gray-500">
-                          {new Date(doc.document_timestamp).toLocaleString()}
+                          {new Date(group.document_timestamp).toLocaleString()}
                         </p>
                       </CardContent>
                       <div className="flex justify-end p-4 pt-0">
-                        <Button variant="ghost" onClick={() => handleOpen(doc)}><Eye className="h-4 w-4" /></Button>
-                        <Button variant="ghost" onClick={() => handleDelete(doc.id)}><Trash2 className="h-4 w-4" /></Button>
+                        <Button variant="ghost" onClick={() => handleOpen(file)}><Eye className="h-4 w-4" /></Button>
+                        <Button variant="ghost" onClick={() => handleDeleteFile(file, group.id)}><Trash2 className="h-4 w-4" /></Button>
                       </div>
                     </Card>
                   ))}
                 </div>
-                <div className="flex justify-end mt-4">
+                <div className="flex justify-end mt-4 space-x-2">
+                  <Button
+                    variant="default"
+                    onClick={() => handleProcessImages(group.id)}
+                    className="bg-blue-500 hover:bg-blue-600 text-white"
+                  >
+                    <ScanEye className="h-4 w-4 mr-2" /> Process Images
+                  </Button>
                   <Button
                     variant="ghost"
                     onClick={() => handleDeleteGroup(group.id)}

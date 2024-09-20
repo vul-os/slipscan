@@ -52,6 +52,8 @@ const FileUploadModal = ({ isOpen, onClose, onUploadComplete, userId }) => {
           id: documentGroupId,
           user_id: userId,
           name: `${sessionFolder}`,
+          transaction_number: files[0].name, // Use the first file's name as the transaction number
+          document_timestamp: new Date().toISOString(),
         })
         .select()
         .single();
@@ -61,12 +63,12 @@ const FileUploadModal = ({ isOpen, onClose, onUploadComplete, userId }) => {
       for (let i = 0; i < files.length; i++) {
         let file = files[i];
         const fileExt = file.name.split('.').pop().toLowerCase();
+        const fileNameWithoutExt = file.name.replace(`.${fileExt}`, '');
 
         if (['jpg', 'jpeg', 'png'].includes(fileExt)) {
           file = await compressImage(file);
         }
-
-        const fileName = `${uuidv4()}.${fileExt}`;
+        const fileName = `${fileNameWithoutExt}-${uuidv4()}.${fileExt}`;
         const filePath = `${userId}/${sessionFolder}/${fileName}`;
 
         const { error: uploadError } = await supabase.storage
@@ -75,25 +77,12 @@ const FileUploadModal = ({ isOpen, onClose, onUploadComplete, userId }) => {
 
         if (uploadError) throw uploadError;
 
-        const { data, error: insertError } = await supabase
-          .from('documents')
-          .insert({
-            user_id: userId,
-            document_group_id: documentGroupId,
-            transaction_number: file.name,
-            document_timestamp: new Date().toISOString(),
-          })
-          .select()
-          .single();
-
-        if (insertError) throw insertError;
-
         const { error: fileError } = await supabase
           .from('document_files')
           .insert({
             user_id: userId,
-            document_id: data.id,
-            bucket_name: 'slips',
+            document_group_id: documentGroupId,
+            bucket_name: 'snaps',
             file_path: filePath,
             file_name: fileName,
             content_type: file.type,
