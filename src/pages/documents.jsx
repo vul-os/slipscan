@@ -5,9 +5,79 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { Trash2, FilePlus, Eye, Folder, FileText, FileImage, File } from 'lucide-react';
+import { Trash2, FilePlus, Eye, Folder, FileText, File, Image as ImageIcon } from 'lucide-react';
 import FileUploadModal from './file-upload';
 import { toast } from "@/components/ui/use-toast";
+
+const FilePreview = ({ doc }) => {
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchPreviewUrl = async () => {
+      if (doc.document_files && doc.document_files[0] && doc.document_files[0].content_type.startsWith('image/')) {
+        setIsLoading(true);
+        try {
+          const { data, error } = await supabase.storage
+            .from('snaps')
+            .createSignedUrl(doc.document_files[0].file_path, 3600); // 1 hour expiration
+
+          if (!error) {
+            setPreviewUrl(data.signedUrl);
+          }
+        } catch (error) {
+          console.error('Error fetching preview URL:', error);
+        } finally {
+          setIsLoading(false);
+        }
+      } else {
+        setIsLoading(false);
+      }
+    };
+
+    fetchPreviewUrl();
+  }, [doc]);
+
+  const getFileIcon = () => {
+    if (doc.document_files && doc.document_files[0]) {
+      const contentType = doc.document_files[0].content_type;
+      const iconProps = {
+        className: "h-16 w-16 text-blue-600",
+        strokeWidth: 1.5
+      };
+
+      if (contentType.startsWith('image/')) {
+        return <ImageIcon {...iconProps} />;
+      } else if (contentType === 'application/pdf') {
+        return <FileText {...iconProps} />;
+      } else {
+        return <File {...iconProps} />;
+      }
+    } else {
+      return <File className="h-12 w-12 text-gray-400" />;
+    }
+  };
+
+  return (
+    <div className="relative w-full h-0 pb-[100%] bg-gray-100 rounded-md overflow-hidden">
+      {isLoading ? (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+        </div>
+      ) : previewUrl ? (
+        <img 
+          src={previewUrl} 
+          alt={doc.transaction_number} 
+          className="absolute inset-0 w-full h-full object-cover"
+        />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center">
+          {getFileIcon()}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const DocumentList = () => {
   const [documentGroups, setDocumentGroups] = useState([]);
@@ -122,21 +192,6 @@ const DocumentList = () => {
     }
   };
 
-  const getFileIcon = (contentType) => {
-    const iconProps = {
-      className: "h-16 w-16 text-blue-600",
-      strokeWidth: 1.5
-    };
-
-    if (contentType.startsWith('image/')) {
-      return <FileImage {...iconProps} />;
-    } else if (contentType === 'application/pdf') {
-      return <FileText {...iconProps} />;
-    } else {
-      return <File {...iconProps} />;
-    }
-  };
-
   return (
     <Card className="w-full">
       <CardHeader>
@@ -181,25 +236,12 @@ const DocumentList = () => {
                 </div>
               </AccordionTrigger>
               <AccordionContent>
-                <div className="flex justify-end mb-2">
-                  <Button
-                    variant="ghost"
-                    onClick={() => handleDeleteGroup(group.id)}
-                  >
-                    <Trash2 className="h-4 w-4 mr-2" /> Delete Group
-                  </Button>
-                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                   {group.documents.map((doc) => (
                     <Card key={doc.id} className="flex flex-col">
                       <CardContent className="flex-grow p-4">
-                        <div className="aspect-square mb-2 overflow-hidden rounded-md flex items-center justify-center bg-gray-100">
-                          {doc.document_files && doc.document_files[0] ? 
-                            getFileIcon(doc.document_files[0].content_type) :
-                            <File className="h-12 w-12 text-gray-400" />
-                          }
-                        </div>
-                        <h3 className="font-semibold truncate">{doc.transaction_number}</h3>
+                        <FilePreview doc={doc} />
+                        <h3 className="font-semibold truncate mt-2">{doc.transaction_number}</h3>
                         <p className="text-sm text-gray-500">
                           {new Date(doc.document_timestamp).toLocaleString()}
                         </p>
@@ -210,6 +252,14 @@ const DocumentList = () => {
                       </div>
                     </Card>
                   ))}
+                </div>
+                <div className="flex justify-end mt-4">
+                  <Button
+                    variant="ghost"
+                    onClick={() => handleDeleteGroup(group.id)}
+                  >
+                    <Trash2 className="h-4 w-4 mr-2" /> Delete Group
+                  </Button>
                 </div>
               </AccordionContent>
             </AccordionItem>
