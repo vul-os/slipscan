@@ -10,7 +10,7 @@ import SignIn from './pages/auth/signin';
 import ForgotPassword from './pages/auth/forgot-password';
 
 // Protected Pages
-import Dashboard from './pages/dashboard';
+import Dashboard from './pages/dashboard/dashboard';
 import Documents from './pages/documents/documents';
 import Items from './pages/items'; 
 

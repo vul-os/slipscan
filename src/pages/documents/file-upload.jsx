@@ -46,11 +46,10 @@ const FileUploadModal = ({ isOpen, onClose, onUploadComplete, userId }) => {
       year: 'numeric',
       month: 'long',
       day: 'numeric',
-      hour: '2-digit',
+      hour: 'numeric',
       minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    }).replace(/,/g, '').replace(/:/g, '-');
+      hour12: true
+    }).replace(/,/g, '').replace(/:/g, '-').replace(/ (?=[AP]M)/, ' ');
     
     try {
       // Create a new document group
@@ -119,6 +118,11 @@ const FileUploadModal = ({ isOpen, onClose, onUploadComplete, userId }) => {
           <DialogTitle className="text-xl font-semibold">Upload Documents</DialogTitle>
         </DialogHeader>
         <div className="grid gap-6 py-4">
+          <div className="text-center mb-4">
+            <p className="text-lg font-semibold text-blue-600">
+              Upload 1 or more files for a single slip
+            </p>
+          </div>
           <div className="flex items-center gap-4">
             <label htmlFor="file-upload" className="cursor-pointer w-full">
               <div className="flex items-center justify-center w-full h-32 px-4 transition bg-white border-2 border-gray-300 border-dashed rounded-md appearance-none hover:border-gray-400 focus:outline-none">
