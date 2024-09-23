@@ -100,6 +100,7 @@ const fetchTopMerchants = async () => {
     // Log the results for debugging
     console.log('Top Merchants:', topMerchants);
   };
+  
   const fetchTopCategories = async () => {
     const { data, error } = await supabase
       .from('extracted_items')
@@ -114,16 +115,22 @@ const fetchTopMerchants = async () => {
 
     const categoryData = data.reduce((acc, curr) => {
       const categoryName = curr.categories?.name || 'Uncategorized';
-      acc[categoryName] = (acc[categoryName] || 0) + curr.price;
+      acc[categoryName] = (acc[categoryName] || 0) + (curr.price || 0);
       return acc;
     }, {});
 
-    setTopCategories(
-      Object.entries(categoryData)
-        .map(([name, amount]) => ({ name, amount }))
-        .sort((a, b) => b.amount - a.amount)
-        .slice(0, 5)
-    );
+    const roundedCategories = Object.entries(categoryData)
+      .map(([name, amount]) => ({
+        name,
+        amount: Number(amount.toFixed(2))  // Round to 2 decimal places
+      }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 5);
+
+    setTopCategories(roundedCategories);
+
+    // Log the results for debugging
+    console.log('Top Categories:', roundedCategories);
   };
 
   const fetchRecentTransactions = async () => {
