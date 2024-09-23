@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DateRangePicker } from '@/components/date-range-picker';
 import { supabase } from '../../services/supabaseClient';
@@ -66,12 +66,16 @@ const DashboardPage = () => {
     setAvgDailySpend((total / days).toFixed(2));
   };
 
-  const fetchTopMerchants = async () => {
+const fetchTopMerchants = async () => {
     const { data, error } = await supabase
       .from('document_groups')
-      .select('merchant_id, merchants(name), total_amount')
-      .gte('document_timestamp', date.from.toISOString())
-      .lte('document_timestamp', date.to.toISOString());
+      .select(`
+        merchant_id,
+        merchants (
+          name
+        ),
+        total_amount
+      `)
 
     if (error) {
       console.error('Error fetching top merchants:', error);
@@ -79,19 +83,23 @@ const DashboardPage = () => {
     }
 
     const merchantData = data.reduce((acc, curr) => {
-      const merchantName = curr.merchants?.name || 'Unknown';
-      acc[merchantName] = (acc[merchantName] || 0) + curr.total_amount;
+      if (curr.merchants && curr.merchants.name) {
+        const merchantName = curr.merchants.name;
+        acc[merchantName] = (acc[merchantName] || 0) + (curr.total_amount || 0);
+      }
       return acc;
     }, {});
 
-    setTopMerchants(
-      Object.entries(merchantData)
-        .map(([name, amount]) => ({ name, amount }))
-        .sort((a, b) => b.amount - a.amount)
-        .slice(0, 5)
-    );
-  };
+    const topMerchants = Object.entries(merchantData)
+      .map(([name, amount]) => ({ name, amount }))
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, 5);
 
+    setTopMerchants(topMerchants);
+
+    // Log the results for debugging
+    console.log('Top Merchants:', topMerchants);
+  };
   const fetchTopCategories = async () => {
     const { data, error } = await supabase
       .from('extracted_items')
@@ -120,9 +128,9 @@ const DashboardPage = () => {
 
   const fetchRecentTransactions = async () => {
     const { data, error } = await supabase
-      .from('document_groups')
-      .select('id, total_amount, document_timestamp, merchants(name)')
-      .order('document_timestamp', { ascending: false })
+      .from('extracted_items')
+      .select('id, description, price, created_at')
+      .order('created_at', { ascending: false })
       .limit(5);
 
     if (error) {
@@ -144,7 +152,11 @@ const DashboardPage = () => {
     </Card>
   );
 
-  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
+  // Function to generate colors dynamically
+  const generateColor = (index, total) => {
+    const hue = (index / total) * 360;
+    return `hsl(${hue}, 70%, 50%)`;
+  };
 
   return (
     <div className="p-6 bg-gray-900 min-h-screen text-white">
@@ -193,7 +205,7 @@ const DashboardPage = () => {
                 <BarChart data={topMerchants} layout="vertical">
                   <XAxis type="number" />
                   <YAxis dataKey="name" type="category" width={100} />
-                  <Tooltip />
+                  <Tooltip formatter={(value) => `${value.toFixed(2)} ZAR`} />
                   <Bar dataKey="amount" fill="#3b82f6" />
                 </BarChart>
               </ResponsiveContainer>
@@ -220,10 +232,11 @@ const DashboardPage = () => {
                     label
                   >
                     {topCategories.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      <Cell key={`cell-${index}`} fill={generateColor(index, topCategories.length)} />
                     ))}
                   </Pie>
-                  <Tooltip />
+                  <Tooltip formatter={(value) => `${value.toFixed(2)} ZAR`} />
+                  <Legend />
                 </PieChart>
               </ResponsiveContainer>
             </CardContent>
@@ -237,10 +250,10 @@ const DashboardPage = () => {
               <ul className="space-y-2">
                 {recentTransactions.map((tx) => (
                   <li key={tx.id} className="flex justify-between items-center">
-                    <span>{tx.merchants?.name || 'Unknown Merchant'}</span>
-                    <span>{tx.total_amount.toFixed(2)} ZAR</span>
+                    <span className="truncate max-w-[200px]">{tx.description}</span>
+                    <span>{tx.price.toFixed(2)} ZAR</span>
                     <span className="text-sm text-gray-400">
-                      {format(new Date(tx.document_timestamp), 'dd/MM/yyyy')}
+                      {format(new Date(tx.created_at), 'dd/MM/yyyy')}
                     </span>
                   </li>
                 ))}
