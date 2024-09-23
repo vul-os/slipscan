@@ -21,7 +21,7 @@ const LandingPage = () => {
               <li><Link to="#" className="text-gray-600 hover:text-blue-600 transition-colors">Features</Link></li>
               <li><Link to="#" className="text-gray-600 hover:text-blue-600 transition-colors">Pricing</Link></li>
               <li><Link to="#" className="text-gray-600 hover:text-blue-600 transition-colors">FAQ</Link></li>
-              <li><Button variant="outline" onClick={() => navigate('/signin')} className="text-blue-600 border-blue-600 hover:bg-blue-600 hover:text-white transition-colors">Log in</Button></li>
+              <li><Button variant="outline" onClick={() => navigate('/login')} className="text-blue-600 border-blue-600 hover:bg-blue-600 hover:text-white transition-colors">Log in</Button></li>
             </ul>
           </nav>
         </header>
