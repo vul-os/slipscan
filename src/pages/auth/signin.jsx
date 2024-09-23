@@ -19,7 +19,7 @@ const SignIn = () => {
     event.preventDefault();
     try {
       await signIn(email, password);
-      navigate('/')
+      navigate('/dashboard')
     } catch (error) {
       setError(error.message);
     }

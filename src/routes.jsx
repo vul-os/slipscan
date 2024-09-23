@@ -18,12 +18,14 @@ import Items from './pages/items';
 import ProtectedRoute from './components/auth/protected-route';
 
 import NotFound from './pages/not-found';
+import LandingPage from './pages/landing';
 
 const AppRoutes = () => {
   return (
     <Routes>
       {/* Public routes */}
       <Route element={<BlankLayout />}>
+        <Route path="/" element={<LandingPage />} />
         <Route path="/login" element={<SignIn />} />
         <Route path="/password-reset" element={<ForgotPassword />} />
       </Route>

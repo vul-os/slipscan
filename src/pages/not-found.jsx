@@ -13,7 +13,7 @@ const NotFoundPage = () => {
         The page you are looking for might have been removed, had its name changed, or is temporarily unavailable.
       </p>
       <Button
-        onClick={() => navigate('/')}
+        onClick={() => navigate('/dashboard')}
         className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded"
       >
         Go to Homepage
