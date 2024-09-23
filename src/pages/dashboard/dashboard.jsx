@@ -27,11 +27,11 @@ const DashboardPage = () => {
 
   const fetchDailySpending = async () => {
     const { data, error } = await supabase
-      .from('document_groups')
-      .select('document_timestamp, total_amount')
-      .gte('document_timestamp', date.from.toISOString())
-      .lte('document_timestamp', date.to.toISOString())
-      .order('document_timestamp');
+      .from('extracted_items')
+      .select('created_at, price')
+      .gte('created_at', date.from.toISOString())
+      .lte('created_at', date.to.toISOString())
+      .order('created_at');
 
     if (error) {
       console.error('Error fetching daily spending:', error);
@@ -39,8 +39,8 @@ const DashboardPage = () => {
     }
 
     const aggregatedData = data.reduce((acc, curr) => {
-      const day = format(new Date(curr.document_timestamp), 'yyyy-MM-dd');
-      acc[day] = (acc[day] || 0) + curr.total_amount;
+      const day = format(new Date(curr.created_at), 'yyyy-MM-dd');
+      acc[day] = (acc[day] || 0) + curr.price;
       return acc;
     }, {});
 
@@ -49,17 +49,17 @@ const DashboardPage = () => {
 
   const fetchTotalStats = async () => {
     const { data, error } = await supabase
-      .from('document_groups')
-      .select('total_amount')
-      .gte('document_timestamp', date.from.toISOString())
-      .lte('document_timestamp', date.to.toISOString());
+      .from('extracted_items')
+      .select('price')
+      .gte('created_at', date.from.toISOString())
+      .lte('created_at', date.to.toISOString());
 
     if (error) {
       console.error('Error fetching total stats:', error);
       return;
     }
 
-    const total = data.reduce((sum, curr) => sum + curr.total_amount, 0);
+    const total = data.reduce((sum, curr) => sum + curr.price, 0);
     setTotalSpent(total.toFixed(2));
     
     const days = Math.ceil((date.to - date.from) / (1000 * 60 * 60 * 24));
