@@ -19,9 +19,16 @@ const LandingPage = () => {
           <nav>
             <ul className="flex space-x-8 items-center">
               <li><Link to="#" className="text-gray-600 hover:text-blue-600 transition-colors">Features</Link></li>
-              <li><Link to="#" className="text-gray-600 hover:text-blue-600 transition-colors">Pricing</Link></li>
               <li><Link to="#" className="text-gray-600 hover:text-blue-600 transition-colors">FAQ</Link></li>
-              <li><Button variant="outline" onClick={() => navigate('/login')} className="text-blue-600 border-blue-600 hover:bg-blue-600 hover:text-white transition-colors">Log in</Button></li>
+              <li>
+                <Button 
+                  variant="outline" 
+                  onClick={() => navigate('/login')} 
+                  className="bg-blue-600 text-white border-blue-600 hover:bg-blue-700 hover:border-blue-700 transition-colors"
+                >
+                  Log in
+                </Button>
+              </li>
             </ul>
           </nav>
         </header>
@@ -36,10 +43,6 @@ const LandingPage = () => {
               into your spending habits and helping you make smarter financial decisions.
             </p>
             <p className="text-3xl font-bold text-blue-600 mb-10">100% Free to Use!</p>
-            <div className="flex justify-center space-x-6">
-              <Button variant="outline" className="text-blue-600 border-blue-600 hover:bg-blue-600 hover:text-white transition-colors px-8 py-3 text-lg">Learn More</Button>
-              <Button className="bg-blue-600 hover:bg-blue-700 text-white transition-colors px-8 py-3 text-lg">Download Free App</Button>
-            </div>
           </section>
 
           {/* Features Section */}
@@ -87,19 +90,16 @@ const LandingPage = () => {
 
               <div className="grid md:grid-cols-3 gap-12 mt-24">
                 {[
-                  { icon: Shield, title: "Advanced Analysis", color: "blue" },
-                  { icon: Lock, title: "Secure Data Handling", color: "green" },
-                  { icon: EyeOff, title: "Privacy-First Approach", color: "purple" }
+                  { icon: Shield, title: "Advanced Analysis", description: "We employ cutting-edge techniques to ensure your financial data remains secure and private, giving you peace of mind with every scan." },
+                  { icon: Lock, title: "Secure Data Handling", description: "Your data is protected with industry-standard encryption and secure storage practices, keeping your financial information safe at all times." },
+                  { icon: EyeOff, title: "Privacy-First Approach", description: "We prioritize your privacy by minimizing data retention and implementing strict access controls, ensuring your information stays confidential." }
                 ].map((feature, index) => (
-                  <div key={index} className="flex flex-col items-start">
-                    <div className={`p-4 bg-${feature.color}-100 rounded-2xl mb-6`}>
-                      <feature.icon className={`text-${feature.color}-600`} size={32} />
+                  <div key={index} className="flex flex-col items-center text-center">
+                    <div className={`p-4 bg-${feature.title === "Advanced Analysis" ? "blue" : feature.title === "Secure Data Handling" ? "green" : "purple"}-100 rounded-full mb-6`}>
+                      <feature.icon className={`text-${feature.title === "Advanced Analysis" ? "blue" : feature.title === "Secure Data Handling" ? "green" : "purple"}-600`} size={32} />
                     </div>
                     <h3 className="text-2xl font-semibold mb-4 text-gray-800">{feature.title}</h3>
-                    <p className="text-gray-600 leading-relaxed">
-                      We employ cutting-edge techniques to ensure your financial data remains 
-                      secure and private, giving you peace of mind with every scan.
-                    </p>
+                    <p className="text-gray-600 leading-relaxed">{feature.description}</p>
                   </div>
                 ))}
               </div>
