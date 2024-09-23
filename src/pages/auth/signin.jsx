@@ -15,6 +15,12 @@ const SignIn = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
+  useEffect(() => {
+    if (user) {
+      navigate('/dashboard')
+    }
+  }, [user])
+
   const handleSubmit = async (event) => {
     event.preventDefault();
     try {
