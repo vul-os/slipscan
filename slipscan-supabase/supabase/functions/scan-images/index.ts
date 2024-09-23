@@ -96,6 +96,22 @@ async function sendClaudeRequest(imageUrls) {
   }
 }
 
+// Function to validate and format the timestamp
+function formatTimestamp(timestamp) {
+  if (!timestamp) return null;
+  
+  const date = new Date(timestamp);
+  
+  // Check if the date is valid
+  if (isNaN(date.getTime())) {
+    console.error('Invalid timestamp:', timestamp);
+    return null;
+  }
+  
+  // Format the date as ISO string (UTC)
+  return date.toISOString();
+}
+
 async function processImage(extractedData, supabase, documentGroupId) {
   console.log('1. Starting processImage function');
   if (!extractedData) {
@@ -122,7 +138,6 @@ async function processImage(extractedData, supabase, documentGroupId) {
     .select('id')
     .eq('user_id', userId)
     .eq('name', merchant.name)
-    .eq('location', merchant.location)
     .single();
 
   console.log('5. Merchant query result:', { merchantData, merchantError });
@@ -180,7 +195,7 @@ async function processImage(extractedData, supabase, documentGroupId) {
       merchant_id: merchantId,
       document_type_id: documentTypeId,
       transaction_number: receipt.transaction_number,
-      document_timestamp: receipt.receipt_timestamp || null,
+      document_timestamp: formatTimestamp(receipt.receipt_timestamp),
       cashier_name: receipt.cashier_name,
       till_number: receipt.till_number,
       subtotal: receipt.subtotal,
