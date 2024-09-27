@@ -8,12 +8,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Folder, Save } from 'lucide-react';
+import { Folder, Save, ArrowUp, ArrowDown } from 'lucide-react';
 import { toast } from "@/components/ui/use-toast";
 
 const Items = () => {
   const [documentGroups, setDocumentGroups] = useState([]);
-  const [sortBy, setSortBy] = useState('date');
+  const [sortBy, setSortBy] = useState('upload_date');
   const [sortOrder, setSortOrder] = useState('desc');
   const [editingItem, setEditingItem] = useState(null);
   const [categories, setCategories] = useState([]);
@@ -36,6 +36,7 @@ const Items = () => {
         id,
         name,
         created_at,
+        document_timestamp,
         extracted_items (
           id,
           description,
@@ -57,8 +58,21 @@ const Items = () => {
           )
         )
       `)
-      .eq('user_id', user.id)
-      .order(sortBy === 'name' ? 'name' : 'created_at', { ascending: sortOrder === 'asc' });
+      .eq('user_id', user.id);
+
+    switch (sortBy) {
+      case 'name':
+        query = query.order('name', { ascending: sortOrder === 'asc' });
+        break;
+      case 'upload_date':
+        query = query.order('created_at', { ascending: sortOrder === 'asc' });
+        break;
+      case 'slip_date':
+        query = query.order('document_timestamp', { ascending: sortOrder === 'asc', nullsFirst: sortOrder === 'asc' });
+        break;
+      default:
+        query = query.order('created_at', { ascending: false });
+    }
 
     if (groupId) {
       query = query.eq('id', groupId);
@@ -112,13 +126,16 @@ const Items = () => {
     }
   };
 
-  const handleEdit = (item) => {
-    setEditingItem(item);
+  const handleEdit = (item, groupId) => {
+    setEditingItem({
+      ...item,
+      document_group_id: groupId
+    });
   };
 
   const handleSave = async () => {
+    console.log(editingItem)
     if (!editingItem) return;
-
     const { data, error } = await supabase
       .from('user_modified_extracted_items')
       .upsert({
@@ -173,18 +190,17 @@ const Items = () => {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="name">Name</SelectItem>
-                <SelectItem value="date">Date</SelectItem>
+                <SelectItem value="upload_date">Upload Date</SelectItem>
+                <SelectItem value="slip_date">Slip Date</SelectItem>
               </SelectContent>
             </Select>
-            <Select value={sortOrder} onValueChange={setSortOrder}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Sort order" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="asc">Ascending</SelectItem>
-                <SelectItem value="desc">Descending</SelectItem>
-              </SelectContent>
-            </Select>
+            <Button
+              variant="outline"
+              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+              className="w-[50px]"
+            >
+              {sortOrder === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
+            </Button>
           </div>
         </CardTitle>
       </CardHeader>
@@ -198,6 +214,9 @@ const Items = () => {
                     <Folder className="mr-2 h-4 w-4" />
                     <span>{group.name || `Group ${group.id}`}</span>
                   </div>
+                  <span className="text-sm text-gray-500 mr-4">
+                    {group.document_timestamp ? new Date(group.document_timestamp).toLocaleDateString() : "No Date"}
+                  </span>
                 </div>
               </AccordionTrigger>
               <AccordionContent>
@@ -318,7 +337,7 @@ const Items = () => {
                           {editingItem?.id === item.id ? (
                             <Button onClick={handleSave}><Save className="h-4 w-4" /></Button>
                           ) : (
-                            <Button onClick={() => handleEdit(item)}>Edit</Button>
+                            <Button onClick={() => handleEdit(item, group.id)}>Edit</Button>
                           )}
                         </TableCell>
                       </TableRow>
