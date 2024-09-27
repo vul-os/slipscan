@@ -1,11 +1,13 @@
 import React, { useEffect, useState, useContext } from 'react';
+import { Link } from 'react-router-dom';
 import { supabase } from '../../services/supabaseClient';
 import { AuthContext } from '../../context/use-auth';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { Trash2, FilePlus, Eye, Folder, ScanEye } from 'lucide-react';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Trash2, FilePlus, Eye, Folder, ScanEye, ChevronRight } from 'lucide-react';
 import FileUploadModal from './file-upload';
 import { toast } from "@/components/ui/use-toast";
 import FilePreview from './file-preview';
@@ -31,9 +33,27 @@ const DocumentList = () => {
         name,
         description,
         created_at,
-        transaction_number,
+        cashier_name,
         document_timestamp,
-        document_files (id, bucket_name, file_path, file_name, content_type)
+        subtotal,
+        tax_amount,
+        total_amount,
+        merchants (id, name),
+        document_files (id, bucket_name, file_path, file_name, content_type),
+        extracted_items (
+          id,
+          description,
+          quantity,
+          price,
+          tax_amount,
+          user_modified_extracted_items (
+            id,
+            description,
+            quantity,
+            price,
+            tax_amount
+          )
+        )
       `)
       .eq('user_id', user.id)
       .order(sortBy === 'name' ? 'name' : 'created_at', { ascending: sortOrder === 'asc' });
@@ -46,8 +66,8 @@ const DocumentList = () => {
         variant: "destructive",
       });
     } else {
-      // Generate signed URLs for each file
-      const groupsWithSignedUrls = await Promise.all(data.map(async (group) => {
+      // Generate signed URLs for each file and process extracted items
+      const groupsWithProcessedData = await Promise.all(data.map(async (group) => {
         const filesWithSignedUrls = await Promise.all(group.document_files.map(async (file) => {
           const { data: signedUrlData, error: signedUrlError } = await supabase.storage
             .from('snaps')
@@ -61,10 +81,16 @@ const DocumentList = () => {
           return { ...file, signedUrl: signedUrlData.signedUrl };
         }));
 
-        return { ...group, document_files: filesWithSignedUrls };
+        const processedItems = group.extracted_items.map(item => ({
+          ...item,
+          ...item.user_modified_extracted_items[0],
+          isModified: item.user_modified_extracted_items.length > 0
+        }));
+
+        return { ...group, document_files: filesWithSignedUrls, extracted_items: processedItems };
       }));
 
-      setDocumentGroups(groupsWithSignedUrls);
+      setDocumentGroups(groupsWithProcessedData);
     }
   };
 
@@ -217,19 +243,22 @@ const DocumentList = () => {
           </div>
         </CardTitle>
       </CardHeader>
-      <CardContent className="p-0"> {/* Remove default padding */}
+      <CardContent className="p-0">
         <Accordion type="single" collapsible className="w-full">
           {documentGroups.map((group) => (
-            <AccordionItem value={group.id} key={group.id} className="px-6"> {/* Add horizontal padding here */}
-              <AccordionTrigger className="py-4"> {/* Adjust vertical padding */}
+            <AccordionItem value={group.id} key={group.id} className="px-6">
+              <AccordionTrigger className="py-4">
                 <div className="flex items-center justify-between w-full">
                   <div className="flex items-center">
                     <Folder className="mr-2 h-4 w-4" />
                     <span>{group.name || `Group ${group.id}`}</span>
                   </div>
+                  <span className="text-sm text-gray-500 mr-4">
+                    {new Date(group.document_timestamp).toLocaleDateString()}
+                  </span>
                 </div>
               </AccordionTrigger>
-              <AccordionContent className="pt-4 pb-6"> {/* Adjust padding */}
+              <AccordionContent className="pt-4 pb-6">
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
                   {group.document_files.map((file) => (
                     <div key={file.id} className="flex flex-col max-w-[200px]">
@@ -249,6 +278,68 @@ const DocumentList = () => {
                     </div>
                   ))}
                 </div>
+                
+                {/* Document Group Details */}
+                <div className="mt-6 bg-gradient-to-r from-gray-800 to-gray-700 text-white p-6 rounded-lg shadow-lg">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-2xl font-bold">{group.merchants?.name || 'Unknown Merchant'}</h3>
+                    <p className="text-sm bg-gray-600 px-3 py-1 rounded-full">
+                      {new Date(group.document_timestamp).toLocaleDateString()}
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-sm text-gray-300">Cashier Name</p>
+                      <p className="font-semibold">{group.cashier_name?.toUpperCase() || 'N/A'}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm text-gray-300">Subtotal</p>
+                      <p className="font-semibold">R{group.subtotal?.toFixed(2) || '0.00'}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-gray-300">Tax</p>
+                      <p className="font-semibold">R{group.tax_amount?.toFixed(2) || '0.00'}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm text-gray-300">Total</p>
+                      <p className="text-xl font-bold">R{group.total_amount?.toFixed(2) || '0.00'}</p>
+                    </div>
+                  </div>
+                </div>
+                {/* Items section with data grid */}
+                <div className="mt-6">
+                  <h3 className="text-lg font-semibold mb-2">Items</h3>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Description</TableHead>
+                        <TableHead>Quantity</TableHead>
+                        <TableHead>Price</TableHead>
+                        <TableHead>Tax Amount</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {group.extracted_items.slice(0, 5).map((item) => (
+                        <TableRow key={item.id}>
+                          <TableCell>{item.description}</TableCell>
+                          <TableCell>{item.quantity}</TableCell>
+                          <TableCell>${item.price?.toFixed(2) || '0.00'}</TableCell>
+                          <TableCell>${item.tax_amount?.toFixed(2) || '0.00'}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                  {group.extracted_items.length > 5 && (
+                    <div className="mt-2 text-right">
+                      <Link to={`/items/${group.id}`}>
+                        <Button variant="link">
+                          Show More <ChevronRight className="ml-1 h-4 w-4" />
+                        </Button>
+                      </Link>
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex justify-end mt-4 space-x-2">
                   <Button
                     variant="default"

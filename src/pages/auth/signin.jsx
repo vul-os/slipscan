@@ -13,7 +13,6 @@ const SignIn = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const navigate = useNavigate();
-  const location = useLocation();
 
   useEffect(() => {
     if (user) {
