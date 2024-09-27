@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { DateRangePicker } from '@/components/date-range-picker';
 import { supabase } from '../../services/supabaseClient';
@@ -13,16 +13,19 @@ const DashboardPage = () => {
   const [dailySpending, setDailySpending] = useState([]);
   const [totalSpent, setTotalSpent] = useState(0);
   const [avgDailySpend, setAvgDailySpend] = useState(0);
+  const [avgSlipSpend, setAvgSlipSpend] = useState(0);
+  const [totalTax, setTotalTax] = useState(0); 
   const [topMerchants, setTopMerchants] = useState([]);
-  const [topCategories, setTopCategories] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [recentTransactions, setRecentTransactions] = useState([]);
 
   useEffect(() => {
     fetchDailySpending();
     fetchTotalStats();
     fetchTopMerchants();
-    fetchTopCategories();
+    fetchCategories();
     fetchRecentTransactions();
+    fetchTotalTax();
   }, [date]);
 
   const fetchDailySpending = async () => {
@@ -64,9 +67,10 @@ const DashboardPage = () => {
     
     const days = Math.ceil((date.to - date.from) / (1000 * 60 * 60 * 24));
     setAvgDailySpend((total / days).toFixed(2));
+    setAvgSlipSpend((total / data.length).toFixed(2));
   };
 
-const fetchTopMerchants = async () => {
+  const fetchTopMerchants = async () => {
     const { data, error } = await supabase
       .from('document_groups')
       .select(`
@@ -96,12 +100,25 @@ const fetchTopMerchants = async () => {
       .slice(0, 5);
 
     setTopMerchants(topMerchants);
-
-    // Log the results for debugging
-    console.log('Top Merchants:', topMerchants);
   };
   
-  const fetchTopCategories = async () => {
+  const fetchTotalTax = async () => {
+    const { data, error } = await supabase
+      .from('document_groups')
+      .select('tax_amount')
+      .gte('created_at', date.from.toISOString())
+      .lte('created_at', date.to.toISOString());
+
+    if (error) {
+      console.error('Error fetching total tax:', error);
+      return;
+    }
+
+    const total = data.reduce((sum, curr) => sum + (curr.tax_amount || 0), 0);
+    setTotalTax(total.toFixed(2));
+  };
+
+  const fetchCategories = async () => {
     const { data, error } = await supabase
       .from('extracted_items')
       .select('category_id, categories(name), price')
@@ -109,7 +126,7 @@ const fetchTopMerchants = async () => {
       .lte('created_at', date.to.toISOString());
 
     if (error) {
-      console.error('Error fetching top categories:', error);
+      console.error('Error fetching categories:', error);
       return;
     }
 
@@ -119,18 +136,34 @@ const fetchTopMerchants = async () => {
       return acc;
     }, {});
 
-    const roundedCategories = Object.entries(categoryData)
+    const total = Object.values(categoryData).reduce((sum, amount) => sum + amount, 0);
+
+    let otherAmount = 0;
+    const groupedCategories = Object.entries(categoryData)
       .map(([name, amount]) => ({
         name,
-        amount: Number(amount.toFixed(2))  // Round to 2 decimal places
+        amount: Number(amount.toFixed(2)),
+        percentage: (amount / total) * 100
       }))
       .sort((a, b) => b.amount - a.amount)
-      .slice(0, 5);
+      .reduce((acc, category) => {
+        if (category.percentage >= 2) {
+          acc.push(category);
+        } else {
+          otherAmount += category.amount;
+        }
+        return acc;
+      }, []);
 
-    setTopCategories(roundedCategories);
+    if (otherAmount > 0) {
+      groupedCategories.push({
+        name: 'Other',
+        amount: Number(otherAmount.toFixed(2)),
+        percentage: (otherAmount / total) * 100
+      });
+    }
 
-    // Log the results for debugging
-    console.log('Top Categories:', roundedCategories);
+    setCategories(groupedCategories);
   };
 
   const fetchRecentTransactions = async () => {
@@ -159,10 +192,15 @@ const fetchTopMerchants = async () => {
     </Card>
   );
 
-  // Function to generate colors dynamically
-  const generateColor = (index, total) => {
-    const hue = (index / total) * 360;
-    return `hsl(${hue}, 70%, 50%)`;
+  // Function to generate shades of blue
+  const generateBlueShades = (count) => {
+    const baseHue = 210; // Blue hue
+    const shades = [];
+    for (let i = 0; i < count; i++) {
+      const lightness = 25 + (i * 50) / count; // Vary lightness from 25% to 75%
+      shades.push(`hsl(${baseHue}, 70%, ${lightness}%)`);
+    }
+    return shades;
   };
 
   return (
@@ -177,10 +215,11 @@ const fetchTopMerchants = async () => {
           />
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          <MetricCard title="Total Spent" value={`${totalSpent} ZAR`} />
-          <MetricCard title="Avg Daily Spend" value={`${avgDailySpend} ZAR`} />
-          <MetricCard title="Number of Days" value={Math.ceil((date.to - date.from) / (1000 * 60 * 60 * 24))} />
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <MetricCard title="Total Spent" value={`R ${totalSpent}`} />
+          <MetricCard title="Avg Daily Spend" value={`R ${avgDailySpend}`} />
+          <MetricCard title="Avg Item Spend" value={`R ${avgSlipSpend}`} />
+          <MetricCard title="Total Tax" value={`R ${totalTax}`} />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -197,7 +236,7 @@ const fetchTopMerchants = async () => {
                   />
                   <YAxis />
                   <Tooltip labelFormatter={(date) => format(new Date(date), 'yyyy-MM-dd')} />
-                  <Line type="monotone" dataKey="amount" stroke="#3b82f6" strokeWidth={2} />
+                  <Line type="monotone" dataKey="amount" stroke={generateBlueShades(1)[0]} strokeWidth={2} />
                 </LineChart>
               </ResponsiveContainer>
             </CardContent>
@@ -213,7 +252,11 @@ const fetchTopMerchants = async () => {
                   <XAxis type="number" />
                   <YAxis dataKey="name" type="category" width={100} />
                   <Tooltip formatter={(value) => `${value.toFixed(2)} ZAR`} />
-                  <Bar dataKey="amount" fill="#3b82f6" />
+                  <Bar dataKey="amount">
+                    {topMerchants.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={generateBlueShades(topMerchants.length)[index]} />
+                    ))}
+                  </Bar>
                 </BarChart>
               </ResponsiveContainer>
             </CardContent>
@@ -223,27 +266,34 @@ const fetchTopMerchants = async () => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <Card className="bg-gray-800">
             <CardHeader>
-              <CardTitle>Top 5 Categories</CardTitle>
+              <CardTitle>Categories</CardTitle>
             </CardHeader>
-            <CardContent className="h-80">
+            <CardContent className="h-96">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
-                    data={topCategories}
+                    data={categories}
                     dataKey="amount"
                     nameKey="name"
                     cx="50%"
                     cy="50%"
-                    outerRadius={80}
+                    outerRadius="90%"
                     fill="#8884d8"
-                    label
+                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                    labelLine={false}
                   >
-                    {topCategories.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={generateColor(index, topCategories.length)} />
+                    {categories.map((entry, index) => (
+                      <Cell 
+                        key={`cell-${index}`} 
+                        fill={generateBlueShades(categories.length)[index]} 
+                      />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(value) => `${value.toFixed(2)} ZAR`} />
-                  <Legend />
+                  <Tooltip 
+                    formatter={(value, name, props) => [`${value.toFixed(2)} ZAR`, name]}
+                    contentStyle={{ backgroundColor: '#1f2937', border: 'none' }}
+                    itemStyle={{ color: '#fff' }}
+                  />
                 </PieChart>
               </ResponsiveContainer>
             </CardContent>
@@ -254,14 +304,16 @@ const fetchTopMerchants = async () => {
               <CardTitle>Recent Transactions</CardTitle>
             </CardHeader>
             <CardContent>
-              <ul className="space-y-2">
+              <ul className="space-y-4">
                 {recentTransactions.map((tx) => (
-                  <li key={tx.id} className="flex justify-between items-center">
-                    <span className="truncate max-w-[200px]">{tx.description}</span>
-                    <span>{tx.price.toFixed(2)} ZAR</span>
-                    <span className="text-sm text-gray-400">
-                      {format(new Date(tx.created_at), 'dd/MM/yyyy')}
-                    </span>
+                  <li key={tx.id} className="bg-gray-700 rounded-lg p-3 shadow-md">
+                    <div className="flex justify-between items-center">
+                      <span className="font-medium truncate max-w-[200px]">{tx.description}</span>
+                      <span className="text-blue-300 font-bold">{tx.price.toFixed(2)} ZAR</span>
+                    </div>
+                    <div className="text-sm text-gray-400 mt-1">
+                      {format(new Date(tx.created_at), 'dd MMMM yyyy')}
+                    </div>
                   </li>
                 ))}
               </ul>

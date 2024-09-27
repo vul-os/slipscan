@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useContext } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import { AuthContext } from '../context/use-auth';
 import { Button } from "@/components/ui/button";
@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Folder, Save, ArrowUp, ArrowDown } from 'lucide-react';
+import { Folder, Save, ArrowUp, ArrowDown, Edit, Trash2 } from 'lucide-react';
 import { toast } from "@/components/ui/use-toast";
 
 const Items = () => {
@@ -20,6 +20,7 @@ const Items = () => {
   const [subcategories, setSubcategories] = useState([]);
   const { user } = useContext(AuthContext);
   const { groupId } = useParams();
+  const navigate = useNavigate();
 
   useEffect(() => {
     if (user) {
@@ -134,7 +135,6 @@ const Items = () => {
   };
 
   const handleSave = async () => {
-    console.log(editingItem)
     if (!editingItem) return;
     const { data, error } = await supabase
       .from('user_modified_extracted_items')
@@ -168,6 +168,32 @@ const Items = () => {
     }
   };
 
+  const handleDelete = async (item) => {
+    // Implement delete logic here
+    console.log('Delete item:', item);
+    // You'll need to add the actual delete operation with Supabase
+    // For example:
+    // const { error } = await supabase
+    //   .from('user_modified_extracted_items')
+    //   .delete()
+    //   .match({ id: item.id });
+    // 
+    // if (error) {
+    //   console.error('Error deleting item:', error);
+    //   toast({
+    //     title: "Error",
+    //     description: "Failed to delete item. Please try again.",
+    //     variant: "destructive",
+    //   });
+    // } else {
+    //   toast({
+    //     title: "Success",
+    //     description: "Item deleted successfully.",
+    //   });
+    //   fetchDocumentGroups();
+    // }
+  };
+
   const getCategoryName = (categoryId) => {
     const category = categories.find(c => c.id === categoryId);
     return category ? category.name : 'N/A';
@@ -178,48 +204,40 @@ const Items = () => {
     return subcategory ? subcategory.name : 'N/A';
   };
 
-  return (
-    <Card className="w-full">
-      <CardHeader>
-        <CardTitle className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-2 sm:space-y-0">
-          <span>Items</span>
-          <div className="flex space-x-2">
-            <Select value={sortBy} onValueChange={setSortBy}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Sort by" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="name">Name</SelectItem>
-                <SelectItem value="upload_date">Upload Date</SelectItem>
-                <SelectItem value="slip_date">Slip Date</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button
-              variant="outline"
-              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-              className="w-[50px]"
-            >
-              {sortOrder === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
-            </Button>
-          </div>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <Accordion type="single" collapsible className="w-full">
-          {documentGroups.map((group) => (
-            <AccordionItem value={group.id} key={group.id}>
-              <AccordionTrigger>
-                <div className="flex items-center justify-between w-full">
-                  <div className="flex items-center">
-                    <Folder className="mr-2 h-4 w-4" />
-                    <span>{group.name || `Group ${group.id}`}</span>
-                  </div>
-                  <span className="text-sm text-gray-500 mr-4">
-                    {group.document_timestamp ? new Date(group.document_timestamp).toLocaleDateString() : "No Date"}
-                  </span>
+  const renderContent = () => {
+    if (documentGroups.length === 0) {
+      return (
+        <div className="text-center py-8">
+          <p className="text-lg mb-4">No items found.</p>
+          <p className="text-gray-600 mb-4">To get started, head over to the Slips section and process a group.</p>
+          <Button variant="outline" onClick={() => navigate('/slips')}>
+            Go to Slips
+          </Button>
+        </div>
+      );
+    }
+
+    return (
+      <Accordion type="single" collapsible className="w-full">
+        {documentGroups.map((group) => (
+          <AccordionItem value={group.id} key={group.id}>
+            <AccordionTrigger>
+              <div className="flex items-center justify-between w-full">
+                <div className="flex items-center">
+                  <Folder className="mr-2 h-4 w-4" />
+                  <span>{group.name || `Group ${group.id}`}</span>
                 </div>
-              </AccordionTrigger>
-              <AccordionContent>
+                <span className="text-sm text-gray-500 mr-4">
+                  {group.document_timestamp ? new Date(group.document_timestamp).toLocaleDateString() : "No Date"}
+                </span>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent>
+              {group.items.length === 0 ? (
+                <div className="text-center py-4">
+                  <p className="text-gray-600">No items in this group. Process this group in the Slips section to add items.</p>
+                </div>
+              ) : (
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -334,20 +352,75 @@ const Items = () => {
                           )}
                         </TableCell>
                         <TableCell>
-                          {editingItem?.id === item.id ? (
-                            <Button onClick={handleSave}><Save className="h-4 w-4" /></Button>
-                          ) : (
-                            <Button onClick={() => handleEdit(item, group.id)}>Edit</Button>
-                          )}
+                          <div className="flex space-x-2">
+                            {editingItem?.id === item.id ? (
+                              <Button 
+                                variant="ghost" 
+                                size="icon" 
+                                onClick={handleSave}
+                              >
+                                <Save className="h-4 w-4" />
+                              </Button>
+                            ) : (
+                              <>
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  onClick={() => handleEdit(item, group.id)}
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  onClick={() => handleDelete(item)}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </Button>
+                              </>
+                            )}
+                          </div>
                         </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
-              </AccordionContent>
-            </AccordionItem>
-          ))}
-        </Accordion>
+              )}
+            </AccordionContent>
+          </AccordionItem>
+        ))}
+      </Accordion>
+    );
+  };
+
+  return (
+    <Card className="w-full">
+      <CardHeader>
+        <CardTitle className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-2 sm:space-y-0">
+          <span>Items</span>
+          <div className="flex space-x-2">
+            <Select value={sortBy} onValueChange={setSortBy}>
+              <SelectTrigger className="w-[180px]">
+                <SelectValue placeholder="Sort by" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="name">Name</SelectItem>
+                <SelectItem value="upload_date">Upload Date</SelectItem>
+                <SelectItem value="slip_date">Slip Date</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              variant="outline"
+              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+              className="w-[50px]"
+            >
+              {sortOrder === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
+            </Button>
+          </div>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {renderContent()}
       </CardContent>
     </Card>
   );
