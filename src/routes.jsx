@@ -19,6 +19,7 @@ import ProtectedRoute from './components/auth/protected-route';
 
 import NotFound from './pages/not-found';
 import LandingPage from './pages/landing';
+import Categories from './pages/categories';
 
 const AppRoutes = () => {
   return (
@@ -33,7 +34,8 @@ const AppRoutes = () => {
       {/* Protected routes */}
       <Route element={<MainLayout />}>
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-        <Route path="/documents" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
+        <Route path="/slips" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
+        <Route path="/categories" element={<ProtectedRoute><Categories /></ProtectedRoute>} />
         <Route path="/items" element={<ProtectedRoute><Items /></ProtectedRoute>} />
         <Route path="/items/:groupId" element={<ProtectedRoute><Items /></ProtectedRoute>} />
         <Route path="*" element={<ProtectedRoute><NotFound /></ProtectedRoute>} />

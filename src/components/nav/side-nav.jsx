@@ -3,13 +3,15 @@ import {
   LayoutDashboard,
   FileText,
   Package,
+  FolderTree
 } from 'lucide-react';
 import { NavItem } from './nav-item';
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, text: 'Dashboard' },
-  { to: '/documents', icon: FileText, text: 'Documents' },
+  { to: '/slips', icon: FileText, text: 'Slips' },
   { to: '/items', icon: Package, text: 'Items' },
+  { to: '/categories', icon: FolderTree, text: 'Categories' },
 ];
 
 const SideNav = ({ isExpanded, isMobile }) => {

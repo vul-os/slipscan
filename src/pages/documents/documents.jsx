@@ -212,11 +212,13 @@ const DocumentList = () => {
     }
   };
 
+  const doc_timestamp = (group) => group?.document_timestamp ? new Date(group?.document_timestamp).toLocaleDateString() : "No Date"
+
   return (
     <Card className="w-full max-w-[1200px] mx-auto">
       <CardHeader>
         <CardTitle className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-2 sm:space-y-0">
-          <span>My Documents</span>
+          <span>My Slips</span>
           <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
             <Select value={sortBy} onValueChange={setSortBy}>
               <SelectTrigger className="w-[180px]">
@@ -238,7 +240,7 @@ const DocumentList = () => {
             </Select>
             <Button onClick={() => setIsUploadModalOpen(true)}>
               <FilePlus className="mr-2 h-4 w-4" /> 
-              Add New Documents
+              Add New Slips
             </Button>
           </div>
         </CardTitle>
@@ -254,7 +256,7 @@ const DocumentList = () => {
                     <span>{group.name || `Group ${group.id}`}</span>
                   </div>
                   <span className="text-sm text-gray-500 mr-4">
-                    {new Date(group.document_timestamp).toLocaleDateString()}
+                    {doc_timestamp(group)}
                   </span>
                 </div>
               </AccordionTrigger>
@@ -268,7 +270,7 @@ const DocumentList = () => {
                       <div className="mt-2">
                         <h3 className="font-semibold text-sm truncate">{file.file_name}</h3>
                         <p className="text-xs text-gray-500">
-                          {new Date(group.document_timestamp).toLocaleString()}
+                          {doc_timestamp(group)}
                         </p>
                       </div>
                       <div className="flex justify-end mt-2">
@@ -284,7 +286,7 @@ const DocumentList = () => {
                   <div className="flex justify-between items-center mb-4">
                     <h3 className="text-2xl font-bold">{group.merchants?.name || 'Unknown Merchant'}</h3>
                     <p className="text-sm bg-gray-600 px-3 py-1 rounded-full">
-                      {new Date(group.document_timestamp).toLocaleDateString()}
+                      {doc_timestamp(group)}
                     </p>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
@@ -323,8 +325,8 @@ const DocumentList = () => {
                         <TableRow key={item.id}>
                           <TableCell>{item.description}</TableCell>
                           <TableCell>{item.quantity}</TableCell>
-                          <TableCell>${item.price?.toFixed(2) || '0.00'}</TableCell>
-                          <TableCell>${item.tax_amount?.toFixed(2) || '0.00'}</TableCell>
+                          <TableCell>R{item.price?.toFixed(2) || '0.00'}</TableCell>
+                          <TableCell>R{item.tax_amount?.toFixed(2) || '0.00'}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

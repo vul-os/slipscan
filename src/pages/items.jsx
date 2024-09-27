@@ -16,12 +16,16 @@ const Items = () => {
   const [sortBy, setSortBy] = useState('date');
   const [sortOrder, setSortOrder] = useState('desc');
   const [editingItem, setEditingItem] = useState(null);
+  const [categories, setCategories] = useState([]);
+  const [subcategories, setSubcategories] = useState([]);
   const { user } = useContext(AuthContext);
   const { groupId } = useParams();
 
   useEffect(() => {
     if (user) {
       fetchDocumentGroups();
+      fetchCategories();
+      fetchSubcategories();
     }
   }, [user, sortBy, sortOrder, groupId]);
 
@@ -38,12 +42,18 @@ const Items = () => {
           quantity,
           price,
           tax_amount,
+          brand,
+          category_id,
+          subcategory_id,
           user_modified_extracted_items (
             id,
             description,
             quantity,
             price,
-            tax_amount
+            tax_amount,
+            brand,
+            category_id,
+            subcategory_id
           )
         )
       `)
@@ -76,6 +86,32 @@ const Items = () => {
     }
   };
 
+  const fetchCategories = async () => {
+    const { data, error } = await supabase
+      .from('categories')
+      .select('id, name')
+      .eq('user_id', user.id);
+
+    if (error) {
+      console.error('Error fetching categories:', error);
+    } else {
+      setCategories(data);
+    }
+  };
+
+  const fetchSubcategories = async () => {
+    const { data, error } = await supabase
+      .from('subcategories')
+      .select('id, name, category_id')
+      .eq('user_id', user.id);
+
+    if (error) {
+      console.error('Error fetching subcategories:', error);
+    } else {
+      setSubcategories(data);
+    }
+  };
+
   const handleEdit = (item) => {
     setEditingItem(item);
   };
@@ -92,7 +128,10 @@ const Items = () => {
         description: editingItem.description,
         quantity: editingItem.quantity,
         price: editingItem.price,
-        tax_amount: editingItem.tax_amount
+        tax_amount: editingItem.tax_amount,
+        brand: editingItem.brand,
+        category_id: editingItem.category_id,
+        subcategory_id: editingItem.subcategory_id
       });
 
     if (error) {
@@ -110,6 +149,16 @@ const Items = () => {
       setEditingItem(null);
       fetchDocumentGroups();
     }
+  };
+
+  const getCategoryName = (categoryId) => {
+    const category = categories.find(c => c.id === categoryId);
+    return category ? category.name : 'N/A';
+  };
+
+  const getSubcategoryName = (subcategoryId) => {
+    const subcategory = subcategories.find(s => s.id === subcategoryId);
+    return subcategory ? subcategory.name : 'N/A';
   };
 
   return (
@@ -159,6 +208,9 @@ const Items = () => {
                       <TableHead>Quantity</TableHead>
                       <TableHead>Price</TableHead>
                       <TableHead>Tax Amount</TableHead>
+                      <TableHead>Brand</TableHead>
+                      <TableHead>Category</TableHead>
+                      <TableHead>Subcategory</TableHead>
                       <TableHead>Actions</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -206,6 +258,60 @@ const Items = () => {
                             />
                           ) : (
                             item.tax_amount
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {editingItem?.id === item.id ? (
+                            <Input
+                              value={editingItem.brand}
+                              onChange={(e) => setEditingItem({...editingItem, brand: e.target.value})}
+                            />
+                          ) : (
+                            item.brand
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {editingItem?.id === item.id ? (
+                            <Select
+                              value={editingItem.category_id}
+                              onValueChange={(value) => setEditingItem({...editingItem, category_id: value})}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select category" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {categories.map((category) => (
+                                  <SelectItem key={category.id} value={category.id}>
+                                    {category.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            getCategoryName(item.category_id)
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {editingItem?.id === item.id ? (
+                            <Select
+                              value={editingItem.subcategory_id}
+                              onValueChange={(value) => setEditingItem({...editingItem, subcategory_id: value})}
+                            >
+                              <SelectTrigger>
+                                <SelectValue placeholder="Select subcategory" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {subcategories
+                                  .filter((subcategory) => subcategory.category_id === editingItem.category_id)
+                                  .map((subcategory) => (
+                                    <SelectItem key={subcategory.id} value={subcategory.id}>
+                                      {subcategory.name}
+                                    </SelectItem>
+                                  ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            getSubcategoryName(item.subcategory_id)
                           )}
                         </TableCell>
                         <TableCell>
