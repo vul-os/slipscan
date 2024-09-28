@@ -8,11 +8,10 @@ const LandingPage = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    console.log(window.location.href)
-    if (window.location.href.endsWith('/#')) {
+    if (window.location.href.startsWith(`${window.location.origin}/#`)) {
       navigate('/dashboard', { replace: true });
     }
-  }, [location, navigate]);
+  }, [navigate]);
 
   return (
     <div className="flex flex-col min-h-screen font-sans bg-gray-50">
