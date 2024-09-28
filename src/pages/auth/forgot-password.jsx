@@ -57,7 +57,7 @@ const ForgotPassword = () => {
             </Button>
           </form>
           <div className="mt-4">
-            <Button variant="link" className="w-full" onClick={() => navigate('/signin')}>
+            <Button variant="link" className="w-full" onClick={() => navigate('/login')}>
               Remember your password? Sign In
             </Button>
           </div>
