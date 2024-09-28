@@ -16,6 +16,7 @@ const UpdatePassword = () => {
   const handleSubmit = async (event) => {
     event.preventDefault();
     if (newPassword !== confirmNewPassword) {
+      console.log("mismatch")
       toast({
         title: "Password Mismatch",
         description: "New password and confirmation do not match.",
