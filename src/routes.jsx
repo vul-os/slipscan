@@ -1,5 +1,5 @@
 import React from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 
 // Layouts
 import BlankLayout from './components/layout/blank-layout';
@@ -26,14 +26,13 @@ const AppRoutes = () => {
     <Routes>
       {/* Public routes */}
       <Route element={<BlankLayout />}>
-        <Route path="/" element={<LandingPage />} />
+        <Route exact path="/" element={<LandingPage />} />
         <Route path="/login" element={<SignIn />} />
         <Route path="/password-reset" element={<ForgotPassword />} />
       </Route>
 
       {/* Protected routes */}
       <Route element={<MainLayout />}>
-        <Route path="/#" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/slips" element={<ProtectedRoute><Documents /></ProtectedRoute>} />
         <Route path="/categories" element={<ProtectedRoute><Categories /></ProtectedRoute>} />
