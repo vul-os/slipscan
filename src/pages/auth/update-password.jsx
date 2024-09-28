@@ -43,12 +43,7 @@ const UpdatePassword = () => {
       });
     }
   };
-
-  if (!user) {
-    navigate('/signin');
-    return null;
-  }
-
+  
   return (
     <div className="container mx-auto max-w-md mt-10">
       <Card>
