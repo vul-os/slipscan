@@ -74,7 +74,7 @@ export function AuthProvider({ children }) {
   const forgotPassword = async (email) => {
     try {
       await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/update-password`,
+        redirectTo: `https://slipsnap.co.za/update-password`,
       })
       const { error } = await supabase.auth.resetPasswordForEmail(email);
       if (error) throw error;
