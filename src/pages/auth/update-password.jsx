@@ -7,8 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useToast } from "@/components/ui/use-toast"
 
 const UpdatePassword = () => {
-  const { updateUserPassword, user } = useContext(AuthContext);
-  const [currentPassword, setCurrentPassword] = useState('');
+  const { updateUserPassword } = useContext(AuthContext);
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
   const navigate = useNavigate();
@@ -43,7 +42,7 @@ const UpdatePassword = () => {
       });
     }
   };
-  
+
   return (
     <div className="container mx-auto max-w-md mt-10">
       <Card>
@@ -52,16 +51,6 @@ const UpdatePassword = () => {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <label htmlFor="currentPassword" className="text-sm font-medium">Current Password</label>
-              <Input
-                id="currentPassword"
-                type="password"
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                required
-              />
-            </div>
             <div className="space-y-2">
               <label htmlFor="newPassword" className="text-sm font-medium">New Password</label>
               <Input
