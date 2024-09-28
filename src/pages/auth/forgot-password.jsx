@@ -23,7 +23,7 @@ const ForgotPassword = () => {
         duration: 5000,
       })
       // Optionally, redirect to a confirmation page or back to sign in
-      navigate('/signin');
+      navigate('/login');
     } catch (error) {
       toast({
         title: "Password Reset Failed",
