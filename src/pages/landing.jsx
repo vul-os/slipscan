@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -6,6 +6,12 @@ import { Camera, Shield, Lock, EyeOff, TrendingUp, PieChart } from 'lucide-react
 
 const LandingPage = () => {
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (window.location.href.endsWith('/#')) {
+      navigate('/dashboard', { replace: true });
+    }
+  }, [location, navigate]);
 
   return (
     <div className="flex flex-col min-h-screen font-sans bg-gray-50">
