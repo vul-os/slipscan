@@ -107,7 +107,7 @@ const SignUp = () => {
           </Button>
         </CardContent>
         <CardFooter>
-          <Button variant="link" className="w-full text-sm text-muted-foreground" onClick={() => navigate('/signin')}>
+          <Button variant="link" className="w-full text-sm text-muted-foreground" onClick={() => navigate('/login')}>
             Already have an account? Sign In
           </Button>
         </CardFooter>
