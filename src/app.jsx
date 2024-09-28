@@ -3,6 +3,7 @@ import { BrowserRouter as Router } from 'react-router-dom';
 import { ThemeProvider } from '@/components/theme-provider';
 import { AuthProvider } from './context/auth-context';
 import AppRoutes from './routes';
+import { Toaster } from "@/components/ui/toaster"
 
 const App = () => {
   return (
@@ -11,6 +12,7 @@ const App = () => {
         <Router>
           <AppRoutes />
         </Router>
+        <Toaster />
       </AuthProvider>
     </ThemeProvider>
   );
