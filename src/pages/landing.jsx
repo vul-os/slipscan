@@ -8,6 +8,7 @@ const LandingPage = () => {
   const navigate = useNavigate();
 
   useEffect(() => {
+    console.log(window.location.href)
     if (window.location.href.endsWith('/#')) {
       navigate('/dashboard', { replace: true });
     }
