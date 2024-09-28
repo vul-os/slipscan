@@ -26,6 +26,7 @@ const UpdatePassword = () => {
       return;
     }
     try {
+      console.log("attempt")
       await updateUserPassword(newPassword);
       toast({
         title: "Password Updated",
