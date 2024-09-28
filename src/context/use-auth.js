@@ -9,6 +9,7 @@ export const AuthContext = createContext({
   signInWithGoogle: async () => {},
   signOut: async () => {},
   forgotPassword: async () => {},
+  updateUserPassword: async () => {},
 });
 
 export default AuthContext;

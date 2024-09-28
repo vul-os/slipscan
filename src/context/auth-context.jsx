@@ -33,7 +33,7 @@ export function AuthProvider({ children }) {
       try {
         const { data: { session }, error } = await supabase.auth.getSession();
         if (error) throw error;
-
+        
         if (session) {
           setUser(session.user);
         }
@@ -73,6 +73,9 @@ export function AuthProvider({ children }) {
 
   const forgotPassword = async (email) => {
     try {
+      await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/update-password`,
+      })
       const { error } = await supabase.auth.resetPasswordForEmail(email);
       if (error) throw error;
       return { error: null };
@@ -97,6 +100,12 @@ export function AuthProvider({ children }) {
     if (error) throw error;
   };
 
+  const updateUserPassword = async (new_password) => {
+    const { data, error } = await supabase.auth.updateUser({ password: new_password });
+    if (error) throw error;
+    return data;
+  };
+
   const contextValue = useMemo(() => ({
     loading,
     user,
@@ -105,6 +114,7 @@ export function AuthProvider({ children }) {
     signInWithGoogle,
     signOut,
     forgotPassword,
+    updateUserPassword,
   }), [loading, user]);
 
   return (

@@ -7,6 +7,7 @@ import MainLayout from './components/layout/main-layout';
 
 // Auth Pages
 import SignIn from './pages/auth/signin';
+import SignUp from './pages/auth/signup';
 import ForgotPassword from './pages/auth/forgot-password';
 
 // Protected Pages
@@ -28,6 +29,7 @@ const AppRoutes = () => {
       <Route element={<BlankLayout />}>
         <Route exact path="/" element={<LandingPage />} />
         <Route path="/login" element={<SignIn />} />
+        <Route path="/signup" element={<SignUp />} />
         <Route path="/password-reset" element={<ForgotPassword />} />
       </Route>
 
