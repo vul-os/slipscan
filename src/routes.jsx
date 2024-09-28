@@ -9,6 +9,7 @@ import MainLayout from './components/layout/main-layout';
 import SignIn from './pages/auth/signin';
 import SignUp from './pages/auth/signup';
 import ForgotPassword from './pages/auth/forgot-password';
+import UpdatePassword from './pages/auth/update-password';
 
 // Protected Pages
 import Dashboard from './pages/dashboard/dashboard';
@@ -31,6 +32,7 @@ const AppRoutes = () => {
         <Route path="/login" element={<SignIn />} />
         <Route path="/signup" element={<SignUp />} />
         <Route path="/password-reset" element={<ForgotPassword />} />
+        <Route path="/update-password" element={<ForgotPassword />} />
       </Route>
 
       {/* Protected routes */}
