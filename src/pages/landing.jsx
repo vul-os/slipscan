@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Camera, TrendingUp, PieChart, ShieldCheck, Zap, Store, Menu, X, Facebook } from 'lucide-react';
+import { Camera, TrendingUp, PieChart, ShieldCheck, Zap, Store, Menu, X, Facebook, Receipt, ArrowRight } from 'lucide-react';
 
 const LandingPage = () => {
   const navigate = useNavigate();
@@ -32,7 +32,7 @@ const LandingPage = () => {
         <header className="flex justify-between items-center mb-8 sm:mb-16">
           <div className="flex items-center">
             <Camera size={32} className="text-blue-600 mr-2" />
-            <span className="text-2xl font-bold text-gray-800">SlipScan</span>
+            <span className="text-2xl font-bold text-gray-800">SlipSnap</span>
           </div>
           <nav className="hidden sm:block">
             <ul className="flex space-x-8 items-center">
@@ -84,7 +84,7 @@ const LandingPage = () => {
           <section className="text-center mb-16 sm:mb-24">
             <h1 className="text-4xl sm:text-6xl font-bold mb-6 text-gray-800 leading-tight">Transform Your <span className="text-blue-600">Receipts</span> into Financial Insights</h1>
             <p className="text-lg sm:text-xl text-gray-600 mb-8 max-w-3xl mx-auto leading-relaxed">
-              SlipScan uses advanced AI to analyze your receipt photos, providing instant insights 
+              SlipSnap uses advanced AI to analyze your receipt photos, providing instant insights 
               into your spending habits and empowering you to make smarter financial decisions.
             </p>
             <p className="text-2xl sm:text-3xl font-bold text-blue-600 mb-10">Completely Free, Forever!</p>
@@ -98,7 +98,7 @@ const LandingPage = () => {
 
           {/* Features Section */}
           <section ref={featuresRef} className="mb-16 sm:mb-24">
-            <h2 className="text-3xl sm:text-4xl font-bold text-center mb-8 sm:mb-12 text-gray-800">How SlipScan Works</h2>
+            <h2 className="text-3xl sm:text-4xl font-bold text-center mb-8 sm:mb-12 text-gray-800">How SlipSnap Works</h2>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-8 sm:gap-12">
               <Card className="bg-white shadow-lg hover:shadow-xl transition-shadow">
                 <CardContent className="pt-8 flex flex-col items-center">
@@ -129,7 +129,7 @@ const LandingPage = () => {
             <div className="container mx-auto px-4 sm:px-8">
               <h2 className="text-3xl sm:text-4xl font-bold text-center mb-8 sm:mb-12 text-gray-800">Supported Retailers</h2>
               <p className="text-lg sm:text-xl text-center text-gray-600 mb-8 sm:mb-12">
-                SlipScan works with receipts from all major retailers. Here are just a few we support:
+                SlipSnap works with receipts from all major retailers. Here are just a few we support:
               </p>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 sm:gap-8">
                 {['Pick n Pay', 'Spar', 'Makro', 'Woolworths', 'Checkers', 'Shoprite', 'Game', 'Dis-Chem'].map((retailer, index) => (
@@ -140,7 +140,7 @@ const LandingPage = () => {
                 ))}
               </div>
               <p className="text-center mt-8 sm:mt-12 text-gray-600">
-                Don't see your favorite store? Don't worry! SlipScan works with virtually any receipt.
+                Don't see your favorite store? Don't worry! SlipSnap works with virtually any receipt.
               </p>
             </div>
           </section>
@@ -153,7 +153,7 @@ const LandingPage = () => {
                 <div className="md:w-1/2 mb-8 md:mb-0 md:pr-8">
                   <h3 className="text-2xl sm:text-3xl font-semibold mb-4 text-gray-800">Gain Insights from Your Spending</h3>
                   <p className="text-lg text-gray-600 mb-6 leading-relaxed">
-                    Our intuitive dashboard provides a comprehensive overview of your financial habits. With SlipScan, you can:
+                    Our intuitive dashboard provides a comprehensive overview of your financial habits. With SlipSnap, you can:
                   </p>
                   <ul className="space-y-4">
                     <li className="flex items-start">
@@ -174,7 +174,7 @@ const LandingPage = () => {
                   <div className="bg-white p-4 rounded-xl shadow-2xl">
                     <img 
                       src="/dashboard.png" 
-                      alt="SlipScan Dashboard Preview" 
+                      alt="SlipSnap Dashboard Preview" 
                       className="rounded-lg w-full"
                     />
                   </div>
@@ -183,13 +183,59 @@ const LandingPage = () => {
             </div>
           </section>
 
+
+        {/* New Slip Details Section */}
+        <section className="mb-16 sm:mb-24">
+          <div className="container mx-auto px-4">
+            <h2 className="text-3xl sm:text-4xl font-bold text-center mb-8 sm:mb-12 text-gray-800">Detailed Insights at Your Fingertips</h2>
+            <div className="flex flex-col md:flex-row items-center justify-between">
+              <div className="md:w-1/2 mb-8 md:mb-0 md:pr-8">
+                <h3 className="text-2xl sm:text-3xl font-semibold mb-4 text-gray-800">Every Purchase, Crystal Clear</h3>
+                <p className="text-lg text-gray-600 mb-6 leading-relaxed">
+                  SlipScan doesn't just capture totals. We break down each receipt into individual line items, giving you unprecedented visibility into your spending habits.
+                </p>
+                <ul className="space-y-4">
+                  <li className="flex items-start">
+                    <Receipt className="text-blue-500 mr-2 mt-1 flex-shrink-0" size={24} />
+                    <span className="text-gray-700">View detailed breakdowns of each receipt</span>
+                  </li>
+                  <li className="flex items-start">
+                    <PieChart className="text-blue-500 mr-2 mt-1 flex-shrink-0" size={24} />
+                    <span className="text-gray-700">Categorize items automatically for better insights</span>
+                  </li>
+                  <li className="flex items-start">
+                    <TrendingUp className="text-blue-500 mr-2 mt-1 flex-shrink-0" size={24} />
+                    <span className="text-gray-700">Track price changes for individual products over time</span>
+                  </li>
+                </ul>
+                <Button 
+                  onClick={() => navigate('/signup')} 
+                  className="mt-8 bg-blue-600 text-white text-lg py-3 px-6 rounded-full hover:bg-blue-700 transition-colors flex items-center"
+                >
+                  Start Scanning Now
+                  <ArrowRight className="ml-2" size={20} />
+                </Button>
+              </div>
+              <div className="md:w-1/2">
+                <div className="bg-white p-4 rounded-xl shadow-2xl">
+                  <img 
+                    src="/slip-details.png" 
+                    alt="SlipScan Detailed Receipt View" 
+                    className="rounded-lg w-full"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
           {/* Security Section - Updated without image */}
           <section className="mb-16 sm:mb-24">
             <div className="bg-blue-50 rounded-3xl p-8 sm:p-12">
               <h2 className="text-3xl sm:text-4xl font-bold text-center mb-8 text-gray-800">Your Security is Our Priority</h2>
               <div className="max-w-3xl mx-auto">
                 <p className="text-lg sm:text-xl text-gray-600 mb-6 leading-relaxed text-center">
-                  At SlipScan, we take your privacy and data security seriously. Our multi-layered security approach ensures that your financial information remains safe and confidential.
+                  At SlipSnap, we take your privacy and data security seriously. Our multi-layered security approach ensures that your financial information remains safe and confidential.
                 </p>
                 <ul className="space-y-4">
                   <li className="flex items-start justify-center">
@@ -214,7 +260,7 @@ const LandingPage = () => {
             <h2 className="text-3xl sm:text-4xl font-bold text-center mb-8 sm:mb-12 text-gray-800">Frequently Asked Questions</h2>
             <div className="space-y-6 sm:space-y-8">
               {[
-                { q: "Is SlipScan really free?", a: "Yes, SlipScan is 100% free to use. We believe in making financial management accessible to everyone." },
+                { q: "Is SlipSnap really free?", a: "Yes, SlipSnap is 100% free to use. We believe in making financial management accessible to everyone." },
                 { q: "How accurate is the receipt scanning?", a: "Our AI-powered scanning is highly accurate. However, we always recommend reviewing the results for any discrepancies." },
                 { q: "Can I export my data?", a: "Absolutely! You can export your data in various formats for use in other financial tools or for your records." },
                 { q: "Is my data safe?", a: "We take data security very seriously. Your information is encrypted, and we never store original receipt images. Read more in our security section." }
@@ -236,7 +282,7 @@ const LandingPage = () => {
             <div>
               <div className="flex items-center mb-6">
                 <Camera size={32} className="text-blue-400 mr-3" />
-                <span className="text-2xl font-semibold">SlipScan</span>
+                <span className="text-2xl font-semibold">SlipSnap</span>
               </div>
               <p className="text-gray-400">A free product by Exolution Technologies</p>
             </div>
@@ -270,7 +316,7 @@ const LandingPage = () => {
             </div>
           </div>
           <div className="mt-12 sm:mt-16 pt-8 border-t border-gray-700 text-sm text-gray-400">
-            © 2024 Exolution Technologies Pty Ltd. All rights reserved. SlipScan is a free product of Exolution Technologies Pty Ltd. SlipScan is not affiliated with or endorsed by any other receipt scanning or financial management system.
+            © 2024 Exolution Technologies Pty Ltd. All rights reserved. SlipSnap is a free product of Exolution Technologies Pty Ltd. SlipSnap is not affiliated with or endorsed by any other receipt scanning or financial management system.
           </div>
         </div>
       </footer>
