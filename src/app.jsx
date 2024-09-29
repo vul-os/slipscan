@@ -4,6 +4,7 @@ import { ThemeProvider } from '@/components/theme-provider';
 import { AuthProvider } from './context/auth-context';
 import AppRoutes from './routes';
 import { Toaster } from "@/components/ui/toaster"
+import { analytics } from './services/firebase';
 
 const App = () => {
   return (
