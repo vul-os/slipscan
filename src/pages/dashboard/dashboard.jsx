@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Pie, Cell } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { DateRangePicker } from '@/components/date-range-picker';
@@ -36,25 +36,25 @@ const DashboardPage = () => {
 
   const fetchDailySpending = async () => {
     const { data, error } = await supabase
-      .from('extracted_items')
-      .select('created_at, price')
-      .gte('created_at', date.from.toISOString())
-      .lte('created_at', date.to.toISOString())
-      .order('created_at');
-
+      .from('document_groups')
+      .select('document_timestamp, total_amount')
+      .gte('document_timestamp', date.from.toISOString())
+      .lte('document_timestamp', date.to.toISOString())
+      .order('document_timestamp');
+  
     if (error) {
       console.error('Error fetching daily spending:', error);
       return;
     }
-
-    if (data.length > 0) {
+  
+    if (data && data.length > 0) {
       setHasData(true);
       const aggregatedData = data.reduce((acc, curr) => {
-        const day = format(new Date(curr.created_at), 'yyyy-MM-dd');
-        acc[day] = (acc[day] || 0) + curr.price;
+        const day = format(new Date(curr.document_timestamp), 'yyyy-MM-dd');
+        acc[day] = (acc[day] || 0) + (curr.total_amount || 0);
         return acc;
       }, {});
-
+  
       setDailySpending(Object.entries(aggregatedData).map(([date, amount]) => ({ date, amount })));
     } else {
       setHasData(false);
@@ -285,24 +285,46 @@ const DashboardPage = () => {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <Card className="bg-gray-800">
-            <CardHeader>
-              <CardTitle>Daily Spending</CardTitle>
-            </CardHeader>
-            <CardContent className="h-60 sm:h-80">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={dailySpending}>
-                  <XAxis 
-                    dataKey="date" 
-                    tickFormatter={(date) => format(new Date(date), 'dd/MM')}
-                  />
-                  <YAxis />
-                  <Tooltip labelFormatter={(date) => format(new Date(date), 'yyyy-MM-dd')} />
-                  <Line type="monotone" dataKey="amount" stroke={generateBlueShades(1)[0]} strokeWidth={2} />
-                </LineChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
+        <Card className="bg-gray-800">
+          <CardHeader>
+            <CardTitle>Daily Spending</CardTitle>
+          </CardHeader>
+          <CardContent className="h-72 sm:h-96">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={dailySpending} margin={{ top: 20, right: 30, left: 20, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#444" />
+                <XAxis 
+                  dataKey="date" 
+                  tickFormatter={(date) => format(new Date(date), 'dd/MM')}
+                  stroke="#888"
+                />
+                <YAxis 
+                  stroke="#888"
+                  tickFormatter={(value) => `R ${value}`}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: '#1f2937',
+                    border: '1px solid #374151',
+                    borderRadius: '0.5rem',
+                    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
+                  }}
+                  itemStyle={{ color: '#60a5fa' }}
+                  formatter={(value) => [`R ${value.toFixed(2)}`, 'Amount']}
+                  labelFormatter={(label) => format(new Date(label), 'MMMM d, yyyy')}
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="amount" 
+                  stroke="#3b82f6" 
+                  strokeWidth={3}
+                  dot={false}
+                  activeDot={{ r: 8, fill: "#3b82f6", stroke: "#fff" }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
 
           <Card className="bg-gray-800">
             <CardHeader>
