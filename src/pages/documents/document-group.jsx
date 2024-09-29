@@ -184,31 +184,32 @@ const DocumentGroup = ({ group, onDeleteFile, onDeleteGroup, onProcessImages, on
                 </div>
               )}
             </div>
-
-            <div className="flex justify-end mt-4 space-x-2">
-              <Button
-                variant="default"
-                onClick={onProcessImages}
-                className="bg-blue-500 hover:bg-blue-600 text-white"
-                disabled={isLoading}
-              >
-                {isLoading ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <ScanEye className="h-4 w-4 mr-2" />
-                )}
-                Reprocess Slips
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={onDeleteGroup}
-                disabled={isLoading}
-              >
-                <Trash2 className="h-4 w-4 mr-2" /> Delete Group
-              </Button>
-            </div>
           </>
         )}
+
+        {/* Action Buttons - now outside the conditional rendering */}
+        <div className="flex justify-end mt-4 space-x-2">
+          <Button
+            variant="default"
+            onClick={onProcessImages}
+            className="bg-blue-500 hover:bg-blue-600 text-white"
+            disabled={isLoading}
+          >
+            {isLoading ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <ScanEye className="h-4 w-4 mr-2" />
+            )}
+            {isGroupEmpty ? 'Process Slips' : 'Reprocess Slips'}
+          </Button>
+          <Button
+            variant="ghost"
+            onClick={onDeleteGroup}
+            disabled={isLoading}
+          >
+            <Trash2 className="h-4 w-4 mr-2" /> Delete Group
+          </Button>
+        </div>
       </AccordionContent>
     </AccordionItem>
   );
