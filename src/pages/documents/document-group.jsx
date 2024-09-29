@@ -47,19 +47,6 @@ const DocumentGroup = ({ group, onDeleteFile, onDeleteGroup, onProcessImages, on
       <p className="text-gray-600 mb-6 max-w-md">
         Unlock the valuable information in your slips by processing them. Our system will extract key details, making your data easily accessible and actionable.
       </p>
-      <Button
-        variant="default"
-        onClick={onProcessImages}
-        className="bg-blue-500 hover:bg-blue-600 text-white"
-        disabled={isLoading}
-      >
-        {isLoading ? (
-          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-        ) : (
-          <ScanEye className="h-4 w-4 mr-2" />
-        )}
-        Process Slips
-      </Button>
     </div>
   );
 
