@@ -394,28 +394,30 @@ const Items = () => {
   };
 
   return (
-    <Card className="w-full">
+    <Card className="w-full max-w-[1200px] mx-auto">
       <CardHeader>
-        <CardTitle className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-2 sm:space-y-0">
-          <span>Items</span>
-          <div className="flex space-x-2">
-            <Select value={sortBy} onValueChange={setSortBy}>
-              <SelectTrigger className="w-[180px]">
-                <SelectValue placeholder="Sort by" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="name">Name</SelectItem>
-                <SelectItem value="upload_date">Upload Date</SelectItem>
-                <SelectItem value="slip_date">Slip Date</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button
-              variant="outline"
-              onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-              className="w-[50px]"
-            >
-              {sortOrder === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
-            </Button>
+        <CardTitle className="flex flex-col space-y-4">
+          <span className="text-2xl font-bold">Items</span>
+          <div className="flex flex-col space-y-2 sm:flex-row sm:space-y-0 sm:items-center">
+            <div className="flex items-center space-x-2 w-full sm:w-auto">
+              <Select value={sortBy} onValueChange={setSortBy}>
+                <SelectTrigger className="w-full sm:w-[180px]">
+                  <SelectValue placeholder="Sort by" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="name">Name</SelectItem>
+                  <SelectItem value="upload_date">Upload Date</SelectItem>
+                  <SelectItem value="slip_date">Slip Date</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                className="w-[50px]"
+              >
+                {sortOrder === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
+              </Button>
+            </div>
           </div>
         </CardTitle>
       </CardHeader>

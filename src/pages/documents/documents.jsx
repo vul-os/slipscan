@@ -117,14 +117,12 @@ const DocumentList = () => {
 
   const handleDeleteFile = async (file, groupId) => {
     try {
-      // Delete the file from storage
       const { error: storageError } = await supabase.storage
         .from('snaps')
         .remove([file.file_path]);
 
       if (storageError) throw storageError;
 
-      // Delete the file record from the database
       const { error: dbError } = await supabase
         .from('document_files')
         .delete()
@@ -132,7 +130,6 @@ const DocumentList = () => {
 
       if (dbError) throw dbError;
 
-      // Update the state
       setDocumentGroups(prevGroups =>
         prevGroups.map(group =>
           group.id === groupId
@@ -157,7 +154,6 @@ const DocumentList = () => {
 
   const handleDeleteGroup = async (groupId) => {
     try {
-      // Fetch all files in the group
       const { data: groupFiles, error: fetchError } = await supabase
         .from('document_files')
         .select('file_path')
@@ -165,7 +161,6 @@ const DocumentList = () => {
 
       if (fetchError) throw fetchError;
 
-      // Delete all files from storage
       if (groupFiles && groupFiles.length > 0) {
         const filePaths = groupFiles.map(file => file.file_path);
         const { error: storageError } = await supabase.storage
@@ -175,12 +170,10 @@ const DocumentList = () => {
         if (storageError) throw storageError;
       }
 
-      // Delete the group and associated data from the database
       const { error: deleteError } = await supabase.rpc('delete_document_group_and_associated_data', { group_id: groupId });
 
       if (deleteError) throw deleteError;
 
-      // Update the state
       setDocumentGroups(prevGroups => prevGroups.filter(group => group.id !== groupId));
 
       toast({
@@ -231,10 +224,8 @@ const DocumentList = () => {
   
       if (error) throw error;
 
-      // Generate a new group name based on the processed data
       const newGroupName = generateGroupName(data.merchant.name, data.merchant.location, new Date(data.receipt.receipt_timestamp));
 
-      // Update the group name in the database
       const { error: updateError } = await supabase
         .from('document_groups')
         .update({ name: newGroupName })
@@ -247,7 +238,6 @@ const DocumentList = () => {
         description: "Documents processed successfully.",
       });
   
-      // Refresh the document groups to reflect any changes
       await fetchDocumentGroups();
     } catch (error) {
       console.error('Error processing images:', error);
@@ -263,7 +253,6 @@ const DocumentList = () => {
 
   const handleUpdateDate = async (groupId, newDate) => {
     try {
-      // Fetch the current group data
       const { data: groupData, error: fetchError } = await supabase
         .from('document_groups')
         .select('merchants (name, location)')
@@ -272,14 +261,12 @@ const DocumentList = () => {
 
       if (fetchError) throw fetchError;
 
-      // Generate new group name
       const newGroupName = generateGroupName(
         groupData.merchants?.name,
         groupData.merchants?.location,
         newDate
       );
 
-      // Update the group with new date and name
       const { error: updateError } = await supabase
         .from('document_groups')
         .update({ 
@@ -295,7 +282,6 @@ const DocumentList = () => {
         description: "Document date and group name updated successfully.",
       });
 
-      // Refresh the document groups to reflect the changes
       await fetchDocumentGroups();
     } catch (error) {
       console.error('Error updating document group date:', error);
@@ -331,28 +317,30 @@ const DocumentList = () => {
   return (
     <Card className="w-full max-w-[1200px] mx-auto">
       <CardHeader>
-        <CardTitle className="flex flex-col sm:flex-row justify-between items-start sm:items-center space-y-2 sm:space-y-0">
-          <span>My Slips</span>
+        <CardTitle className="flex flex-col space-y-4">
+          <span className="text-2xl font-bold">My Slips</span>
           {!isLoading && documentGroups.length > 0 && (
-            <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
-              <Select value={sortBy} onValueChange={setSortBy}>
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Sort by" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="name">Name</SelectItem>
-                  <SelectItem value="upload_date">Upload Date</SelectItem>
-                  <SelectItem value="slip_date">Slip Date</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button
-                variant="outline"
-                onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
-                className="w-[50px]"
-              >
-                {sortOrder === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
-              </Button>
-              <Button onClick={() => setIsUploadModalOpen(true)}>
+            <div className="flex flex-col space-y-2">
+              <div className="flex items-center space-x-2">
+                <Select value={sortBy} onValueChange={setSortBy}>
+                  <SelectTrigger className="flex-grow">
+                    <SelectValue placeholder="Sort by" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="name">Name</SelectItem>
+                    <SelectItem value="upload_date">Upload Date</SelectItem>
+                    <SelectItem value="slip_date">Slip Date</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  variant="outline"
+                  onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+                  className="w-[50px]"
+                >
+                  {sortOrder === 'asc' ? <ArrowUp className="h-4 w-4" /> : <ArrowDown className="h-4 w-4" />}
+                </Button>
+              </div>
+              <Button onClick={() => setIsUploadModalOpen(true)} className="w-full sm:w-auto">
                 <FilePlus className="mr-2 h-4 w-4" /> 
                 Add New Slips
               </Button>
