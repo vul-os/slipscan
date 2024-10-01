@@ -1,20 +1,47 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <link rel="icon" type="image/svg+xml" href="/camera.svg" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>SlipSnap</title>
-        <!-- Fonts -->
-        <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-        <!-- Figtree -->
-        <link
-            href="https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700;800&display=swap"
-            rel="stylesheet" />
-    </head>
-    <body>
-        <div id="root" class="font-sans antialiased"></div>
-        <script type="module" src="/src/main.jsx"></script>
-    </body>
+<head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/camera.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SlipSnap</title>
+    
+    <!-- Preload font files -->
+    <link rel="preload" href="https://fonts.gstatic.com/s/figtree/v4/9XzeJFhPtgGjuaDMYqECUY-B_KMuy0Y.woff2" as="font" type="font/woff2" crossorigin>
+    
+    <!-- Inline critical CSS -->
+    <style>
+        /* Fallback font */
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+        }
+        /* Font class for when custom font is loaded */
+        .fonts-loaded body {
+            font-family: 'Figtree', sans-serif;
+        }
+    </style>
+    
+    <!-- Asynchronous font loading script -->
+    <script>
+        (function() {
+            // Simple font loading using FontFace API
+            const font = new FontFace('Figtree', 'url(https://fonts.gstatic.com/s/figtree/v4/9XzeJFhPtgGjuaDMYqECUY-B_KMuy0Y.woff2)', {
+                style: 'normal',
+                weight: '300 800',
+                display: 'swap'
+            });
+
+            font.load().then(() => {
+                document.fonts.add(font);
+                document.documentElement.classList.add('fonts-loaded');
+            }).catch((err) => {
+                console.error('Font loading failed:', err);
+            });
+        })();
+    </script>
+</head>
+<body>
+    <div id="root" class="font-sans antialiased"></div>
+    <script type="module" src="/src/main.jsx"></script>
+</body>
 </html>
