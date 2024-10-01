@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
 import { Camera, Menu, X, ShieldCheck } from 'lucide-react';
 
@@ -9,37 +9,21 @@ const Retailers = lazy(() => import('./retailers'));
 const FAQ = lazy(() => import('./faq'));
 const Footer = lazy(() => import('./footer'));
 
-// Critical CSS for the hero section
-const criticalCSS = `
-  .hero-heading {
-    font-size: clamp(2.25rem, 5vw, 3.75rem);
-    line-height: 1.2;
-    font-weight: 700;
-    color: #1a202c;
-    margin-bottom: 1.5rem;
-    font-family: 'Your-Font-Name', sans-serif;
-  }
-  .hero-highlight {
-    color: #3182ce;
-  }
-  .hero-description {
-    font-size: clamp(1rem, 2vw, 1.25rem);
-    color: #4a5568;
-    max-width: 42rem;
-    margin: 0 auto 2rem auto;
-  }
-  .hero-cta {
-    font-size: 1.125rem;
-    padding: 0.75rem 1.5rem;
-    background-color: #3182ce;
-    color: white;
-    border-radius: 9999px;
-    transition: background-color 0.2s;
-  }
-  .hero-cta:hover {
-    background-color: #2c5282;
-  }
-`;
+// Inline critical CSS components
+const HeroHeading = ({ children }) => (
+  <h1 
+    className="text-[clamp(2.25rem,5vw,3.75rem)] leading-tight font-bold text-gray-900 mb-6"
+    style={{fontFamily: 'var(--font-sans)'}}
+  >
+    {children}
+  </h1>
+);
+
+const HeroDescription = ({ children }) => (
+  <p className="text-[clamp(1rem,2vw,1.25rem)] text-gray-600 max-w-2xl mx-auto mb-8">
+    {children}
+  </p>
+);
 
 const LandingPage = () => {
   const navigate = useNavigate();
@@ -49,30 +33,19 @@ const LandingPage = () => {
   const faqRef = useRef(null);
 
   useEffect(() => {
-    // Inject critical CSS
-    const style = document.createElement('style');
-    style.textContent = criticalCSS;
-    document.head.appendChild(style);
-
-    // Preload critical font
-    const link = document.createElement('link');
-    link.rel = 'preload';
-    link.as = 'font';
-    link.href = '/path-to-your-font.woff2';
-    link.type = 'font/woff2';
-    link.crossOrigin = 'anonymous';
-    document.head.appendChild(link);
-
     // Navigation logic
     if (window.location.href.startsWith(`${window.location.origin}/#`)) {
       navigate('/dashboard', { replace: true });
     }
 
-    // Clean up function
-    return () => {
-      document.head.removeChild(style);
-      document.head.removeChild(link);
-    };
+    // Preload critical font
+    const link = document.createElement('link');
+    link.rel = 'preload';
+    link.as = 'font';
+    link.href = '/fonts/your-font-name.woff2';
+    link.type = 'font/woff2';
+    link.crossOrigin = 'anonymous';
+    document.head.appendChild(link);
   }, [navigate]);
 
   const scrollToSection = (elementRef) => {
@@ -140,16 +113,16 @@ const LandingPage = () => {
         <main>
           {/* Hero Section */}
           <section className="text-center mb-16 sm:mb-24">
-            <h1 className="hero-heading">
-              Transform Your <span className="hero-highlight">Receipts</span> into Financial Insights
-            </h1>
-            <p className="hero-description">
+            <HeroHeading>
+              Transform Your <span className="text-blue-600">Receipts</span> into Financial Insights
+            </HeroHeading>
+            <HeroDescription>
               SlipSnap uses advanced AI to analyze your receipt photos, providing instant insights 
               into your spending habits and empowering you to make smarter financial decisions.
-            </p>
+            </HeroDescription>
             <Button 
               onClick={() => navigate('/signup')} 
-              className="hero-cta"
+              className="text-lg px-6 py-3 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors"
             >
               Start Scanning for Free
             </Button>
