@@ -19,42 +19,29 @@
         .fonts-loaded body {
             font-family: 'Figtree', sans-serif;
         }
-        /* Add any other critical CSS here */
     </style>
     
     <!-- Asynchronous font loading script -->
     <script>
         (function() {
-            if ("FontFace" in window) {
-                const font = new FontFace('Figtree', 'url(https://fonts.gstatic.com/s/figtree/v4/9XzeJFhPtgGjuaDMYqECUY-B_KMuy0Y.woff2)', {
-                    style: 'normal',
-                    weight: '300 800',
-                    display: 'swap'
-                });
+            // Simple font loading using FontFace API
+            const font = new FontFace('Figtree', 'url(https://fonts.gstatic.com/s/figtree/v4/9XzeJFhPtgGjuaDMYqECUY-B_KMuy0Y.woff2)', {
+                style: 'normal',
+                weight: '300 800',
+                display: 'swap'
+            });
 
-                font.load().then(() => {
-                    document.fonts.add(font);
-                    document.documentElement.classList.add('fonts-loaded');
-                }).catch((err) => {
-                    console.error('Font loading failed:', err);
-                });
-            } else {
-                // Fallback for browsers that don't support FontFace API
+            font.load().then(() => {
+                document.fonts.add(font);
                 document.documentElement.classList.add('fonts-loaded');
-            }
+            }).catch((err) => {
+                console.error('Font loading failed:', err);
+            });
         })();
     </script>
 </head>
 <body>
     <div id="root" class="font-sans antialiased"></div>
-    
-    <!-- Modern browsers -->
     <script type="module" src="/src/main.jsx"></script>
-    
-    <!-- Legacy browsers -->
-    <script nomodule>
-        // Vite will automatically inject the legacy bundle here
-        // You don't need to manually add anything
-    </script>
 </body>
 </html>
