@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
-import { Camera, Menu, X, ShieldCheck } from 'lucide-react';
+import { Camera, Menu, X, TrendingUp, PieChart, ShieldCheck, Zap, Store } from 'lucide-react';
 
 // Lazy loaded components
 const Features = lazy(() => import('./features'));
@@ -9,21 +9,22 @@ const Retailers = lazy(() => import('./retailers'));
 const FAQ = lazy(() => import('./faq'));
 const Footer = lazy(() => import('./footer'));
 
-// Inline critical CSS components
-const HeroHeading = ({ children }) => (
-  <h1 
-    className="text-[clamp(2.25rem,5vw,3.75rem)] leading-tight font-bold text-gray-900 mb-6"
-    style={{fontFamily: 'var(--font-sans)'}}
-  >
-    {children}
-  </h1>
-);
+// Separate component for hero content below the heading
+const HeroContent = lazy(() => import('./hero'));
 
-const HeroDescription = ({ children }) => (
-  <p className="text-[clamp(1rem,2vw,1.25rem)] text-gray-600 max-w-2xl mx-auto mb-8">
-    {children}
-  </p>
-);
+// Inline styles for critical hero content
+const heroStyles = {
+  heading: {
+    fontSize: 'clamp(2.25rem, 5vw, 3.75rem)',
+    lineHeight: '1.2',
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: '1.5rem',
+  },
+  highlight: {
+    color: '#3182ce',
+  }
+};
 
 const LandingPage = () => {
   const navigate = useNavigate();
@@ -33,19 +34,9 @@ const LandingPage = () => {
   const faqRef = useRef(null);
 
   useEffect(() => {
-    // Navigation logic
     if (window.location.href.startsWith(`${window.location.origin}/#`)) {
       navigate('/dashboard', { replace: true });
     }
-
-    // Preload critical font
-    const link = document.createElement('link');
-    link.rel = 'preload';
-    link.as = 'font';
-    link.href = '/fonts/your-font-name.woff2';
-    link.type = 'font/woff2';
-    link.crossOrigin = 'anonymous';
-    document.head.appendChild(link);
   }, [navigate]);
 
   const scrollToSection = (elementRef) => {
@@ -113,19 +104,12 @@ const LandingPage = () => {
         <main>
           {/* Hero Section */}
           <section className="text-center mb-16 sm:mb-24">
-            <HeroHeading>
-              Transform Your <span className="text-blue-600">Receipts</span> into Financial Insights
-            </HeroHeading>
-            <HeroDescription>
-              SlipSnap uses advanced AI to analyze your receipt photos, providing instant insights 
-              into your spending habits and empowering you to make smarter financial decisions.
-            </HeroDescription>
-            <Button 
-              onClick={() => navigate('/signup')} 
-              className="text-lg px-6 py-3 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors"
-            >
-              Start Scanning for Free
-            </Button>
+            <h1 style={heroStyles.heading}>
+              Transform Your <span style={heroStyles.highlight}>Receipts</span> into Financial Insights
+            </h1>
+            <Suspense fallback={<div style={{ height: '200px' }}></div>}>
+              <HeroContent />
+            </Suspense>
           </section>
 
           {/* Features Section */}
