@@ -1,14 +1,39 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Camera, TrendingUp, PieChart, ShieldCheck, Zap, Store, Menu, X, Facebook } from 'lucide-react';
+import { Camera, Menu, X } from 'lucide-react';
 
 // Lazy loaded components
 const Features = lazy(() => import('./features'));
 const Retailers = lazy(() => import('./retailers'));
 const FAQ = lazy(() => import('./faq'));
 const Footer = lazy(() => import('./footer'));
+
+// Inline critical CSS
+const criticalCSS = `
+  .hero-heading {
+    font-size: 2.25rem;
+    line-height: 1.2;
+    font-weight: 700;
+    color: #1a202c;
+    margin-bottom: 1.5rem;
+  }
+  @media (min-width: 640px) {
+    .hero-heading {
+      font-size: 3.75rem;
+    }
+  }
+  .hero-heading-highlight {
+    color: #3182ce;
+  }
+  .security-section {
+    min-height: 400px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+  }
+`;
 
 const LandingPage = () => {
   const navigate = useNavigate();
@@ -18,6 +43,20 @@ const LandingPage = () => {
   const faqRef = useRef(null);
 
   useEffect(() => {
+    // Preload critical font
+    const link = document.createElement('link');
+    link.rel = 'preload';
+    link.as = 'font';
+    link.href = '/path-to-your-font.woff2';
+    link.type = 'font/woff2';
+    link.crossOrigin = 'anonymous';
+    document.head.appendChild(link);
+
+    // Inject critical CSS
+    const style = document.createElement('style');
+    style.textContent = criticalCSS;
+    document.head.appendChild(style);
+
     if (window.location.href.startsWith(`${window.location.origin}/#`)) {
       navigate('/dashboard', { replace: true });
     }
@@ -88,7 +127,9 @@ const LandingPage = () => {
         <main>
           {/* Hero Section */}
           <section className="text-center mb-16 sm:mb-24">
-            <h1 className="text-4xl sm:text-6xl font-bold mb-6 text-gray-800 leading-tight">Transform Your <span className="text-blue-600">Receipts</span> into Financial Insights</h1>
+            <h1 className="hero-heading">
+              Transform Your <span className="hero-heading-highlight">Receipts</span> into Financial Insights
+            </h1>
             <p className="text-lg sm:text-xl text-gray-600 mb-8 max-w-3xl mx-auto leading-relaxed">
               SlipSnap uses advanced AI to analyze your receipt photos, providing instant insights 
               into your spending habits and empowering you to make smarter financial decisions.
@@ -103,34 +144,34 @@ const LandingPage = () => {
           </section>
 
           {/* Features Section */}
-          <Suspense fallback={<div>Loading...</div>}>
+          <Suspense fallback={<div className="h-96 flex items-center justify-center">Loading...</div>}>
             <Features ref={featuresRef} />
           </Suspense>
 
           {/* Supported Retailers Section */}
-          <Suspense fallback={<div>Loading...</div>}>
+          <Suspense fallback={<div className="h-96 flex items-center justify-center">Loading...</div>}>
             <Retailers ref={retailersRef} />
           </Suspense>
 
-          {/* Security Section */}
+          {/* Security Section - Optimized for CLS */}
           <section className="mb-16 sm:mb-24">
-            <div className="bg-blue-50 rounded-3xl p-8 sm:p-12">
+            <div className="bg-blue-50 rounded-3xl p-8 sm:p-12 security-section">
               <h2 className="text-3xl sm:text-4xl font-bold text-center mb-8 text-gray-800">Your Security is Our Priority</h2>
-              <div className="max-w-3xl mx-auto">
+              <div className="max-w-3xl mx-auto w-full">
                 <p className="text-lg sm:text-xl text-gray-600 mb-6 leading-relaxed text-center">
                   At SlipSnap, we take your privacy and data security seriously. Our multi-layered security approach ensures that your financial information remains safe and confidential.
                 </p>
                 <ul className="space-y-4">
                   <li className="flex items-start justify-center">
-                    <ShieldCheck className="text-green-500 mr-2 mt-1 flex-shrink-0" size={24} />
+                    <span className="text-green-500 mr-2 mt-1 flex-shrink-0">✓</span>
                     <span className="text-gray-700">Advanced encryption for all data transmissions</span>
                   </li>
                   <li className="flex items-start justify-center">
-                    <ShieldCheck className="text-green-500 mr-2 mt-1 flex-shrink-0" size={24} />
+                    <span className="text-green-500 mr-2 mt-1 flex-shrink-0">✓</span>
                     <span className="text-gray-700">No storage of original receipt images</span>
                   </li>
                   <li className="flex items-start justify-center">
-                    <ShieldCheck className="text-green-500 mr-2 mt-1 flex-shrink-0" size={24} />
+                    <span className="text-green-500 mr-2 mt-1 flex-shrink-0">✓</span>
                     <span className="text-gray-700">Regular security audits and updates</span>
                   </li>
                 </ul>
@@ -139,14 +180,14 @@ const LandingPage = () => {
           </section>
 
           {/* FAQ Section */}
-          <Suspense fallback={<div>Loading...</div>}>
+          <Suspense fallback={<div className="h-96 flex items-center justify-center">Loading...</div>}>
             <FAQ ref={faqRef} />
           </Suspense>
         </main>
       </div>
 
       {/* Footer */}
-      <Suspense fallback={<div>Loading...</div>}>
+      <Suspense fallback={<div className="h-40 flex items-center justify-center">Loading...</div>}>
         <Footer />
       </Suspense>
     </div>
