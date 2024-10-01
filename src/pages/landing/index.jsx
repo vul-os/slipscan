@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
-import { Camera, Menu, X } from 'lucide-react';
+import { Camera, Menu, X, TrendingUp, PieChart, ShieldCheck, Zap, Store } from 'lucide-react';
 
 // Lazy loaded components
 const Features = lazy(() => import('./features'));
@@ -9,31 +9,22 @@ const Retailers = lazy(() => import('./retailers'));
 const FAQ = lazy(() => import('./faq'));
 const Footer = lazy(() => import('./footer'));
 
-// Inline critical CSS
-const criticalCSS = `
-  .hero-heading {
-    font-size: 2.25rem;
-    line-height: 1.2;
-    font-weight: 700;
-    color: #1a202c;
-    margin-bottom: 1.5rem;
+// Separate component for hero content below the heading
+const HeroContent = lazy(() => import('./hero'));
+
+// Inline styles for critical hero content
+const heroStyles = {
+  heading: {
+    fontSize: 'clamp(2.25rem, 5vw, 3.75rem)',
+    lineHeight: '1.2',
+    fontWeight: '700',
+    color: '#1a202c',
+    marginBottom: '1.5rem',
+  },
+  highlight: {
+    color: '#3182ce',
   }
-  @media (min-width: 640px) {
-    .hero-heading {
-      font-size: 3.75rem;
-    }
-  }
-  .hero-heading-highlight {
-    color: #3182ce;
-  }
-  .security-section {
-    min-height: 400px;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
-  }
-`;
+};
 
 const LandingPage = () => {
   const navigate = useNavigate();
@@ -43,20 +34,6 @@ const LandingPage = () => {
   const faqRef = useRef(null);
 
   useEffect(() => {
-    // Preload critical font
-    const link = document.createElement('link');
-    link.rel = 'preload';
-    link.as = 'font';
-    link.href = '/path-to-your-font.woff2';
-    link.type = 'font/woff2';
-    link.crossOrigin = 'anonymous';
-    document.head.appendChild(link);
-
-    // Inject critical CSS
-    const style = document.createElement('style');
-    style.textContent = criticalCSS;
-    document.head.appendChild(style);
-
     if (window.location.href.startsWith(`${window.location.origin}/#`)) {
       navigate('/dashboard', { replace: true });
     }
@@ -127,20 +104,12 @@ const LandingPage = () => {
         <main>
           {/* Hero Section */}
           <section className="text-center mb-16 sm:mb-24">
-            <h1 className="hero-heading">
-              Transform Your <span className="hero-heading-highlight">Receipts</span> into Financial Insights
+            <h1 style={heroStyles.heading}>
+              Transform Your <span style={heroStyles.highlight}>Receipts</span> into Financial Insights
             </h1>
-            <p className="text-lg sm:text-xl text-gray-600 mb-8 max-w-3xl mx-auto leading-relaxed">
-              SlipSnap uses advanced AI to analyze your receipt photos, providing instant insights 
-              into your spending habits and empowering you to make smarter financial decisions.
-            </p>
-            <p className="text-2xl sm:text-3xl font-bold text-blue-600 mb-10">Completely Free, Forever!</p>
-            <Button 
-              onClick={() => navigate('/signup')} 
-              className="bg-blue-600 text-white text-lg py-4 px-8 sm:py-6 sm:px-10 rounded-full hover:bg-blue-700 transition-colors"
-            >
-              Start Scanning for Free
-            </Button>
+            <Suspense fallback={<div style={{ height: '200px' }}></div>}>
+              <HeroContent />
+            </Suspense>
           </section>
 
           {/* Features Section */}
@@ -153,25 +122,25 @@ const LandingPage = () => {
             <Retailers ref={retailersRef} />
           </Suspense>
 
-          {/* Security Section - Optimized for CLS */}
+          {/* Security Section */}
           <section className="mb-16 sm:mb-24">
-            <div className="bg-blue-50 rounded-3xl p-8 sm:p-12 security-section">
+            <div className="bg-blue-50 rounded-3xl p-8 sm:p-12">
               <h2 className="text-3xl sm:text-4xl font-bold text-center mb-8 text-gray-800">Your Security is Our Priority</h2>
-              <div className="max-w-3xl mx-auto w-full">
+              <div className="max-w-3xl mx-auto">
                 <p className="text-lg sm:text-xl text-gray-600 mb-6 leading-relaxed text-center">
                   At SlipSnap, we take your privacy and data security seriously. Our multi-layered security approach ensures that your financial information remains safe and confidential.
                 </p>
                 <ul className="space-y-4">
                   <li className="flex items-start justify-center">
-                    <span className="text-green-500 mr-2 mt-1 flex-shrink-0">✓</span>
+                    <ShieldCheck className="text-green-500 mr-2 mt-1 flex-shrink-0" size={24} />
                     <span className="text-gray-700">Advanced encryption for all data transmissions</span>
                   </li>
                   <li className="flex items-start justify-center">
-                    <span className="text-green-500 mr-2 mt-1 flex-shrink-0">✓</span>
+                    <ShieldCheck className="text-green-500 mr-2 mt-1 flex-shrink-0" size={24} />
                     <span className="text-gray-700">No storage of original receipt images</span>
                   </li>
                   <li className="flex items-start justify-center">
-                    <span className="text-green-500 mr-2 mt-1 flex-shrink-0">✓</span>
+                    <ShieldCheck className="text-green-500 mr-2 mt-1 flex-shrink-0" size={24} />
                     <span className="text-gray-700">Regular security audits and updates</span>
                   </li>
                 </ul>
