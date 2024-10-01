@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
 import { Camera, Menu, X, ShieldCheck } from 'lucide-react';
 
@@ -67,6 +67,12 @@ const LandingPage = () => {
     if (window.location.href.startsWith(`${window.location.origin}/#`)) {
       navigate('/dashboard', { replace: true });
     }
+
+    // Clean up function
+    return () => {
+      document.head.removeChild(style);
+      document.head.removeChild(link);
+    };
   }, [navigate]);
 
   const scrollToSection = (elementRef) => {
