@@ -4,7 +4,7 @@ const FAQ = React.forwardRef((props, ref) => {
   const faqItems = [
     { q: "Is SlipSnap really free?", a: "Yes, SlipSnap is 100% free to use. We believe in making financial management accessible to everyone." },
     { q: "How accurate is the receipt scanning?", a: "Our AI-powered scanning is highly accurate. However, we always recommend reviewing the results for any discrepancies." },
-    { q: "Can I export my data?", a: "Absolutely! You can export your data in various formats for use in other financial tools or for your records." },
+    { q: "Can I export my data?", a: "We're actively working on implementing data export functionality. Soon, you'll be able to export your data in various formats for use in other financial tools or for your records. Stay tuned for updates!" },
     { q: "Is my data safe?", a: "We take data security very seriously. Your information is encrypted, and we never store original receipt images. Read more in our security section." }
   ];
 

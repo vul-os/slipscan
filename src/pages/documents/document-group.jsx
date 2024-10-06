@@ -51,7 +51,7 @@ const DocumentGroup = ({ group, onDeleteFile, onDeleteGroup, onProcessImages, on
   );
 
   return (
-    <AccordionItem value={group.id} className="px-6">
+    <AccordionItem value={group.id} className="px-2 sm:px-6">
       <AccordionTrigger className="py-4">
         <div className="flex items-center justify-between w-full">
           <div className="flex items-center">
@@ -174,12 +174,12 @@ const DocumentGroup = ({ group, onDeleteFile, onDeleteGroup, onProcessImages, on
           </>
         )}
 
-        {/* Action Buttons - now outside the conditional rendering */}
-        <div className="flex justify-end mt-4 space-x-2">
+        {/* Action Buttons - now with responsive layout */}
+        <div className="flex flex-col sm:flex-row justify-end mt-4 space-y-2 sm:space-y-0 sm:space-x-2">
           <Button
             variant="default"
             onClick={onProcessImages}
-            className="bg-blue-500 hover:bg-blue-600 text-white"
+            className="bg-blue-500 hover:bg-blue-600 text-white w-full sm:w-auto"
             disabled={isLoading}
           >
             {isLoading ? (
@@ -193,6 +193,7 @@ const DocumentGroup = ({ group, onDeleteFile, onDeleteGroup, onProcessImages, on
             variant="ghost"
             onClick={onDeleteGroup}
             disabled={isLoading}
+            className="w-full sm:w-auto"
           >
             <Trash2 className="h-4 w-4 mr-2" /> Delete Group
           </Button>

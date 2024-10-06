@@ -31,13 +31,7 @@ const Footer = () => {
               <li>
                 <a href="https://twitter.com/slipsnapapp" target="_blank" rel="noopener noreferrer" className="flex items-center text-gray-400 hover:text-blue-400 transition-colors">
                   <X size={20} className="mr-2" />
-                  <span>X (Twitter): @slipsnapapp</span>
-                </a>
-              </li>
-              <li>
-                <a href="https://facebook.com/slipsnapapp" target="_blank" rel="noopener noreferrer" className="flex items-center text-gray-400 hover:text-blue-400 transition-colors">
-                  <Facebook size={20} className="mr-2" />
-                  <span>Facebook: @slipsnapapp</span>
+                  <span>X (Twitter): @exolutionza</span>
                 </a>
               </li>
             </ul>

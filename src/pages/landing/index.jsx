@@ -1,16 +1,15 @@
 import React, { useState, useEffect, useRef, lazy, Suspense } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
-import { Camera, Menu, X, TrendingUp, PieChart, ShieldCheck, Zap, Store } from 'lucide-react';
+import { Camera, Menu, X, TrendingUp, PieChart, ShieldCheck, Zap, Store, ChevronDown, ChevronUp } from 'lucide-react';
 
 // Lazy loaded components
 const Features = lazy(() => import('./features'));
 const Retailers = lazy(() => import('./retailers'));
 const FAQ = lazy(() => import('./faq'));
 const Footer = lazy(() => import('./footer'));
-
-// Separate component for hero content below the heading
 const HeroContent = lazy(() => import('./hero'));
+const FullPrivacyPolicy = lazy(() => import('./privacy'));
 
 // Inline styles for critical hero content
 const heroStyles = {
@@ -26,12 +25,38 @@ const heroStyles = {
   }
 };
 
+// Privacy Policy Dropdown Component
+const PrivacyPolicyDropdown = () => {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <div className="bg-white rounded-3xl shadow-lg overflow-hidden">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full px-6 py-4 flex justify-between items-center bg-blue-600 text-white"
+      >
+        <span className="text-xl font-semibold">Privacy Policy</span>
+        {isOpen ? <ChevronUp size={24} /> : <ChevronDown size={24} />}
+      </button>
+      <div
+        className="transition-all duration-500 ease-in-out"
+        style={{ maxHeight: isOpen ? '5000px' : '0', overflow: 'hidden' }}
+      >
+        <Suspense fallback={<div className="h-96 flex items-center justify-center">Loading Privacy Policy...</div>}>
+          <FullPrivacyPolicy />
+        </Suspense>
+      </div>
+    </div>
+  );
+};
+
 const LandingPage = () => {
   const navigate = useNavigate();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const featuresRef = useRef(null);
   const retailersRef = useRef(null);
   const faqRef = useRef(null);
+  const privacyPolicyRef = useRef(null);
 
   useEffect(() => {
     if (window.location.href.startsWith(`${window.location.origin}/#`)) {
@@ -61,6 +86,7 @@ const LandingPage = () => {
               <li><button onClick={() => scrollToSection(featuresRef)} className="text-gray-600 hover:text-blue-600 transition-colors">Features</button></li>
               <li><button onClick={() => scrollToSection(retailersRef)} className="text-gray-600 hover:text-blue-600 transition-colors">Retailers</button></li>
               <li><button onClick={() => scrollToSection(faqRef)} className="text-gray-600 hover:text-blue-600 transition-colors">FAQ</button></li>
+              <li><button onClick={() => scrollToSection(privacyPolicyRef)} className="text-gray-600 hover:text-blue-600 transition-colors">Privacy Policy</button></li>
               <li>
                 <Button 
                   variant="outline" 
@@ -87,6 +113,7 @@ const LandingPage = () => {
               <li><button onClick={() => scrollToSection(featuresRef)} className="text-xl text-gray-800 hover:text-blue-600 transition-colors">Features</button></li>
               <li><button onClick={() => scrollToSection(retailersRef)} className="text-xl text-gray-800 hover:text-blue-600 transition-colors">Supported Retailers</button></li>
               <li><button onClick={() => scrollToSection(faqRef)} className="text-xl text-gray-800 hover:text-blue-600 transition-colors">FAQ</button></li>
+              <li><button onClick={() => scrollToSection(privacyPolicyRef)} className="text-xl text-gray-800 hover:text-blue-600 transition-colors">Privacy Policy</button></li>
               <li>
                 <Button 
                   variant="outline" 
@@ -137,7 +164,7 @@ const LandingPage = () => {
                   </li>
                   <li className="flex items-start justify-center">
                     <ShieldCheck className="text-green-500 mr-2 mt-1 flex-shrink-0" size={24} />
-                    <span className="text-gray-700">No storage of original receipt images</span>
+                    <span className="text-gray-700">Secure storage with strict access controls</span>
                   </li>
                   <li className="flex items-start justify-center">
                     <ShieldCheck className="text-green-500 mr-2 mt-1 flex-shrink-0" size={24} />
@@ -152,6 +179,11 @@ const LandingPage = () => {
           <Suspense fallback={<div className="h-96 flex items-center justify-center">Loading...</div>}>
             <FAQ ref={faqRef} />
           </Suspense>
+
+          {/* Privacy Policy Dropdown Section */}
+          <section ref={privacyPolicyRef} className="mb-16 sm:mb-24">
+            <PrivacyPolicyDropdown />
+          </section>
         </main>
       </div>
 
