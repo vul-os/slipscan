@@ -7,8 +7,9 @@
     <title>SlipSnap</title>
     
     <!-- Preload font files -->
-    <link rel="preload" href="https://fonts.gstatic.com/s/figtree/v4/9XzeJFhPtgGjuaDMYqECUY-B_KMuy0Y.woff2" as="font" type="font/woff2" crossorigin>
-    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&display=swap" rel="stylesheet">    
     <!-- Inline critical CSS -->
     <style>
         /* Fallback font */
@@ -21,24 +22,6 @@
         }
     </style>
     
-    <!-- Asynchronous font loading script -->
-    <script>
-        (function() {
-            // Simple font loading using FontFace API
-            const font = new FontFace('Figtree', 'url(https://fonts.gstatic.com/s/figtree/v4/9XzeJFhPtgGjuaDMYqECUY-B_KMuy0Y.woff2)', {
-                style: 'normal',
-                weight: '300 800',
-                display: 'swap'
-            });
-
-            font.load().then(() => {
-                document.fonts.add(font);
-                document.documentElement.classList.add('fonts-loaded');
-            }).catch((err) => {
-                console.error('Font loading failed:', err);
-            });
-        })();
-    </script>
 </head>
 <body>
     <div id="root" class="font-sans antialiased"></div>
