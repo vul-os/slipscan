@@ -13,7 +13,7 @@ import UpdatePassword from './pages/auth/update-password';
 
 // Protected Pages
 import Dashboard from './pages/dashboard/dashboard';
-import Documents from './pages/documents/documents';
+import Documents from './pages/documents';
 import Items from './pages/items'; 
 
 // Components
