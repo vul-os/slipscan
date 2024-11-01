@@ -38,8 +38,6 @@ const DashboardPage = () => {
     const { data, error } = await supabase
       .from('document_groups')
       .select('document_timestamp, total_amount')
-      .gte('document_timestamp', date.from.toISOString())
-      .lte('document_timestamp', date.to.toISOString())
       .order('document_timestamp');
   
     if (error) {
