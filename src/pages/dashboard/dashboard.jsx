@@ -66,8 +66,6 @@ const DashboardPage = () => {
     const { data, error } = await supabase
       .from('extracted_items')
       .select('price')
-      .gte('created_at', date.from.toISOString())
-      .lte('created_at', date.to.toISOString());
 
     if (error) {
       console.error('Error fetching total stats:', error);
@@ -92,8 +90,7 @@ const DashboardPage = () => {
         ),
         total_amount
       `)
-      .gte('created_at', date.from.toISOString())
-      .lte('created_at', date.to.toISOString());
+
 
     if (error) {
       console.error('Error fetching top merchants:', error);
@@ -120,9 +117,6 @@ const DashboardPage = () => {
     const { data, error } = await supabase
       .from('document_groups')
       .select('tax_amount')
-      .gte('created_at', date.from.toISOString())
-      .lte('created_at', date.to.toISOString());
-
     if (error) {
       console.error('Error fetching total tax:', error);
       return;
@@ -136,8 +130,7 @@ const DashboardPage = () => {
     const { data, error } = await supabase
       .from('extracted_items')
       .select('category_id, categories(name), price')
-      .gte('created_at', date.from.toISOString())
-      .lte('created_at', date.to.toISOString());
+
 
     if (error) {
       console.error('Error fetching categories:', error);
