@@ -1,0 +1,37 @@
+name: Deploy to Bunny CDN Storage
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build project
+        run: npm run build
+      
+      - name: Install FTP client
+        run: sudo apt-get install -y lftp
+      
+      - name: Deploy to Bunny CDN Storage
+        env:
+          BUNNY_FTP_HOST: ${{ secrets.BUNNY_FTP_HOST }}
+          BUNNY_FTP_USERNAME: ${{ secrets.BUNNY_FTP_USERNAME }}
+          BUNNY_FTP_PASSWORD: ${{ secrets.BUNNY_FTP_PASSWORD }}
+        run: |
+          lftp -c "set ssl:verify-certificate no; open ftp://$BUNNY_FTP_HOST; user $BUNNY_FTP_USERNAME $BUNNY_FTP_PASSWORD; rm -rf /$BUNNY_FTP_USERNAME/*; mirror --reverse --verbose out/ /$BUNNY_FTP_USERNAME/; quit;"

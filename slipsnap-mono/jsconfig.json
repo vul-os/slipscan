@@ -1,0 +1,13 @@
+{
+    "compilerOptions": {
+      "baseUrl": ".",
+      "paths": {
+        "@/*": ["./src/*"]
+      }
+    },
+    "exclude": [
+      "supabase",
+      "node_modules", // maybe dont need to?
+      "dist"
+    ]
+  }
