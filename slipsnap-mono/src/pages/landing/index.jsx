@@ -79,7 +79,7 @@ const LandingPage = () => {
         <header className="flex justify-between items-center mb-8 sm:mb-16">
           <div className="flex items-center">
             <Camera size={32} className="text-blue-600 mr-2" />
-            <span className="text-2xl font-bold text-gray-800">SlipSnap</span>
+            <span className="text-2xl font-bold text-gray-800">SlipSnap 2</span>
           </div>
           <nav className="hidden sm:block">
             <ul className="flex space-x-8 items-center">
