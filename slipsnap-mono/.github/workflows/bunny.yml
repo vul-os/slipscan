@@ -34,4 +34,4 @@ jobs:
           BUNNY_FTP_USERNAME: ${{ secrets.BUNNY_FTP_USERNAME }}
           BUNNY_FTP_PASSWORD: ${{ secrets.BUNNY_FTP_PASSWORD }}
         run: |
-          lftp -c "set ssl:verify-certificate no; open ftp://$BUNNY_FTP_HOST; user $BUNNY_FTP_USERNAME $BUNNY_FTP_PASSWORD; rm -rf /$BUNNY_FTP_USERNAME/*; mirror --reverse --verbose out/ /$BUNNY_FTP_USERNAME/; quit;"
+          lftp -c "set ssl:verify-certificate no; open ftp://$BUNNY_FTP_HOST; user $BUNNY_FTP_USERNAME $BUNNY_FTP_PASSWORD; rm -rf /$BUNNY_FTP_USERNAME/*; mirror --reverse --verbose dist/ /$BUNNY_FTP_USERNAME/; quit;"
