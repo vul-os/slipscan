@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Camera, X, Facebook } from 'lucide-react';
+import { Camera, X, Linkedin } from 'lucide-react';
 
 const Footer = () => {
   return (
@@ -12,7 +12,7 @@ const Footer = () => {
               <Camera size={32} className="text-blue-400 mr-3" />
               <span className="text-2xl font-semibold">SlipSnap</span>
             </div>
-            <p className="text-gray-400">A free product by Exolution Technologies</p>
+            <p className="text-gray-400">A free product by Cognizance Processing</p>
           </div>
           <div>
             <h3 className="font-semibold text-xl mb-4 sm:mb-6">Quick Links</h3>
@@ -29,16 +29,16 @@ const Footer = () => {
             <h3 className="font-semibold text-xl mb-4 sm:mb-6">Connect With Us</h3>
             <ul className="space-y-2 sm:space-y-3">
               <li>
-                <a href="https://twitter.com/slipsnapapp" target="_blank" rel="noopener noreferrer" className="flex items-center text-gray-400 hover:text-blue-400 transition-colors">
-                  <X size={20} className="mr-2" />
-                  <span>X (Twitter): @exolutionza</span>
+                <a href="https://za.linkedin.com/company/keystone-vision" target="_blank" rel="noopener noreferrer" className="flex items-center text-gray-400 hover:text-blue-400 transition-colors">
+                  <Linkedin size={20} className="mr-2" />
+                  <span>Linkedin: @keystone</span>
                 </a>
               </li>
             </ul>
           </div>
         </div>
         <div className="mt-12 sm:mt-16 pt-8 border-t border-gray-700 text-sm text-gray-400">
-          © {new Date().getFullYear()} Exolution Technologies Pty Ltd. All rights reserved. SlipSnap is a free product of Exolution Technologies Pty Ltd. SlipSnap is not affiliated with or endorsed by any other receipt scanning or financial management system.
+          © {new Date().getFullYear()} Cognizance Processing Pty Ltd. All rights reserved. SlipSnap is a free product of Cognizance Processing Pty Ltd. SlipSnap is not affiliated with or endorsed by any other receipt scanning or financial management system.
         </div>
       </div>
     </footer>
