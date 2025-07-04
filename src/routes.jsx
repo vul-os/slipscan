@@ -12,16 +12,6 @@ import LandingPage from './pages/landing';
 const getLoadingMessage = (pathname) => {
   if (pathname.includes('/signin')) return 'Loading sign in...';
   if (pathname.includes('/signup')) return 'Loading sign up...';
-  if (pathname.includes('/dashboard')) return 'Loading dashboard...';
-  if (pathname.includes('/reports')) return 'Loading reports...';
-  if (pathname.includes('/reviews')) return 'Loading reviews...';
-  if (pathname.includes('/settings')) return 'Loading settings...';
-  if (pathname.includes('/account')) return 'Loading account...';
-  if (pathname.includes('/docs/privacy')) return 'Loading privacy policy...';
-  if (pathname.includes('/docs/terms')) return 'Loading terms of service...';
-  if (pathname.includes('/docs/cookies')) return 'Loading cookie policy...';
-  if (pathname.includes('/docs/custom-avatar-url')) return 'Loading avatar guide...';
-  if (pathname.includes('/docs')) return 'Loading documentation...';
   if (pathname === '/') return 'Loading homepage...';
   return 'Loading...';
 };
@@ -51,21 +41,6 @@ const ForgotPassword = lazyImport(() => import('./pages/auth/forgot-password'));
 const UpdatePassword = lazyImport(() => import('./pages/auth/update-password'));
 const VerifyEmail = lazyImport(() => import('./pages/auth/verify-email'));
 
-// Lazy loaded components - App pages
-const Dashboard = lazyImport(() => import('./pages/dashboard'));
-const Reports = lazyImport(() => import('./pages/reports'));
-const Reviews = lazyImport(() => import('./pages/reviews'));
-const Members = lazyImport(() => import('./pages/members'));
-const Settings = lazyImport(() => import('./pages/settings'));
-const Account = lazyImport(() => import('./pages/account'));
-
-// Lazy loaded components - Documentation pages
-const DocsIndex = lazyImport(() => import('./pages/docs/index'));
-const DocsPrivacyPolicy = lazyImport(() => import('./pages/docs/privacy-policy'));
-const DocsTermsOfService = lazyImport(() => import('./pages/docs/terms-of-service'));
-const DocsCookiesPolicy = lazyImport(() => import('./pages/docs/cookies-policy'));
-const DocsCustomAvatarUrl = lazyImport(() => import('./pages/docs/custom-avatar-url'));
-
 // Other pages
 const NotFound = lazyImport(() => import('./pages/not-found'));
 
@@ -89,52 +64,9 @@ const AppRoutes = () => {
         {/* Public routes with main layout */}
         <Route element={<MainLayout />}>
           <Route path="/" element={<LandingPage />} />
-          <Route path="/docs" element={<DocsIndex />} />
-          <Route path="/docs/privacy" element={<DocsPrivacyPolicy />} />
-          <Route path="/docs/terms" element={<DocsTermsOfService />} />
-          <Route path="/docs/cookies" element={<DocsCookiesPolicy />} />
-          <Route path="/docs/custom-avatar-url" element={<DocsCustomAvatarUrl />} />
-          
-          {/* Legacy redirects for old legal routes */}
-          <Route path="/privacy" element={<DocsPrivacyPolicy />} />
-          <Route path="/terms" element={<DocsTermsOfService />} />
-          <Route path="/cookies" element={<DocsCookiesPolicy />} />
         </Route>
 
-        {/* Protected app routes */}
-        <Route element={<MainLayout />}>
-          <Route path="/dashboard" element={
-            <Protected>
-              <Dashboard />
-            </Protected>
-          } />
-          <Route path="/reports" element={
-            <Protected>
-              <Reports />
-            </Protected>
-          } />
-          <Route path="/reviews" element={
-            <Protected>
-              <Reviews />
-            </Protected>
-          } />
-          <Route path="/members" element={
-            <Protected>
-              <Members />
-            </Protected>
-          } />
-          <Route path="/settings" element={
-            <Protected>
-              <Settings />
-            </Protected>
-          } />
-          <Route path="/account" element={
-            <Protected>
-              <Account />
-            </Protected>
-          } />
-        </Route>
-
+  
         {/* Global catch-all route */}
         <Route path="*" element={<NotFound />} />
       </Routes>
