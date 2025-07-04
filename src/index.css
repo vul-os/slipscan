@@ -1,0 +1,286 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 10%; /* Primary Text: Rich black for readability */
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%; /* Primary Text: Rich black */
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 10%; /* Primary Text: Rich black */
+    
+    /* Restaurant Owner Optimized Color Scheme */
+    --primary: 25 95% 53%; /* Primary Orange: #F97316 - bright vibrant orange */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 29%; /* Secondary Text: #4A4A4A - readable gray */
+    --secondary-foreground: 0 0% 100%;
+    --muted: 0 0% 98%; /* Background Light: #FAFAFA - clean sections */
+    --muted-foreground: 220 13% 46%; /* Tertiary Text: #6B7280 - subtle text */
+    --accent: 32 91% 72%; /* Accent Orange: #FDBA74 - light warm orange */
+    --accent-foreground: 0 0% 10%;
+    --destructive: 0 84% 60%; /* Error Red: #EF4444 */
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 91%; /* Border Light: #E5E7EB */
+    --input: 220 13% 91%; /* Border Light for inputs */
+    --ring: 25 95% 53%; /* Primary Orange focus ring */
+    
+    /* Updated chart colors using vibrant orange palette */
+    --chart-1: 25 95% 53%; /* Primary Orange */
+    --chart-2: 24 95% 61%; /* Secondary Orange */
+    --chart-3: 32 91% 72%; /* Accent Orange */
+    --chart-4: 158 84% 39%; /* Success Green */
+    --chart-5: 43 96% 50%; /* Warning Amber */
+    --radius: 0.75rem;
+    
+    /* Custom BeepBite variables with vibrant orange palette */
+    --beepbite-orange: 25 95% 53%; /* Primary Orange: #F97316 */
+    --beepbite-orange-soft: 24 95% 61%; /* Secondary Orange: #FB923C */
+    --beepbite-accent: 32 91% 72%; /* Accent Orange: #FDBA74 */
+    --beepbite-text-primary: 0 0% 10%; /* Primary Text: #1A1A1A */
+    --beepbite-text-secondary: 0 0% 29%; /* Secondary Text: #4A4A4A */
+    --beepbite-text-tertiary: 220 13% 46%; /* Tertiary Text: #6B7280 */
+    --beepbite-background: 0 0% 100%; /* Background White */
+    --beepbite-background-light: 0 0% 98%; /* Background Light: #FAFAFA */
+    --beepbite-background-cream: 33 100% 97%; /* Background Cream: #FFF7ED */
+    --beepbite-success: 158 84% 39%; /* Success Green: #10B981 */
+    --beepbite-warning: 43 96% 50%; /* Warning Amber: #F59E0B */
+    --beepbite-error: 0 84% 60%; /* Error Red: #EF4444 */
+    --beepbite-border-light: 220 13% 91%; /* Border Light: #E5E7EB */
+    --beepbite-border-medium: 220 13% 83%; /* Border Medium: #D1D5DB */
+    --beepbite-gradient-start: 25 95% 53%; /* Primary Orange */
+    --beepbite-gradient-end: 24 95% 61%; /* Secondary Orange */
+  }
+
+  .dark {
+    --background: 0 0% 10%; /* Primary Text as dark background */
+    --foreground: 0 0% 98%; /* Background Light as light text */
+    --card: 0 0% 10%; /* Primary Text as dark card */
+    --card-foreground: 0 0% 98%; /* Background Light as light text */
+    --popover: 0 0% 10%; /* Primary Text as dark popover */
+    --popover-foreground: 0 0% 98%; /* Background Light as light text */
+    --primary: 25 95% 53%; /* Keep bright Primary Orange in dark mode */
+    --primary-foreground: 0 0% 10%; /* Primary Text as contrast */
+    --secondary: 0 0% 29%; /* Secondary Text */
+    --secondary-foreground: 0 0% 98%; /* Background Light */
+    --muted: 0 0% 29%; /* Secondary Text as muted background */
+    --muted-foreground: 220 13% 46%; /* Tertiary Text */
+    --accent: 32 91% 72%; /* Accent Orange */
+    --accent-foreground: 0 0% 10%; /* Primary Text */
+    --destructive: 0 84% 60%; /* Error Red */
+    --destructive-foreground: 0 0% 98%; /* Background Light */
+    --border: 0 0% 29%; /* Secondary Text as border */
+    --input: 0 0% 29%; /* Secondary Text as input border */
+    --ring: 25 95% 53%; /* Primary Orange */
+    
+    /* Updated dark mode chart colors */
+    --chart-1: 25 95% 53%; /* Primary Orange */
+    --chart-2: 24 95% 61%; /* Secondary Orange */
+    --chart-3: 32 91% 72%; /* Accent Orange */
+    --chart-4: 158 84% 39%; /* Success Green */
+    --chart-5: 43 96% 50%; /* Warning Amber */
+  }
+
+  /* Apply border and background styles */
+  * {
+    @apply border-border outline-ring/50;
+  }
+  
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    line-height: 1.5;
+    font-weight: 400;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    margin: 0;
+    padding: 0;
+    min-height: 100vh;
+    width: 100%;
+    /* Mobile optimizations */
+    overflow-x: hidden;
+    touch-action: manipulation;
+  }
+  
+  h1 {
+    line-height: 1.1;
+  }
+  
+  /* Link styles */
+  a {
+    font-weight: 500;
+    color: hsl(var(--primary));
+    text-decoration: inherit;
+  }
+  a:hover {
+    color: hsl(var(--primary) / 0.8);
+  }
+  
+  /* Button reset */
+  button {
+    font-family: inherit;
+    cursor: pointer;
+    /* Touch optimization */
+    touch-action: manipulation;
+  }
+
+  /* Input optimizations for mobile */
+  input, textarea, select {
+    font-size: 16px; /* Prevents zoom on iOS */
+  }
+  
+  @media (min-width: 640px) {
+    input, textarea, select {
+      font-size: inherit;
+    }
+  }
+
+  /* Custom BeepBite utility classes */
+  .beepbite-gradient {
+    background: linear-gradient(135deg, hsl(var(--beepbite-gradient-start)), hsl(var(--beepbite-gradient-end)));
+  }
+  
+  .beepbite-gradient-text {
+    background: linear-gradient(135deg, hsl(var(--beepbite-gradient-start)), hsl(var(--beepbite-gradient-end)));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Restaurant-optimized color utility classes */
+  .beepbite-text-primary {
+    color: hsl(var(--beepbite-text-primary));
+  }
+  
+  .beepbite-text-secondary {
+    color: hsl(var(--beepbite-text-secondary));
+  }
+  
+  .beepbite-text-tertiary {
+    color: hsl(var(--beepbite-text-tertiary));
+  }
+  
+  .beepbite-bg-cream {
+    background-color: hsl(var(--beepbite-background-cream));
+  }
+  
+  .beepbite-border-light {
+    border-color: hsl(var(--beepbite-border-light));
+  }
+  
+  .beepbite-border-medium {
+    border-color: hsl(var(--beepbite-border-medium));
+  }
+
+  .glass-effect {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+  }
+
+  .dark .glass-effect {
+    background: rgba(0, 0, 0, 0.95);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  /* Mobile-first responsive utilities */
+  .mobile-container {
+    @apply px-4 sm:px-6 lg:px-8;
+  }
+
+  .mobile-text {
+    @apply text-sm sm:text-base;
+  }
+
+  .mobile-heading {
+    @apply text-xl sm:text-2xl lg:text-3xl;
+  }
+
+  .mobile-subheading {
+    @apply text-lg sm:text-xl lg:text-2xl;
+  }
+
+  .mobile-grid-cols-auto {
+    @apply grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4;
+  }
+
+  .mobile-space-y {
+    @apply space-y-4 sm:space-y-6;
+  }
+
+  .mobile-button {
+    @apply h-10 sm:h-11 text-sm sm:text-base;
+  }
+
+  .mobile-card-padding {
+    @apply p-4 sm:p-6;
+  }
+
+  /* Hero Animation Custom Styles */
+  .animate-in {
+    animation: fade-in 0.5s ease-out forwards;
+  }
+
+  .slide-in-from-right-5 {
+    animation: slide-in-right 0.7s ease-out forwards;
+  }
+
+  .fade-in {
+    animation: fade-in 1s ease-out forwards;
+  }
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(10px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes slide-in-right {
+    from {
+      opacity: 0;
+      transform: translateX(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  /* Enhanced pulse animation for hero elements */
+  .hero-pulse {
+    animation: hero-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes hero-pulse {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.8;
+      transform: scale(1.05);
+    }
+  }
+
+  /* Smooth transitions for hero steps */
+  .hero-transition {
+    transition: all 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
+@layer components {
+  .font-inter {
+    font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  }
+}
