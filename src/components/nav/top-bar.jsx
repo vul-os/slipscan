@@ -7,7 +7,8 @@ import {
   Briefcase, 
   UserCircle,
   Plus,
-  Menu
+  Menu,
+  LayoutDashboard
 } from 'lucide-react';
 import { useAuth } from '@/context/auth-context';
 import {
@@ -249,6 +250,10 @@ const TopBar = ({ onToggleSidebar, showSidebarToggle = false }) => {
                     </DropdownMenuLabel>
                     <DropdownMenuSeparator />
                     <DropdownMenuGroup>
+                      <DropdownMenuItem onClick={() => navigate('/dashboard')}>
+                        <LayoutDashboard className="mr-2 h-4 w-4" />
+                        <span>Dashboard</span>
+                      </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => navigate('/settings')}>
                         <UserCircle className="mr-2 h-4 w-4" />
                         <span>Profile</span>

@@ -300,6 +300,36 @@ export function AuthProvider({ children, onNavigate, pathname }) {
     }
   }, [pendingInvites, fetchInvites]);
 
+  const updateEntity = useCallback(async (entityId, updates) => {
+    try {
+      const { data, error } = await supabase
+        .from('entities')
+        .update(updates)
+        .eq('id', entityId)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // Update the entities state
+      setEntities(prevEntities => 
+        prevEntities.map(entity => 
+          entity.id === entityId ? { ...entity, ...data } : entity
+        )
+      );
+
+      // Update active entity if it's the one being updated
+      if (activeEntity?.id === entityId) {
+        setActiveEntity(prev => ({ ...prev, ...data }));
+      }
+
+      return data;
+    } catch (error) {
+      console.error('Error updating entity:', error);
+      throw error;
+    }
+  }, [activeEntity]);
+
   // Initialize auth state
   useEffect(() => {
     const initializeAuth = async () => {
@@ -419,6 +449,7 @@ export function AuthProvider({ children, onNavigate, pathname }) {
     acceptInvite,
     rejectInvite,
     fetchUserProfile,
+    updateEntity,
   }), [
     loading,
     user,
@@ -443,6 +474,7 @@ export function AuthProvider({ children, onNavigate, pathname }) {
     acceptInvite,
     rejectInvite,
     fetchUserProfile,
+    updateEntity,
   ]);
 
   return (

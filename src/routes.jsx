@@ -14,6 +14,7 @@ const getLoadingMessage = (pathname) => {
   if (pathname.includes('/signup')) return 'Loading sign up...';
   if (pathname.includes('/dashboard')) return 'Loading dashboard...';
   if (pathname.includes('/documents')) return 'Loading documents...';
+  if (pathname.includes('/settings')) return 'Loading settings...';
   if (pathname === '/') return 'Loading homepage...';
   return 'Loading...';
 };
@@ -46,6 +47,7 @@ const VerifyEmail = lazyImport(() => import('./pages/auth/verify-email'));
 // Protected pages
 const Dashboard = lazyImport(() => import('./pages/dashboard'));
 const Documents = lazyImport(() => import('./pages/documents'));
+const Settings = lazyImport(() => import('./pages/settings'));
 
 // Other pages
 const NotFound = lazyImport(() => import('./pages/not-found'));
@@ -74,6 +76,7 @@ const AppRoutes = () => {
           {/* Protected routes */}
           <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
           <Route path="/documents" element={<Protected><Documents /></Protected>} />
+          <Route path="/settings" element={<Protected><Settings /></Protected>} />
         </Route>
 
   
