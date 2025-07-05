@@ -13,33 +13,33 @@
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 10%; /* Primary Text: Rich black */
     
-    /* Restaurant Owner Optimized Color Scheme */
-    --primary: 25 95% 53%; /* Primary Orange: #F97316 - bright vibrant orange */
+    /* Financial App Optimized Color Scheme */
+    --primary: 261 83% 58%; /* Primary Purple: #8B5CF6 - professional purple */
     --primary-foreground: 0 0% 100%;
     --secondary: 0 0% 29%; /* Secondary Text: #4A4A4A - readable gray */
     --secondary-foreground: 0 0% 100%;
     --muted: 0 0% 98%; /* Background Light: #FAFAFA - clean sections */
     --muted-foreground: 220 13% 46%; /* Tertiary Text: #6B7280 - subtle text */
-    --accent: 32 91% 72%; /* Accent Orange: #FDBA74 - light warm orange */
+    --accent: 214 95% 74%; /* Accent Blue: #93C5FD - light professional blue */
     --accent-foreground: 0 0% 10%;
     --destructive: 0 84% 60%; /* Error Red: #EF4444 */
     --destructive-foreground: 0 0% 100%;
     --border: 220 13% 91%; /* Border Light: #E5E7EB */
     --input: 220 13% 91%; /* Border Light for inputs */
-    --ring: 25 95% 53%; /* Primary Orange focus ring */
+    --ring: 261 83% 58%; /* Primary Purple focus ring */
     
-    /* Updated chart colors using vibrant orange palette */
-    --chart-1: 25 95% 53%; /* Primary Orange */
-    --chart-2: 24 95% 61%; /* Secondary Orange */
-    --chart-3: 32 91% 72%; /* Accent Orange */
+    /* Updated chart colors using purple/blue palette */
+    --chart-1: 261 83% 58%; /* Primary Purple */
+    --chart-2: 214 95% 59%; /* Primary Blue */
+    --chart-3: 214 95% 74%; /* Accent Blue */
     --chart-4: 158 84% 39%; /* Success Green */
     --chart-5: 43 96% 50%; /* Warning Amber */
     --radius: 0.75rem;
     
-    /* Custom BeepBite variables with vibrant orange palette */
-    --beepbite-orange: 25 95% 53%; /* Primary Orange: #F97316 */
-    --beepbite-orange-soft: 24 95% 61%; /* Secondary Orange: #FB923C */
-    --beepbite-accent: 32 91% 72%; /* Accent Orange: #FDBA74 */
+    /* Custom SlipScan variables with purple/blue palette */
+    --beepbite-orange: 261 83% 58%; /* Primary Purple: #8B5CF6 */
+    --beepbite-orange-soft: 214 95% 59%; /* Primary Blue: #3B82F6 */
+    --beepbite-accent: 214 95% 74%; /* Accent Blue: #93C5FD */
     --beepbite-text-primary: 0 0% 10%; /* Primary Text: #1A1A1A */
     --beepbite-text-secondary: 0 0% 29%; /* Secondary Text: #4A4A4A */
     --beepbite-text-tertiary: 220 13% 46%; /* Tertiary Text: #6B7280 */
@@ -51,8 +51,8 @@
     --beepbite-error: 0 84% 60%; /* Error Red: #EF4444 */
     --beepbite-border-light: 220 13% 91%; /* Border Light: #E5E7EB */
     --beepbite-border-medium: 220 13% 83%; /* Border Medium: #D1D5DB */
-    --beepbite-gradient-start: 25 95% 53%; /* Primary Orange */
-    --beepbite-gradient-end: 24 95% 61%; /* Secondary Orange */
+    --beepbite-gradient-start: 261 83% 58%; /* Primary Purple */
+    --beepbite-gradient-end: 214 95% 59%; /* Primary Blue */
   }
 
   .dark {
@@ -62,24 +62,24 @@
     --card-foreground: 0 0% 98%; /* Background Light as light text */
     --popover: 0 0% 10%; /* Primary Text as dark popover */
     --popover-foreground: 0 0% 98%; /* Background Light as light text */
-    --primary: 25 95% 53%; /* Keep bright Primary Orange in dark mode */
+    --primary: 261 83% 58%; /* Keep bright Primary Purple in dark mode */
     --primary-foreground: 0 0% 10%; /* Primary Text as contrast */
     --secondary: 0 0% 29%; /* Secondary Text */
     --secondary-foreground: 0 0% 98%; /* Background Light */
     --muted: 0 0% 29%; /* Secondary Text as muted background */
     --muted-foreground: 220 13% 46%; /* Tertiary Text */
-    --accent: 32 91% 72%; /* Accent Orange */
+    --accent: 214 95% 74%; /* Accent Blue */
     --accent-foreground: 0 0% 10%; /* Primary Text */
     --destructive: 0 84% 60%; /* Error Red */
     --destructive-foreground: 0 0% 98%; /* Background Light */
     --border: 0 0% 29%; /* Secondary Text as border */
     --input: 0 0% 29%; /* Secondary Text as input border */
-    --ring: 25 95% 53%; /* Primary Orange */
+    --ring: 261 83% 58%; /* Primary Purple */
     
     /* Updated dark mode chart colors */
-    --chart-1: 25 95% 53%; /* Primary Orange */
-    --chart-2: 24 95% 61%; /* Secondary Orange */
-    --chart-3: 32 91% 72%; /* Accent Orange */
+    --chart-1: 261 83% 58%; /* Primary Purple */
+    --chart-2: 214 95% 59%; /* Primary Blue */
+    --chart-3: 214 95% 74%; /* Accent Blue */
     --chart-4: 158 84% 39%; /* Success Green */
     --chart-5: 43 96% 50%; /* Warning Amber */
   }

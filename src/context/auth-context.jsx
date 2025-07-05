@@ -15,43 +15,15 @@ export function AuthProvider({ children, onNavigate, pathname }) {
   const [user, setUser] = useState(null);
   const [userProfile, setUserProfile] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [bistros, setBistros] = useState([]);
-  const [activeBistro, setActiveBistro] = useState(null);
-  const [hasLoadedBistros, setHasLoadedBistros] = useState(false);
+  const [entities, setEntities] = useState([]);
+  const [activeEntity, setActiveEntity] = useState(null);
+  const [hasLoadedEntities, setHasLoadedEntities] = useState(false);
   const [pendingInvites, setPendingInvites] = useState([]);
   const [hasLoadedInvites, setHasLoadedInvites] = useState(false);
-  const [bistroSetupCompleted, setBistroSetupCompleted] = useState(true); // Default to true to avoid popup until checked
 
-  const getBistroBySlug = useCallback((slug) => {
-    return bistros.find(bistro => bistro.slug === slug);
-  }, [bistros]);
-
-  // Function to check if bistro setup is completed
-  const checkBistroSetupCompleted = useCallback(async (bistroId) => {
-    if (!bistroId) {
-      setBistroSetupCompleted(true);
-      return true;
-    }
-    
-    try {
-      const { data, error } = await supabase.rpc('check_bistro_setup_completed', {
-        p_bistro_id: bistroId
-      });
-      
-      if (error) {
-        console.error('Error checking bistro setup completion:', error);
-        setBistroSetupCompleted(true); // Default to true on error to avoid popup spam
-        return true;
-      }
-      
-      setBistroSetupCompleted(data);
-      return data;
-    } catch (error) {
-      console.error('Error checking bistro setup completion:', error);
-      setBistroSetupCompleted(true);
-      return true;
-    }
-  }, []);
+  const getEntityBySlug = useCallback((slug) => {
+    return entities.find(entity => entity.slug === slug);
+  }, [entities]);
 
   const fetchUserProfile = useCallback(async () => {
     if (!user?.id) {
@@ -79,50 +51,56 @@ export function AuthProvider({ children, onNavigate, pathname }) {
     }
   }, [user?.id]);
 
-  const fetchBistros = useCallback(async () => {
+  const fetchEntities = useCallback(async () => {
     if (!user) {
-      setHasLoadedBistros(true);
+      setHasLoadedEntities(true);
       return;
     }
     
     try {
       const { data, error } = await supabase
-        .from('bistros')
+        .from('entity_members')
         .select(`
-          *,
-          bistro_members!inner(
-            role,
-            profile_id
+          entities (
+            id,
+            name,
+            description,
+            created_at,
+            updated_at
           )
         `)
-        .eq('bistro_members.profile_id', user.id);
+        .eq('profile_id', user.id);
 
       if (error) throw error;
-      setBistros(data || []);
-      if (data && data.length > 0 && !activeBistro) {
-        setActiveBistro(data[0]);
+      
+      // Extract entities from the joined data
+      const entitiesData = data?.map(item => item.entities).filter(Boolean) || [];
+      setEntities(entitiesData);
+      
+      if (entitiesData.length > 0 && !activeEntity) {
+        setActiveEntity(entitiesData[0]);
       }
     } catch (error) {
-      console.error('Error fetching bistros:', error);
+      console.error('Error fetching entities:', error);
     } finally {
-      setHasLoadedBistros(true);
+      setHasLoadedEntities(true);
     }
-  }, [user, activeBistro]);
+  }, [user, activeEntity]);
 
-  const switchBistro = useCallback((bistroId) => {
-    const newActiveBistro = bistros.find(bistro => bistro.id === bistroId);
-    if (newActiveBistro) {
-      setActiveBistro(newActiveBistro);
+  const switchEntity = useCallback((entityId) => {
+    const newActiveEntity = entities.find(entity => entity.id === entityId);
+    if (newActiveEntity) {
+      setActiveEntity(newActiveEntity);
     }
-    return newActiveBistro;
-  }, [bistros]);
+    return newActiveEntity;
+  }, [entities]);
 
-  const switchBistroBySlug = useCallback((slug) => {
-    const newActiveBistro = bistros.find(bistro => bistro.slug === slug);
-    if (newActiveBistro) {
-      setActiveBistro(newActiveBistro);
+  const switchEntityBySlug = useCallback((slug) => {
+    const newActiveEntity = entities.find(entity => entity.slug === slug);
+    if (newActiveEntity) {
+      setActiveEntity(newActiveEntity);
     }
-  }, [bistros]);
+  }, [entities]);
 
   const handleAuthStateChange = useCallback((event, session) => {
     console.log('Auth state changed:', event);
@@ -141,7 +119,7 @@ export function AuthProvider({ children, onNavigate, pathname }) {
           access_token: session.access_token,
           refresh_token: session.refresh_token
         });
-        setHasLoadedBistros(false);
+        setHasLoadedEntities(false);
         setHasLoadedInvites(false);
         
         // Only navigate to search on manual sign-in, not on session restoration
@@ -156,12 +134,11 @@ export function AuthProvider({ children, onNavigate, pathname }) {
     } else if (event === 'SIGNED_OUT' || event === 'USER_DELETED') {
       setUser(null);
       setUserProfile(null);
-      setBistros([]);
-      setActiveBistro(null);
-      setHasLoadedBistros(true);
+      setEntities([]);
+      setActiveEntity(null);
+      setHasLoadedEntities(true);
       setPendingInvites([]);
       setHasLoadedInvites(true);
-      setBistroSetupCompleted(true); // Reset setup state on signout
     } else if (event === 'USER_UPDATED') {
       setUser(prev => prev ? {
         ...session?.user,
@@ -267,14 +244,14 @@ export function AuthProvider({ children, onNavigate, pathname }) {
 
   const acceptInvite = useCallback(async (inviteId) => {
     try {
-      // Get the bistro_id from the pending invite
+      // Get the entity_id from the pending invite
       const currentInvite = pendingInvites.find(invite => invite.invite_id === inviteId);
       if (!currentInvite) {
         throw new Error('Invite not found');
       }
 
       const { data, error } = await supabase.rpc('respond_invitation', {
-        p_bistro_id: currentInvite.bistro_id,
+        p_entity_id: currentInvite.entity_id,
         p_accept: true
       });
 
@@ -284,26 +261,26 @@ export function AuthProvider({ children, onNavigate, pathname }) {
         throw new Error(data.error || 'Failed to accept invitation');
       }
       
-      // Refresh invites and bistros after accepting
-      await Promise.all([fetchInvites(), fetchBistros()]);
+      // Refresh invites and entities after accepting
+      await Promise.all([fetchInvites(), fetchEntities()]);
       
       return { success: true, message: data.message };
     } catch (error) {
       console.error('Error accepting invite:', error);
       return { success: false, error: error.message };
     }
-  }, [pendingInvites, fetchInvites, fetchBistros]);
+  }, [pendingInvites, fetchInvites, fetchEntities]);
 
   const rejectInvite = useCallback(async (inviteId) => {
     try {
-      // Get the bistro_id from the pending invite
+      // Get the entity_id from the pending invite
       const currentInvite = pendingInvites.find(invite => invite.invite_id === inviteId);
       if (!currentInvite) {
         throw new Error('Invite not found');
       }
 
       const { data, error } = await supabase.rpc('respond_invitation', {
-        p_bistro_id: currentInvite.bistro_id,
+        p_entity_id: currentInvite.entity_id,
         p_accept: false
       });
 
@@ -356,12 +333,12 @@ export function AuthProvider({ children, onNavigate, pathname }) {
     };
   }, [handleAuthStateChange]);
 
-  // Fetch bistros when user changes
+  // Fetch entities when user changes
   useEffect(() => {
-    if (!hasLoadedBistros) {
-      fetchBistros();
+    if (!hasLoadedEntities) {
+      fetchEntities();
     }
-  }, [user, hasLoadedBistros, fetchBistros]);
+  }, [user, hasLoadedEntities, fetchEntities]);
 
   // Fetch user profile when user changes
   useEffect(() => {
@@ -374,13 +351,6 @@ export function AuthProvider({ children, onNavigate, pathname }) {
       fetchInvites();
     }
   }, [user, hasLoadedInvites, fetchInvites]);
-
-  // Check bistro setup completion when activeBistro changes
-  useEffect(() => {
-    if (activeBistro) {
-      checkBistroSetupCompleted(activeBistro.id);
-    }
-  }, [activeBistro, checkBistroSetupCompleted]);
 
   // Add token refresh function
   const refreshToken = async () => {
@@ -427,26 +397,23 @@ export function AuthProvider({ children, onNavigate, pathname }) {
     loading,
     user,
     userProfile,
-    bistros,
-    activeBistro,
-    hasLoadedBistros,
-    setHasLoadedBistros,
+    entities,
+    activeEntity,
+    hasLoadedEntities,
+    setHasLoadedEntities,
     pendingInvites,
     hasLoadedInvites,
     setHasLoadedInvites,
-    bistroSetupCompleted,
-    setBistroSetupCompleted,
-    checkBistroSetupCompleted,
-    switchBistro,
-    switchBistroBySlug,
-    getBistroBySlug,
+    switchEntity,
+    switchEntityBySlug,
+    getEntityBySlug,
     signUp,
     signIn,
     signInWithGoogle,
     signOut,
     forgotPassword,
     updateUserPassword,
-    fetchBistros,
+    fetchEntities,
     refreshToken,
     fetchInvites,
     acceptInvite,
@@ -456,23 +423,21 @@ export function AuthProvider({ children, onNavigate, pathname }) {
     loading,
     user,
     userProfile,
-    bistros,
-    activeBistro,
-    hasLoadedBistros,
+    entities,
+    activeEntity,
+    hasLoadedEntities,
     pendingInvites,
     hasLoadedInvites,
-    bistroSetupCompleted,
-    checkBistroSetupCompleted,
-    switchBistro,
-    switchBistroBySlug,
-    getBistroBySlug,
+    switchEntity,
+    switchEntityBySlug,
+    getEntityBySlug,
     signUp,
     signIn,
     signInWithGoogle,
     signOut,
     forgotPassword,
     updateUserPassword,
-    fetchBistros,
+    fetchEntities,
     refreshToken,
     fetchInvites,
     acceptInvite,

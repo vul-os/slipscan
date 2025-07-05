@@ -12,6 +12,8 @@ import LandingPage from './pages/landing';
 const getLoadingMessage = (pathname) => {
   if (pathname.includes('/signin')) return 'Loading sign in...';
   if (pathname.includes('/signup')) return 'Loading sign up...';
+  if (pathname.includes('/dashboard')) return 'Loading dashboard...';
+  if (pathname.includes('/documents')) return 'Loading documents...';
   if (pathname === '/') return 'Loading homepage...';
   return 'Loading...';
 };
@@ -41,6 +43,10 @@ const ForgotPassword = lazyImport(() => import('./pages/auth/forgot-password'));
 const UpdatePassword = lazyImport(() => import('./pages/auth/update-password'));
 const VerifyEmail = lazyImport(() => import('./pages/auth/verify-email'));
 
+// Protected pages
+const Dashboard = lazyImport(() => import('./pages/dashboard'));
+const Documents = lazyImport(() => import('./pages/documents'));
+
 // Other pages
 const NotFound = lazyImport(() => import('./pages/not-found'));
 
@@ -64,6 +70,10 @@ const AppRoutes = () => {
         {/* Public routes with main layout */}
         <Route element={<MainLayout />}>
           <Route path="/" element={<LandingPage />} />
+          
+          {/* Protected routes */}
+          <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
+          <Route path="/documents" element={<Protected><Documents /></Protected>} />
         </Route>
 
   
