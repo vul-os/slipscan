@@ -59,9 +59,7 @@ const SettingsPage = () => {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3">
-        <div className="w-10 h-10 bg-gradient-to-r from-purple-500 to-blue-500 rounded-xl flex items-center justify-center">
-          <Settings className="w-5 h-5 text-white" />
-        </div>
+        <img src="/icon.svg" alt="SlipScan" className="w-10 h-10" />
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
           <p className="text-gray-600">Manage your account and entity preferences</p>

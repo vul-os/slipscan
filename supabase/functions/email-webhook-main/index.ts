@@ -59,6 +59,7 @@ const B2_CONFIG = {
   keyId: Deno.env.get('B2_KEY_ID'),
   applicationKey: Deno.env.get('B2_APPLICATION_KEY'),
   bucketName: Deno.env.get('B2_BUCKET_NAME'),
+  bucketId: Deno.env.get('B2_BUCKET_ID'),
   baseUrl: 'https://api.backblazeb2.com'
 }
 
@@ -99,6 +100,13 @@ class BackblazeB2 {
       await this.authenticate()
     }
 
+    console.log('☁️ Uploading to B2:', fileName)
+
+    // Calculate SHA1 hash for B2 verification
+    const sha1HashBuffer = await crypto.subtle.digest('SHA-1', fileContent);
+    const sha1HashArray = Array.from(new Uint8Array(sha1HashBuffer));
+    const sha1Hash = sha1HashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
     // Get upload URL
     const uploadUrlResponse = await fetch(`${this.apiUrl}/b2api/v2/b2_get_upload_url`, {
       method: 'POST',
@@ -107,7 +115,7 @@ class BackblazeB2 {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        bucketId: B2_CONFIG.bucketName
+        bucketId: B2_CONFIG.bucketId
       })
     })
 
@@ -117,23 +125,34 @@ class BackblazeB2 {
 
     const uploadUrlData = await uploadUrlResponse.json()
     
+    // Encode filename for B2
+    const encodedFileName = encodeURIComponent(fileName)
+    
     // Upload file
     const uploadResponse = await fetch(uploadUrlData.uploadUrl, {
       method: 'POST',
       headers: {
         'Authorization': uploadUrlData.authorizationToken,
-        'X-Bz-File-Name': fileName,
+        'X-Bz-File-Name': encodedFileName,
         'Content-Type': contentType,
-        'X-Bz-Content-Sha1': 'unverified'
+        'Content-Length': fileContent.length.toString(),
+        'X-Bz-Content-Sha1': sha1Hash
       },
       body: fileContent
     })
 
     if (!uploadResponse.ok) {
-      throw new Error(`File upload failed: ${uploadResponse.statusText}`)
+      const errorText = await uploadResponse.text()
+      console.error('❌ B2 upload error:', {
+        status: uploadResponse.status,
+        statusText: uploadResponse.statusText,
+        error: errorText
+      })
+      throw new Error(`File upload failed: ${uploadResponse.status} ${uploadResponse.statusText} - ${errorText}`)
     }
 
     const uploadData = await uploadResponse.json()
+    console.log('✅ File uploaded to B2:', uploadData.fileName)
     return `${this.downloadUrl}/file/${B2_CONFIG.bucketName}/${fileName}`
   }
 }
@@ -189,6 +208,14 @@ async function saveEmailToSupabase(emailEvent: EmailEvent, entityId: string): Pr
   return data.id
 }
 
+// Calculate SHA-256 hash for document storage
+async function calculateDocumentHash(fileContent: Uint8Array): Promise<string> {
+  const hashBuffer = await crypto.subtle.digest('SHA-256', fileContent);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  return hashHex;
+}
+
 // Create document in Supabase
 async function createDocument(
   entityId: string,
@@ -198,9 +225,16 @@ async function createDocument(
   fileSize: number,
   mimeType: string,
   sourceType: 'email',
+  fileContent: Uint8Array,
   attachmentFilename?: string,
   attachmentContentId?: string
 ): Promise<string> {
+  console.log('💾 Creating document record:', fileName)
+  
+  // Calculate document hash for deduplication
+  const documentHash = await calculateDocumentHash(fileContent)
+  console.log('🔒 Document hash:', documentHash.substring(0, 8) + '...')
+
   const { data, error } = await supabase
     .from('documents')
     .insert({
@@ -214,16 +248,18 @@ async function createDocument(
       source_type: sourceType,
       source_email_id: emailId,
       source_attachment_filename: attachmentFilename,
-      source_attachment_content_id: attachmentContentId
+      source_attachment_content_id: attachmentContentId,
+      document_hash: documentHash
     })
     .select('id')
     .single()
 
   if (error) {
-    console.error('Error creating document:', error)
+    console.error('❌ Error creating document:', error)
     throw new Error(`Failed to create document: ${error.message}`)
   }
 
+  console.log('✅ Document created:', data.id)
   return data.id
 }
 
@@ -273,9 +309,11 @@ async function processEmailBody(emailEvent: EmailEvent, entityId: string, emailI
       return
     }
 
-    // Create filename for email body
-    const timestamp = new Date(emailEvent.processed_at * 1000).toISOString().replace(/[:.]/g, '-')
-    const fileName = `emails/${entityId}/${emailId}/email-body-${timestamp}.html`
+    // Create filename for email body using subject
+    const timestamp = Date.now()
+    const subject = emailEvent.headers['subject']?.[0] || 'no-subject'
+    const safeSubject = subject.replace(/[^a-zA-Z0-9._-\s]/g, '_').replace(/\s+/g, '-').substring(0, 100)
+    const fileName = `${entityId}/${timestamp}-${safeSubject}.html`
 
     // Upload email body to Backblaze
     const htmlContent = new TextEncoder().encode(emailEvent.body.html)
@@ -285,11 +323,12 @@ async function processEmailBody(emailEvent: EmailEvent, entityId: string, emailI
     const documentId = await createDocument(
       entityId,
       emailId,
-      `email-body-${timestamp}.html`,
+      `${timestamp}-${safeSubject}.html`,
       filePath,
       htmlContent.length,
       'text/html',
-      'email'
+      'email',
+      htmlContent
     )
 
     await logEmailProcessing(emailId, 'email_body', 'completed', undefined, 'text/html', undefined, htmlContent.length, undefined, documentId)
@@ -325,24 +364,8 @@ async function processAttachments(emailEvent: EmailEvent, entityId: string, emai
 
       console.log(`  - Processing: ${attachment.filename}`)
 
-      // Skip unsupported files
-      if (attachment.content_type.startsWith('image/') && attachment.filename.match(/\.(gif|png|jpg|jpeg)$/i)) {
-        await logEmailProcessing(
-          emailId,
-          'attachment',
-          'skipped',
-          attachment.filename,
-          attachment.content_type,
-          attachment.content_id,
-          attachment.size,
-          attachment.url,
-          undefined,
-          undefined,
-          'signature_image'
-        )
-        console.log(`  - Skipped (likely signature image): ${attachment.filename}`)
-        continue
-      }
+      // Note: Processing all attachments including images
+      // Previous logic was too restrictive and skipped all images
 
       // Download attachment from Maileroo
       const attachmentResponse = await fetch(attachment.url)
@@ -352,10 +375,10 @@ async function processAttachments(emailEvent: EmailEvent, entityId: string, emai
 
       const attachmentData = new Uint8Array(await attachmentResponse.arrayBuffer())
       
-      // Create safe filename for B2
-      const timestamp = new Date(emailEvent.processed_at * 1000).toISOString().replace(/[:.]/g, '-')
+      // Create safe filename for B2 - consistent with document manager
+      const timestamp = Date.now()
       const safeFilename = attachment.filename.replace(/[^a-zA-Z0-9._-]/g, '_')
-      const fileName = `emails/${entityId}/${emailId}/attachments/${timestamp}-${safeFilename}`
+      const fileName = `${entityId}/${timestamp}-${safeFilename}`
 
       // Upload to Backblaze
       const filePath = await b2Client.uploadFile(fileName, attachmentData, attachment.content_type)
@@ -369,6 +392,7 @@ async function processAttachments(emailEvent: EmailEvent, entityId: string, emai
         attachment.size,
         attachment.content_type,
         'email',
+        attachmentData,
         attachment.filename,
         attachment.content_id
       )
@@ -446,11 +470,52 @@ serve(async (req: Request) => {
     
     console.log('✅ Webhook validation successful')
     
-    // TODO: Determine entity_id from email domain/recipient
-    // For now, using a placeholder - you'll need to implement entity resolution
-    const entityId = Deno.env.get('DEFAULT_ENTITY_ID')
+    // Determine entity_id from email recipient address
+    console.log('🔍 Determining entity from recipients:', emailEvent.recipients)
+    
+    let entityId: string | null = null
+    
+    // Look for entity-specific email addresses (e.g., entity123@docs.slipscan.com)
+    for (const recipient of emailEvent.recipients) {
+      console.log('📧 Checking recipient:', recipient)
+      
+      // Extract entity ID from email address before @
+      const emailParts = recipient.split('@')
+      if (emailParts.length === 2) {
+        const potentialEntityId = emailParts[0]
+        
+        // Validate entity ID format (should be UUID or alphanumeric)
+        if (potentialEntityId.match(/^[a-zA-Z0-9-]{8,}$/)) {
+          console.log('🎯 Potential entity ID found:', potentialEntityId)
+          
+          // Verify entity exists in database
+          const { data: entity, error } = await supabase
+            .from('entities')
+            .select('id')
+            .eq('id', potentialEntityId)
+            .single()
+          
+          if (!error && entity) {
+            entityId = potentialEntityId
+            console.log('✅ Entity confirmed:', entityId)
+            break
+          } else {
+            console.log('❌ Entity not found in database:', potentialEntityId)
+          }
+        } else {
+          console.log('⚠️ Invalid entity ID format:', potentialEntityId)
+        }
+      }
+    }
+    
+    // Fall back to default entity if no valid entity found
     if (!entityId) {
-      throw new Error('DEFAULT_ENTITY_ID environment variable not set')
+      const defaultEntityId = Deno.env.get('DEFAULT_ENTITY_ID')
+      if (!defaultEntityId) {
+        throw new Error('No valid entity found in recipients and DEFAULT_ENTITY_ID not set')
+      }
+      entityId = defaultEntityId
+      console.log('🔄 Using default entity ID:', entityId)
     }
 
     // Initialize B2 client

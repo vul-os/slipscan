@@ -1,4 +1,3 @@
-
 -- Emails table - track incoming emails that contain documents
 CREATE TABLE emails (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -76,6 +75,15 @@ CREATE TABLE documents (
     source_attachment_filename VARCHAR(255),
     source_attachment_content_id VARCHAR(255)
 );
+
+-- Add document hash column for duplicate detection and integrity checking
+ALTER TABLE documents ADD COLUMN document_hash VARCHAR(64);
+
+-- Add index on document_hash for performance and duplicate detection
+CREATE INDEX idx_documents_hash ON documents(document_hash);
+
+-- Add unique constraint on hash within entity to prevent duplicates
+CREATE UNIQUE INDEX idx_documents_entity_hash ON documents(entity_id, document_hash) WHERE document_hash IS NOT NULL;
 
 -- Email processing log - track individual attachment processing attempts
 CREATE TABLE email_processing_log (

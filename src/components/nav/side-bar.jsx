@@ -4,7 +4,6 @@ import { useMediaQuery } from 'react-responsive';
 import { useAuth } from '@/context/auth-context';
 import { Button } from "@/components/ui/button";
 import { 
-  Brain, 
   LayoutDashboard, 
   FileText, 
   Settings, 
@@ -100,10 +99,17 @@ const Sidebar = ({ isCollapsed, onToggleCollapse }) => {
           <ChevronRight className="w-3 h-3" />
         </Button>
 
-        {/* Logo */}
-        <div className="p-4 border-b border-gray-200">
-          <div className="w-8 h-8 bg-gradient-to-r from-purple-500 to-blue-500 rounded-lg flex items-center justify-center">
-            <Brain className="w-4 h-4 text-white" />
+        {/* Logo - Mobile Only */}
+        <div className="p-4 border-b border-gray-200 md:hidden">
+          <div className="flex items-center gap-2">
+            <img src="/icon.svg" alt="SlipScan" className="w-8 h-8" />
+            <div>
+              <h2 className="font-bold text-sm text-gray-900">
+                <span className="bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">Slip</span>
+                <span className="text-gray-900">Scan</span>
+              </h2>
+              <p className="text-xs text-gray-500">AI Financial Tracking</p>
+            </div>
           </div>
         </div>
 
@@ -186,12 +192,10 @@ const Sidebar = ({ isCollapsed, onToggleCollapse }) => {
           </Button>
         )}
 
-        {/* Header */}
-        <div className="p-6 border-b border-gray-200">
+        {/* Header - Mobile Only */}
+        <div className="p-6 border-b border-gray-200 md:hidden">
           <div className="flex items-center gap-3 mb-4">
-            <div className="w-10 h-10 bg-gradient-to-r from-purple-500 to-blue-500 rounded-xl flex items-center justify-center">
-              <Brain className="w-5 h-5 text-white" />
-            </div>
+            <img src="/icon.svg" alt="SlipScan" className="w-10 h-10" />
             <div>
               <h2 className="font-bold text-xl text-gray-900">
                 <span className="bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">Slip</span>
@@ -201,7 +205,7 @@ const Sidebar = ({ isCollapsed, onToggleCollapse }) => {
             </div>
           </div>
 
-          {/* Entity Selector */}
+          {/* Entity Selector - Mobile Only */}
           {activeEntity && (
             <div className="bg-purple-50 rounded-lg p-3 border border-purple-200">
               <div className="flex items-center gap-2 mb-1">

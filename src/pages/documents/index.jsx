@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '@/context/auth-context';
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,9 @@ import {
   XCircle,
   Mail,
   Globe,
-  Sparkles
+  Sparkles,
+  Trash2,
+  Loader2
 } from 'lucide-react';
 import {
   Select,
@@ -29,91 +31,40 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-
-// Mock documents data - replace with real API calls
-const mockDocuments = [
-  {
-    id: 1,
-    filename: 'starbucks_receipt_march15.pdf',
-    upload_date: '2024-03-15T10:30:00Z',
-    status: 'completed',
-    extracted_data: {
-      total: 10.04,
-      currency: 'USD',
-      vendor: 'Starbucks Downtown',
-      line_items: 3,
-      category: 'Business Meals'
-    },
-    entity_id: 1
-  },
-  {
-    id: 2,
-    filename: 'uber_receipt_march14.pdf',
-    upload_date: '2024-03-14T18:45:00Z',
-    status: 'completed',
-    extracted_data: {
-      total: 23.50,
-      currency: 'USD',
-      vendor: 'Uber',
-      line_items: 1,
-      category: 'Transportation'
-    },
-    entity_id: 1
-  },
-  {
-    id: 3,
-    filename: 'office_supplies_march13.pdf',
-    upload_date: '2024-03-13T14:20:00Z',
-    status: 'processing',
-    extracted_data: null,
-    entity_id: 1
-  },
-  {
-    id: 4,
-    filename: 'hotel_invoice_march12.pdf',
-    upload_date: '2024-03-12T09:15:00Z',
-    status: 'failed',
-    extracted_data: null,
-    entity_id: 1
-  },
-  {
-    id: 5,
-    filename: 'amazon_business_march11.pdf',
-    upload_date: '2024-03-11T16:30:00Z',
-    status: 'completed',
-    extracted_data: {
-      total: 156.78,
-      currency: 'USD',
-      vendor: 'Amazon Business',
-      line_items: 8,
-      category: 'Office Supplies'
-    },
-    entity_id: 1
-  }
-];
+import { supabase } from '@/services/supabase-client';
 
 const DocumentsPage = () => {
   const { activeEntity, user } = useAuth();
   const [documents, setDocuments] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [dateRange, setDateRange] = useState('all');
+  const fileInputRef = useRef(null);
 
   // Load documents when component mounts or active entity changes
   useEffect(() => {
     const loadDocuments = async () => {
+      if (!activeEntity) {
+        setLoading(false);
+        return;
+      }
+
       setLoading(true);
       try {
-        // Simulate API call
-        await new Promise(resolve => setTimeout(resolve, 800));
-        
-        // Filter documents by active entity
-        const entityDocuments = activeEntity 
-          ? mockDocuments.filter(doc => doc.entity_id === activeEntity.id)
-          : mockDocuments;
-        
-        setDocuments(entityDocuments);
+        const { data, error } = await supabase
+          .from('documents')
+          .select('*')
+          .eq('entity_id', activeEntity.id)
+          .order('created_at', { ascending: false });
+
+        if (error) {
+          console.error('Error loading documents:', error);
+          return;
+        }
+
+        setDocuments(data || []);
       } catch (error) {
         console.error('Failed to load documents:', error);
       } finally {
@@ -124,6 +75,135 @@ const DocumentsPage = () => {
     loadDocuments();
   }, [activeEntity]);
 
+  // Handle file upload - send directly to edge function
+  const handleFileUpload = async (files) => {
+    if (!files?.length || !activeEntity) return;
+
+    setUploading(true);
+    
+    try {
+      for (const file of files) {
+        console.log(`📤 Starting upload: ${file.name}`);
+        
+        // Convert file to base64 for JSON transfer
+        const arrayBuffer = await file.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        const base64String = btoa(String.fromCharCode(...uint8Array));
+
+        // Send file and metadata to edge function
+        const { data, error } = await supabase.functions.invoke('document-manager', {
+          body: {
+            file_data: base64String,
+            file_name: file.name,
+            mime_type: file.type,
+            entity_id: activeEntity.id,
+            document_type: 'receipt', // Default type, can be changed later
+            uploaded_by: user?.email
+          }
+        });
+
+        if (error) {
+          console.error('❌ Error uploading file:', error);
+          continue;
+        }
+
+        if (!data.success) {
+          console.error('❌ Failed to upload file:', data.error);
+          continue;
+        }
+
+        console.log(`✅ Document created successfully: ${file.name} (${data.document_id})`);
+        console.log(`🔒 File hash: ${data.document_hash?.substring(0, 8)}...`);
+      }
+
+      // Reload documents
+      loadDocuments();
+    } catch (error) {
+      console.error('❌ Upload error:', error);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  // Handle file input change
+  const handleFileInputChange = (event) => {
+    const files = Array.from(event.target.files || []);
+    handleFileUpload(files);
+    // Clear input for next upload
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  // View document
+  const handleViewDocument = async (documentId) => {
+    try {
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/document-manager/${documentId}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+        }
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success && data.signed_url) {
+        window.open(data.signed_url, '_blank');
+      } else {
+        console.error('Failed to get document:', data.error);
+      }
+    } catch (error) {
+      console.error('Failed to view document:', error);
+    }
+  };
+
+  // Delete document
+  const handleDeleteDocument = async (documentId) => {
+    if (!confirm('Are you sure you want to delete this document?')) return;
+
+    try {
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/document-manager/${documentId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+        }
+      });
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        setDocuments(docs => docs.filter(doc => doc.id !== documentId));
+        console.log('✅ Document deleted successfully');
+      } else {
+        console.error('Failed to delete document:', data.error);
+      }
+    } catch (error) {
+      console.error('Failed to delete document:', error);
+    }
+  };
+
+  // Refresh documents
+  const loadDocuments = async () => {
+    if (!activeEntity) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('documents')
+        .select('*')
+        .eq('entity_id', activeEntity.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error loading documents:', error);
+        return;
+      }
+
+      setDocuments(data || []);
+    } catch (error) {
+      console.error('Failed to load documents:', error);
+    }
+  };
+
   // Filter documents based on search and filters
   const filteredDocuments = useMemo(() => {
     let filtered = documents;
@@ -131,15 +211,16 @@ const DocumentsPage = () => {
     // Search filter
     if (searchQuery) {
       filtered = filtered.filter(doc => 
-        doc.filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        doc.extracted_data?.vendor?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        doc.extracted_data?.category?.toLowerCase().includes(searchQuery.toLowerCase())
+        doc.file_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        doc.entity_name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        doc.document_type?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        doc.notes?.toLowerCase().includes(searchQuery.toLowerCase())
       );
     }
 
     // Status filter
     if (statusFilter !== 'all') {
-      filtered = filtered.filter(doc => doc.status === statusFilter);
+      filtered = filtered.filter(doc => doc.processing_status === statusFilter);
     }
 
     // Date range filter
@@ -161,7 +242,7 @@ const DocumentsPage = () => {
           return filtered;
       }
       
-      filtered = filtered.filter(doc => new Date(doc.upload_date) >= filterDate);
+      filtered = filtered.filter(doc => new Date(doc.created_at) >= filterDate);
     }
 
     return filtered;
@@ -175,6 +256,8 @@ const DocumentsPage = () => {
         return <Clock className="w-4 h-4 text-yellow-500" />;
       case 'failed':
         return <XCircle className="w-4 h-4 text-red-500" />;
+      case 'pending':
+        return <AlertCircle className="w-4 h-4 text-blue-500" />;
       default:
         return <AlertCircle className="w-4 h-4 text-gray-500" />;
     }
@@ -184,11 +267,12 @@ const DocumentsPage = () => {
     const variants = {
       completed: 'bg-green-100 text-green-800 border-green-200',
       processing: 'bg-yellow-100 text-yellow-800 border-yellow-200',
-      failed: 'bg-red-100 text-red-800 border-red-200'
+      failed: 'bg-red-100 text-red-800 border-red-200',
+      pending: 'bg-blue-100 text-blue-800 border-blue-200'
     };
 
     return (
-      <Badge className={`${variants[status]} border`}>
+      <Badge className={`${variants[status] || 'bg-gray-100 text-gray-800 border-gray-200'} border`}>
         {status.charAt(0).toUpperCase() + status.slice(1)}
       </Badge>
     );
@@ -236,10 +320,28 @@ const DocumentsPage = () => {
               AI-powered document processing for {activeEntity?.name || 'your entity'}
             </p>
           </div>
-          <Button className="bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-lg hover:shadow-xl transition-all duration-300">
-            <Upload className="w-4 h-4 mr-2" />
-            Upload Document
-          </Button>
+          <div className="flex items-center gap-2">
+            <input
+              type="file"
+              ref={fileInputRef}
+              onChange={handleFileInputChange}
+              className="hidden"
+              accept=".pdf,.jpg,.jpeg,.png,.gif,.doc,.docx,.txt"
+              multiple
+            />
+            <Button 
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+              className="bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-lg hover:shadow-xl transition-all duration-300"
+            >
+              {uploading ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Upload className="w-4 h-4 mr-2" />
+              )}
+              {uploading ? 'Uploading...' : 'Upload Document'}
+            </Button>
+          </div>
         </div>
 
         {/* Stats Cards */}
@@ -264,7 +366,7 @@ const DocumentsPage = () => {
                 <div>
                   <p className="text-sm font-medium text-gray-600">Processed</p>
                   <p className="text-2xl font-bold text-gray-900">
-                    {documents.filter(d => d.status === 'completed').length}
+                    {documents.filter(d => d.processing_status === 'completed').length}
                   </p>
                 </div>
                 <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
@@ -280,7 +382,7 @@ const DocumentsPage = () => {
                 <div>
                   <p className="text-sm font-medium text-gray-600">Processing</p>
                   <p className="text-2xl font-bold text-gray-900">
-                    {documents.filter(d => d.status === 'processing').length}
+                    {documents.filter(d => d.processing_status === 'processing').length}
                   </p>
                 </div>
                 <div className="w-10 h-10 bg-yellow-100 rounded-lg flex items-center justify-center">
@@ -298,8 +400,8 @@ const DocumentsPage = () => {
                   <p className="text-2xl font-bold text-gray-900">
                     {formatCurrency(
                       documents
-                        .filter(d => d.extracted_data?.total)
-                        .reduce((sum, d) => sum + d.extracted_data.total, 0),
+                        .filter(d => d.total_amount)
+                        .reduce((sum, d) => sum + d.total_amount, 0),
                       'USD'
                     )}
                   </p>
@@ -337,8 +439,9 @@ const DocumentsPage = () => {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Status</SelectItem>
-                  <SelectItem value="completed">Completed</SelectItem>
+                  <SelectItem value="pending">Pending</SelectItem>
                   <SelectItem value="processing">Processing</SelectItem>
+                  <SelectItem value="completed">Completed</SelectItem>
                   <SelectItem value="failed">Failed</SelectItem>
                 </SelectContent>
               </Select>
@@ -388,9 +491,17 @@ const DocumentsPage = () => {
                     : 'Start by uploading your first document for AI processing.'}
                 </p>
                 {(!searchQuery && statusFilter === 'all' && dateRange === 'all') && (
-                  <Button className="bg-gradient-to-r from-purple-500 to-blue-500 text-white">
-                    <Upload className="w-4 h-4 mr-2" />
-                    Upload Your First Document
+                  <Button 
+                    className="bg-gradient-to-r from-purple-500 to-blue-500 text-white"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={uploading}
+                  >
+                    {uploading ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Upload className="w-4 h-4 mr-2" />
+                    )}
+                    {uploading ? 'Uploading...' : 'Upload Your First Document'}
                   </Button>
                 )}
               </div>
@@ -407,43 +518,72 @@ const DocumentsPage = () => {
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-1">
-                              <h3 className="font-semibold text-gray-900 truncate">{doc.filename}</h3>
-                              {getStatusIcon(doc.status)}
-                              {getStatusBadge(doc.status)}
+                              <h3 className="font-semibold text-gray-900 truncate">{doc.file_name}</h3>
+                              {getStatusIcon(doc.processing_status)}
+                              {getStatusBadge(doc.processing_status)}
                             </div>
                             <p className="text-sm text-gray-500 mb-2">
-                              Uploaded {formatDate(doc.upload_date)}
+                              Uploaded {formatDate(doc.created_at)}
                             </p>
                             
-                            {doc.extracted_data && (
-                              <div className="flex flex-wrap gap-2 text-sm">
+                            <div className="flex flex-wrap gap-2 text-sm">
+                              {doc.total_amount && (
                                 <span className="inline-flex items-center gap-1 text-gray-600">
                                   <DollarSign className="w-3 h-3" />
-                                  {formatCurrency(doc.extracted_data.total, doc.extracted_data.currency)}
+                                  {formatCurrency(doc.total_amount, 'USD')}
                                 </span>
+                              )}
+                              {doc.entity_name && (
                                 <span className="inline-flex items-center gap-1 text-gray-600">
                                   <Globe className="w-3 h-3" />
-                                  {doc.extracted_data.vendor}
+                                  {doc.entity_name}
                                 </span>
+                              )}
+                              {doc.document_type && (
                                 <span className="inline-flex items-center gap-1 text-gray-600">
                                   <Sparkles className="w-3 h-3" />
-                                  {doc.extracted_data.category}
+                                  {doc.document_type}
                                 </span>
-                              </div>
-                            )}
+                              )}
+                              {doc.source_type === 'email' && (
+                                <span className="inline-flex items-center gap-1 text-blue-600">
+                                  <Mail className="w-3 h-3" />
+                                  Email
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
 
                       {/* Actions */}
                       <div className="flex items-center gap-2 lg:flex-shrink-0">
-                        <Button variant="outline" size="sm" className="border-gray-300 hover:border-purple-500">
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          className="border-gray-300 hover:border-purple-500"
+                          onClick={() => handleViewDocument(doc.id)}
+                        >
                           <Eye className="w-4 h-4 mr-2" />
                           View
                         </Button>
-                        <Button variant="outline" size="sm" className="border-gray-300 hover:border-purple-500">
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          className="border-gray-300 hover:border-purple-500"
+                          onClick={() => handleViewDocument(doc.id)}
+                        >
                           <Download className="w-4 h-4 mr-2" />
                           Download
+                        </Button>
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          className="border-gray-300 hover:border-red-500 text-red-600"
+                          onClick={() => handleDeleteDocument(doc.id)}
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Delete
                         </Button>
                       </div>
                     </div>

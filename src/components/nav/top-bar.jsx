@@ -67,9 +67,26 @@ const TopBar = ({ onToggleSidebar, showSidebarToggle = false }) => {
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-lg border-b border-gray-200/50 shadow-sm">
       <nav className="h-16 px-4 sm:px-6 lg:px-8">
-        <div className="h-full flex items-center justify-between max-w-7xl mx-auto">
-          {/* Left: Hamburger Menu + Logo */}
+        <div className="h-full flex items-center justify-between">
+          {/* Left: Logo (absolute far left) + Hamburger Menu */}
           <div className="flex items-center gap-3">
+            {/* Logo - Absolute Far Left on Desktop/Tablet */}
+            <Link to="/" className="flex items-center">
+              <div className="hidden md:block">
+                {/* Desktop logo only */}
+                <div className="flex items-center gap-3">
+                  <img src="/icon.svg" alt="SlipScan" className="w-10 h-10" />
+                  <div>
+                    <h2 className="font-bold text-xl text-gray-900">
+                      <span className="bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">Slip</span>
+                      <span className="text-gray-900">Scan</span>
+                    </h2>
+                    <p className="text-xs text-gray-500">AI Financial Tracking</p>
+                  </div>
+                </div>
+              </div>
+            </Link>
+            
             {/* Hamburger Menu Button for Mobile */}
             {showSidebarToggle && (
               <Button
@@ -81,37 +98,10 @@ const TopBar = ({ onToggleSidebar, showSidebarToggle = false }) => {
                 <Menu className="h-5 w-5 text-gray-600" />
               </Button>
             )}
-            
-            <Link to="/" className="flex items-center">
-              <div className="block sm:hidden">
-                {/* Mobile logo - just icon */}
-                <div className="w-10 h-10 bg-gradient-to-r from-purple-500 to-blue-500 rounded-xl flex items-center justify-center shadow-lg">
-                  <div className="w-6 h-6 bg-white rounded-lg flex items-center justify-center">
-                    <div className="w-4 h-4 bg-gradient-to-r from-purple-500 to-blue-500 rounded"></div>
-                  </div>
-                </div>
-              </div>
-              <div className="hidden sm:block">
-                {/* Desktop logo */}
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-gradient-to-r from-purple-500 to-blue-500 rounded-xl flex items-center justify-center shadow-lg">
-                    <div className="w-6 h-6 bg-white rounded-lg flex items-center justify-center">
-                      <div className="w-4 h-4 bg-gradient-to-r from-purple-500 to-blue-500 rounded"></div>
-                    </div>
-                  </div>
-                  <div>
-                    <h2 className="font-bold text-xl text-gray-900">
-                      <span className="bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">Slip</span>
-                      <span className="text-gray-900">Scan</span>
-                    </h2>
-                  </div>
-                </div>
-              </div>
-            </Link>
           </div>
 
           {/* Right: Entity Selector and User Menu */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 max-w-7xl">
             {user ? (
               <>
                 {/* Entity Selector - Desktop */}
@@ -253,10 +243,6 @@ const TopBar = ({ onToggleSidebar, showSidebarToggle = false }) => {
                       <DropdownMenuItem onClick={() => navigate('/dashboard')}>
                         <LayoutDashboard className="mr-2 h-4 w-4" />
                         <span>Dashboard</span>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => navigate('/settings')}>
-                        <UserCircle className="mr-2 h-4 w-4" />
-                        <span>Profile</span>
                       </DropdownMenuItem>
                       <DropdownMenuItem onClick={() => navigate('/settings')}>
                         <Settings className="mr-2 h-4 w-4" />
