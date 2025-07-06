@@ -1,0 +1,26 @@
+[supabase]
+url = "https://mdyyjppxiylwtlpxcbxq.supabase.co"
+service_role_key = "your-service-role-key-here"
+default_entity_id = "your-default-entity-uuid-here"
+
+[backblaze]
+key_id = "your-b2-key-id-here"
+application_key = "your-b2-application-key-here"
+bucket_name = "your-bucket-name-here"
+bucket_id = "your-bucket-id-here"
+base_url = "https://api.backblazeb2.com"
+
+[processing]
+# Number of documents to process in each batch
+batch_size = 10
+# Maximum number of tokens for model generation
+max_new_tokens = 1024
+# Image processing resolution settings
+min_pixels = 3584  # 128*28*28
+max_pixels = 602112  # 768*28*28
+# GPU memory allocation in GiB
+gpu_memory_limit = "4.0GiB"
+
+[logging]
+level = "INFO"
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s" 

@@ -1,0 +1,9 @@
+torch
+transformers
+qwen-vl-utils
+supabase
+python-dotenv
+Pillow
+accelerate
+toml
+requests 

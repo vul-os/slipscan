@@ -1,0 +1,39 @@
+# Configuration file for the document processing script
+# Copy this file to config.toml and update with your actual credentials
+
+[supabase]
+# Your Supabase project URL
+url = "https://your-project.supabase.co"
+# Your Supabase service role key (keep this secret!)
+service_role_key = "your-service-role-key-here"
+# Default entity/organization ID to use when processing documents
+default_entity_id = "your-default-entity-uuid-here"
+
+[backblaze]
+# Backblaze B2 Key ID
+key_id = "your-b2-key-id-here"
+# Backblaze B2 Application Key (keep this secret!)
+application_key = "your-b2-application-key-here"
+# B2 Bucket name where documents are stored
+bucket_name = "your-bucket-name-here"
+# B2 Bucket ID
+bucket_id = "your-bucket-id-here"
+# B2 API base URL (usually doesn't need to change)
+base_url = "https://api.backblazeb2.com"
+
+[processing]
+# Number of documents to process in each batch
+batch_size = 10
+# Maximum number of tokens for model generation
+max_new_tokens = 1024
+# Image processing resolution settings (lower = less memory usage)
+min_pixels = 3584    # 128*28*28
+max_pixels = 602112  # 768*28*28  
+# GPU memory allocation in GiB
+gpu_memory_limit = "4.0GiB"
+
+[logging]
+# Logging level: DEBUG, INFO, WARNING, ERROR
+level = "INFO"
+# Log message format
+format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s" 
