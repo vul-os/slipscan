@@ -15,6 +15,7 @@ const getLoadingMessage = (pathname) => {
   if (pathname.includes('/dashboard')) return 'Loading dashboard...';
   if (pathname.includes('/documents')) return 'Loading documents...';
   if (pathname.includes('/settings')) return 'Loading settings...';
+  if (pathname.includes('/docs')) return 'Loading documentation...';
   if (pathname === '/') return 'Loading homepage...';
   return 'Loading...';
 };
@@ -49,6 +50,10 @@ const Dashboard = lazyImport(() => import('./pages/dashboard'));
 const Documents = lazyImport(() => import('./pages/documents'));
 const Settings = lazyImport(() => import('./pages/settings'));
 
+// Documentation pages
+const DocsPage = lazyImport(() => import('./pages/docs'));
+const PrivacyPolicy = lazyImport(() => import('./pages/docs/privacy'));
+
 // Other pages
 const NotFound = lazyImport(() => import('./pages/not-found'));
 
@@ -72,6 +77,15 @@ const AppRoutes = () => {
         {/* Public routes with main layout */}
         <Route element={<MainLayout />}>
           <Route path="/" element={<LandingPage />} />
+          
+          {/* Documentation routes - public access */}
+          <Route path="/docs" element={<DocsPage />} />
+          <Route path="/docs/:section" element={<DocsPage />} />
+          
+          {/* Legal/Policy pages - public access */}
+          <Route path="/docs/privacy" element={<PrivacyPolicy />} />
+          <Route path="/docs/terms" element={<PrivacyPolicy />} />
+          <Route path="/docs/cookies" element={<PrivacyPolicy />} />
           
           {/* Protected routes */}
           <Route path="/dashboard" element={<Protected><Dashboard /></Protected>} />
