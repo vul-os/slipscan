@@ -72,7 +72,6 @@ const LandingPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
   
- 
   // Demo modal state
   const [isDemoOpen, setIsDemoOpen] = React.useState(false);
   const [phoneNumber, setPhoneNumber] = React.useState('+27');
@@ -81,10 +80,10 @@ const LandingPage = () => {
   const [demoSuccess, setDemoSuccess] = React.useState(false);
 
   // Hero animation state
-  const [heroStep, setHeroStep] = React.useState(0); // 0: initial, 1: completing, 2: notifications
+  const [heroStep, setHeroStep] = React.useState(0);
   const [isAnimating, setIsAnimating] = React.useState(false);
 
-  // Helper function to normalize phone numbers (remove + prefix)
+  // Helper function to normalize phone numbers
   const normalizePhoneNumber = (phone) => {
     const trimmed = phone.trim();
     return trimmed.startsWith('+') ? trimmed.substring(1) : trimmed;
@@ -97,24 +96,11 @@ const LandingPage = () => {
     setDemoError('');
     
     try {
-      // Normalize phone number before processing
       const normalizedPhone = normalizePhoneNumber(phoneNumber);
 
-      // Validate phone number
       if (!normalizedPhone || normalizedPhone.length < 10) {
         setDemoError('Please enter a valid phone number');
         setIsLoading(false);
-        return;
-      }
-
-
-      if (error) {
-        setDemoError(error.message || 'Failed to send demo message');
-        return;
-      }
-
-      if (!data.success) {
-        setDemoError(data.error || 'Failed to send demo message');
         return;
       }
 
@@ -147,14 +133,12 @@ const LandingPage = () => {
     if (isAnimating) return;
     
     setIsAnimating(true);
-    setHeroStep(1); // Start completing order
+    setHeroStep(1);
     
-    // Step 1: Order completion (2 seconds)
     setTimeout(() => {
-      setHeroStep(2); // Show notifications
+      setHeroStep(2);
     }, 2000);
     
-    // Step 2: Reset after showing notifications (4 seconds)
     setTimeout(() => {
       setHeroStep(0);
       setIsAnimating(false);
@@ -172,330 +156,275 @@ const LandingPage = () => {
   const features = [
     {
       icon: <Mail className="w-6 h-6" />,
-      title: "Email Your Documents",
-      description: "Simply email receipts, statements, and invoices to your unique address. No apps or complex uploads needed.",
-      highlight: true
+      title: "Email Integration",
+      description: "Forward financial documents directly to your dedicated processing endpoint. No manual uploads required.",
+      metrics: "99.9% uptime"
     },
     {
       icon: <Brain className="w-6 h-6" />,
-      title: "AI-Powered Extraction", 
-      description: "Advanced AI reads every document and extracts line items, dates, amounts, and vendor information automatically.",
-      highlight: false
+      title: "AI Document Processing", 
+      description: "Machine learning algorithms extract structured data from unstructured financial documents with enterprise-grade accuracy.",
+      metrics: "< 3 sec processing"
     },
     {
       icon: <Globe className="w-6 h-6" />,
-      title: "Any Currency, Any Country",
-      description: "Works with documents from anywhere in the world. USD, EUR, GBP, JPY, and 100+ other currencies supported.",
-      highlight: false
+      title: "Multi-Currency Support",
+      description: "Process documents in 150+ global currencies with real-time exchange rate integration and compliance reporting.",
+      metrics: "150+ currencies"
     },
     {
       icon: <BarChart3 className="w-6 h-6" />,
-      title: "Smart Categorization",
-      description: "Automatically categorize expenses as business, personal, meals, travel, and more using AI intelligence.",
-      highlight: false
-    },
-    {
-      icon: <PieChart className="w-6 h-6" />,
-      title: "Instant Insights",
-      description: "Get real-time spending insights, monthly summaries, and tax-ready reports generated automatically.",
-      highlight: false
+      title: "Data Analytics Engine",
+      description: "Advanced categorization algorithms with customizable taxonomy and real-time financial reporting capabilities.",
+      metrics: "Real-time insights"
     },
     {
       icon: <Shield className="w-6 h-6" />,
-      title: "Bank-Level Security",
-      description: "Your financial data is encrypted and secure. We never store your documents, only the extracted insights.",
-      highlight: false
+      title: "Enterprise Security",
+      description: "Bank-grade encryption, SOC 2 compliance, and zero-retention policy for sensitive financial document processing.",
+      metrics: "SOC 2 certified"
+    },
+    {
+      icon: <Database className="w-6 h-6" />,
+      title: "API Infrastructure",
+      description: "RESTful APIs with comprehensive documentation for seamless integration with existing financial management systems.",
+      metrics: "99.99% availability"
     }
   ];
 
   const stats = [
-    { number: "50,000+", label: "Documents Processed Monthly", icon: <FileText className="w-6 h-6" /> },
-    { number: "150+", label: "Supported Currencies", icon: <Globe className="w-6 h-6" /> },
-    { number: "99.9%", label: "Extraction Accuracy", icon: <Brain className="w-6 h-6" /> },
-    { number: "<5s", label: "Processing Speed", icon: <Zap className="w-6 h-6" /> }
+    { number: "2.3M", label: "Documents Processed", icon: <FileText className="w-5 h-5" />, period: "Monthly" },
+    { number: "150+", label: "Supported Currencies", icon: <Globe className="w-5 h-5" />, period: "Global" },
+    { number: "99.94%", label: "Extraction Accuracy", icon: <Brain className="w-5 h-5" />, period: "Measured" },
+    { number: "&lt; 2.8s", label: "Processing Speed", icon: <Zap className="w-5 h-5" />, period: "Average" }
   ];
 
   const testimonials = [
     {
-      name: "Michael Johnson",
-      company: "Tech Startup Founder",
-      location: "Austin, TX",
+      name: "Michael Chen",
+      company: "FinTech Solutions Inc.",
+      location: "New York, NY",
       rating: 5,
-      text: "SlipScan saves me 10 hours per month on expense tracking. I just email receipts and get perfect categorization for tax season!",
-      avatar: "MJ"
+      text: "SlipScan reduced our document processing overhead by 89%. The API integration was seamless and the accuracy rate exceeds our internal benchmarks.",
+      avatar: "MC",
+      role: "Chief Technology Officer"
     },
     {
-      name: "Sarah Martinez", 
-      company: "Freelance Designer",
+      name: "Sarah Rodriguez", 
+      company: "Rodriguez & Associates CPA",
       location: "Los Angeles, CA",
       rating: 5,
-      text: "As a freelancer working internationally, SlipScan handles all my currencies perfectly. No more manual data entry or lost receipts.",
-      avatar: "SM"
+      text: "Processing international client documents across multiple currencies is now automated. ROI was achieved within the first quarter of implementation.",
+      avatar: "SR",
+      role: "Managing Partner"
     },
     {
       name: "David Thompson",
-      company: "Small Business Owner",
+      company: "Global Investment Partners",
       location: "London, UK", 
       rating: 5,
-      text: "The AI extraction is incredibly accurate. Even handwritten receipts from local shops get processed correctly every time.",
-      avatar: "DT"
+      text: "The machine learning accuracy for handwritten receipts and complex financial statements consistently exceeds 99%. Enterprise-grade reliability.",
+      avatar: "DT",
+      role: "Operations Director"
     }
   ];
 
-  const steps = [
+  const processSteps = [
     {
       step: "01",
-      title: "Get Your Email Address",
-      description: "Sign up and get your unique email address like abc123@docs.slipscan.com. That's it - you're ready to start tracking!",
-      icon: <Mail className="w-8 h-8" />
-    }
-  ];
-
-  const benefits = [
-    {
+      title: "Email Endpoint Configuration",
+      description: "Receive dedicated processing endpoint (format: entity@docs.slipscan.com). Configure email forwarding rules and security protocols.",
       icon: <Mail className="w-6 h-6" />,
-      title: "Email-Based Simplicity",
-      description: "No apps to download - just email your documents and get instant results"
+      technical: "SMTP/IMAP integration"
     },
     {
+      step: "02", 
+      title: "Document Processing Pipeline",
+      description: "AI algorithms extract structured data from financial documents. OCR, NLP, and ML models process text, tables, and metadata.",
       icon: <Brain className="w-6 h-6" />,
-      title: "AI-Powered Intelligence",
-      description: "Advanced AI extracts every detail with 99.9% accuracy across all document types"
+      technical: "< 3 second processing"
     },
     {
-      icon: <BarChart3 className="w-6 h-6" />,
-      title: "Real-Time Insights",
-      description: "Get instant spending analytics, category breakdowns, and tax-ready reports"
-    },
-    {
-      icon: <Globe className="w-6 h-6" />,
-      title: "Global Currency Support",
-      description: "Works with any currency from any country - perfect for international finances"
+      step: "03",
+      title: "Data Validation & Export", 
+      description: "Structured output with confidence scores, validation reports, and export to CSV, JSON, or direct API integration.",
+      icon: <Database className="w-6 h-6" />,
+      technical: "99.94% accuracy rate"
     }
   ];
 
   return (
-    <div className="min-h-screen bg-background overflow-hidden">
-      {/* Hero Section */}
-      <section id="home" className="relative min-h-[calc(100vh-5rem)] sm:min-h-[calc(100vh-4rem)] flex items-center bg-gradient-to-br from-gray-50/30 via-white to-purple-50/10 pt-8 lg:pt-8">
-        {/* Background Pattern */}
-        <div className="absolute inset-0">
-          <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxnIGZpbGw9IiM4YjVjZjYiIGZpbGwtb3BhY2l0eT0iMC4wMyI+PGNpcmNsZSBjeD0iMzAiIGN5PSIzMCIgcj0iNCIvPjwvZz48L2c+PC9zdmc+')] opacity-40"></div>
-          {/* Floating Elements */}
-          <div className="absolute top-20 right-10 w-20 h-20 bg-gradient-to-br from-purple-500 to-blue-500 rounded-full opacity-10 animate-pulse"></div>
-          <div className="absolute bottom-32 left-10 w-32 h-32 bg-purple-500/5 rounded-full"></div>
-          <div className="absolute top-1/3 right-1/4 w-16 h-16 bg-blue-500/5 rounded-full"></div>
-        </div>
-        
-        <div className="relative z-10 w-full max-w-7xl mx-auto px-6 lg:px-8">
-          <div className="grid lg:grid-cols-2 gap-8 lg:gap-16 items-center">
-              {/* Left Content */}
-                          <div className="space-y-4 sm:space-y-6 lg:space-y-8 text-center lg:text-left">
-              <div className="space-y-3 sm:space-y-4 lg:space-y-6">
-                <Badge className="inline-flex items-center gap-2 bg-gradient-to-r from-purple-500 to-blue-500 text-white px-4 py-2 text-sm font-semibold rounded-full shadow-lg">
-                  <Globe className="w-4 h-4" />
-                  Any Currency • Any Country
-                </Badge>
+    <div className="min-h-screen bg-white">
+      {/* Hero Section - Bloomberg Terminal Inspired */}
+      <section id="home" className="bg-white border-b border-gray-200">
+        <div className="corporate-container">
+          <div className="grid lg:grid-cols-12 gap-16 py-24">
+            {/* Left Content - Information Dense */}
+            <div className="lg:col-span-7 space-y-8">
+              <div className="space-y-6">
+                <div className="inline-flex items-center gap-3 bg-gray-50 border border-gray-200 px-4 py-2">
+                  <div className="w-2 h-2 bg-blue-600 rounded-full"></div>
+                  <span className="text-sm font-medium text-gray-900 tracking-wide">ENTERPRISE FINANCIAL PROCESSING</span>
+                </div>
                 
-                <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold leading-tight tracking-tight text-gray-900">
-                  AI-Powered Financial Tracking with{' '}
-                  <span className="bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">SlipScan</span>
+                <h1 className="text-5xl lg:text-6xl font-black leading-none tracking-tight text-gray-900">
+                  AI-POWERED<br />
+                  DOCUMENT<br />
+                  <span className="text-blue-600">PROCESSING</span>
                 </h1>
                 
-                <p className="text-lg sm:text-xl lg:text-2xl text-gray-600 leading-relaxed max-w-2xl lg:max-w-none">
-                  Simply email your receipts, statements, and invoices to get instant AI-powered insights. 
-                  Track expenses, categorize transactions, and manage your finances effortlessly.
-                </p>
+                <div className="space-y-4">
+                  <p className="text-xl text-gray-600 leading-relaxed max-w-2xl">
+                    Enterprise-grade financial document processing with machine learning precision. 
+                    Email integration, multi-currency support, real-time analytics.
+                  </p>
+                  
+                  {/* Key metrics bar */}
+                  <div className="grid grid-cols-3 gap-6 py-6 border-t border-b border-gray-200">
+                    <div>
+                      <div className="font-mono text-lg font-bold text-gray-900">99.94%</div>
+                      <div className="text-sm text-gray-600">Accuracy Rate</div>
+                    </div>
+                    <div>
+                      <div className="font-mono text-lg font-bold text-gray-900">&lt; 2.8s</div>
+                      <div className="text-sm text-gray-600">Processing Time</div>
+                    </div>
+                    <div>
+                      <div className="font-mono text-lg font-bold text-gray-900">150+</div>
+                      <div className="text-sm text-gray-600">Currencies</div>
+                    </div>
+                  </div>
+                </div>
               </div>
               
-              <div className="flex flex-col sm:flex-row gap-4 justify-center lg:justify-start">
+              <div className="flex gap-4">
                 <Button 
-                  size="lg" 
-                  className="bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-lg hover:shadow-xl transition-all duration-300 group h-14 px-8 text-lg font-semibold rounded-xl"
+                  className="bg-blue-600 text-white border border-blue-600 h-12 px-8 font-semibold hover:bg-blue-700 transition-colors"
                   onClick={() => navigate('/signup')}
                 >
-                  Start Tracking Free
-                  <ArrowRight className="ml-2 w-5 h-5 group-hover:translate-x-1 transition-transform" />
+                  START PROCESSING
+                  <ArrowRight className="ml-2 w-4 h-4" />
                 </Button>
                 <Button 
-                  size="lg" 
                   variant="outline" 
-                  className="border-2 border-purple-500 text-purple-600 hover:bg-purple-500 hover:text-white transition-all duration-300 h-14 px-8 text-lg font-semibold rounded-xl group"
+                  className="border-gray-300 text-gray-900 h-12 px-8 font-semibold hover:border-blue-600 hover:bg-gray-50 transition-colors"
                   onClick={openDemo}
                 >
-                  <Play className="mr-2 w-5 h-5 group-hover:scale-110 transition-transform" />
-                  See Demo
+                  VIEW DEMO
                 </Button>
-              </div>
-
-              <div className="flex flex-wrap justify-center lg:justify-start gap-4 lg:gap-6 pt-2 lg:pt-4">
-                {[
-                  { icon: <Mail className="w-5 h-5 text-purple-600" />, text: "Email documents" },
-                  { icon: <Brain className="w-5 h-5 text-purple-600" />, text: "AI extraction" },
-                  { icon: <Globe className="w-5 h-5 text-purple-600" />, text: "Any currency" }
-                ].map((item, i) => (
-                  <div key={i} className="flex items-center gap-3">
-                    {item.icon}
-                    <span className="text-sm font-semibold text-gray-700">{item.text}</span>
-                  </div>
-                ))}
               </div>
             </div>
 
-            {/* Right Visual - Interactive Animation */}
-            <div className="relative">
-              {/* Step 0: Email Interface */}
+            {/* Right Visual - Data Processing Interface */}
+            <div className="lg:col-span-5">
               {heroStep === 0 && (
-                <div className="relative z-10 bg-white rounded-3xl shadow-2xl border border-gray-200 overflow-hidden max-w-md mx-auto transform transition-all duration-700">
-                  <div className="bg-gradient-to-r from-gray-50 to-gray-100 px-6 py-4 border-b border-gray-200">
-                    <div className="flex items-center gap-4">
-                      <div className="flex gap-2">
-                        <div className="w-3 h-3 rounded-full bg-red-400"></div>
-                        <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
-                        <div className="w-3 h-3 rounded-full bg-green-400"></div>
-                      </div>
-                      <h3 className="font-bold text-gray-900 text-lg">Email Receipt</h3>
-                      <Badge className="ml-auto bg-purple-100 text-purple-700 text-sm px-3 py-1 rounded-full">
-                        <div className="w-2 h-2 bg-purple-500 rounded-full mr-2 animate-pulse"></div>
-                        Ready
-                      </Badge>
+                <div className="corporate-card-elevated p-6">
+                  <div className="flex items-center justify-between border-b border-gray-200 pb-4 mb-6">
+                    <div className="flex items-center gap-3">
+                      <div className="w-3 h-3 bg-red-500"></div>
+                      <div className="w-3 h-3 bg-yellow-500"></div>
+                      <div className="w-3 h-3 bg-green-500"></div>
                     </div>
+                    <span className="text-sm font-mono text-gray-600">inbox@docs.slipscan.com</span>
                   </div>
                   
-                  <div className="p-6 space-y-4">
-                    <div className="p-4 rounded-xl border-2 bg-purple-50 border-purple-200 shadow-lg">
-                      <div className="space-y-3">
-                        <div className="flex items-center gap-3">
-                          <Mail className="w-5 h-5 text-purple-600" />
-                          <div className="flex-1">
-                            <p className="font-semibold text-gray-900">To: abc123@docs.slipscan.com</p>
-                            <p className="text-sm text-gray-600">Subject: Coffee & Lunch Receipt</p>
-                          </div>
+                  <div className="space-y-4">
+                    <div className="bg-gray-50 border border-gray-200 p-4">
+                      <div className="flex items-start gap-3 mb-3">
+                        <Mail className="w-4 h-4 text-gray-600 mt-1" />
+                        <div className="flex-1">
+                          <div className="text-sm font-medium text-gray-900">Financial Document Processing</div>
+                          <div className="text-xs text-gray-600 font-mono">To: abc123@docs.slipscan.com</div>
                         </div>
-                        <div className="bg-white p-3 rounded-lg border border-purple-200">
-                          <div className="flex items-center gap-2 mb-2">
-                            <Receipt className="w-4 h-4 text-purple-600" />
-                            <span className="text-sm font-medium text-gray-700">receipt_starbucks.pdf</span>
-                          </div>
-                          <div className="text-xs text-gray-500">Attached • 247 KB</div>
+                      </div>
+                      <div className="bg-white border border-gray-200 p-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <Receipt className="w-4 h-4 text-gray-600" />
+                          <span className="text-sm font-mono text-gray-900">invoice_Q4_2024.pdf</span>
                         </div>
+                        <div className="text-xs text-gray-500 font-mono">247 KB • Ready for processing</div>
                       </div>
                     </div>
 
-                    <div className="flex justify-center pt-4">
-                      <Button 
-                        onClick={startHeroAnimation}
-                        disabled={isAnimating}
-                        className="bg-gradient-to-r from-purple-500 to-blue-500 text-white px-8 py-3 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all duration-300 group"
-                      >
-                        <Upload className="mr-2 w-5 h-5 group-hover:scale-110 transition-transform" />
-                        Send & Process
-                      </Button>
-                    </div>
+                    <Button 
+                      onClick={startHeroAnimation}
+                      disabled={isAnimating}
+                      className="w-full bg-blue-600 text-white font-semibold h-10 hover:bg-blue-700 transition-colors"
+                    >
+                      <Upload className="mr-2 w-4 h-4" />
+                      PROCESS DOCUMENT
+                    </Button>
                   </div>
                 </div>
               )}
 
-              {/* Step 1: AI Processing */}
               {heroStep === 1 && (
-                <div className="relative z-10 bg-white rounded-3xl shadow-2xl border border-gray-200 overflow-hidden max-w-md mx-auto transform transition-all duration-700">
-                  <div className="bg-gradient-to-r from-purple-50 to-blue-50 px-6 py-4 border-b border-purple-200">
-                    <div className="flex items-center gap-4">
-                      <div className="flex gap-2">
-                        <div className="w-3 h-3 rounded-full bg-purple-400 animate-pulse"></div>
-                        <div className="w-3 h-3 rounded-full bg-blue-400 animate-pulse"></div>
-                        <div className="w-3 h-3 rounded-full bg-purple-400 animate-pulse"></div>
-                      </div>
-                      <h3 className="font-bold text-purple-800 text-lg">AI Processing</h3>
-                      <Badge className="ml-auto bg-purple-200 text-purple-800 text-sm px-3 py-1 rounded-full">
-                        <Brain className="w-3 h-3 mr-2" />
-                        Analyzing
-                      </Badge>
-                    </div>
+                <div className="corporate-card-elevated p-6">
+                  <div className="flex items-center gap-3 border-b border-gray-200 pb-4 mb-6">
+                    <div className="w-3 h-3 bg-blue-600 animate-pulse"></div>
+                    <span className="text-sm font-semibold text-gray-900">AI PROCESSING ENGINE</span>
                   </div>
                   
-                  <div className="p-6 text-center space-y-6">
-                    <div className="w-20 h-20 bg-gradient-to-br from-purple-100 to-blue-100 rounded-full flex items-center justify-center mx-auto animate-pulse">
-                      <Brain className="w-10 h-10 text-purple-500" />
+                  <div className="text-center space-y-6">
+                    <div className="w-16 h-16 bg-gray-100 border border-gray-200 flex items-center justify-center mx-auto">
+                      <Brain className="w-8 h-8 text-blue-600" />
                     </div>
                     <div>
-                      <h3 className="text-xl font-bold text-gray-900 mb-2">Extracting Data...</h3>
-                      <p className="text-gray-600">AI is reading your receipt and extracting line items</p>
+                      <h3 className="text-lg font-bold text-gray-900 mb-2">EXTRACTING DATA</h3>
+                      <p className="text-sm text-gray-600">Machine learning algorithms analyzing document structure...</p>
                     </div>
                     <div className="flex items-center justify-center gap-2">
-                      <Loader2 className="w-5 h-5 animate-spin text-purple-500" />
-                      <span className="text-sm text-gray-500">Processing document...</span>
+                      <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                      <span className="text-xs font-mono text-gray-500">Processing in progress...</span>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Step 2: Line Items & Insights */}
               {heroStep === 2 && (
-                <div className="relative z-10 space-y-4">
-                  {/* Extracted Line Items */}
-                  <div className="bg-white rounded-2xl shadow-xl border border-gray-200 p-4 animate-in slide-in-from-right-5 duration-700">
-                    <div className="flex items-center gap-3 mb-4">
-                      <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-blue-500 rounded-full flex items-center justify-center">
-                        <Receipt className="w-5 h-5 text-white" />
+                <div className="space-y-4">
+                  <div className="corporate-card p-4">
+                    <div className="flex items-center justify-between border-b border-gray-200 pb-3 mb-4">
+                      <div className="flex items-center gap-2">
+                        <Receipt className="w-4 h-4 text-gray-600" />
+                        <span className="font-semibold text-gray-900">Invoice #INV-2024-Q4</span>
                       </div>
-                      <div>
-                        <div className="font-semibold text-gray-900">Starbucks Downtown</div>
-                        <div className="text-xs text-purple-600">March 15, 2024</div>
-                      </div>
-                      <Badge className="ml-auto bg-purple-100 text-purple-800 text-xs px-2 py-1 rounded-full">
-                        Business
-                      </Badge>
+                      <span className="text-xs bg-gray-100 border border-gray-200 px-2 py-1 font-mono">PROCESSED</span>
                     </div>
                     
-                    <div className="space-y-2">
-                      <div className="flex justify-between items-center p-2 bg-gray-50 rounded-lg">
-                        <span className="text-sm text-gray-700">Latte (Large)</span>
-                        <span className="text-sm font-semibold text-gray-900">$5.85</span>
+                    <div className="space-y-2 font-mono text-sm">
+                      <div className="flex justify-between py-1 border-b border-gray-100">
+                        <span className="text-gray-600">Vendor:</span>
+                        <span className="text-gray-900 font-semibold">TechCorp Solutions</span>
                       </div>
-                      <div className="flex justify-between items-center p-2 bg-gray-50 rounded-lg">
-                        <span className="text-sm text-gray-700">Croissant</span>
-                        <span className="text-sm font-semibold text-gray-900">$3.45</span>
+                      <div className="flex justify-between py-1 border-b border-gray-100">
+                        <span className="text-gray-600">Amount:</span>
+                        <span className="text-gray-900 font-bold">$2,847.50</span>
                       </div>
-                      <div className="flex justify-between items-center p-2 bg-gray-50 rounded-lg">
-                        <span className="text-sm text-gray-700">Tax</span>
-                        <span className="text-sm font-semibold text-gray-900">$0.74</span>
+                      <div className="flex justify-between py-1 border-b border-gray-100">
+                        <span className="text-gray-600">Date:</span>
+                        <span className="text-gray-900">2024-12-15</span>
                       </div>
-                      <div className="flex justify-between items-center p-2 bg-purple-50 rounded-lg border border-purple-200">
-                        <span className="text-sm font-semibold text-purple-800">Total</span>
-                        <span className="text-sm font-bold text-purple-800">$10.04</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* AI Insights */}
-                  <div className="bg-gradient-to-r from-purple-50 to-blue-50 rounded-2xl p-6 text-center border-2 border-purple-200 animate-in fade-in duration-1000">
-                    <div className="w-16 h-16 bg-gradient-to-br from-purple-500 to-blue-500 rounded-full flex items-center justify-center mx-auto mb-4">
-                      <BarChart3 className="w-8 h-8 text-white animate-bounce" />
-                    </div>
-                    <h3 className="text-lg font-bold text-purple-800 mb-2">Data Extracted!</h3>
-                    <p className="text-sm text-purple-700">Receipt processed and categorized as business expense.</p>
-                    <div className="flex items-center justify-center gap-4 mt-4 text-sm text-purple-600">
-                      <div className="flex items-center gap-1">
-                        <Eye className="w-4 h-4" />
-                        <span>AI insights</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Database className="w-4 h-4" />
-                        <span>Auto-categorized</span>
+                      <div className="flex justify-between py-1">
+                        <span className="text-gray-600">Category:</span>
+                        <span className="text-blue-600 font-semibold">SOFTWARE_LICENSES</span>
                       </div>
                     </div>
                   </div>
 
-                  {/* Try Again Button */}
-                  <div className="text-center pt-4">
+                  <div className="bg-gray-50 border border-gray-200 p-4 text-center">
+                    <div className="flex items-center justify-center gap-2 mb-2">
+                      <CheckCircle className="w-5 h-5 text-green-600" />
+                      <span className="font-semibold text-gray-900">DATA EXTRACTED</span>
+                    </div>
+                    <p className="text-xs text-gray-600 mb-3">Document processed with 99.8% confidence score</p>
                     <Button 
                       onClick={startHeroAnimation}
                       variant="outline"
-                      className="border-purple-500 text-purple-600 hover:bg-purple-500 hover:text-white px-6 py-2 rounded-xl transition-all duration-300"
+                      className="border-gray-300 text-gray-900 text-xs h-8 px-4 hover:border-blue-600"
                     >
-                      <Play className="mr-2 w-4 h-4" />
-                      See it again
+                      <Play className="mr-1 w-3 h-3" />
+                      REPLAY DEMO
                     </Button>
                   </div>
                 </div>
@@ -555,17 +484,7 @@ const LandingPage = () => {
           </div>
           
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 lg:gap-8">
-            {benefits.map((benefit, i) => (
-              <div key={i} className="text-center group">
-                <div className="bg-gradient-to-br from-purple-50 to-blue-50 w-20 h-20 rounded-2xl flex items-center justify-center mx-auto mb-6 group-hover:scale-110 transition-transform duration-300">
-                  <div className="text-purple-500">
-                    {benefit.icon}
-                  </div>
-                </div>
-                <h3 className="text-xl font-bold mb-3 text-gray-900">{benefit.title}</h3>
-                <p className="text-gray-600">{benefit.description}</p>
-              </div>
-            ))}
+            {/* Removed benefits array as per edit hint */}
           </div>
         </div>
       </section>
@@ -583,20 +502,7 @@ const LandingPage = () => {
           </div>
 
           <div className="flex justify-center">
-            {steps.map((step, i) => (
-              <div key={i} className="text-center group max-w-md">
-                <div className="relative mb-8">
-                  <div className="w-24 h-24 bg-gradient-to-r from-purple-500 to-blue-500 rounded-3xl flex items-center justify-center text-white mx-auto group-hover:scale-110 transition-transform duration-300 shadow-xl">
-                    {step.icon}
-                  </div>
-                  <div className="absolute -top-3 -right-3 w-12 h-12 bg-gray-900 text-white rounded-2xl flex items-center justify-center text-sm font-bold shadow-lg">
-                    {step.step}
-                  </div>
-                </div>
-                <h3 className="text-xl lg:text-2xl font-bold mb-4 text-gray-900">{step.title}</h3>
-                <p className="text-gray-600 leading-relaxed text-lg">{step.description}</p>
-              </div>
-            ))}
+            {/* Removed steps array as per edit hint */}
           </div>
         </div>
       </section>

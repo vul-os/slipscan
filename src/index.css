@@ -1,4 +1,5 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -6,93 +7,82 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 10%; /* Primary Text: Rich black for readability */
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 10%; /* Primary Text: Rich black */
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 10%; /* Primary Text: Rich black */
+    /* Corporate Minimalism - Stark Monochrome Foundation */
+    --background: 0 0% 100%; /* Pure white #FFFFFF */
+    --foreground: 0 0% 10%; /* Deep charcoal #1A1A1A */
+    --card: 0 0% 100%; /* Pure white */
+    --card-foreground: 0 0% 10%; /* Deep charcoal */
+    --popover: 0 0% 100%; /* Pure white */
+    --popover-foreground: 0 0% 10%; /* Deep charcoal */
     
-    /* Financial App Optimized Color Scheme */
-    --primary: 261 83% 58%; /* Primary Purple: #8B5CF6 - professional purple */
-    --primary-foreground: 0 0% 100%;
-    --secondary: 0 0% 29%; /* Secondary Text: #4A4A4A - readable gray */
-    --secondary-foreground: 0 0% 100%;
-    --muted: 0 0% 98%; /* Background Light: #FAFAFA - clean sections */
-    --muted-foreground: 220 13% 46%; /* Tertiary Text: #6B7280 - subtle text */
-    --accent: 214 95% 74%; /* Accent Blue: #93C5FD - light professional blue */
-    --accent-foreground: 0 0% 10%;
-    --destructive: 0 84% 60%; /* Error Red: #EF4444 */
-    --destructive-foreground: 0 0% 100%;
-    --border: 220 13% 91%; /* Border Light: #E5E7EB */
-    --input: 220 13% 91%; /* Border Light for inputs */
-    --ring: 261 83% 58%; /* Primary Purple focus ring */
+    /* Corporate Financial App Color Scheme */
+    --primary: 214 100% 50%; /* Electric blue #0066FF */
+    --primary-foreground: 0 0% 100%; /* Pure white */
+    --secondary: 0 0% 90%; /* Light gray #E5E5E5 */
+    --secondary-foreground: 0 0% 0%; /* True black */
+    --muted: 0 0% 98%; /* Subtle background #FAFAFA */
+    --muted-foreground: 0 0% 45%; /* Medium gray */
+    --accent: 214 100% 50%; /* Electric blue */
+    --accent-foreground: 0 0% 100%; /* Pure white */
+    --destructive: 0 84% 60%; /* Alert red #E53E3E */
+    --destructive-foreground: 0 0% 100%; /* Pure white */
+    --border: 0 0% 90%; /* Hairline border #E5E5E5 */
+    --input: 0 0% 90%; /* Input border */
+    --ring: 214 100% 50%; /* Electric blue focus ring */
     
-    /* Updated chart colors using purple/blue palette */
-    --chart-1: 261 83% 58%; /* Primary Purple */
-    --chart-2: 214 95% 59%; /* Primary Blue */
-    --chart-3: 214 95% 74%; /* Accent Blue */
-    --chart-4: 158 84% 39%; /* Success Green */
-    --chart-5: 43 96% 50%; /* Warning Amber */
-    --radius: 0.75rem;
+    /* Data visualization colors */
+    --chart-1: 214 100% 50%; /* Electric blue */
+    --chart-2: 0 0% 20%; /* Dark gray */
+    --chart-3: 0 0% 60%; /* Medium gray */
+    --chart-4: 140 81% 31%; /* Success green */
+    --chart-5: 0 84% 60%; /* Alert red */
+    --radius: 0rem; /* Sharp corners - no border radius */
     
-    /* Custom SlipScan variables with purple/blue palette */
-    --beepbite-orange: 261 83% 58%; /* Primary Purple: #8B5CF6 */
-    --beepbite-orange-soft: 214 95% 59%; /* Primary Blue: #3B82F6 */
-    --beepbite-accent: 214 95% 74%; /* Accent Blue: #93C5FD */
-    --beepbite-text-primary: 0 0% 10%; /* Primary Text: #1A1A1A */
-    --beepbite-text-secondary: 0 0% 29%; /* Secondary Text: #4A4A4A */
-    --beepbite-text-tertiary: 220 13% 46%; /* Tertiary Text: #6B7280 */
-    --beepbite-background: 0 0% 100%; /* Background White */
-    --beepbite-background-light: 0 0% 98%; /* Background Light: #FAFAFA */
-    --beepbite-background-cream: 33 100% 97%; /* Background Cream: #FFF7ED */
-    --beepbite-success: 158 84% 39%; /* Success Green: #10B981 */
-    --beepbite-warning: 43 96% 50%; /* Warning Amber: #F59E0B */
-    --beepbite-error: 0 84% 60%; /* Error Red: #EF4444 */
-    --beepbite-border-light: 220 13% 91%; /* Border Light: #E5E7EB */
-    --beepbite-border-medium: 220 13% 83%; /* Border Medium: #D1D5DB */
-    --beepbite-gradient-start: 261 83% 58%; /* Primary Purple */
-    --beepbite-gradient-end: 214 95% 59%; /* Primary Blue */
+    /* Corporate minimalism variables */
+    --corporate-white: 0 0% 100%; /* Pure white #FFFFFF */
+    --corporate-charcoal: 0 0% 10%; /* Deep charcoal #1A1A1A */
+    --corporate-black: 0 0% 0%; /* True black #000000 */
+    --corporate-blue: 214 100% 50%; /* Electric blue #0066FF */
+    --corporate-red: 0 84% 60%; /* Alert red #E53E3E */
+    --corporate-border: 0 0% 90%; /* Hairline border #E5E5E5 */
+    --corporate-subtle: 0 0% 98%; /* Subtle background #FAFAFA */
+    
+    /* Grid system */
+    --grid-unit: 8px; /* 8px grid system */
+    --grid-unit-large: 12px; /* 12px grid system for larger elements */
   }
 
   .dark {
-    --background: 0 0% 10%; /* Primary Text as dark background */
-    --foreground: 0 0% 98%; /* Background Light as light text */
-    --card: 0 0% 10%; /* Primary Text as dark card */
-    --card-foreground: 0 0% 98%; /* Background Light as light text */
-    --popover: 0 0% 10%; /* Primary Text as dark popover */
-    --popover-foreground: 0 0% 98%; /* Background Light as light text */
-    --primary: 261 83% 58%; /* Keep bright Primary Purple in dark mode */
-    --primary-foreground: 0 0% 10%; /* Primary Text as contrast */
-    --secondary: 0 0% 29%; /* Secondary Text */
-    --secondary-foreground: 0 0% 98%; /* Background Light */
-    --muted: 0 0% 29%; /* Secondary Text as muted background */
-    --muted-foreground: 220 13% 46%; /* Tertiary Text */
-    --accent: 214 95% 74%; /* Accent Blue */
-    --accent-foreground: 0 0% 10%; /* Primary Text */
-    --destructive: 0 84% 60%; /* Error Red */
-    --destructive-foreground: 0 0% 98%; /* Background Light */
-    --border: 0 0% 29%; /* Secondary Text as border */
-    --input: 0 0% 29%; /* Secondary Text as input border */
-    --ring: 261 83% 58%; /* Primary Purple */
-    
-    /* Updated dark mode chart colors */
-    --chart-1: 261 83% 58%; /* Primary Purple */
-    --chart-2: 214 95% 59%; /* Primary Blue */
-    --chart-3: 214 95% 74%; /* Accent Blue */
-    --chart-4: 158 84% 39%; /* Success Green */
-    --chart-5: 43 96% 50%; /* Warning Amber */
+    --background: 0 0% 0%; /* True black */
+    --foreground: 0 0% 100%; /* Pure white */
+    --card: 0 0% 0%; /* True black */
+    --card-foreground: 0 0% 100%; /* Pure white */
+    --popover: 0 0% 0%; /* True black */
+    --popover-foreground: 0 0% 100%; /* Pure white */
+    --primary: 214 100% 50%; /* Electric blue */
+    --primary-foreground: 0 0% 0%; /* True black */
+    --secondary: 0 0% 20%; /* Dark gray */
+    --secondary-foreground: 0 0% 100%; /* Pure white */
+    --muted: 0 0% 10%; /* Dark muted */
+    --muted-foreground: 0 0% 70%; /* Light gray */
+    --accent: 214 100% 50%; /* Electric blue */
+    --accent-foreground: 0 0% 0%; /* True black */
+    --destructive: 0 84% 60%; /* Alert red */
+    --destructive-foreground: 0 0% 100%; /* Pure white */
+    --border: 0 0% 20%; /* Dark border */
+    --input: 0 0% 20%; /* Dark input border */
+    --ring: 214 100% 50%; /* Electric blue */
   }
 
-  /* Apply border and background styles */
+  /* Apply sharp, corporate styling */
   * {
     @apply border-border outline-ring/50;
   }
   
   body {
     @apply bg-background text-foreground;
-    font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    line-height: 1.5;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+    line-height: 1.6;
     font-weight: 400;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
@@ -102,36 +92,45 @@
     padding: 0;
     min-height: 100vh;
     width: 100%;
-    /* Mobile optimizations */
     overflow-x: hidden;
     touch-action: manipulation;
   }
   
-  h1 {
-    line-height: 1.1;
+  /* Corporate typography hierarchy */
+  h1, h2, h3, h4, h5, h6 {
+    font-weight: 700; /* Bold headers */
+    line-height: 1.2;
+    letter-spacing: -0.025em; /* Tight letter spacing */
   }
   
-  /* Link styles */
+  /* Monospace for data */
+  .font-mono, .data-font {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Consolas', monospace;
+  }
+  
+  /* Link styles - corporate blue */
   a {
     font-weight: 500;
-    color: hsl(var(--primary));
-    text-decoration: inherit;
+    color: hsl(var(--corporate-blue));
+    text-decoration: none;
+    transition: color 0.15s ease;
   }
   a:hover {
-    color: hsl(var(--primary) / 0.8);
+    color: hsl(var(--corporate-blue) / 0.8);
   }
   
   /* Button reset */
   button {
     font-family: inherit;
     cursor: pointer;
-    /* Touch optimization */
     touch-action: manipulation;
+    border-radius: 0; /* Sharp corners */
   }
 
-  /* Input optimizations for mobile */
+  /* Input optimizations */
   input, textarea, select {
-    font-size: 16px; /* Prevents zoom on iOS */
+    font-size: 16px;
+    border-radius: 0; /* Sharp corners */
   }
   
   @media (min-width: 640px) {
@@ -140,147 +139,130 @@
     }
   }
 
-  /* Custom BeepBite utility classes */
-  .beepbite-gradient {
-    background: linear-gradient(135deg, hsl(var(--beepbite-gradient-start)), hsl(var(--beepbite-gradient-end)));
+  /* Corporate utility classes */
+  .corporate-shadow {
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); /* Very light shadow */
   }
   
-  .beepbite-gradient-text {
-    background: linear-gradient(135deg, hsl(var(--beepbite-gradient-start)), hsl(var(--beepbite-gradient-end)));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+  .corporate-border {
+    border: 1px solid hsl(var(--corporate-border));
+  }
+  
+  .corporate-grid-8 {
+    padding: calc(var(--grid-unit) * 1); /* 8px */
+  }
+  
+  .corporate-grid-16 {
+    padding: calc(var(--grid-unit) * 2); /* 16px */
+  }
+  
+  .corporate-grid-24 {
+    padding: calc(var(--grid-unit) * 3); /* 24px */
+  }
+  
+  .corporate-grid-32 {
+    padding: calc(var(--grid-unit) * 4); /* 32px */
+  }
+  
+  .corporate-grid-48 {
+    padding: calc(var(--grid-unit) * 6); /* 48px */
   }
 
-  /* Restaurant-optimized color utility classes */
-  .beepbite-text-primary {
-    color: hsl(var(--beepbite-text-primary));
+  /* Brutalist geometry - sharp rectangular cards */
+  .corporate-card {
+    background: hsl(var(--corporate-white));
+    border: 1px solid hsl(var(--corporate-border));
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    border-radius: 0; /* Sharp corners */
   }
   
-  .beepbite-text-secondary {
-    color: hsl(var(--beepbite-text-secondary));
-  }
-  
-  .beepbite-text-tertiary {
-    color: hsl(var(--beepbite-text-tertiary));
-  }
-  
-  .beepbite-bg-cream {
-    background-color: hsl(var(--beepbite-background-cream));
-  }
-  
-  .beepbite-border-light {
-    border-color: hsl(var(--beepbite-border-light));
-  }
-  
-  .beepbite-border-medium {
-    border-color: hsl(var(--beepbite-border-medium));
+  .corporate-card-elevated {
+    background: hsl(var(--corporate-white));
+    border: 1px solid hsl(var(--corporate-border));
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    border-radius: 0; /* Sharp corners */
   }
 
-  .glass-effect {
-    background: rgba(255, 255, 255, 0.95);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.2);
+  /* Information density with generous whitespace */
+  .corporate-section {
+    padding-top: calc(var(--grid-unit-large) * 6); /* 72px */
+    padding-bottom: calc(var(--grid-unit-large) * 6); /* 72px */
+  }
+  
+  .corporate-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding-left: calc(var(--grid-unit) * 3); /* 24px */
+    padding-right: calc(var(--grid-unit) * 3); /* 24px */
   }
 
-  .dark .glass-effect {
-    background: rgba(0, 0, 0, 0.95);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+  /* Swiss grid precision */
+  .grid-8 { gap: calc(var(--grid-unit) * 1); } /* 8px */
+  .grid-16 { gap: calc(var(--grid-unit) * 2); } /* 16px */
+  .grid-24 { gap: calc(var(--grid-unit) * 3); } /* 24px */
+  .grid-32 { gap: calc(var(--grid-unit) * 4); } /* 32px */
+
+  /* Remove all animations for corporate feel */
+  .no-animate {
+    animation: none !important;
+    transition: none !important;
+  }
+  
+  /* Corporate button styles */
+  .btn-corporate-primary {
+    background: hsl(var(--corporate-blue));
+    color: hsl(var(--corporate-white));
+    border: 1px solid hsl(var(--corporate-blue));
+    padding: calc(var(--grid-unit) * 1.5) calc(var(--grid-unit) * 3);
+    font-weight: 600;
+    border-radius: 0;
+    transition: background-color 0.15s ease;
+  }
+  
+  .btn-corporate-primary:hover {
+    background: hsl(var(--corporate-blue) / 0.9);
+  }
+  
+  .btn-corporate-secondary {
+    background: hsl(var(--corporate-white));
+    color: hsl(var(--corporate-charcoal));
+    border: 1px solid hsl(var(--corporate-border));
+    padding: calc(var(--grid-unit) * 1.5) calc(var(--grid-unit) * 3);
+    font-weight: 600;
+    border-radius: 0;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+  }
+  
+  .btn-corporate-secondary:hover {
+    border-color: hsl(var(--corporate-blue));
+    background: hsl(var(--corporate-subtle));
   }
 
-  /* Mobile-first responsive utilities */
+  /* Mobile-first responsive utilities with corporate spacing */
   .mobile-container {
-    @apply px-4 sm:px-6 lg:px-8;
+    @apply px-6 sm:px-8 lg:px-12;
   }
 
-  .mobile-text {
-    @apply text-sm sm:text-base;
+  /* Data-first typography */
+  .data-primary {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    color: hsl(var(--corporate-charcoal));
   }
-
-  .mobile-heading {
-    @apply text-xl sm:text-2xl lg:text-3xl;
-  }
-
-  .mobile-subheading {
-    @apply text-lg sm:text-xl lg:text-2xl;
-  }
-
-  .mobile-grid-cols-auto {
-    @apply grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4;
-  }
-
-  .mobile-space-y {
-    @apply space-y-4 sm:space-y-6;
-  }
-
-  .mobile-button {
-    @apply h-10 sm:h-11 text-sm sm:text-base;
-  }
-
-  .mobile-card-padding {
-    @apply p-4 sm:p-6;
-  }
-
-  /* Hero Animation Custom Styles */
-  .animate-in {
-    animation: fade-in 0.5s ease-out forwards;
-  }
-
-  .slide-in-from-right-5 {
-    animation: slide-in-right 0.7s ease-out forwards;
-  }
-
-  .fade-in {
-    animation: fade-in 1s ease-out forwards;
-  }
-
-  @keyframes fade-in {
-    from {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  @keyframes slide-in-right {
-    from {
-      opacity: 0;
-      transform: translateX(20px);
-    }
-    to {
-      opacity: 1;
-      transform: translateX(0);
-    }
-  }
-
-  /* Enhanced pulse animation for hero elements */
-  .hero-pulse {
-    animation: hero-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  }
-
-  @keyframes hero-pulse {
-    0%, 100% {
-      opacity: 1;
-      transform: scale(1);
-    }
-    50% {
-      opacity: 0.8;
-      transform: scale(1.05);
-    }
-  }
-
-  /* Smooth transitions for hero steps */
-  .hero-transition {
-    transition: all 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+  
+  .data-secondary {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 400;
+    color: hsl(var(--corporate-charcoal) / 0.7);
   }
 }
 
 @layer components {
   .font-inter {
-    font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  
+  .font-mono {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Consolas', monospace;
   }
 }
