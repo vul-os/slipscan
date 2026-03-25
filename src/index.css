@@ -1,268 +1,111 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+:root {
+  --text: #6b6375;
+  --text-h: #08060d;
+  --bg: #fff;
+  --border: #e5e4e7;
+  --code-bg: #f4f3ec;
+  --accent: #aa3bff;
+  --accent-bg: rgba(170, 59, 255, 0.1);
+  --accent-border: rgba(170, 59, 255, 0.5);
+  --social-bg: rgba(244, 243, 236, 0.5);
+  --shadow:
+    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
 
-@layer base {
-  :root {
-    /* Corporate Minimalism - Stark Monochrome Foundation */
-    --background: 0 0% 100%; /* Pure white #FFFFFF */
-    --foreground: 0 0% 10%; /* Deep charcoal #1A1A1A */
-    --card: 0 0% 100%; /* Pure white */
-    --card-foreground: 0 0% 10%; /* Deep charcoal */
-    --popover: 0 0% 100%; /* Pure white */
-    --popover-foreground: 0 0% 10%; /* Deep charcoal */
-    
-    /* Corporate Financial App Color Scheme */
-    --primary: 214 100% 50%; /* Electric blue #0066FF */
-    --primary-foreground: 0 0% 100%; /* Pure white */
-    --secondary: 0 0% 90%; /* Light gray #E5E5E5 */
-    --secondary-foreground: 0 0% 0%; /* True black */
-    --muted: 0 0% 98%; /* Subtle background #FAFAFA */
-    --muted-foreground: 0 0% 45%; /* Medium gray */
-    --accent: 214 100% 50%; /* Electric blue */
-    --accent-foreground: 0 0% 100%; /* Pure white */
-    --destructive: 0 84% 60%; /* Alert red #E53E3E */
-    --destructive-foreground: 0 0% 100%; /* Pure white */
-    --border: 0 0% 90%; /* Hairline border #E5E5E5 */
-    --input: 0 0% 90%; /* Input border */
-    --ring: 214 100% 50%; /* Electric blue focus ring */
-    
-    /* Data visualization colors */
-    --chart-1: 214 100% 50%; /* Electric blue */
-    --chart-2: 0 0% 20%; /* Dark gray */
-    --chart-3: 0 0% 60%; /* Medium gray */
-    --chart-4: 140 81% 31%; /* Success green */
-    --chart-5: 0 84% 60%; /* Alert red */
-    --radius: 0rem; /* Sharp corners - no border radius */
-    
-    /* Corporate minimalism variables */
-    --corporate-white: 0 0% 100%; /* Pure white #FFFFFF */
-    --corporate-charcoal: 0 0% 10%; /* Deep charcoal #1A1A1A */
-    --corporate-black: 0 0% 0%; /* True black #000000 */
-    --corporate-blue: 214 100% 50%; /* Electric blue #0066FF */
-    --corporate-red: 0 84% 60%; /* Alert red #E53E3E */
-    --corporate-border: 0 0% 90%; /* Hairline border #E5E5E5 */
-    --corporate-subtle: 0 0% 98%; /* Subtle background #FAFAFA */
-    
-    /* Grid system */
-    --grid-unit: 8px; /* 8px grid system */
-    --grid-unit-large: 12px; /* 12px grid system for larger elements */
-  }
+  font: 18px/145% var(--sans);
+  letter-spacing: 0.18px;
+  color-scheme: light dark;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 
-  .dark {
-    --background: 0 0% 0%; /* True black */
-    --foreground: 0 0% 100%; /* Pure white */
-    --card: 0 0% 0%; /* True black */
-    --card-foreground: 0 0% 100%; /* Pure white */
-    --popover: 0 0% 0%; /* True black */
-    --popover-foreground: 0 0% 100%; /* Pure white */
-    --primary: 214 100% 50%; /* Electric blue */
-    --primary-foreground: 0 0% 0%; /* True black */
-    --secondary: 0 0% 20%; /* Dark gray */
-    --secondary-foreground: 0 0% 100%; /* Pure white */
-    --muted: 0 0% 10%; /* Dark muted */
-    --muted-foreground: 0 0% 70%; /* Light gray */
-    --accent: 214 100% 50%; /* Electric blue */
-    --accent-foreground: 0 0% 0%; /* True black */
-    --destructive: 0 84% 60%; /* Alert red */
-    --destructive-foreground: 0 0% 100%; /* Pure white */
-    --border: 0 0% 20%; /* Dark border */
-    --input: 0 0% 20%; /* Dark input border */
-    --ring: 214 100% 50%; /* Electric blue */
-  }
-
-  /* Apply sharp, corporate styling */
-  * {
-    @apply border-border outline-ring/50;
-  }
-  
-  body {
-    @apply bg-background text-foreground;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
-    line-height: 1.6;
-    font-weight: 400;
-    font-synthesis: none;
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    margin: 0;
-    padding: 0;
-    min-height: 100vh;
-    width: 100%;
-    overflow-x: hidden;
-    touch-action: manipulation;
-  }
-  
-  /* Corporate typography hierarchy */
-  h1, h2, h3, h4, h5, h6 {
-    font-weight: 700; /* Bold headers */
-    line-height: 1.2;
-    letter-spacing: -0.025em; /* Tight letter spacing */
-  }
-  
-  /* Monospace for data */
-  .font-mono, .data-font {
-    font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Consolas', monospace;
-  }
-  
-  /* Link styles - corporate blue */
-  a {
-    font-weight: 500;
-    color: hsl(var(--corporate-blue));
-    text-decoration: none;
-    transition: color 0.15s ease;
-  }
-  a:hover {
-    color: hsl(var(--corporate-blue) / 0.8);
-  }
-  
-  /* Button reset */
-  button {
-    font-family: inherit;
-    cursor: pointer;
-    touch-action: manipulation;
-    border-radius: 0; /* Sharp corners */
-  }
-
-  /* Input optimizations */
-  input, textarea, select {
+  @media (max-width: 1024px) {
     font-size: 16px;
-    border-radius: 0; /* Sharp corners */
-  }
-  
-  @media (min-width: 640px) {
-    input, textarea, select {
-      font-size: inherit;
-    }
-  }
-
-  /* Corporate utility classes */
-  .corporate-shadow {
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); /* Very light shadow */
-  }
-  
-  .corporate-border {
-    border: 1px solid hsl(var(--corporate-border));
-  }
-  
-  .corporate-grid-8 {
-    padding: calc(var(--grid-unit) * 1); /* 8px */
-  }
-  
-  .corporate-grid-16 {
-    padding: calc(var(--grid-unit) * 2); /* 16px */
-  }
-  
-  .corporate-grid-24 {
-    padding: calc(var(--grid-unit) * 3); /* 24px */
-  }
-  
-  .corporate-grid-32 {
-    padding: calc(var(--grid-unit) * 4); /* 32px */
-  }
-  
-  .corporate-grid-48 {
-    padding: calc(var(--grid-unit) * 6); /* 48px */
-  }
-
-  /* Brutalist geometry - sharp rectangular cards */
-  .corporate-card {
-    background: hsl(var(--corporate-white));
-    border: 1px solid hsl(var(--corporate-border));
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-    border-radius: 0; /* Sharp corners */
-  }
-  
-  .corporate-card-elevated {
-    background: hsl(var(--corporate-white));
-    border: 1px solid hsl(var(--corporate-border));
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-    border-radius: 0; /* Sharp corners */
-  }
-
-  /* Information density with generous whitespace */
-  .corporate-section {
-    padding-top: calc(var(--grid-unit-large) * 6); /* 72px */
-    padding-bottom: calc(var(--grid-unit-large) * 6); /* 72px */
-  }
-  
-  .corporate-container {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding-left: calc(var(--grid-unit) * 3); /* 24px */
-    padding-right: calc(var(--grid-unit) * 3); /* 24px */
-  }
-
-  /* Swiss grid precision */
-  .grid-8 { gap: calc(var(--grid-unit) * 1); } /* 8px */
-  .grid-16 { gap: calc(var(--grid-unit) * 2); } /* 16px */
-  .grid-24 { gap: calc(var(--grid-unit) * 3); } /* 24px */
-  .grid-32 { gap: calc(var(--grid-unit) * 4); } /* 32px */
-
-  /* Remove all animations for corporate feel */
-  .no-animate {
-    animation: none !important;
-    transition: none !important;
-  }
-  
-  /* Corporate button styles */
-  .btn-corporate-primary {
-    background: hsl(var(--corporate-blue));
-    color: hsl(var(--corporate-white));
-    border: 1px solid hsl(var(--corporate-blue));
-    padding: calc(var(--grid-unit) * 1.5) calc(var(--grid-unit) * 3);
-    font-weight: 600;
-    border-radius: 0;
-    transition: background-color 0.15s ease;
-  }
-  
-  .btn-corporate-primary:hover {
-    background: hsl(var(--corporate-blue) / 0.9);
-  }
-  
-  .btn-corporate-secondary {
-    background: hsl(var(--corporate-white));
-    color: hsl(var(--corporate-charcoal));
-    border: 1px solid hsl(var(--corporate-border));
-    padding: calc(var(--grid-unit) * 1.5) calc(var(--grid-unit) * 3);
-    font-weight: 600;
-    border-radius: 0;
-    transition: border-color 0.15s ease, background-color 0.15s ease;
-  }
-  
-  .btn-corporate-secondary:hover {
-    border-color: hsl(var(--corporate-blue));
-    background: hsl(var(--corporate-subtle));
-  }
-
-  /* Mobile-first responsive utilities with corporate spacing */
-  .mobile-container {
-    @apply px-6 sm:px-8 lg:px-12;
-  }
-
-  /* Data-first typography */
-  .data-primary {
-    font-family: 'JetBrains Mono', monospace;
-    font-weight: 600;
-    color: hsl(var(--corporate-charcoal));
-  }
-  
-  .data-secondary {
-    font-family: 'JetBrains Mono', monospace;
-    font-weight: 400;
-    color: hsl(var(--corporate-charcoal) / 0.7);
   }
 }
 
-@layer components {
-  .font-inter {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #9ca3af;
+    --text-h: #f3f4f6;
+    --bg: #16171d;
+    --border: #2e303a;
+    --code-bg: #1f2028;
+    --accent: #c084fc;
+    --accent-bg: rgba(192, 132, 252, 0.15);
+    --accent-border: rgba(192, 132, 252, 0.5);
+    --social-bg: rgba(47, 48, 58, 0.5);
+    --shadow:
+      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
   }
-  
-  .font-mono {
-    font-family: 'JetBrains Mono', 'Fira Code', 'Monaco', 'Consolas', monospace;
+
+  #social .button-icon {
+    filter: invert(1) brightness(2);
   }
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  width: 1126px;
+  max-width: 100%;
+  margin: 0 auto;
+  text-align: center;
+  border-inline: 1px solid var(--border);
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+h1,
+h2 {
+  font-family: var(--heading);
+  font-weight: 500;
+  color: var(--text-h);
+}
+
+h1 {
+  font-size: 56px;
+  letter-spacing: -1.68px;
+  margin: 32px 0;
+  @media (max-width: 1024px) {
+    font-size: 36px;
+    margin: 20px 0;
+  }
+}
+h2 {
+  font-size: 24px;
+  line-height: 118%;
+  letter-spacing: -0.24px;
+  margin: 0 0 8px;
+  @media (max-width: 1024px) {
+    font-size: 20px;
+  }
+}
+p {
+  margin: 0;
+}
+
+code,
+.counter {
+  font-family: var(--mono);
+  display: inline-flex;
+  border-radius: 4px;
+  color: var(--text-h);
+}
+
+code {
+  font-size: 15px;
+  line-height: 135%;
+  padding: 4px 8px;
+  background: var(--code-bg);
 }
