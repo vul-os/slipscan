@@ -1,0 +1,27 @@
+do a nice landing page, with header, hero footer, 
+
+have docs, terms of serivce and privacy policy are like this have a nice docs home page also
+
+sign in page sign up, etc veirfy email, forgot password 
+
+make sure system have light and dark mode
+
+look at the database, and after login, we need to go to home, which is a dashboard overview with a chat system a llm chat system where users can ask about their data it uses tool 
+make a good prompt, also chat must save everything tool usage. tools like query which allow querying of a users home or business data. we need a different scheme for user data to isolate it with good rls to protect this querying from people acessing data they not a member of 
+
+on home page if no data, our system is one where you upload documents, it can be done on chat, in documents page a popup. also each user gets an email address, in .env there is base_email_domain if not make it, each organization gets a slug that they can changed, this is used for their email. Like abc@base_email_domain which they can use to send data to. tell this to user and ask them to send an email with data to it, also show them they can upload documents to also give data. Data is stored in gcs check backend and .env 
+
+
+MAIL RECIEVING SYSTEM 
+Create a folder called mailrx in the root of this project. It must be written in Go and implement a lightweight SMTP receiving server using github.com/emersion/go-smtp for the SMTP protocol and github.com/emersion/go-message for parsing raw email including attachments. At the RCPT TO phase, before accepting any email body, query the existing database using the project's established DB connection and ORM patterns to check if the recipient address exists as a valid customer email address — reject unknown addresses immediately with a 550 error, ensuring no spam or unknown mail ever reaches the queue. Once an address is validated, accept the email, parse the To: address and any attachments, then push a lightweight JSON message onto a queue for async processing. Check the migrations folder to understand the existing database schema and create any additional migrations needed to store inbound email records and valid recipient addresses following the same migration patterns already used in this project. The SMTP server config (port, domain, DB connection, queue DSN) must be driven by environment variables. The queue implementation should use whatever queue or messaging system is already present in this project, or default to Redis streams using github.com/redis/go-redis/v9 if none exists. Keep the mailrx package self-contained with its own server.go, handler.go, and config.go files.
+In the main backend application, create a dedicated route following the existing routing patterns of this project that acts as the queue consumer and mail processor. This route or background worker must pull jobs off the queue, extract the customer from the To: address by looking up the database, retrieve any attachments, store documents using whatever file storage pattern already exists in the project, and update the relevant database records. The mailrx SMTP server and the backend processing route must be kept decoupled — mailrx only validates and enqueues, the backend route only processes — so each can be scaled and updated independently.
+
+
+
+
+
+
+
+
+
+
