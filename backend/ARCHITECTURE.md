@@ -54,6 +54,12 @@ This document is the canonical description of how the backend is deployed, why i
             │   — original docs + raw RFC822 emails            │
             └──────────────────────────────────────────────────┘
             ┌──────────────────────────────────────────────────┐
+            │   Redis VM (cache only, Hetzner CX22)            │
+            │   — private network, redis.internal.slipscan.app │
+            │   — rate limit, idempotency, wallet cache, queue │
+            │   — fail-open; Postgres is source of truth       │
+            └──────────────────────────────────────────────────┘
+            ┌──────────────────────────────────────────────────┐
             │   Hetzner DNS (slipscan.app authoritative)       │
             │   — managed by deploy.sh via DNS API             │
             └──────────────────────────────────────────────────┘
@@ -319,7 +325,43 @@ Verbs:
 | Postgres down | Every request 5xx | This is a Neon outage. Read-only mode behind a flag (future work). |
 | B2 down | Document upload fails | Queue uploads in `documents.metadata.pending_upload=true`, retry via worker |
 | LLM down | Extraction fails, marks `ai_runs.status='failed'` | Worker retries with backoff; document stuck `pending` → user-visible "still processing" |
+| Redis down | Cache miss on every hot path | **Fail-open**: rate limiter allows, idempotency degrades to best-effort, wallet cache falls back to Postgres. `redis_unavailable` metric fires. No customer-visible 5xx. |
 | DNS API failure mid-deploy | `deploy.sh status` shows partial state | Re-run `dns-sync` |
+
+---
+
+## 5.5 Redis (cache layer)
+
+Single Redis VM per environment, sitting on the Hetzner private network alongside the API/RX VMs. Provisioned via `deploy.sh --role redis`. Cache only — never source of truth.
+
+**What it does:**
+- API rate limiting (token bucket per `api_tokens.id`, enforces `rate_limit_per_minute`)
+- Idempotency keys for the public API (`SET NX EX 86400`)
+- Wallet/quota hot-path cache (`billing_wallets.balance_cents` with 30s TTL, atomic `DECRBY` for chat reservations)
+- Outbound webhook delivery queue (Asynq — retry/backoff/dead-letter)
+- WhatsApp/SMS outbound throttle (Meta rate limit compliance)
+- Chat tool-call result cache (short TTL on `(org, tool, args)` tuples)
+- WhatsApp inbound webhook dedup (`SET NX` on `message_id`)
+
+**What it does NOT do:**
+- Distributed locks → `pg_advisory_lock`
+- Document/extraction job queue → `documents.status='pending'` + `FOR UPDATE SKIP LOCKED`
+- Sessions → JWT
+- Anything that must survive a Redis flush — Postgres only
+
+**Why self-hosted, not Upstash:**
+- Latency: ~0.5 ms on the private network vs. 5–30 ms to Upstash. Hits every API request.
+- Cost: ~€4.50/mo flat vs. Upstash pay-as-you-go ~$50–500/mo at our expected throughput.
+- We already have a VM cluster + `deploy.sh`; adding `--role redis` is a cloud-init template.
+- Upstash's HTTP API exists for serverless; we're not serverless.
+
+**Engine**: Redis 7+ (or Valkey for license clarity, or Dragonfly for memory pressure). All Redis-protocol-compatible drop-ins.
+
+**Persistence**: AOF `everysec` + daily RDB snapshot. Loss of <1s of cache data on crash is fine — nothing durable lives here.
+
+**HA**: single node to start. Add replica + Sentinel only when "30 seconds of cache rewarming after a restart" becomes unacceptable. At our scale that's Phase 4+.
+
+**Bind**: private IP only, `requirepass` for auth, Hetzner Cloud Firewall ingress 6379 restricted to API/RX VM tag.
 
 ---
 

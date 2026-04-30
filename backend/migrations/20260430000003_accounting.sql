@@ -19,6 +19,13 @@
 --   * manual_journals + ledger_entries (double-entry projection)
 --   * bank_statements + statement_lines (with reconcile state)
 --   * sales_invoices + lines, bills + lines (Xero-style AR / AP)
+--   * purchase_orders + lines (PO → bill flow)
+--   * credit_notes + lines (sales/purchase credits, refunds)
+--   * expense_claims + lines (employee reimbursement workflow)
+--   * fixed_assets + depreciation_schedule (capex register)
+--   * assets, asset_valuations, liabilities, liability_balances, holdings
+--     (22Seven-style net-worth + investment tracking)
+--   * bank_feed_connections (Plaid / Yodlee / Truelayer / Salt Edge / manual)
 --   * budgets + budget_lines, goals
 --   * classification_corrections, merchant_signals
 -- =============================================================================
@@ -48,6 +55,23 @@ CREATE TYPE goal_status               AS ENUM ('active', 'achieved', 'abandoned'
 
 CREATE TYPE recurring_frequency       AS ENUM ('weekly', 'biweekly', 'monthly', 'quarterly', 'yearly');
 CREATE TYPE recurring_status          AS ENUM ('active', 'paused', 'cancelled');
+
+-- Net worth (personal — Vault22 / 22Seven parity)
+CREATE TYPE asset_kind                AS ENUM ('property', 'vehicle', 'cash', 'investment', 'retirement', 'business', 'collectible', 'other');
+CREATE TYPE liability_kind            AS ENUM ('mortgage', 'student_loan', 'credit_card', 'personal_loan', 'auto_loan', 'business_loan', 'other');
+CREATE TYPE holding_kind              AS ENUM ('equity', 'etf', 'mutual_fund', 'bond', 'crypto', 'commodity', 'cash', 'other');
+
+-- Xero gaps (business)
+CREATE TYPE expense_claim_status      AS ENUM ('draft', 'submitted', 'approved', 'rejected', 'paid', 'voided');
+CREATE TYPE purchase_order_status     AS ENUM ('draft', 'submitted', 'approved', 'partially_billed', 'billed', 'cancelled');
+CREATE TYPE credit_note_kind          AS ENUM ('sales', 'purchase');
+CREATE TYPE credit_note_status        AS ENUM ('draft', 'authorised', 'applied', 'voided');
+CREATE TYPE fixed_asset_status        AS ENUM ('draft', 'registered', 'disposed');
+CREATE TYPE depreciation_method       AS ENUM ('straight_line', 'declining_balance', 'none');
+
+-- Bank feeds
+CREATE TYPE bank_feed_provider        AS ENUM ('plaid', 'yodlee', 'truelayer', 'salt_edge', 'manual');
+CREATE TYPE bank_feed_status          AS ENUM ('pending', 'connected', 'reauth_required', 'error', 'disconnected');
 
 -- -----------------------------------------------------------------------------
 -- Tax rates and chart of accounts
@@ -729,6 +753,414 @@ BEFORE UPDATE ON merchant_signals
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 -- -----------------------------------------------------------------------------
+-- Net worth: assets, asset_valuations, liabilities, liability_balances, holdings
+--
+-- These are the 22Seven / Vault22-style parity additions. `assets` and
+-- `liabilities` are the user-facing rows (one per house, mortgage, retirement
+-- account, etc.); the *_valuations / *_balances tables hold the time series so
+-- the net-worth chart can be drawn without overwriting the headline value on
+-- every refresh.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE assets (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    account_id      UUID REFERENCES accounts(id) ON DELETE SET NULL,
+    kind            asset_kind NOT NULL,
+    name            TEXT NOT NULL,
+    description     TEXT,
+    currency        CHAR(3) NOT NULL DEFAULT 'ZAR',
+    current_value   NUMERIC(14, 2),
+    purchased_at    DATE,
+    purchase_value  NUMERIC(14, 2),
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    is_archived     BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT assets_currency_iso CHECK (currency ~ '^[A-Z]{3}$')
+);
+CREATE INDEX assets_org_kind_idx ON assets (organization_id, kind);
+
+CREATE TRIGGER assets_set_updated_at
+BEFORE UPDATE ON assets
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE asset_valuations (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    asset_id        UUID NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+    as_of           DATE NOT NULL,
+    value           NUMERIC(14, 2) NOT NULL,
+    currency        CHAR(3) NOT NULL,
+    source          TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (asset_id, as_of),
+    CONSTRAINT asset_valuations_currency_iso CHECK (currency ~ '^[A-Z]{3}$')
+);
+CREATE INDEX asset_valuations_org_idx ON asset_valuations (organization_id, as_of DESC);
+
+CREATE TABLE liabilities (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    account_id          UUID REFERENCES accounts(id) ON DELETE SET NULL,
+    contact_id          UUID REFERENCES contacts(id) ON DELETE SET NULL,
+    kind                liability_kind NOT NULL,
+    name                TEXT NOT NULL,
+    description         TEXT,
+    currency            CHAR(3) NOT NULL DEFAULT 'ZAR',
+    original_principal  NUMERIC(14, 2),
+    current_balance     NUMERIC(14, 2),
+    interest_rate       NUMERIC(7, 4),
+    minimum_payment     NUMERIC(14, 2),
+    payment_frequency   recurring_frequency,
+    started_at          DATE,
+    matures_at          DATE,
+    metadata            JSONB NOT NULL DEFAULT '{}'::jsonb,
+    is_archived         BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT liabilities_currency_iso CHECK (currency ~ '^[A-Z]{3}$')
+);
+CREATE INDEX liabilities_org_kind_idx ON liabilities (organization_id, kind);
+
+CREATE TRIGGER liabilities_set_updated_at
+BEFORE UPDATE ON liabilities
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE liability_balances (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    liability_id    UUID NOT NULL REFERENCES liabilities(id) ON DELETE CASCADE,
+    as_of           DATE NOT NULL,
+    balance         NUMERIC(14, 2) NOT NULL,
+    currency        CHAR(3) NOT NULL,
+    interest_paid   NUMERIC(14, 2),
+    principal_paid  NUMERIC(14, 2),
+    source          TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (liability_id, as_of),
+    CONSTRAINT liability_balances_currency_iso CHECK (currency ~ '^[A-Z]{3}$')
+);
+CREATE INDEX liability_balances_org_idx ON liability_balances (organization_id, as_of DESC);
+
+CREATE TABLE holdings (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    account_id      UUID REFERENCES accounts(id) ON DELETE SET NULL,
+    asset_id        UUID REFERENCES assets(id) ON DELETE SET NULL,
+    kind            holding_kind NOT NULL,
+    symbol          TEXT,
+    isin            TEXT,
+    name            TEXT NOT NULL,
+    quantity        NUMERIC(20, 8) NOT NULL,
+    cost_basis      NUMERIC(14, 2),
+    cost_currency   CHAR(3),
+    current_price   NUMERIC(20, 8),
+    price_currency  CHAR(3),
+    last_priced_at  TIMESTAMPTZ,
+    metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    is_archived     BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT holdings_cost_currency_iso  CHECK (cost_currency  IS NULL OR cost_currency  ~ '^[A-Z]{3}$'),
+    CONSTRAINT holdings_price_currency_iso CHECK (price_currency IS NULL OR price_currency ~ '^[A-Z]{3}$')
+);
+CREATE INDEX holdings_org_kind_idx ON holdings (organization_id, kind);
+CREATE INDEX holdings_symbol_idx   ON holdings (symbol);
+
+CREATE TRIGGER holdings_set_updated_at
+BEFORE UPDATE ON holdings
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Expense claims (employee reimbursement)
+--
+-- Each line links to the underlying transaction (the receipt) so the OCR'd
+-- amount + tax flow through without re-typing.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE expense_claims (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    submitted_by        UUID REFERENCES users(id) ON DELETE SET NULL,
+    approved_by         UUID REFERENCES users(id) ON DELETE SET NULL,
+    paid_by_account_id  UUID REFERENCES accounts(id) ON DELETE SET NULL,
+    reference           TEXT,
+    title               TEXT NOT NULL,
+    status              expense_claim_status NOT NULL DEFAULT 'draft',
+    currency            CHAR(3) NOT NULL,
+    fx_rate             NUMERIC(20, 10),
+    subtotal            NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    tax_total           NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    total               NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    submitted_at        TIMESTAMPTZ,
+    approved_at         TIMESTAMPTZ,
+    paid_at             TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT expense_claims_currency_iso CHECK (currency ~ '^[A-Z]{3}$')
+);
+CREATE INDEX expense_claims_org_status_idx   ON expense_claims (organization_id, status);
+CREATE INDEX expense_claims_submitted_by_idx ON expense_claims (submitted_by);
+
+CREATE TRIGGER expense_claims_set_updated_at
+BEFORE UPDATE ON expense_claims
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE expense_claim_lines (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    expense_claim_id    UUID NOT NULL REFERENCES expense_claims(id) ON DELETE CASCADE,
+    organization_id     UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    transaction_id      UUID REFERENCES transactions(id) ON DELETE SET NULL,
+    document_id         UUID REFERENCES documents(id) ON DELETE SET NULL,
+    account_id          UUID REFERENCES accounts(id) ON DELETE SET NULL,
+    category_id         UUID REFERENCES categories(id) ON DELETE SET NULL,
+    tax_rate_id         UUID REFERENCES tax_rates(id) ON DELETE SET NULL,
+    description         TEXT,
+    amount              NUMERIC(14, 2) NOT NULL,
+    tax                 NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    line_order          INT NOT NULL DEFAULT 0,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX expense_claim_lines_claim_idx ON expense_claim_lines (expense_claim_id, line_order);
+
+CREATE TRIGGER expense_claim_lines_set_updated_at
+BEFORE UPDATE ON expense_claim_lines
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Purchase orders → bills
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE purchase_orders (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    contact_id      UUID REFERENCES contacts(id) ON DELETE SET NULL,
+    created_by      UUID REFERENCES users(id) ON DELETE SET NULL,
+    approved_by     UUID REFERENCES users(id) ON DELETE SET NULL,
+    po_number       TEXT NOT NULL,
+    reference       TEXT,
+    status          purchase_order_status NOT NULL DEFAULT 'draft',
+    issue_date      DATE,
+    delivery_date   DATE,
+    currency        CHAR(3) NOT NULL,
+    fx_rate         NUMERIC(20, 10),
+    subtotal        NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    tax_total       NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    total           NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    notes           TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (organization_id, po_number),
+    CONSTRAINT purchase_orders_currency_iso CHECK (currency ~ '^[A-Z]{3}$')
+);
+CREATE INDEX purchase_orders_org_status_idx ON purchase_orders (organization_id, status);
+CREATE INDEX purchase_orders_contact_idx    ON purchase_orders (contact_id);
+
+CREATE TRIGGER purchase_orders_set_updated_at
+BEFORE UPDATE ON purchase_orders
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE purchase_order_lines (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    purchase_order_id UUID NOT NULL REFERENCES purchase_orders(id) ON DELETE CASCADE,
+    organization_id   UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    account_id        UUID REFERENCES accounts(id) ON DELETE SET NULL,
+    category_id       UUID REFERENCES categories(id) ON DELETE SET NULL,
+    tax_rate_id       UUID REFERENCES tax_rates(id) ON DELETE SET NULL,
+    description       TEXT,
+    quantity          NUMERIC(14, 4) NOT NULL DEFAULT 1,
+    unit_price        NUMERIC(14, 4) NOT NULL DEFAULT 0,
+    amount            NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    tax               NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    line_order        INT NOT NULL DEFAULT 0,
+    quantity_billed   NUMERIC(14, 4) NOT NULL DEFAULT 0,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX purchase_order_lines_po_idx ON purchase_order_lines (purchase_order_id, line_order);
+
+CREATE TRIGGER purchase_order_lines_set_updated_at
+BEFORE UPDATE ON purchase_order_lines
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- A PO can be billed across multiple bills, so the link lives on the bill.
+ALTER TABLE bills
+    ADD COLUMN purchase_order_id UUID REFERENCES purchase_orders(id) ON DELETE SET NULL;
+CREATE INDEX bills_purchase_order_idx ON bills (purchase_order_id);
+
+-- -----------------------------------------------------------------------------
+-- Credit notes (sales = vs invoice; purchase = vs bill)
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE credit_notes (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id    UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    contact_id         UUID REFERENCES contacts(id) ON DELETE SET NULL,
+    sales_invoice_id   UUID REFERENCES sales_invoices(id) ON DELETE SET NULL,
+    bill_id            UUID REFERENCES bills(id) ON DELETE SET NULL,
+    created_by         UUID REFERENCES users(id) ON DELETE SET NULL,
+    kind               credit_note_kind NOT NULL,
+    status             credit_note_status NOT NULL DEFAULT 'draft',
+    credit_note_number TEXT NOT NULL,
+    reference          TEXT,
+    issue_date         DATE,
+    currency           CHAR(3) NOT NULL,
+    fx_rate            NUMERIC(20, 10),
+    subtotal           NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    tax_total          NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    total              NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    amount_applied     NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    notes              TEXT,
+    voided_at          TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (organization_id, credit_note_number),
+    CONSTRAINT credit_notes_currency_iso CHECK (currency ~ '^[A-Z]{3}$'),
+    -- A sales credit attaches to an invoice (or nothing); a purchase credit
+    -- attaches to a bill (or nothing). Don't allow crossed kinds.
+    CONSTRAINT credit_notes_kind_target CHECK (
+        (kind = 'sales'    AND bill_id IS NULL) OR
+        (kind = 'purchase' AND sales_invoice_id IS NULL)
+    )
+);
+CREATE INDEX credit_notes_org_status_idx ON credit_notes (organization_id, status);
+CREATE INDEX credit_notes_contact_idx    ON credit_notes (contact_id);
+CREATE INDEX credit_notes_invoice_idx    ON credit_notes (sales_invoice_id);
+CREATE INDEX credit_notes_bill_idx       ON credit_notes (bill_id);
+
+CREATE TRIGGER credit_notes_set_updated_at
+BEFORE UPDATE ON credit_notes
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE credit_note_lines (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    credit_note_id  UUID NOT NULL REFERENCES credit_notes(id) ON DELETE CASCADE,
+    organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    account_id      UUID REFERENCES accounts(id) ON DELETE SET NULL,
+    category_id     UUID REFERENCES categories(id) ON DELETE SET NULL,
+    tax_rate_id     UUID REFERENCES tax_rates(id) ON DELETE SET NULL,
+    description     TEXT,
+    quantity        NUMERIC(14, 4) NOT NULL DEFAULT 1,
+    unit_price      NUMERIC(14, 4) NOT NULL DEFAULT 0,
+    amount          NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    tax             NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    line_order      INT NOT NULL DEFAULT 0,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX credit_note_lines_cn_idx ON credit_note_lines (credit_note_id, line_order);
+
+CREATE TRIGGER credit_note_lines_set_updated_at
+BEFORE UPDATE ON credit_note_lines
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- -----------------------------------------------------------------------------
+-- Fixed assets register + depreciation schedule
+--
+-- Schedule rows are pre-computed when the asset is registered; a periodic
+-- journal job posts the matching ledger_entries on each period_end and stamps
+-- posted_at + posted_journal_id.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE fixed_assets (
+    id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id    UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    asset_id           UUID REFERENCES assets(id) ON DELETE SET NULL,
+    bill_id            UUID REFERENCES bills(id) ON DELETE SET NULL,
+    asset_account_id   UUID REFERENCES accounts(id) ON DELETE SET NULL,
+    expense_account_id UUID REFERENCES accounts(id) ON DELETE SET NULL,
+    name               TEXT NOT NULL,
+    asset_number       TEXT,
+    serial_number      TEXT,
+    description        TEXT,
+    status             fixed_asset_status NOT NULL DEFAULT 'draft',
+    purchase_date      DATE,
+    purchase_price     NUMERIC(14, 2),
+    currency           CHAR(3) NOT NULL,
+    salvage_value      NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    useful_life_months INT,
+    method             depreciation_method NOT NULL DEFAULT 'straight_line',
+    accumulated_dep    NUMERIC(14, 2) NOT NULL DEFAULT 0,
+    depreciation_start DATE,
+    disposed_at        DATE,
+    disposed_amount    NUMERIC(14, 2),
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (organization_id, asset_number),
+    CONSTRAINT fixed_assets_currency_iso CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT fixed_assets_useful_life  CHECK (useful_life_months IS NULL OR useful_life_months > 0)
+);
+CREATE INDEX fixed_assets_org_status_idx ON fixed_assets (organization_id, status);
+
+CREATE TRIGGER fixed_assets_set_updated_at
+BEFORE UPDATE ON fixed_assets
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TABLE fixed_asset_depreciation_schedule (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id   UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    fixed_asset_id    UUID NOT NULL REFERENCES fixed_assets(id) ON DELETE CASCADE,
+    period_start      DATE NOT NULL,
+    period_end        DATE NOT NULL,
+    amount            NUMERIC(14, 2) NOT NULL,
+    accumulated_after NUMERIC(14, 2) NOT NULL,
+    book_value_after  NUMERIC(14, 2) NOT NULL,
+    posted_at         TIMESTAMPTZ,
+    posted_journal_id UUID REFERENCES manual_journals(id) ON DELETE SET NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (fixed_asset_id, period_end)
+);
+CREATE INDEX fixed_asset_dep_schedule_fa_idx ON fixed_asset_depreciation_schedule (fixed_asset_id, period_end);
+
+-- -----------------------------------------------------------------------------
+-- Bank feed connections (Plaid / Yodlee / Truelayer / Salt Edge / manual)
+--
+-- Persistent state for a live aggregation link. Encrypted tokens live here so
+-- a feed is rotated/revoked independently from any user OAuth grant. Each row
+-- represents one connected institution-account pair on the provider side; a
+-- single user-facing GL `account_id` may be populated by it.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE bank_feed_connections (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id         UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    account_id              UUID REFERENCES accounts(id) ON DELETE SET NULL,
+    created_by              UUID REFERENCES users(id) ON DELETE SET NULL,
+    provider                bank_feed_provider NOT NULL,
+    provider_item_id        TEXT,
+    provider_account_id     TEXT,
+    institution_name        TEXT,
+    institution_id          TEXT,
+    mask                    TEXT,
+    access_token_encrypted  TEXT,
+    refresh_token_encrypted TEXT,
+    cursor                  TEXT,
+    status                  bank_feed_status NOT NULL DEFAULT 'pending',
+    error_code              TEXT,
+    error_message           TEXT,
+    last_synced_at          TIMESTAMPTZ,
+    consent_expires_at      TIMESTAMPTZ,
+    metadata                JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (provider, provider_item_id, provider_account_id)
+);
+CREATE INDEX bank_feed_connections_org_idx     ON bank_feed_connections (organization_id, status);
+CREATE INDEX bank_feed_connections_account_idx ON bank_feed_connections (account_id);
+
+CREATE TRIGGER bank_feed_connections_set_updated_at
+BEFORE UPDATE ON bank_feed_connections
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- Track the source of each statement so reconciliation can dedupe across
+-- email-in / upload / live feed.
+ALTER TABLE bank_statements
+    ADD COLUMN bank_feed_connection_id UUID REFERENCES bank_feed_connections(id) ON DELETE SET NULL;
+CREATE INDEX bank_statements_feed_idx ON bank_statements (bank_feed_connection_id);
+
+-- -----------------------------------------------------------------------------
 -- RLS for accounting tables
 -- -----------------------------------------------------------------------------
 
@@ -759,7 +1191,21 @@ DECLARE
         'budgets',
         'budget_lines',
         'goals',
-        'classification_corrections'
+        'classification_corrections',
+        'assets',
+        'asset_valuations',
+        'liabilities',
+        'liability_balances',
+        'holdings',
+        'expense_claims',
+        'expense_claim_lines',
+        'purchase_orders',
+        'purchase_order_lines',
+        'credit_notes',
+        'credit_note_lines',
+        'fixed_assets',
+        'fixed_asset_depreciation_schedule',
+        'bank_feed_connections'
     ];
 BEGIN
     FOREACH t IN ARRAY accounting_tables LOOP

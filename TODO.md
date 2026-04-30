@@ -57,6 +57,8 @@ Legend: `[ ]` not done · `[x]` done · `[~]` in progress · `[!]` blocked
 - `PTR` (rDNS): set via Hetzner Cloud API per VM IP for SMTP deliverability
 - LB target attach/detach happens in the same script call
 
+**Redis VM** (cache only, see §2.34) — one CX22 per environment in the Hetzner private network. Used by every API/RX VM for rate limiting, idempotency keys, wallet/quota hot-path cache, webhook delivery queue, WhatsApp dedup. Source of truth stays in Postgres; Redis is fail-open. Self-hosted, **not Upstash** — at our shape it's ~10–100× cheaper and ~10× faster on the same private network.
+
 ---
 
 ## 1. USER tasks (accounts, billing, secrets — only the user can do these)
@@ -262,11 +264,36 @@ Schema: `manual_journals`, `ledger_entries`, `accounts`, `transfers`.
 - [ ] Lock-date enforcement (`organizations.financial_lock_date`)
 - [ ] Reconciliation UI: match `statement_lines` against `transactions`
 
-### 2.14 Invoicing (business orgs)
-Schema: `sales_invoices`, `sales_invoice_lines`, `bills`, `bill_lines`, `contacts`, `tax_rates`.
-- [ ] Sales invoice CRUD + PDF generation + send via Resend
-- [ ] Bill CRUD + payment recording
-- [ ] Contacts (customers/suppliers)
+### 2.14 Invoicing, POs, credit notes, expense claims, fixed assets (business orgs)
+Schema: `sales_invoices`/`sales_invoice_lines`, `bills`/`bill_lines`, `purchase_orders`/`purchase_order_lines`, `credit_notes`/`credit_note_lines`, `expense_claims`/`expense_claim_lines`, `fixed_assets`/`fixed_asset_depreciation_schedule`, `contacts`, `tax_rates`. The `bills.purchase_order_id` and `credit_notes.{sales_invoice_id,bill_id}` FKs link the document chain.
+
+**Sales / AR**
+- [ ] Sales invoice CRUD + PDF generation + send via Resend (existing scope)
+- [ ] Sales credit notes (`credit_notes.kind = 'sales'`) — issue against an invoice; CHECK constraint blocks crossing into purchase
+- [ ] Apply a credit note to one or more invoices (track `amount_applied`); on full apply set `status = 'applied'`
+
+**Purchases / AP**
+- [ ] Bill CRUD + payment recording (existing scope)
+- [ ] Purchase orders — create, approve, partially_billed → billed lifecycle. `purchase_order_lines.quantity_billed` accumulates as bills land
+- [ ] PO → bill conversion: open bill prefilled from PO lines, sets `bills.purchase_order_id`
+- [ ] Purchase credit notes (`credit_notes.kind = 'purchase'`) — issue against a bill (refund from supplier)
+
+**Expense claims (employee reimbursement)**
+- [ ] Submit flow: employee picks one or more `transactions` (their own receipts) → bundled into `expense_claims` + lines (each line FKs the underlying transaction so OCR'd amount + tax flow through)
+- [ ] Approval flow (admin/accountant role): approve / reject with note, sets `approved_at` / `approved_by`
+- [ ] Payment: settle via `paid_by_account_id`, post matching `ledger_entries` (debit expense, credit cash), stamp `paid_at`
+- [ ] PDF render of the claim summary for record-keeping
+
+**Fixed asset register**
+- [ ] Register flow: from a bill line, "Treat as fixed asset" creates `fixed_assets` row (links `bill_id`, `asset_account_id`, `expense_account_id`)
+- [ ] Pre-compute `fixed_asset_depreciation_schedule` rows on register based on `method`, `useful_life_months`, `salvage_value`, `depreciation_start`
+- [ ] Periodic cron: post each due schedule row to `manual_journals` + `ledger_entries`, stamp `posted_at` and `posted_journal_id`, update `fixed_assets.accumulated_dep`
+- [ ] Disposal flow: stamp `disposed_at` / `disposed_amount`, post gain/loss journal, mark `status = 'disposed'`
+
+**Cross-cutting**
+- [ ] Contacts (customers/suppliers) — already has a UI placeholder (§2.28); ensure detail page surfaces invoices, bills, POs, credit notes, expense claims attributed to that contact
+- [ ] Lock-date enforcement on every mutation in this section (`organizations.financial_lock_date` — read-side check + 403 with override permission)
+- [ ] Numbering sequences per org (next-invoice-number, next-PO-number, next-credit-note-number) — store on the org or a small `numbering_sequences` table; pick one before this work starts
 
 ### 2.15 Subscriptions & billing
 Schema: `plans`, `plan_prices`, `subscriptions`, `payment_methods`, `subscription_invoices`, `paystack_events`, `usage_counters`, `billing_wallets`, `wallet_topups`, `wallet_ledger`, `usage_charges`, `plan_quotas`, `organization_quotas`, `usage_events`.
@@ -378,6 +405,88 @@ Schema: `api_permissions` (catalogue), `api_tokens` (per-org, with `kind`, `scop
 
 **Test suite coverage (cross-link to §2.21)** — listed alongside other test items below.
 
+### 2.32 Net worth backend (assets, liabilities, holdings)
+Schema: `assets` + `asset_valuations`, `liabilities` + `liability_balances`, `holdings`. Frontend in §2.27.
+
+- [ ] **CRUD**:
+  - `assets` — kind, name, current_value (denormalized — also written as a fresh `asset_valuations` row), purchased_at, purchase_value, optional `account_id` link to a GL account so balance flows through to net worth
+  - `liabilities` — kind, principal, current_balance, interest_rate, minimum_payment, payment_frequency, matures_at; same valuation-history pattern via `liability_balances`
+  - `holdings` — symbol, quantity, cost_basis (cost_currency), current_price (price_currency), grouped under an optional parent `asset` (e.g. one retirement asset, many holdings inside)
+- [ ] **Valuation update endpoint**: `POST /assets/{id}/valuations` writes `asset_valuations` and updates `assets.current_value`. Same for liabilities. UNIQUE `(asset_id, as_of)` guards against accidental dupes.
+- [ ] **Net-worth aggregator** (`GET /reports/net-worth?from=…&to=…`): sums latest valuation per asset + latest balance per liability, bucketed by month. Personal-org default report.
+- [ ] **Holdings pricing job** (optional, second pass): if a `symbol` is set, fetch latest market price into `holdings.current_price` + `last_priced_at` from a free provider (Yahoo, Alpha Vantage). Skip if `holding_kind = 'cash'` or no symbol.
+- [ ] **Cost-basis math**: when `cost_currency != price_currency`, convert via latest `fx_rates` for the unrealized gain/loss display.
+- [ ] **Manual entry forms** drive most of this — no aggregator needed for v1. Bank feeds (§2.33) hydrate cash + credit-card liabilities automatically once integrated.
+- [ ] **Migration of existing "asset accounts"**: any `accounts` row with `account_type = 'asset'` that's user-tracked (not a bank account) should optionally project into an `assets` row so net-worth charts pick it up — wizard in settings.
+
+### 2.33 Bank feed connections (Plaid / Yodlee / Truelayer / Salt Edge)
+Schema: `bank_feed_connections`, `bank_statements.bank_feed_connection_id`. Stays optional behind a feature flag — emails-in + statement upload remain the default.
+
+- [ ] **Provider abstraction**: one `BankFeedProvider` Go interface (`Link()`, `Sync(cursor)`, `Reauth()`, `Disconnect()`), with implementations behind build tags so the binary doesn't bloat with unused vendor SDKs.
+- [ ] **Pick first provider** (recommendation: Plaid for US/CA, Truelayer for EU/UK; for SA there's no first-class option — start with manual + statement upload, integrate Stitch or DirectID later)
+- [ ] **Link flow**: backend mints a Link token → frontend opens provider's hosted UI → callback exchanges public_token for `access_token_encrypted`. Encrypt with KMS-backed key (use Hetzner secrets or AWS KMS — pick before this work starts).
+- [ ] **Sync worker**: periodic (15 min) call provider's incremental endpoint with stored `cursor`. Insert `bank_statements` + `statement_lines` + `transactions` (status `pending` → `verified` after dedupe). Stamp `last_synced_at`.
+- [ ] **Reauth**: on `ITEM_LOGIN_REQUIRED` (Plaid) or expired consent (PSD2 90-day), set `status = 'reauth_required'` and surface a banner.
+- [ ] **Webhook receiver**: provider-specific endpoints under `/webhooks/banking/{provider}` — verify signature, queue a sync.
+- [ ] **Disconnection**: hard-revoke at the provider, soft-mark `status = 'disconnected'`, never delete (audit + reconnect flow needs the history).
+- [ ] **Dedupe**: when a feed-sourced statement arrives for a period that already has an upload-sourced one, mark the upload-sourced one as superseded rather than double-counting. Match on `(account_id, period_start, period_end)`.
+- [ ] **PII / compliance**: bank credentials never touch Postgres in plaintext; only `access_token_encrypted` and `refresh_token_encrypted`. Document the threat model alongside the integration.
+
+### 2.34 Redis layer (self-hosted on Hetzner)
+**Why it exists**: hot-path caching/counters that would otherwise hammer Postgres. Tight scope — Redis owns nothing durable; Postgres remains the source of truth. **Not Upstash** — at our shape (Hetzner VMs, EU region, steady traffic, latency-sensitive middleware) self-hosted on a CX22 is ~10–100× cheaper and ~10× faster than Upstash. See conversation thread for the full break-even analysis.
+
+**Strict scope — Redis IS used for:**
+- [ ] **API rate limiting** — token bucket per `api_tokens.id` enforcing `api_tokens.rate_limit_per_minute` (and per-IP fallback). `INCR` + `EXPIRE` keyed on `rl:tok:<id>:<minute>`. Middleware in `internal/apiauth`.
+- [ ] **Idempotency keys** for the public API — `SET NX EX 86400` keyed on `idem:<org>:<key>` storing response hash; replay returns cached response.
+- [ ] **Wallet / quota hot-path cache** — cache `billing_wallets.balance_cents` and active `organization_quotas` rows with 30s TTL. Atomic `DECRBY` for chat-message reservations; settle to Postgres asynchronously. Cache invalidation on Postgres update via `LISTEN/NOTIFY` bridge or write-through.
+- [ ] **Outbound webhook delivery queue** — pick **Asynq** (Redis-backed) or **river-queue** (Postgres-backed); Asynq if we're already running Redis. Handles retry+backoff+dead-letter for `document.extracted`, `transaction.created`, `invoice.paid`, etc. (cross-link §2.22).
+- [ ] **WhatsApp / SMS outbound throttle** — token bucket against Meta's per-business rate limit so we don't get blocked.
+- [ ] **Chat tool-call result cache** — short TTL (30–60s) on identical (org, tool, args) tuples so two users asking "spend by category last 30 days" within a minute don't both pay LLM/DB cost.
+- [ ] **WhatsApp webhook dedup** — `SET NX EX 600` on `wa:msg:<message_id>` to absorb Meta's webhook retries.
+
+**Strict scope — Redis is NOT used for:**
+- Distributed locks → `pg_advisory_lock` (already in architecture)
+- Background job queue for document extraction / classification → `documents.status='pending'` + `FOR UPDATE SKIP LOCKED` (already in architecture)
+- Sessions → JWT (stateless)
+- Webhook deduplication that must be durable forever → unique constraint in Postgres
+- Anything that survives a Redis flush — Redis is a cache, never the source of truth
+- SSE/WebSocket fanout — solved by Hetzner LB sticky sessions (chat stream lives on the same VM that runs the LLM call)
+
+**Backend (`internal/redis`, `internal/ratelimit`, `internal/idempotency`, `internal/walletcache`, `internal/webhookq`)**
+- [ ] `internal/redis` — single shared `*redis.Client` (go-redis), config from `REDIS_URL`, sane pool defaults, health probe wired into `/healthz`
+- [ ] **Engine choice**: vanilla **Redis 7+** to start. Consider **Valkey** (Redis fork, BSD-licensed) for license clarity, or **Dragonfly** if memory pressure becomes a concern — all are Redis-protocol-compatible drop-ins.
+- [ ] **Persistence**: AOF `everysec` (durable enough for cache; we don't store source-of-truth data anyway) + daily RDB snapshot to `/var/lib/redis/dump.rdb`
+- [ ] **Eviction policy**: `allkeys-lru`, `maxmemory` set to ~75% of VM RAM
+- [ ] **TLS off on the private network** (Hetzner Cloud private network is not public); auth via `requirepass` in `/etc/redis/redis.conf` (mode 0600)
+- [ ] **Failure mode — fail-open with metric**: when Redis is unreachable, rate limiter allows request + emits `redis_unavailable` counter. Idempotency degrades to "best effort" (log + metric). Wallet cache falls back to Postgres read. We never block a paying customer because a cache box rebooted.
+- [ ] **Connection limits** — pool per VM tuned for our peak concurrency; Redis VM `maxclients` set generously
+- [ ] **Lua scripts** for atomic token-bucket and atomic balance-decrement (avoid round-trips)
+
+**Deployment (`backend/deploy.sh`)**
+- [ ] `--role redis` — provisions a Redis VM:
+  - Hetzner CX22 (2 vCPU, 4 GB) in same region as API VMs, in the same Hetzner private network
+  - cloud-init installs Redis 7+ (or Valkey), writes `/etc/redis/redis.conf` (bind to private IP only, AOF on, requirepass, maxmemory-policy)
+  - systemd unit with `Restart=always` and `MemoryMax=3.5G`
+  - DNS: `redis.internal.slipscan.app` A → private IP (only resolvable inside the private network)
+  - Hetzner Cloud Firewall: ingress 6379 only from API/RX VM tags; SSH from admin IPs
+  - Append `REDIS_URL=redis://:password@redis.internal.slipscan.app:6379/0` to each API/RX VM's `/etc/slipscan/env` and reload systemd unit
+- [ ] `--role redis --replace` — provision new Redis VM, point DNS, drain old (Redis is cache → no draining needed beyond letting in-flight commands finish), destroy old
+- [ ] **One Redis VM per environment**: `dev` and `main` each get their own
+- [ ] (Future, Phase 4+) Add a Redis replica + Sentinel only if we need active-passive failover. Single-node is fine to start; a Redis restart is a 30-second cache rewarming, not a customer-impacting outage.
+
+**Dev / local**
+- [ ] Local: `docker compose` service for Redis (already common pattern); `REDIS_URL=redis://localhost:6379/0` in `backend/.env`
+- [ ] CI / `cmd/tests`: spin a throwaway Redis container via testcontainers-go, or skip Redis-dependent tests when `REDIS_URL` unset (with a loud warning)
+
+**Tests in `cmd/tests` (cross-link §2.21)**
+- [ ] **redis-health** — connect, PING, basic SET/GET round-trip
+- [ ] **ratelimit-token-bucket** — burst above limit returns 429; per-token override beats default; window resets correctly; fail-open when Redis is killed mid-test
+- [ ] **idempotency-replay** — same `Idempotency-Key` returns same response; different bodies with same key rejected; key expires after TTL
+- [ ] **wallet-cache** — cache hit returns balance; Postgres update invalidates; concurrent decrements are atomic; cache miss falls back to Postgres
+- [ ] **webhook-queue** — enqueue → deliver → retry on 5xx → dead-letter after N attempts; signing secret used; idempotent on consumer side
+- [ ] **whatsapp-dedup** — duplicate webhook with same `message_id` is absorbed; different `message_id` processes both
+- [ ] **redis-failure-mode** — kill Redis VM mid-flight → rate limiter, idempotency, wallet cache all degrade gracefully (no 5xx, metrics fire)
+
 ### 2.21 Operational test suite (`cmd/tests`)
 Single binary that exercises real code paths against a real Neon DB. Not `go test` — these are end-to-end smoke/security probes. Each test registers itself in `internal/testsuite`; the runner picks them up.
 
@@ -414,6 +523,14 @@ Backend-feature tests to add as features land (track with the relevant section):
 - [ ] **apikeys-ratelimit** — burst above limit returns `429` with `Retry-After`; per-token override beats plan default (§2.22)
 - [ ] **apikeys-rls** — token for org A cannot read org B data via any route (cross-tenant smoke test) (§2.22)
 - [ ] **apikeys-audit-meter** — mutating call appends `audit_log` row with `actor_token_id` and a `usage_events` row with metric `api_requests` (§2.22)
+- [ ] **net-worth** — assets + valuations + liabilities + balances → aggregator returns expected month-bucketed totals; `(asset_id, as_of)` UNIQUE prevents dupes (§2.32)
+- [ ] **holdings-pricing** — symbol-tagged holding gets `current_price` + `last_priced_at` from stub provider; cash holdings skipped (§2.32)
+- [ ] **purchase-orders** — PO → bill conversion bumps `quantity_billed`; status flips to `partially_billed` then `billed` correctly (§2.14)
+- [ ] **credit-notes** — sales credit blocks crossing into bill (CHECK constraint); apply to invoice updates `amount_applied`; full apply transitions to `applied` (§2.14)
+- [ ] **expense-claims** — submit → approve → pay flow posts balanced `ledger_entries`; lock-date enforced on payment (§2.14)
+- [ ] **fixed-assets** — register pre-computes schedule; periodic post creates `manual_journals` + `ledger_entries`; `accumulated_dep` advances (§2.14)
+- [ ] **bank-feeds-sync** — stub provider returns batched `statement_lines`; second sync with same cursor is a no-op; reauth status surfaces (§2.33)
+- [ ] **bank-feeds-dedupe** — uploaded statement + feed statement for same `(account, period)` don't double-count (§2.33)
 
 Suite plumbing improvements:
 - [ ] Per-test cleanup (currently the seed wipes transactions; add a teardown hook for tests that insert their own rows)
@@ -522,22 +639,25 @@ Tables: `transactions`, `transaction_classifications`, `categories`, `transactio
 - [ ] **Empty state**: hero + "Forward your first slip to <rx>" + Upload CTA
 
 ### 2.27 Accounts & assets — net worth, balances, raw ledger
-Tables: `accounts` (with `account_type` asset/liability/equity/income/expense), `ledger_entries`, `bank_statements`, `statement_lines`, `transfers`, `manual_journals`.
+Tables: `accounts` (`account_type` asset/liability/equity/income/expense), `ledger_entries`, `bank_statements`, `statement_lines`, `transfers`, `manual_journals`, **`assets` + `asset_valuations`, `liabilities` + `liability_balances`, `holdings`** (the dedicated net-worth tables — distinct from `accounts`; an asset can optionally link to a GL account but doesn't have to).
 - [ ] **Accounts list**: tree (parent → children) with running balance per account from `ledger_entries`, grouped by `account_type`
 - [ ] **Net worth page** (personal-emphasis, useful for business owners too):
-  - Big number: total assets − total liabilities
-  - Trend line over time (month buckets)
-  - Asset breakdown donut (cash, investments, property, other)
-  - Liability breakdown donut (credit cards, loans, other)
-  - "Add account" → manual asset (property, vehicle, investment) or upload bank statement
+  - Big number: total `assets.current_value` − total `liabilities.current_balance` (currency-converted via latest `fx_rates`)
+  - Trend line over time, sourced from `asset_valuations` + `liability_balances` (month buckets, falls back to current value if no history)
+  - Asset breakdown donut driven by `assets.kind` (property, vehicle, cash, investment, retirement, business, collectible, other)
+  - Liability breakdown donut driven by `liabilities.kind` (mortgage, credit_card, student_loan, …)
+  - **Holdings panel** under "Investments" asset: list of `holdings` rows with quantity × current_price, unrealized gain/loss vs cost_basis (FX-converted)
+  - "Add" menu → asset (form per kind), liability (form per kind), holding (symbol lookup), or upload bank statement
 - [ ] **Account detail page** per account:
   - Current + opening balance
   - Reconciliation status (matched vs unmatched statement lines)
   - Transactions filtered to this account
-  - Statements list (`bank_statements` rows)
+  - Statements list (`bank_statements` rows, including `bank_feed_connection_id` source)
   - **Raw data drawer**: underlying `ledger_entries` rows (date, source_type, source_id, debit, credit, running balance) — reads like a real general ledger
-- [ ] **Asset entry forms** for non-bank holdings (property, vehicle, investments) — these are `accounts` of type `asset` with valuation entries posted as `manual_journals` → `ledger_entries`
-- [ ] **Liability tracking**: credit card / loan accounts with payoff progress
+- [ ] **Asset entry forms** per `asset_kind`: kind-specific fields (e.g. property → address; vehicle → make/model/year; retirement → fund name + provider). Each save also writes an `asset_valuations` row with `as_of = today`.
+- [ ] **Liability entry forms** per `liability_kind`: principal, interest_rate, payment_frequency, minimum_payment, matures_at; payoff-progress chart from `liability_balances` history.
+- [ ] **Holdings entry**: symbol search (Yahoo / IEX), quantity, cost_basis, optional grouping under a parent retirement asset.
+- [ ] **Bank feed link UI** (§2.33 driven, feature-flagged): "Connect a live feed" button on the account detail page; status pill (connected / reauth_required / error / disconnected) + last_synced_at.
 - [ ] **Reconciliation workspace** (business-emphasis, also for zero-based personal):
   - Two-pane: bank `statement_lines` left, candidate `transactions` right
   - One-click match, split-match, create-from-line, mark as transfer
@@ -546,9 +666,11 @@ Tables: `accounts` (with `account_type` asset/liability/equity/income/expense), 
 
 ### 2.28 Business-only screens
 All gated by `organizations.kind = 'business'`. Use route guards + a shared `useOrgKind()` hook. Tables in `…0003_accounting.sql`.
-- [ ] **Sales** — invoice list, create/edit (line items from `sales_invoice_lines`, `tax_rates`), send via Resend, payment recording, statement generation
-- [ ] **Purchases** — bill list, create/edit, payment recording, attached document preview
-- [ ] **Contacts** — customers, suppliers, both. Detail page with running balance, transaction history, statement
+- [ ] **Sales** — invoice list, create/edit (line items from `sales_invoice_lines`, `tax_rates`), send via Resend, payment recording, statement generation; **sales credit notes** (`credit_notes.kind = 'sales'`) issuable from an invoice with apply-to flow (§2.14)
+- [ ] **Purchases** — bill list, create/edit, payment recording, attached document preview; **purchase orders** with PO → bill conversion (`bills.purchase_order_id`); **purchase credit notes** (`credit_notes.kind = 'purchase'`) (§2.14)
+- [ ] **Expense claims** — submit / approve / pay workspace (`expense_claims` + lines link `transactions` for the receipt + amount) (§2.14)
+- [ ] **Fixed assets register** — list, register-from-bill, depreciation schedule preview, disposal flow (`fixed_assets`, `fixed_asset_depreciation_schedule`) (§2.14)
+- [ ] **Contacts** — customers, suppliers, both. Detail page with running balance, transaction history, statement, plus this contact's invoices, bills, POs, credit notes, expense claims
 - [ ] **Tax rates** — CRUD on `tax_rates` (effective dates, inclusive/exclusive)
 - [ ] **Manual journals** — debit/credit balanced entry form, attach supporting docs, lock-date enforcement
 - [ ] **Chart of accounts** — full tree CRUD on `accounts`, archive
@@ -640,6 +762,7 @@ Separate from the docs site. Short and fast. Built with the same design system.
 - 1.1, 1.2, 1.3, 1.4, 1.5, 1.6 (user accounts/keys)
 - 2.1 env files, 2.2 Firebase, 2.3 cmd layout, 2.4 migrations, 2.5 base email templates
 - **2.23 design system** (tokens + primitives — every other UI section depends on this)
+- **2.34 Redis layer** (provision the cache VM; rate limiter / idempotency / wallet cache middleware land alongside §2.22 and §2.15)
 
 **Phase 2 — core flow**
 - 2.6 mailrx, 2.7 deploy.sh (1 combined VM), 2.8 registration, 2.9 ingestion, 2.10 classification baseline (rules+LLM, no global learning yet)
