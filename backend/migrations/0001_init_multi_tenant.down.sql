@@ -1,0 +1,11 @@
+BEGIN;
+
+DROP TABLE IF EXISTS invitations;
+DROP TABLE IF EXISTS memberships;
+DROP TABLE IF EXISTS organizations;
+DROP TABLE IF EXISTS users;
+
+DROP TYPE IF EXISTS membership_role;
+DROP FUNCTION IF EXISTS set_updated_at();
+
+COMMIT;

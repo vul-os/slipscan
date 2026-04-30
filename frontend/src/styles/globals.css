@@ -1,0 +1,105 @@
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@fontsource/geist-mono/400.css";
+@import "@fontsource/geist-mono/500.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+    font-feature-settings: "cv11", "ss01", "ss03"; /* Inter stylistic sets */
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-ink-0 text-ink-900 font-sans antialiased;
+  }
+
+  /* Tabular numerals everywhere — money, counts, IDs. */
+  .tnum, table, [data-tnum] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Selection — accent color, not blue. */
+  ::selection {
+    background: theme(colors.accent.DEFAULT);
+    color: theme(colors.accent.fg);
+  }
+
+  /* Scrollbar — kept calm. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: theme(colors.ink.300) transparent;
+  }
+
+  /* Focus rings — accent-toned, ample. */
+  :focus-visible {
+    @apply outline-none;
+    box-shadow: 0 0 0 2px theme(colors.ink.0), 0 0 0 4px theme(colors.accent.ring);
+  }
+
+  /* Form base reset — handled by primitives, but kill defaults. */
+  input, textarea, select, button {
+    font: inherit;
+  }
+}
+
+@layer components {
+  /* Editorial label — small caps, used for form labels and table headers. */
+  .label-eyebrow {
+    @apply text-[11px] font-medium uppercase tracking-[0.08em] text-ink-500;
+  }
+
+  /* Standard page padding — generous on desktop, tighter on phone. Used
+     by every authenticated app page. */
+  .page-shell {
+    @apply px-4 py-6 sm:px-6 sm:py-8 lg:px-10 lg:py-10;
+  }
+
+  /* Skeleton shimmer — a single class so we can put it on anything. */
+  .skeleton {
+    @apply bg-ink-100 relative overflow-hidden rounded;
+    background-image: linear-gradient(
+      90deg,
+      theme(colors.ink.100) 0%,
+      theme(colors.ink.200) 50%,
+      theme(colors.ink.100) 100%
+    );
+    background-size: 1000px 100%;
+    @apply animate-shimmer;
+  }
+
+  /* Wordmark lockup. The slash is the brand mark — keep it tight. */
+  .wordmark {
+    @apply font-sans font-medium tracking-tightest text-ink-900;
+  }
+  .wordmark-slash {
+    @apply text-accent-ring;
+  }
+}
+
+/* Print: hide chrome (sidebar, top bar), expand main, drop background tints. */
+@media print {
+  aside,
+  nav,
+  [role="dialog"] {
+    display: none !important;
+  }
+  main {
+    padding: 0 !important;
+  }
+  body {
+    background: white !important;
+    color: black !important;
+  }
+}
