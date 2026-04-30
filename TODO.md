@@ -425,6 +425,215 @@ Suite plumbing improvements:
 
 ---
 
+## 2.F Frontend (deep, designed, flows together)
+
+> **Read the migrations first.** Every screen here maps to specific tables in `backend/migrations/20260430000001_foundation.sql` (orgs, profiles, memberships, api_tokens), `…0002_documents_chat.sql` (documents, inbound_emails, chats), `…0003_accounting.sql` (accounts, transactions, classifications, ledger, invoices/bills, budgets, goals), `…0004_billing.sql` (plans, subscriptions, wallets, usage). The data model already encodes business rules (RLS, profile-kind enforcement, ledger projections, scope catalog) — the UI must match them exactly, not invent parallel concepts. When in doubt about a column or enum, open the migration before writing the component.
+
+### 2.23 Frontend design system & component library
+**Goal**: a UI as crafted as Stripe / Linear / Vault22 / Xero. Not a generic Tailwind dashboard — deep, composable CSS, design tokens, intentional motion, dense data layouts. Every screen feels considered.
+- [ ] **Tokens** in `src/styles/tokens.css` (CSS variables): full color scales 50–950 for neutral, brand, success, warning, danger, info; spacing ramp; radii; **layered shadows** (Stripe-style `shadow-xs` → `shadow-2xl` plus inner shadows for inset fields); typography ramp (display, h1–h4, body, mono via Geist Mono, micro); motion durations + easings; z-index ladder
+- [ ] **Tailwind config** maps tokens → utilities. No raw hex outside tokens.
+- [ ] **Component primitives** (extend existing `src/components/ui/`):
+  - Button (primary/secondary/ghost/destructive/link, xs–lg, loading, with-icon)
+  - Input, Textarea, NumberInput (currency-aware, locale-formatted), DatePicker, DateRangePicker
+  - Select, Combobox, MultiSelect (Radix + virtualized for big lists)
+  - Switch, Checkbox, RadioGroup, Toggle
+  - Card (header/body/footer slots), Stat, KPI tile
+  - Table (sticky header, column resize, sort, multi-select, row actions, virtualized > 1k rows)
+  - DataGrid (denser, Xero-style, for ledger views)
+  - Tabs, SegmentedControl, Stepper
+  - Dialog, Drawer (right + bottom sheet), Popover, Tooltip, Toast (Sonner)
+  - DropdownMenu, ContextMenu, CommandPalette (⌘K)
+  - Badge, Pill, Tag, StatusDot
+  - Avatar, AvatarStack
+  - EmptyState, ErrorState, LoadingState, Skeleton
+  - Charts: Donut, Bar, Line, Sparkline, AreaStacked, Waterfall (Recharts or visx, dark-mode aware)
+  - Money component — renders amount + currency with locale, sign coloring, hover-shows-original-currency
+  - JSONViewer (for raw extraction payloads)
+- [ ] **Motion**: Framer Motion for page transitions, drawer slide, toast spring, list-item enter/exit. Subtle — never showy.
+- [ ] **Dark mode**: full parity, toggle in user menu, persisted per user
+- [ ] **Density modes**: comfortable / compact (Xero-style toggle for power users)
+- [ ] **Accessibility**: keyboard-navigable, ARIA roles, focus rings, prefers-reduced-motion respect
+- [ ] **Storybook (or Ladle)** so each component is reviewed in isolation
+- [ ] **Style guide page** at `/style-guide` (dev-only) showing every component + token
+
+### 2.24 First-login onboarding
+Tables: `users`, `organizations`, `personal_profiles`, `business_profiles`, `memberships`, `invitations` (foundation migration). The `enforce_profile_kind` trigger requires the org's `kind` and the profile row to match — the backend creates user+org+profile+membership in one tx; the frontend collects the inputs.
+- [ ] **Verify-email gate** before any onboarding (existing `users.email_verified_at`)
+- [ ] **Step 1 — Account type**: full-bleed split-screen card "Personal" vs "Business" with iconography + plain-language description. Sets `organizations.kind`.
+- [ ] **Step 2a — Personal profile**: full name → `personal_profiles.full_name`. Optional avatar upload.
+- [ ] **Step 2b — Business profile**: legal name, registration number, tax/VAT number, industry (Combobox with common SIC), website, address (line1/2/city/region/postal_code/country), fiscal year start month → `business_profiles`. Country prefilled from IP.
+- [ ] **Step 3 — Workspace identity**: auto-suggest `slug` and `rx_local_part` from name, both editable, live uniqueness debounce check. Show resulting inbound email `<rx_local_part>@rx.slipscan.app` in a copy-to-clipboard pill with "Send test email" link (`mailto:` prefilled).
+- [ ] **Step 4 — Choose first action** (entrypoint to home):
+  - "Email your first slip" — shows the rx address with `Copy` + `Send test email`
+  - "Upload your first document" — opens upload dialog (drag-drop multi-file, PDF/JPG/PNG/HEIC)
+  - "Connect a bank statement" — upload a statement PDF/CSV
+- [ ] **Step 5 — Invite teammates** (business only, skippable) — emails → `invitations` rows
+- [ ] Persist progress on the org row; user can skip and return later
+- [ ] On completion: route to home (§2.25) with a celebratory toast
+
+### 2.25 Home / dashboard — org-kind aware
+The home page branches on `organizations.kind`. Both kinds get a top "Getting started" panel until the org has ≥1 extracted document, then it collapses to a dismissible nudge.
+
+**Shared header**:
+- [ ] Inbound email pill — `<rx_local_part>@rx.slipscan.app` with `Copy`. Tooltip: "Forward bills, slips, statements here. They show up below within seconds."
+- [ ] Quick actions row: Upload, Email me a sample, New transaction (manual), Connect WhatsApp
+- [ ] Search / ⌘K command palette
+
+**Personal home** (Vault22-style — "where did my money go"):
+- [ ] Net worth card (assets − liabilities from `accounts`, sparkline trend)
+- [ ] This-month cashflow waterfall: income, expense, net
+- [ ] Spend-by-category donut (last 30 days), click → drill to `transactions` filtered by category
+- [ ] Top merchants (top 5 by spend this month)
+- [ ] Recurring & subscriptions detected (`recurring_transactions`) with cancel-suggestion
+- [ ] Budgets progress (`budgets`, `budget_lines`) — only over-90% surfaced
+- [ ] Goals progress (`goals`) — only active
+- [ ] Recent transactions (last 10) — click → transactions page
+- [ ] Anomaly callouts ("Eating out 60% above your 6-month average")
+
+**Business home** (Xero-style — "state of my business"):
+- [ ] Cash position card (sum of asset accounts, sparkline)
+- [ ] Money in / money out this month with MoM comparison
+- [ ] AR aging mini (current / 1–30 / 31–60 / 60+ from `sales_invoices`)
+- [ ] AP aging mini (from `bills`)
+- [ ] Outstanding invoices count + total
+- [ ] Outstanding bills count + total
+- [ ] Bank reconciliation status — N statement lines unmatched (`statement_lines.matched_at IS NULL`)
+- [ ] VAT due this period (driven by `tax_rates`)
+- [ ] Recent documents stream (last 10)
+- [ ] **Extras for business**: profit-margin trend (6 months), top customers by revenue, top expense categories, upcoming recurring bills, lock-date warning if `financial_lock_date` is approaching period-end
+
+### 2.26 Transactions — raw + classified UX
+Tables: `transactions`, `transaction_classifications`, `categories`, `transaction_splits`, `transaction_tags`, `tags`, `classification_rules`, `classification_corrections`, `merchant_signals` (`…0003_accounting.sql`). Open the migration before wiring fields — confidence, source, status enums must match exactly.
+- [ ] **Two views, toggleable**:
+  - **Categorized** (Vault22-style): grouped by category with expand/collapse, donut on top, MoM bars
+  - **Ledger** (Xero-style): flat virtualized table — date, merchant, description, account, category, debit, credit, balance, status pill (`pending`/`verified`/`rejected`)
+- [ ] Filters: date range, account, category, status, amount range, contact, tag, merchant search, classification source (rule/signal/llm/user)
+- [ ] **Bulk operations**: select N → categorize, tag, mark verified, delete, split, transfer-pair
+- [ ] **Inline classification edit**: click category cell → Combobox with category tree → save creates `classification_corrections` row + bumps `merchant_signals` for this merchant + offers "Apply to all 27 past 'Pick n Pay' transactions" → on accept creates a `classification_rules` row
+- [ ] **Confidence badge**: subtle indicator from `transaction_classifications.confidence`, warning if low
+- [ ] **Source badge**: where the classification came from (rule / community signal / LLM / you)
+- [ ] **Split transaction** dialog: allocate amount across multiple categories → `transaction_splits` rows
+- [ ] **Transfer detection**: surface candidate pairs (same amount, opposite direction, ±2 days) → user confirms → `transfers` row
+- [ ] **Drilldown to source**: every transaction links to its `documents.id` (preview pane on right with original receipt/statement page)
+- [ ] **Raw data drawer** (per transaction, "View raw"): shows `document_extractions.payload` JSON, `transaction_classifications` history, `ledger_entries` projection — for power users / debugging
+- [ ] **Manual entry**: "+ New transaction" dialog (date, account, amount, direction, merchant, category, contact, tags, notes)
+- [ ] **CSV import** for bank statements not in PDF
+- [ ] **Empty state**: hero + "Forward your first slip to <rx>" + Upload CTA
+
+### 2.27 Accounts & assets — net worth, balances, raw ledger
+Tables: `accounts` (with `account_type` asset/liability/equity/income/expense), `ledger_entries`, `bank_statements`, `statement_lines`, `transfers`, `manual_journals`.
+- [ ] **Accounts list**: tree (parent → children) with running balance per account from `ledger_entries`, grouped by `account_type`
+- [ ] **Net worth page** (personal-emphasis, useful for business owners too):
+  - Big number: total assets − total liabilities
+  - Trend line over time (month buckets)
+  - Asset breakdown donut (cash, investments, property, other)
+  - Liability breakdown donut (credit cards, loans, other)
+  - "Add account" → manual asset (property, vehicle, investment) or upload bank statement
+- [ ] **Account detail page** per account:
+  - Current + opening balance
+  - Reconciliation status (matched vs unmatched statement lines)
+  - Transactions filtered to this account
+  - Statements list (`bank_statements` rows)
+  - **Raw data drawer**: underlying `ledger_entries` rows (date, source_type, source_id, debit, credit, running balance) — reads like a real general ledger
+- [ ] **Asset entry forms** for non-bank holdings (property, vehicle, investments) — these are `accounts` of type `asset` with valuation entries posted as `manual_journals` → `ledger_entries`
+- [ ] **Liability tracking**: credit card / loan accounts with payoff progress
+- [ ] **Reconciliation workspace** (business-emphasis, also for zero-based personal):
+  - Two-pane: bank `statement_lines` left, candidate `transactions` right
+  - One-click match, split-match, create-from-line, mark as transfer
+  - Bulk auto-match by amount+date heuristic
+  - Persist matches via `statement_lines.matched_transaction_id`
+
+### 2.28 Business-only screens
+All gated by `organizations.kind = 'business'`. Use route guards + a shared `useOrgKind()` hook. Tables in `…0003_accounting.sql`.
+- [ ] **Sales** — invoice list, create/edit (line items from `sales_invoice_lines`, `tax_rates`), send via Resend, payment recording, statement generation
+- [ ] **Purchases** — bill list, create/edit, payment recording, attached document preview
+- [ ] **Contacts** — customers, suppliers, both. Detail page with running balance, transaction history, statement
+- [ ] **Tax rates** — CRUD on `tax_rates` (effective dates, inclusive/exclusive)
+- [ ] **Manual journals** — debit/credit balanced entry form, attach supporting docs, lock-date enforcement
+- [ ] **Chart of accounts** — full tree CRUD on `accounts`, archive
+- [ ] **Reports hub** (Xero parity, see §2.12):
+  - P&L, Balance Sheet, Trial Balance, Cash Flow Statement
+  - AR Aging, AP Aging, Customer/Supplier statements
+  - VAT Return, General Ledger, Account Transactions
+  - Period selector, comparative columns, export CSV/PDF/Excel
+- [ ] **Lock dates** — settings UI sets `organizations.financial_lock_date`; warns about edits before that date
+- [ ] **Multi-currency** — base currency from org, FX gain/loss on revaluation (uses `fx_rates`)
+- [ ] **Fiscal year settings** — `business_profiles.fiscal_year_start_month`
+- [ ] **Team & permissions** — uses `memberships.role` (owner/admin/accountant/member/viewer): invite, change role, revoke
+- [ ] **Quote → invoice** conversion (future, once schema for quotes lands)
+
+### 2.29 Documentation — public site + in-app help
+Two surfaces, both first-class.
+
+**Public docs** (`docs.slipscan.app` — separate Firebase site or `/docs` route):
+- [ ] Static doc framework (Nextra / Starlight / Docusaurus — pick lightweight)
+- [ ] Sections:
+  - Getting started (signup → choose type → first upload / first email-in)
+  - Personal guide (every screen explained, vault22 migration tips, CSV export → import)
+  - Business guide (Xero migration, COA setup, VAT, invoicing, reconciliation)
+  - Email-in guide (forwarding rules, supported document types, what gets extracted)
+  - Mobile / WhatsApp guide
+  - Categories & classification (how it learns, how to correct it, community signals)
+  - Reports reference (every column explained)
+  - Accounts & ledger primer (for personal users new to double-entry)
+  - Security, privacy, data export, deletion
+  - FAQ
+  - Changelog
+- [ ] Search (Algolia DocSearch or built-in)
+- [ ] Dark mode parity with the app
+- [ ] Edit-on-GitHub link
+
+**In-app help**:
+- [ ] `?` button bottom-right → contextual help drawer (auto-detects current screen)
+- [ ] `/help <query>` slash command in chat
+- [ ] Empty states link to relevant docs section
+- [ ] Keyboard shortcut overlay (`?` while not in input)
+
+**Public API docs** (cross-references §2.22 — keys/scopes):
+- [ ] OpenAPI 3.1 spec generated from backend route metadata (single source of truth)
+- [ ] Rendered with Scalar / Stoplight Elements / Redocly (Stripe-grade reading experience)
+- [ ] Per-endpoint: scope required (matches `api_permissions` codes), rate limit, request/response examples in curl + JS + Python + Go, error codes table
+- [ ] Sections: auth, pagination, rate limits, idempotency keys, webhooks reference, changelog
+- [ ] Interactive "Try it" using the user's test key
+- [ ] Hosted at `https://docs.slipscan.app/api` (matches what §2.22 calls out at `api.slipscan.app/docs` — pick one and stick)
+
+**API status page** (separate, simple): uptime + latency by endpoint group.
+
+### 2.30 Information architecture & navigation — make it flow as one product
+Reference the migration files when wiring routes so every screen ties back to its tables. Nothing should be a dead end — every monetary number drills into transactions, every transaction into its document, every document into its inbound email.
+- [ ] **Top-level routes** (after auth):
+  - `/` → home (org-kind branched, §2.25)
+  - `/transactions` → §2.26
+  - `/accounts` → §2.27 list; `/accounts/:id` → detail
+  - `/documents` → list of `documents`; click → preview + extracted data
+  - `/inbox` → `inbound_emails` log + status
+  - `/reports/*` → personal reports (always) + business reports (kind=business)
+  - `/budgets`, `/goals`, `/recurring` (personal-emphasis)
+  - `/sales/*`, `/purchases/*`, `/contacts/*`, `/journals`, `/coa`, `/reconciliation` (business-only)
+  - `/settings/*` (org, members, slug + rx, integrations, api keys, webhooks, billing, plan, security, locale)
+  - `/help`, `/docs`
+- [ ] **Left nav** — collapsible, sections grouped (Money, Documents, Reports, Business, Settings); business-only sections hidden when kind=personal
+- [ ] **Right rail** — chat panel (§2.19) on every authenticated route, collapsible, persistent across navigation
+- [ ] **Top bar** — org switcher (multi-org users via `memberships`), search/⌘K, notifications, user menu
+- [ ] **Breadcrumbs** on detail pages
+- [ ] **Cross-links everywhere**: monetary numbers → underlying transactions; transactions → documents; documents → inbound emails (when applicable); reports rows → ledger entries
+- [ ] **Consistent empty states**: every list with zero rows links to the action that creates the first row + the relevant docs page
+
+### 2.31 Marketing / landing site (logged-out)
+Separate from the docs site. Short and fast. Built with the same design system.
+- [ ] Hero: clear value prop ("Send a slip, get your finances sorted")
+- [ ] Two persona sections: For You (personal) and For Your Business (business)
+- [ ] Feature grid (email-in, OCR, classification, vault22-style breakdowns, Xero-grade reports, WhatsApp, API)
+- [ ] "How it works" — 4 steps with screenshots/animation
+- [ ] Pricing (driven by `plans` + `plan_prices`)
+- [ ] Trust: security, data location (ZA/EU), export-anytime
+- [ ] Testimonials / logos (later)
+- [ ] CTAs to signup with kind preselected
+- [ ] Hosted on the same Firebase project as the app, or `/` rewrite for unauthenticated users
+
+---
+
 ## 3. Phasing
 
 **Phase 1 — foundation** (unblocks everything else)
