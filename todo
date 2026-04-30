@@ -1,0 +1,26 @@
+Make a firebase project on slipscan account. 
+
+Firebase for frontend, make sure there is one project for firebase, two sites, one is the dev site, npm run build:dev and npm run build:main must work, also firebase deploy —only hosting:dev and :main must work. 
+set it up to be like this 
+npm run build:main 
+npx firebase deploy --only hosting:main
+
+Neondb on slipscan account, also a dev db.
+
+have nice email templates, have nice logo. have that in email templates. 
+
+Now fix .env.dev .env.main  and .env for local so they all work. 
+
+find exchange rate provider, get api key, get cheapest, only update 24 times a day on a cron schedule 
+
+You need to make it similar to vault22, and also Xero. 
+When user registers, they choose to be a business or personal, where you give your details, like name of business, reg number etc, for personal its just name. That is the organization. 
+
+We process slips, bank statements invoices etc etc. We have an email in system also so you can upload documents or email them in. So each org gets a slug which can be changed, and this is used for email inbound rx for org for easy receiving documents. For orgs we also need a ledger and manual entries etc, reporting will also have to differ from personal to business but for both we want a vault22 style breakdown, the llm when processing the documents must classify transactions, but users must be able to change it, and this must be learnt over time. We must be able to have a system that looks at all the data to have better classifications overall, using llm or otherwise. 
+
+
+You need a hetzner vm for smtp receiver, it needs to have a slug per organization that’s unique that represents their receiving email address. The smtp server must be multiple ip receiver system where we can dynamically add vms. Start with 1 vm. You will need hetzner cli token for deployment script. Have a deploy.sh inside the backend directory which deploys this. /cmd/mailrx is where this service lives. Also have /cmd/server for running server /cmd/migrate for migrations and /migrations for the actual migration scripts. The backend will run on these vms also, so there 
+
+Load balancer connects the vms for backend, mail receiver goes directly to public ip of vms
+
+The dns is part of hetzner, so have a deploy script that on provisioning of a new vm there is —replace which checks all under load balancer and replaces them, auto naming date and also can happen multiple times and also have instance number like if its replacing 2 then -1 or -2. Then also configure the dns for the domain rx for the ip addresses etc automatically.

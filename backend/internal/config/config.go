@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -17,7 +16,6 @@ type Config struct {
 	Port            string
 	AppBaseURL      string
 	FrontendBaseURL string
-	MigrationsDir   string
 
 	B2KeyID          string
 	B2ApplicationKey string
@@ -60,15 +58,6 @@ func Load() (*Config, error) {
 		port = "8080"
 	}
 
-	migDir := os.Getenv("MIGRATIONS_DIR")
-	if migDir == "" {
-		migDir = "migrations"
-	}
-	abs, err := filepath.Abs(migDir)
-	if err != nil {
-		return nil, fmt.Errorf("migrations dir: %w", err)
-	}
-
 	b2KeyID := os.Getenv("B2_KEY_ID")
 	b2AppKey := os.Getenv("B2_APPLICATION_KEY")
 	b2Bucket := os.Getenv("B2_BUCKET")
@@ -92,7 +81,6 @@ func Load() (*Config, error) {
 		Port:            port,
 		AppBaseURL:      getOr("APP_BASE_URL", "http://localhost:8080"),
 		FrontendBaseURL: getOr("FRONTEND_BASE_URL", "http://localhost:5173"),
-		MigrationsDir:   abs,
 
 		B2KeyID:          b2KeyID,
 		B2ApplicationKey: b2AppKey,

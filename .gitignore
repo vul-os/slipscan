@@ -1,7 +1,8 @@
 node_modules
 
-.venv
-
 dist
 
 .firebase
+.env
+.env.dev
+.env.main
