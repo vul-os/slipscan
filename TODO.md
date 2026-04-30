@@ -639,18 +639,23 @@ Separate from the docs site. Short and fast. Built with the same design system.
 **Phase 1 — foundation** (unblocks everything else)
 - 1.1, 1.2, 1.3, 1.4, 1.5, 1.6 (user accounts/keys)
 - 2.1 env files, 2.2 Firebase, 2.3 cmd layout, 2.4 migrations, 2.5 base email templates
+- **2.23 design system** (tokens + primitives — every other UI section depends on this)
 
 **Phase 2 — core flow**
 - 2.6 mailrx, 2.7 deploy.sh (1 combined VM), 2.8 registration, 2.9 ingestion, 2.10 classification baseline (rules+LLM, no global learning yet)
+- **2.24 onboarding**, **2.25 home (personal + business getting-started)**, **2.30 IA / nav scaffold**
 
 **Phase 3 — value & assistant**
 - 2.12 reports (personal first → vault22 parity), 2.11 fx cron, 2.13 ledger, 2.10 global learning, 2.17 notifications, **2.19 right-side chat panel**
+- **2.26 transactions UI (categorized + ledger views, classification UX)**, **2.27 accounts & assets (net worth, raw ledger)**
 
 **Phase 4 — business + monetization + WhatsApp**
 - 2.12 reports (business → Xero parity), 2.14 invoicing, 2.15 billing/Paystack, 2.18 audit log, **2.20 WhatsApp webhooks**
+- **2.28 business-only screens** (sales, purchases, contacts, COA, reconciliation, manual journals, lock dates)
+- **2.22 API keys/scopes UI + 2.29 API docs** (public API surface)
 
 **Phase 5 — polish**
-- 2.16 i18n, advanced insights, mobile PWA, public API + webhooks
+- 2.16 i18n, advanced insights, mobile PWA, **2.29 public docs site**, **2.31 marketing / landing**
 
 ---
 
