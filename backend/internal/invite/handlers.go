@@ -98,7 +98,8 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		role = org.RoleMember
 	}
 	if !role.Valid() {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_role", "role must be 'admin' or 'member'")
+		// P4-01: accountant role is valid; accept owner|admin|accountant|member|viewer.
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_role", "role must be one of: owner, admin, accountant, member, viewer")
 		return
 	}
 
