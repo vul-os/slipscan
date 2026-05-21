@@ -2,9 +2,9 @@
 id: P1-02
 title: Transaction classification engine
 phase: 1
-status: todo
+status: review
 depends_on: [P1-01]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -71,3 +71,35 @@ default category set per org kind on org creation.
 Normalize merchant strings consistently (lowercase, strip store-number suffixes)
 — P1-03/P1-04 rely on the same normalization to match signals. Factor it into a
 shared helper.
+
+### Implementation notes (sonnet-agent, 2026-05-21)
+
+**Files added:**
+- `backend/internal/classify/classify.go` — main cascade engine (`Classifier`, `ClassifyDocument`, cascade stages, `Extracted` shape)
+- `backend/internal/classify/seed.go` — idempotent default-category seeding (personal Vault22 tree; business Xero chart-of-accounts + categories)
+- `backend/internal/classify/signals.go` — `LookupSignal` (see contract below) + `mapSignalToCategory`
+- `backend/internal/classify/store.go` — `ListTransactions` DB query (joined with classifications)
+- `backend/internal/classify/handlers.go` — HTTP handlers: `POST /orgs/{orgID}/documents/{docID}/classify`, `GET /orgs/{orgID}/transactions`
+- `backend/internal/classify/classify_test.go` — unit tests for cascade precedence, LLM constraint, seed shape, merchant normalization parity
+
+**Files modified:**
+- `backend/internal/org/store.go` — added `CategorySeeder` func type + `WithCategorySeeder()`; seeder called inside `Create` tx
+- `backend/cmd/server/main.go` — wired classify routes (authedMember), wired `classify.SeedDefaultCategories` into orgStore
+
+**`LookupSignal` signature (P1-04 must match):**
+```go
+// signals.go in internal/classify
+func LookupSignal(ctx context.Context, db *sql.DB, merchantNormalized string) (*Signal, error)
+
+type Signal struct {
+    CategoryLabel string  // TEXT from merchant_signals — NOT a per-org UUID
+    VoteCount     int
+}
+```
+P1-04 populates `merchant_signals (merchant_normalized, category_label, vote_count)`; P1-02 reads from it via `LookupSignal`. Privacy invariant: no org_id/user_id/amounts in merchant_signals.
+
+**Seed contents:**
+- Personal: 12 top-level expense/income/transfer categories (Income, Housing, Groceries & Food, Transport, Health & Wellness, Personal Care, Education, Entertainment, Financial Services, Savings & Investments, Giving, Travel & Accommodation) each with 4–7 children.
+- Business: 36 Xero-coded accounts (090–800 range, asset/liability/equity/income/expense) + 28 named categories linked to account codes by code.
+
+**Test results:** `go test ./... ` — all 12 tests in `internal/classify` pass; full build (`go build ./...`) and vet (`go vet ./...`) clean.
