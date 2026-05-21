@@ -2,9 +2,9 @@
 id: P1-01
 title: Extraction hardening — slips, invoices, bank statements
 phase: 1
-status: todo
+status: review
 depends_on: [P0-01]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -65,3 +65,37 @@ pending→processing→extracted/failed; retry/timeout handling.
 Keep prompts versioned (string consts with a version tag) so we can A/B and so
 `ai_runs.model`/version is meaningful. This feeds P1-02 directly — agree the
 output struct shape with that task.
+
+### Implementation (sonnet-agent, 2026-05-21)
+
+**Files added:**
+- `backend/internal/extract/types.go` — `Extracted`, `LineItem`, `StatementLine`, `DocumentKind`, `DocumentStatus` types.
+- `backend/internal/extract/prompts.go` — versioned prompt consts (`slip-v1`, `invoice-v1`, `bank-statement-v1`, `kind-detect-v1`), Gemini JSON schemas, `geminiRaw` unmarshalling structs, `mapToExtracted`.
+- `backend/internal/extract/currency.go` — `NormalizeCurrency` (symbol/alias → ISO code, with org default fallback).
+- `backend/internal/extract/store.go` — DB layer: `GetDocument`, `OrgCurrency`, `EnsureAIModel`, `CreateAIRun`, `FinishAIRun`, `CreateExtraction`, `CompleteExtraction` (transactional is_current flip + `documents.current_extraction_id`), `FailExtraction`.
+- `backend/internal/extract/service.go` — orchestration pipeline: status transitions pending→processing→extracted/failed; kind detection when `unknown`; `StorageGetter` interface.
+- `backend/internal/extract/handler.go` — `POST /orgs/{orgID}/documents/{docID}/extract` HTTP handler.
+- `backend/internal/extract/extract_test.go` — 8 golden-file unit tests (slip, invoice, bank statement fixtures; currency normalization; JSON shape binding).
+- `backend/internal/extract/testdata/{slip,invoice,bank_statement}_raw.json` — fixture files.
+
+**Files modified:**
+- `backend/internal/ocr/gemini.go` — added `ExtractWithSchema` (image bytes + custom prompt + schema).
+- `backend/internal/storage/storage.go` — added `Get(ctx, key) ([]byte, error)` for re-fetching uploaded files.
+- `backend/cmd/server/main.go` — wired `extractStore`, `extractSvc`, `extractH`; registered `POST /orgs/{orgID}/documents/{docID}/extract` (authedMember).
+
+**Contract compliance:** `Extracted.extracted` JSONB exactly matches PHASE1-CONTRACT.md §2:
+```json
+{
+  "kind": "slip|invoice|bank_statement",
+  "merchant": "WOOLWORTHS PTY LTD #4021",
+  "date": "2026-05-18",
+  "currency": "ZAR",
+  "subtotal": 210.00, "tax": 31.50, "total": 241.50,
+  "confidence": 0.94,
+  "line_items": [{"description":"Milk 2L","qty":1,"unit":24.99,"amount":24.99}],
+  "statement_lines": [{"date":"2026-05-01","description":"...","amount":-120.00,"balance":880.00}]
+}
+```
+`statement_lines` omitted for slip/invoice; `line_items` omitted for bank_statement (omitempty).
+
+**Test results:** `go test ./... ` — 8/8 pass. `go build ./...` and `go vet ./...` clean. No live Gemini calls (LLM tests would be behind `//go:build llm` if added).
