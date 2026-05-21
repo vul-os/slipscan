@@ -15,6 +15,7 @@ import (
 	"github.com/exolutionza/slipscan/backend/internal/db"
 	"github.com/exolutionza/slipscan/backend/internal/document"
 	"github.com/exolutionza/slipscan/backend/internal/email"
+	"github.com/exolutionza/slipscan/backend/internal/fx"
 	"github.com/exolutionza/slipscan/backend/internal/httpx"
 	"github.com/exolutionza/slipscan/backend/internal/insights"
 	"github.com/exolutionza/slipscan/backend/internal/invite"
@@ -70,6 +71,19 @@ func main() {
 	orgStore := org.NewStore(pool)
 	inviteStore := invite.NewStore(pool)
 	docStore := document.NewStore(pool)
+
+	// FX rate scheduler — only starts when FX_SYNC_ENABLED=true.
+	// This env var must be set on EXACTLY ONE fleet member so the ≤24 calls/day
+	// cap is respected across the whole fleet. A missing API key disables the
+	// scheduler gracefully (logs a warning; does not crash).
+	if cfg.FXSyncEnabled {
+		fxClient := fx.NewClient(cfg.ExchangeRateAPIKey)
+		fxStore := fx.NewStore(pool)
+		fxScheduler := fx.NewScheduler(fxClient, fxStore, cfg.ExchangeRateBase)
+		go fxScheduler.Run(ctx)
+	} else {
+		log.Printf("fx: scheduler disabled (FX_SYNC_ENABLED != true)")
+	}
 
 	authH := auth.NewHandler(auth.HandlerConfig{
 		Users:           userStore,

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -27,6 +29,22 @@ type Config struct {
 
 	ResendAPIKey string
 	ResendFrom   string
+
+	// Mail receiver (cmd/mailrx)
+	RxDomain        string
+	MailrxAddr      string
+	MailrxMaxBytes  int64
+	MailrxAllowedTypes []string
+
+	// FX / exchange-rate sync.
+	// ExchangeRateAPIKey is optional. When empty, the free Frankfurter.app
+	// provider is used (no account required, no secret needed).
+	ExchangeRateAPIKey string
+	// ExchangeRateBase is the base currency for all stored rates (default USD).
+	ExchangeRateBase string
+	// FXSyncEnabled gates the hourly scheduler. Set to "true" on exactly ONE
+	// fleet member to enforce the <=24 calls/day single-runner constraint.
+	FXSyncEnabled bool
 }
 
 func Load() (*Config, error) {
@@ -92,7 +110,53 @@ func Load() (*Config, error) {
 
 		ResendAPIKey: os.Getenv("RESEND_API_KEY"),
 		ResendFrom:   os.Getenv("RESEND_FROM"),
+
+		RxDomain:        getOr("RX_DOMAIN", "mail.slipscan.app"),
+		MailrxAddr:      getOr("MAILRX_ADDR", ":2525"),
+		MailrxMaxBytes:  mailrxMaxBytes(),
+		MailrxAllowedTypes: mailrxAllowedTypes(),
+
+		ExchangeRateAPIKey: os.Getenv("EXCHANGE_RATE_API_KEY"),
+		ExchangeRateBase:   getOr("EXCHANGE_RATE_BASE", "USD"),
+		FXSyncEnabled:      os.Getenv("FX_SYNC_ENABLED") == "true",
 	}, nil
+}
+
+// mailrxMaxBytes returns the maximum inbound message size in bytes.
+// Defaults to 25 MB.
+func mailrxMaxBytes() int64 {
+	v := os.Getenv("MAILRX_MAX_MESSAGE_BYTES")
+	if v == "" {
+		return 25 << 20 // 25 MB
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return 25 << 20
+	}
+	return n
+}
+
+// mailrxAllowedTypes returns the list of allowed MIME types for attachments.
+// Defaults to pdf, jpeg, png, heic.
+func mailrxAllowedTypes() []string {
+	v := os.Getenv("MAILRX_ALLOWED_TYPES")
+	if v == "" {
+		return []string{
+			"application/pdf",
+			"image/jpeg",
+			"image/png",
+			"image/heic",
+			"image/heif",
+		}
+	}
+	parts := strings.Split(v, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, strings.ToLower(t))
+		}
+	}
+	return out
 }
 
 func getOr(key, def string) string {
