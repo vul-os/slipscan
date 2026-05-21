@@ -15,6 +15,7 @@ import (
 	"github.com/exolutionza/slipscan/backend/internal/db"
 	"github.com/exolutionza/slipscan/backend/internal/document"
 	"github.com/exolutionza/slipscan/backend/internal/email"
+	"github.com/exolutionza/slipscan/backend/internal/extract"
 	"github.com/exolutionza/slipscan/backend/internal/fx"
 	"github.com/exolutionza/slipscan/backend/internal/httpx"
 	"github.com/exolutionza/slipscan/backend/internal/insights"
@@ -99,6 +100,11 @@ func main() {
 	docH := document.NewHandler(docStore, storageClient, ocrClient)
 	insightsH := insights.NewHandler(pool, insights.NewTranslator(ocrClient))
 
+	// P1-01: extraction hardening — typed structured extraction pipeline.
+	extractStore := extract.NewStore(pool)
+	extractSvc := extract.NewService(extractStore, ocrClient, storageClient)
+	extractH := extract.NewHandler(extractSvc)
+
 	mux := http.NewServeMux()
 
 	// Public routes.
@@ -147,6 +153,9 @@ func main() {
 	mux.Handle("GET /orgs/{orgID}/documents", authedMember(docH.List))
 	mux.Handle("POST /orgs/{orgID}/ask", authedMember(insightsH.Ask))
 	mux.Handle("GET /orgs/{orgID}/documents/{docID}", authedMember(docH.Get))
+
+	// P1-01: re-run extraction on an existing document.
+	mux.Handle("POST /orgs/{orgID}/documents/{docID}/extract", authedMember(extractH.TriggerExtract))
 
 	corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if corsOrigins == "" {

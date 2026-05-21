@@ -158,6 +158,38 @@ func (c *Client) Extract(ctx context.Context, imageBytes []byte, mimeType string
 	return &receipt, json.RawMessage(text), nil
 }
 
+// ExtractWithSchema sends image bytes to Gemini with a caller-supplied prompt
+// and response schema, returning the raw JSON bytes. This is used by the
+// extraction pipeline (internal/extract) so each document kind can have its
+// own structured schema without duplicating the HTTP transport logic.
+func (c *Client) ExtractWithSchema(ctx context.Context, imageBytes []byte, mimeType, prompt string, schema map[string]any) (json.RawMessage, error) {
+	if len(imageBytes) == 0 {
+		return nil, errors.New("ocr: empty image")
+	}
+	encoded := base64.StdEncoding.EncodeToString(imageBytes)
+	reqBody := map[string]any{
+		"contents": []map[string]any{{
+			"parts": []map[string]any{
+				{"text": prompt},
+				{"inline_data": map[string]any{
+					"mime_type": mimeType,
+					"data":      encoded,
+				}},
+			},
+		}},
+		"generationConfig": map[string]any{
+			"responseMimeType": "application/json",
+			"responseSchema":   schema,
+			"temperature":      0.1,
+		},
+	}
+	text, err := c.callJSON(ctx, reqBody)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(text), nil
+}
+
 // GenerateJSON is a generic helper for callers that want structured-output
 // generation (e.g. the search feature translating NL → query filter). The
 // caller supplies a prompt and a JSON schema; we handle transport, retries,
