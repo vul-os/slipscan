@@ -85,9 +85,23 @@ type BusinessProfile struct {
 	Country            string // ISO-3166 alpha-2; written to organizations.country
 }
 
-type Store struct{ db *sql.DB }
+// CategorySeeder is called inside the org-creation transaction after the org
+// row and profile row have been inserted.  It should idempotently seed the
+// default category (and, for business orgs, account) tree.
+// Injected by classify.SeedDefaultCategories to avoid an import cycle.
+type CategorySeeder func(ctx context.Context, tx *sql.Tx, orgID uuid.UUID, orgKind string, currency string) error
+
+type Store struct {
+	db              *sql.DB
+	categorySeeder  CategorySeeder
+}
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
+
+// WithCategorySeeder returns a new Store that calls seeder during org creation.
+func (s *Store) WithCategorySeeder(seeder CategorySeeder) *Store {
+	return &Store{db: s.db, categorySeeder: seeder}
+}
 
 // CreateOptions bundles everything needed to spin up an organization at
 // registration time: the org's kind, a display name, the per-kind profile
@@ -191,6 +205,14 @@ func (s *Store) Create(ctx context.Context, opts CreateOptions) (*Organization, 
 		o.ID, opts.OwnerUserID,
 	); err != nil {
 		return nil, err
+	}
+
+	// P1-02: seed default categories (and accounts for business orgs) inside
+	// this transaction so any failure rolls the whole org creation back.
+	if s.categorySeeder != nil {
+		if err := s.categorySeeder(ctx, tx, o.ID, string(o.Kind), o.Currency); err != nil {
+			return nil, fmt.Errorf("org: seed categories: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
