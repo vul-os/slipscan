@@ -1,0 +1,13 @@
+{
+  "merchant": "ACME SUPPLIES (PTY) LTD",
+  "date": "2026-05-15",
+  "currency": "ZAR",
+  "subtotal": 1500.00,
+  "tax": 225.00,
+  "total": 1725.00,
+  "confidence": 0.91,
+  "line_items": [
+    {"description": "Office Chairs x5", "qty": 5, "unit": 250.00, "amount": 1250.00},
+    {"description": "Desk Lamp", "qty": 1, "unit": 250.00, "amount": 250.00}
+  ]
+}

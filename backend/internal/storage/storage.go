@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -70,6 +71,24 @@ func (c *Client) PresignGet(ctx context.Context, key string, expires time.Durati
 		return "", fmt.Errorf("storage presign %s: %w", key, err)
 	}
 	return out.URL, nil
+}
+
+// Get downloads object bytes. Used by the extraction pipeline to re-read
+// uploaded files without requiring the caller to cache them at upload time.
+func (c *Client) Get(ctx context.Context, key string) ([]byte, error) {
+	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(c.bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("storage get %s: %w", key, err)
+	}
+	defer out.Body.Close()
+	data, err := io.ReadAll(out.Body)
+	if err != nil {
+		return nil, fmt.Errorf("storage read %s: %w", key, err)
+	}
+	return data, nil
 }
 
 func (c *Client) Delete(ctx context.Context, key string) error {
