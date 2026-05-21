@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/exolutionza/slipscan/backend/internal/accounting_export"
+	"github.com/exolutionza/slipscan/backend/internal/audit"
 	"github.com/exolutionza/slipscan/backend/internal/auth"
 	"github.com/exolutionza/slipscan/backend/internal/classify"
 	"github.com/exolutionza/slipscan/backend/internal/config"
@@ -157,6 +158,8 @@ func main() {
 	} else {
 		log.Printf("xero: integration disabled (XERO_CLIENT_ID / XERO_CLIENT_SECRET not set)")
 	}
+	// P4-03: audit trail — per-org queryable audit log (admin-gated).
+	auditH := audit.NewHandler(audit.NewStore(pool))
 
 	mux := http.NewServeMux()
 
@@ -218,6 +221,8 @@ func main() {
 	// ?apply_to_existing=true  →  also reclassifies past non-user transactions
 	mux.Handle("PATCH /orgs/{orgID}/transactions/{txID}/classification",
 		authedMember(correctionsH.PatchClassification))
+	// P4-03: per-org audit log — admin-only; filterable by entity/actor/date.
+	mux.Handle("GET /orgs/{orgID}/audit", authedAdmin(auditH.List))
 
 	// P2-03: business ledger, chart of accounts, manual journals, contacts
 	// Chart of accounts

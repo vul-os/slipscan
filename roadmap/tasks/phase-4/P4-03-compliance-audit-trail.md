@@ -2,9 +2,9 @@
 id: P4-03
 title: Compliance & audit trail
 phase: 4
-status: todo
+status: review
 depends_on: [P2-03]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -61,3 +61,37 @@ encryption beyond what storage already provides.
 ## Notes
 Append-only integrity is the point — make it impossible to quietly rewrite
 history through the app. This unblocks upmarket/enterprise and accountant trust.
+
+### Implementation summary (sonnet-agent, 2026-05-21)
+
+**audit_log columns targeted:** id, organization_id, actor_user_id, actor_token_id,
+entity_type, entity_id, action, before (jsonb), after (jsonb), ip_address, user_agent, created_at.
+The table pre-existed in migration 20260430000004_billing.sql; no schema changes were needed.
+
+**Write helper API** (`internal/audit`):
+- `audit.Entry` struct with OrganizationID, ActorUserID, ActorTokenID, EntityType, EntityID, Action, Before, After, IPAddress, UserAgent.
+- `audit.Write(ctx, Querier, Entry) error` — accepts `*sql.DB` or `*sql.Tx`; only ever INSERTs.
+- `audit.MarshalBefore(v) / MarshalAfter(v)` — JSON helpers for snapshot construction.
+- `audit.Store.List(ctx, orgID, ListFilter)` — filterable by actor/entity/action/date with limit/offset.
+- `audit.Handler.List` — HTTP handler for `GET /orgs/{orgID}/audit`.
+
+**Instrumented call sites (P4-03 audit comment at each):**
+1. `internal/classify/corrections.go` — `ApplyCorrection()` after commit: emits `classification.corrected` with before (old category/source) + after (new category/classification_id).
+2. `internal/org/store.go` — `AddMember()` after INSERT: emits `membership.added` with after (user_id, role).
+3. `internal/org/store.go` — `Create()` after commit: emits `organization.created` with after (kind, name, slug).
+
+**Route added:** `GET /orgs/{orgID}/audit` wired under `authedAdmin` in `cmd/server/main.go`.
+
+**Append-only enforcement:** Migration `20260521000001_audit_log_append_only.sql` adds
+`no_update_audit_log` and `no_delete_audit_log` PostgreSQL RULES that suppress
+UPDATE/DELETE at the rewrite-rule level before execution. The Write helper itself only ever INSERTs.
+
+**Tests:** 14 unit tests in `internal/audit/` cover: MarshalBefore/After, nullUUID/nullJSON helpers,
+Write (all fields, error propagation, nil actor), itoa, sensitive-path entry validation for all
+three instrumented actions, and the append-only INSERT-only policy. All pass. `go build ./...` and
+`go vet ./...` clean.
+
+**Stubs / deferred:** Data export/erasure (POPIA/GDPR) and cross-org denial matrix tests are
+deferred — the audit trail foundation is in place to build them on top of. The append-only
+PostgreSQL RULES are the enforcement mechanism; further hardening via role-level REVOKE is
+documented in the migration comments for a DBA to apply per environment.
