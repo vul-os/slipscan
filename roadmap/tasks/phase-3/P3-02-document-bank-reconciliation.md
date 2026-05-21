@@ -2,9 +2,9 @@
 id: P3-02
 title: Document ↔ bank-feed auto-reconciliation
 phase: 3
-status: todo
+status: review
 depends_on: [P3-01]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -69,3 +69,41 @@ cases (flag, don't solve fully); statutory reconciliation reports (P2-04 owns re
 This is the Phase 3 payoff and a core moat. Track the auto-match rate (a P3
 success metric). Confirm/reject is both UX and training data — wire it so the
 matcher improves over time.
+
+### Implementation (sonnet-agent, 2026-05-21)
+
+**Package:** `backend/internal/recon` — 5 files (types.go, matcher.go, store.go,
+handlers.go, matcher_test.go).
+
+**Migration:** `backend/migrations/20260521000004_reconciliation_matches.sql` — adds
+the `reconciliation_matches` table with `recon_match_state` enum
+(`auto`/`suggested`/`confirmed`/`rejected`), confidence, amount_delta,
+date_delta_days, merchant_score, actioned_by/at.  Two partial unique indexes
+enforce the no-double-match invariant at the DB level: one on `(org,
+transaction_id) WHERE state <> 'rejected'` and one on `(org,
+statement_line_id) WHERE state <> 'rejected'`.  RLS org-isolation policy applied.
+
+**Matcher design:**
+- Scoring: amount (45%), date (30%), merchant (25%) weighted composite.
+- Amount tolerance: ±0.02 absolute OR ±0.5% relative, widest ceiling for
+  linear decay inside the band.  Hard reject on both exceeded.
+- Date window: ±5 days configurable hard cutoff (both dates known) — beyond
+  window rejects immediately regardless of amount/merchant scores.
+- Merchant: Jaccard token-overlap on `merchant_normalized`; 0.3 neutral score
+  when either side is empty.
+- Auto threshold: confidence ≥ 0.85; suggest threshold: ≥ 0.55.
+- In-memory dedup guard in `RunMatcher` prevents the same tx/line being
+  matched twice in a single run; DB unique index is the final guard.
+- LLM tie-breaker gated on `//go:build llm` (not present by default).
+
+**Routes wired (`cmd/server/main.go`, grouped `// P3-02`):**
+- `POST /orgs/{orgID}/reconcile` — trigger matcher run → `RunResult`
+- `GET  /orgs/{orgID}/reconcile` — three-bucket view (matched/suggested/unmatched)
+- `POST /orgs/{orgID}/reconcile/{matchID}/confirm` — confirm match
+- `POST /orgs/{orgID}/reconcile/{matchID}/reject` — reject match
+
+**Tests:** 21 unit tests covering amount/date/merchant tolerances, window
+edges, composite score weights, no-double-match in-memory guard, and
+candidate sort order.  All pass.  No live DB or LLM required.
+
+**Build:** `go build ./... && go vet ./...` clean.
