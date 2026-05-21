@@ -45,6 +45,12 @@ type Config struct {
 	// FXSyncEnabled gates the hourly scheduler. Set to "true" on exactly ONE
 	// fleet member to enforce the <=24 calls/day single-runner constraint.
 	FXSyncEnabled bool
+
+	// P1-03: correction-learning loop
+	// ClassifyPromotionThreshold is the number of identical user corrections
+	// (same merchant_normalized → same category) before a classification_rules
+	// row is upserted. Defaults to 2 when 0. Set via CLASSIFY_PROMOTION_THRESHOLD.
+	ClassifyPromotionThreshold int
 }
 
 func Load() (*Config, error) {
@@ -119,6 +125,8 @@ func Load() (*Config, error) {
 		ExchangeRateAPIKey: os.Getenv("EXCHANGE_RATE_API_KEY"),
 		ExchangeRateBase:   getOr("EXCHANGE_RATE_BASE", "USD"),
 		FXSyncEnabled:      os.Getenv("FX_SYNC_ENABLED") == "true",
+
+		ClassifyPromotionThreshold: classifyPromotionThreshold(),
 	}, nil
 }
 
@@ -157,6 +165,22 @@ func mailrxAllowedTypes() []string {
 		}
 	}
 	return out
+}
+
+// classifyPromotionThreshold returns the correction count threshold for rule
+// promotion. Defaults to 0 (which classify.CorrectionsConfig.WithDefaults will
+// interpret as DefaultPromotionThreshold = 2). Negative or non-numeric values
+// are treated as 0.
+func classifyPromotionThreshold() int {
+	v := os.Getenv("CLASSIFY_PROMOTION_THRESHOLD")
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func getOr(key, def string) string {

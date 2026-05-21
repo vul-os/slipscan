@@ -69,7 +69,6 @@ func main() {
 
 	userStore := auth.NewStore(pool)
 	tokenStore := auth.NewTokenStore(pool)
-
 	// P1-02: wire category seeder into org creation so every new org gets a
 	// sensible default category (and, for business orgs, account) tree.
 	orgStore := org.NewStore(pool).WithCategorySeeder(classify.SeedDefaultCategories)
@@ -106,6 +105,11 @@ func main() {
 	// P1-02: classification engine
 	classifyEngine := classify.New(pool, ocrClient)
 	classifyH := classify.NewHandler(pool, classifyEngine)
+	// P1-03: correction-learning loop
+	// PromotionThreshold defaults to 2; override via CLASSIFY_PROMOTION_THRESHOLD.
+	correctionsH := classify.NewCorrectionsHandler(classify.NewCorrectionsStore(pool, classify.CorrectionsConfig{
+		PromotionThreshold: cfg.ClassifyPromotionThreshold,
+	}))
 
 	mux := http.NewServeMux()
 
@@ -159,6 +163,11 @@ func main() {
 	// P1-02: classification engine routes
 	mux.Handle("POST /orgs/{orgID}/documents/{docID}/classify", authedMember(classifyH.Classify))
 	mux.Handle("GET /orgs/{orgID}/transactions", authedMember(classifyH.ListTransactions))
+	// P1-03: correction-learning loop
+	// PATCH /orgs/{orgID}/transactions/{txID}/classification
+	// ?apply_to_existing=true  →  also reclassifies past non-user transactions
+	mux.Handle("PATCH /orgs/{orgID}/transactions/{txID}/classification",
+		authedMember(correctionsH.PatchClassification))
 
 	corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if corsOrigins == "" {
