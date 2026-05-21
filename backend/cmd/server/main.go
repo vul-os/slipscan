@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/exolutionza/slipscan/backend/internal/auth"
+	"github.com/exolutionza/slipscan/backend/internal/classify"
 	"github.com/exolutionza/slipscan/backend/internal/config"
 	"github.com/exolutionza/slipscan/backend/internal/db"
 	"github.com/exolutionza/slipscan/backend/internal/document"
@@ -68,7 +69,10 @@ func main() {
 
 	userStore := auth.NewStore(pool)
 	tokenStore := auth.NewTokenStore(pool)
-	orgStore := org.NewStore(pool)
+
+	// P1-02: wire category seeder into org creation so every new org gets a
+	// sensible default category (and, for business orgs, account) tree.
+	orgStore := org.NewStore(pool).WithCategorySeeder(classify.SeedDefaultCategories)
 	inviteStore := invite.NewStore(pool)
 	docStore := document.NewStore(pool)
 
@@ -98,6 +102,10 @@ func main() {
 	inviteH := invite.NewHandler(inviteStore, userStore, orgStore, cfg.InvitationTTL, cfg.FrontendBaseURL, mailer)
 	docH := document.NewHandler(docStore, storageClient, ocrClient)
 	insightsH := insights.NewHandler(pool, insights.NewTranslator(ocrClient))
+
+	// P1-02: classification engine
+	classifyEngine := classify.New(pool, ocrClient)
+	classifyH := classify.NewHandler(pool, classifyEngine)
 
 	mux := http.NewServeMux()
 
@@ -147,6 +155,10 @@ func main() {
 	mux.Handle("GET /orgs/{orgID}/documents", authedMember(docH.List))
 	mux.Handle("POST /orgs/{orgID}/ask", authedMember(insightsH.Ask))
 	mux.Handle("GET /orgs/{orgID}/documents/{docID}", authedMember(docH.Get))
+
+	// P1-02: classification engine routes
+	mux.Handle("POST /orgs/{orgID}/documents/{docID}/classify", authedMember(classifyH.Classify))
+	mux.Handle("GET /orgs/{orgID}/transactions", authedMember(classifyH.ListTransactions))
 
 	corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if corsOrigins == "" {

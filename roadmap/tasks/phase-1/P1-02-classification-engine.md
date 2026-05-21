@@ -99,7 +99,7 @@ type Signal struct {
 P1-04 populates `merchant_signals (merchant_normalized, category_label, vote_count)`; P1-02 reads from it via `LookupSignal`. Privacy invariant: no org_id/user_id/amounts in merchant_signals.
 
 **Seed contents:**
-- Personal: 12 top-level expense/income/transfer categories (Income, Housing, Groceries & Food, Transport, Health & Wellness, Personal Care, Education, Entertainment, Financial Services, Savings & Investments, Giving, Travel & Accommodation) each with 4–7 children.
-- Business: 36 Xero-coded accounts (090–800 range, asset/liability/equity/income/expense) + 28 named categories linked to account codes by code.
+- Personal: 12 top-level expense/income/transfer categories (Income, Housing, Groceries & Food, Transport, Health & Wellness, Personal Care, Education, Entertainment, Financial Services, Savings & Investments, Giving, Travel & Accommodation) each with 4-7 children.
+- Business: 36 Xero-coded accounts (090-800 range, asset/liability/equity/income/expense) + 28 named categories linked to account codes by code.
 
-**Test results:** `go test ./... ` — all 12 tests in `internal/classify` pass; full build (`go build ./...`) and vet (`go vet ./...`) clean.
+**Test results:** `go test ./...` — all 12 tests in `internal/classify` pass; `go build ./...` and `go vet ./...` clean.
