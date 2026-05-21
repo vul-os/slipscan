@@ -35,6 +35,7 @@ import (
 	"github.com/exolutionza/slipscan/backend/internal/recon"
 	"github.com/exolutionza/slipscan/backend/internal/reporting"
 	"github.com/exolutionza/slipscan/backend/internal/storage"
+	"github.com/exolutionza/slipscan/backend/internal/workspace"
 )
 
 func main() {
@@ -181,6 +182,8 @@ func main() {
 	}
 	// P4-03: audit trail — per-org queryable audit log (admin-gated).
 	auditH := audit.NewHandler(audit.NewStore(pool))
+	// P4-01: accountant multi-client workspace.
+	workspaceH := workspace.NewHandler(workspace.NewStore(pool))
 
 	// P3-01: Bank-feed aggregator (Stitch SA-first).
 	// Secrets: STITCH_CLIENT_ID, STITCH_CLIENT_SECRET, STITCH_REDIRECT_URL,
@@ -260,6 +263,9 @@ func main() {
 	}
 
 	mux.Handle("GET /auth/me", authed(authH.Me))
+
+	// P4-01: accountant multi-client workspace — user-scoped (authed/JWT only).
+	mux.Handle("GET /workspace", authed(workspaceH.GetWorkspace))
 
 	mux.Handle("POST /orgs", authed(orgH.Create))
 	mux.Handle("GET /orgs", authed(orgH.ListMine))
