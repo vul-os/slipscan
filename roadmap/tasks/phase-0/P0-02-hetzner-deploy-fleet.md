@@ -2,9 +2,9 @@
 id: P0-02
 title: Hetzner VM fleet deploy script (backend + mailrx + LB + DNS)
 phase: 0
-status: todo
+status: review
 depends_on: [P0-03]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -64,3 +64,52 @@ cloud-init; Terraform (shell script per the `todo`, keep it simple).
 ## Notes
 Keep secrets out of the repo. Pin `hcloud` CLI version. Record cost notes
 (server type, LB tier) in the PR so we can reason about per-VM economics.
+
+---
+
+### Implementation notes (sonnet-agent, 2026-05-21)
+
+**What was built:**
+
+- `backend/deploy.sh` — bash script (`set -euo pipefail`) using the `hcloud` CLI
+- `backend/DEPLOY.md` — full documentation: prerequisites, secrets, usage, cost reference
+
+**deploy.sh capabilities:**
+
+| Flag | Behaviour |
+|------|-----------|
+| `--env dev\|main` | Target environment; names LB and firewall accordingly |
+| (no flag) | Provisions from scratch: build → firewall → LB → VM → upload → health-check → DNS |
+| `--replace [N]` | Zero-downtime rolling replace: create N new dated VMs, health-check, swap LB, drain+delete old, update DNS |
+| `--dry-run` | Prints all `hcloud` and DNS API commands without executing; works without hcloud installed |
+| `--list` / `--status` | Shows fleet servers, LB targets, DNS records |
+
+**Server naming:** `slipscan-YYYYMMDD-<n>` (e.g. `slipscan-20260521-1`); instance number auto-increments per day to support multiple replacements.
+
+**Services deployed per VM:**
+- `slipscan-api.service` — API server on port 8080, fronted by Hetzner LB
+- `slipscan-mailrx.service` — SMTP receiver on port 25, direct public-IP access
+
+**Secrets/credentials the human must provide:**
+
+| Secret | Description |
+|--------|-------------|
+| `HCLOUD_TOKEN` | Hetzner Cloud API token with Read+Write permissions |
+| `HCLOUD_SSH_KEY` | Name of SSH key already uploaded to Hetzner account |
+| `RX_DOMAIN` | Mail receive domain/subdomain (e.g. `rx.slipscan.io`) |
+| `HCLOUD_DNS_ZONE_ID` | Hetzner DNS zone ID for the domain above |
+| `.env.dev` / `.env.main` | Runtime env file (DB URL, JWT secret, API keys) — copy from `.env.example`, fill in, never commit |
+
+**Cost:** cpx11 VM (~€4.15/mo) + lb11 Load Balancer (~€5.83/mo) = ~€10/mo for a 1-VM fleet.
+
+**Dry-run verified:** All paths (`--env dev --dry-run`, `--replace 2 --dry-run`, `--list --dry-run`) produce correct command output and exit 0. Error cases (missing env vars, invalid `--env`) exit 1 with clear messages. `bash -n deploy.sh` passes.
+
+**What can only be tested against a live Hetzner account:**
+- Actual server creation and cloud-init execution
+- SSH/SCP binary upload
+- Real `/healthz` health-check polling
+- LB target attachment and traffic routing
+- Hetzner DNS API record creation/update
+- End-to-end SMTP mail receive on port 25
+
+**Dependency:** Requires `cmd/mailrx` (P0-01) to install `slipscan-mailrx.service`. Script gracefully skips mailrx binary if the package is not yet built (warns, continues with API only).
