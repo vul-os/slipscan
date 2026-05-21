@@ -21,8 +21,10 @@ import (
 	"github.com/exolutionza/slipscan/backend/internal/httpx"
 	"github.com/exolutionza/slipscan/backend/internal/insights"
 	"github.com/exolutionza/slipscan/backend/internal/invite"
+	"github.com/exolutionza/slipscan/backend/internal/ledger"
 	"github.com/exolutionza/slipscan/backend/internal/ocr"
 	"github.com/exolutionza/slipscan/backend/internal/org"
+	"github.com/exolutionza/slipscan/backend/internal/reporting"
 	"github.com/exolutionza/slipscan/backend/internal/storage"
 )
 
@@ -126,6 +128,10 @@ func main() {
 	correctionsH := classify.NewCorrectionsHandler(classify.NewCorrectionsStore(pool, classify.CorrectionsConfig{
 		PromotionThreshold: cfg.ClassifyPromotionThreshold,
 	}))
+	// P2-03: business ledger, chart of accounts, manual journals.
+	ledgerH := ledger.NewHandler(ledger.NewStore(pool))
+	// P2-04: reporting by org kind.
+	reportH := reporting.NewHandler(pool)
 
 	mux := http.NewServeMux()
 
@@ -187,6 +193,55 @@ func main() {
 	// ?apply_to_existing=true  →  also reclassifies past non-user transactions
 	mux.Handle("PATCH /orgs/{orgID}/transactions/{txID}/classification",
 		authedMember(correctionsH.PatchClassification))
+
+	// P2-03: business ledger, chart of accounts, manual journals, contacts
+	// Chart of accounts
+	mux.Handle("GET /orgs/{orgID}/accounts",
+		authedMember(ledgerH.ListAccounts))
+	mux.Handle("POST /orgs/{orgID}/accounts",
+		authedMember(ledgerH.CreateAccount))
+	mux.Handle("GET /orgs/{orgID}/accounts/{accountID}",
+		authedMember(ledgerH.GetAccount))
+	mux.Handle("PATCH /orgs/{orgID}/accounts/{accountID}",
+		authedMember(ledgerH.UpdateAccount))
+	mux.Handle("DELETE /orgs/{orgID}/accounts/{accountID}",
+		authedMember(ledgerH.DeleteAccount))
+	// Account ledger drill-down
+	mux.Handle("GET /orgs/{orgID}/accounts/{accountID}/ledger",
+		authedMember(ledgerH.AccountLedger))
+	// Trial balance
+	mux.Handle("GET /orgs/{orgID}/trial-balance",
+		authedMember(ledgerH.TrialBalance))
+	// Transaction posting (double-entry)
+	mux.Handle("POST /orgs/{orgID}/transactions/{txID}/post",
+		authedMember(ledgerH.PostTransaction))
+	// Manual journals
+	mux.Handle("GET /orgs/{orgID}/journals",
+		authedMember(ledgerH.ListJournals))
+	mux.Handle("POST /orgs/{orgID}/journals",
+		authedMember(ledgerH.CreateJournal))
+	mux.Handle("GET /orgs/{orgID}/journals/{journalID}",
+		authedMember(ledgerH.GetJournal))
+	mux.Handle("DELETE /orgs/{orgID}/journals/{journalID}",
+		authedMember(ledgerH.DeleteJournal))
+	// Contacts
+	mux.Handle("GET /orgs/{orgID}/contacts",
+		authedMember(ledgerH.ListContacts))
+	mux.Handle("POST /orgs/{orgID}/contacts",
+		authedMember(ledgerH.CreateContact))
+	mux.Handle("GET /orgs/{orgID}/contacts/{contactID}",
+		authedMember(ledgerH.GetContact))
+	mux.Handle("PATCH /orgs/{orgID}/contacts/{contactID}",
+		authedMember(ledgerH.UpdateContact))
+	mux.Handle("DELETE /orgs/{orgID}/contacts/{contactID}",
+		authedMember(ledgerH.DeleteContact))
+
+	// P2-04: reporting by org kind
+	// GET /orgs/{orgID}/reports/{name}?from=YYYY-MM-DD&to=YYYY-MM-DD[&format=csv]
+	// Business: profit-and-loss, balance-sheet, vat-summary
+	// Personal: cash-flow, spending-trend, net-worth
+	mux.Handle("GET /orgs/{orgID}/reports/{name}",
+		authedMember(reportH.Get))
 
 	corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if corsOrigins == "" {

@@ -2,9 +2,9 @@
 id: P2-03
 title: Business — ledger, chart of accounts & manual journals
 phase: 2
-status: todo
+status: review
 depends_on: [P2-01]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
