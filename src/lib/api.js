@@ -238,6 +238,16 @@ export const api = {
   getReconcile: (orgId) => request(`/orgs/${orgId}/reconcile`), // { matched, suggested, unmatched }
   confirmMatch: (orgId, matchId) => request(`/orgs/${orgId}/reconcile/${matchId}/confirm`, { method: "POST" }),
   rejectMatch: (orgId, matchId) => request(`/orgs/${orgId}/reconcile/${matchId}/reject`, { method: "POST" }),
+
+  // ── Phase 4: accountant workspace (P4-01, user-scoped — JWT only, no org) ──
+  // → { orgs: [{ id, name, kind, role, attention: { unverified_transactions,
+  //     unmatched_lines, pending_documents, suggested_matches } }] }
+  getWorkspace: () => request(`/workspace`),
+
+  // ── Phase 4: cross-org intelligence (P4-02) ───────────────────────────────
+  getForecast: (orgId, { horizon } = {}) => request(`/orgs/${orgId}/forecast${qs({ horizon })}`),
+  getAnomalies: (orgId) => request(`/orgs/${orgId}/anomalies`),
+  getTaxReadiness: (orgId) => request(`/orgs/${orgId}/tax-readiness`),
 };
 
 // qs builds a query string from defined, non-empty values (drops undefined/null/"").

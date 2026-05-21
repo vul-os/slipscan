@@ -3,7 +3,7 @@ import { toast } from "sonner";
 import {
   LayoutDashboard, Receipt, Users, Settings, Plus, ChevronsUpDown,
   LogOut, Check, Search, Sparkles, Target, TrendingUp, BookOpen, BarChart3, ShieldCheck,
-  Landmark, GitCompareArrows,
+  Landmark, GitCompareArrows, Briefcase, Brain,
 } from "lucide-react";
 import { Wordmark } from "@/components/Wordmark";
 import {
@@ -27,6 +27,8 @@ const nav = [
   { to: "/reports",   label: "Reports",   icon: BarChart3,       shortcut: "g p" },
   { to: "/bank-feeds",label: "Bank feeds",icon: Landmark,        shortcut: "g f" },
   { to: "/reconcile", label: "Reconcile", icon: GitCompareArrows,shortcut: "g c" },
+  { to: "/insights",  label: "Insights",  icon: Brain,           shortcut: "g i" },
+  { to: "/workspace", label: "Workspace", icon: Briefcase,       shortcut: "g w" },
   { to: "/ask",       label: "Ask",       icon: Sparkles,        shortcut: "g a" },
   { to: "/audit",     label: "Audit",     icon: ShieldCheck,     shortcut: "g u" },
   { to: "/members",   label: "Members",   icon: Users,           shortcut: "g m" },

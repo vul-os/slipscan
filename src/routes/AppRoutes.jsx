@@ -22,6 +22,8 @@ const ReportsPage = lazy(() => import("@/pages/Reports"));
 const AuditPage = lazy(() => import("@/pages/Audit"));
 const BankFeedsPage = lazy(() => import("@/pages/BankFeeds"));
 const ReconcilePage = lazy(() => import("@/pages/Reconcile"));
+const WorkspacePage = lazy(() => import("@/pages/Workspace"));
+const InsightsPage = lazy(() => import("@/pages/Insights"));
 const NotFoundPage = lazy(() => import("@/pages/NotFound"));
 
 function PageFallback() {
@@ -62,6 +64,8 @@ export function AppRoutes() {
           <Route path="/reports"             element={<ReportsPage />} />
           <Route path="/bank-feeds"          element={<BankFeedsPage />} />
           <Route path="/reconcile"           element={<ReconcilePage />} />
+          <Route path="/workspace"           element={<WorkspacePage />} />
+          <Route path="/insights"            element={<InsightsPage />} />
           <Route path="/audit"               element={<AuditPage />} />
           <Route path="/members"             element={<MembersPage />} />
           <Route path="/settings"            element={<SettingsPage />} />

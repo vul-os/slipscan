@@ -27,6 +27,10 @@ export const qk = {
   audit:      (orgId, f)      => ["audit", orgId, f],
   bankConnections:(orgId)     => ["bank-connections", orgId],
   reconcile:  (orgId)         => ["reconcile", orgId],
+  workspace:                     ["workspace"],
+  forecast:   (orgId, h)      => ["forecast", orgId, h],
+  anomalies:  (orgId)         => ["anomalies", orgId],
+  taxReadiness:(orgId)        => ["tax-readiness", orgId],
 };
 
 // arr normalizes a `{ <key>: [...] }` envelope or bare array to an array.
@@ -272,3 +276,13 @@ export const useBankConnections = (orgId) =>
   enabledQuery(orgId, qk.bankConnections(orgId), async () => arr(await api.listBankConnections(orgId), "connections"));
 export const useReconcile = (orgId) =>
   enabledQuery(orgId, qk.reconcile(orgId), () => api.getReconcile(orgId));
+
+// ── Phase 4 read hooks (accountant workspace, cross-org intelligence) ───────
+export const useWorkspace = () =>
+  useQuery({ queryKey: qk.workspace, queryFn: async () => arr(await api.getWorkspace(), "orgs") });
+export const useForecast = (orgId, horizon) =>
+  enabledQuery(orgId, qk.forecast(orgId, horizon), () => api.getForecast(orgId, { horizon }));
+export const useAnomalies = (orgId) =>
+  enabledQuery(orgId, qk.anomalies(orgId), async () => arr(await api.getAnomalies(orgId), "anomalies"));
+export const useTaxReadiness = (orgId) =>
+  enabledQuery(orgId, qk.taxReadiness(orgId), () => api.getTaxReadiness(orgId));
