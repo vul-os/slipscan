@@ -2,7 +2,7 @@
 id: P1-03
 title: Correction-learning loop (per-org)
 phase: 1
-status: todo
+status: review
 depends_on: [P1-02]
 owner: unassigned
 ---

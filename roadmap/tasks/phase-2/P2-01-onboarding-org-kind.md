@@ -2,7 +2,7 @@
 id: P2-01
 title: Onboarding by org kind (personal vs business)
 phase: 2
-status: todo
+status: review
 depends_on: [P1-02]
 owner: unassigned
 ---
