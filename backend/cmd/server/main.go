@@ -17,6 +17,7 @@ import (
 	"github.com/exolutionza/slipscan/backend/internal/document"
 	"github.com/exolutionza/slipscan/backend/internal/email"
 	"github.com/exolutionza/slipscan/backend/internal/extract"
+	"github.com/exolutionza/slipscan/backend/internal/finance"
 	"github.com/exolutionza/slipscan/backend/internal/fx"
 	"github.com/exolutionza/slipscan/backend/internal/httpx"
 	"github.com/exolutionza/slipscan/backend/internal/insights"
@@ -187,6 +188,26 @@ func main() {
 	// ?apply_to_existing=true  →  also reclassifies past non-user transactions
 	mux.Handle("PATCH /orgs/{orgID}/transactions/{txID}/classification",
 		authedMember(correctionsH.PatchClassification))
+
+	// P2-02: personal spending breakdown, budgets, goals, net worth
+	financeH := finance.NewHandler(finance.NewStore(pool))
+	// Spending breakdown + drill-down
+	mux.Handle("GET /orgs/{orgID}/spending", authedMember(financeH.GetSpending))
+	mux.Handle("GET /orgs/{orgID}/spending/{categoryID}", authedMember(financeH.GetSpendingDrilldown))
+	// Budgets CRUD + progress
+	mux.Handle("POST /orgs/{orgID}/budgets", authedMember(financeH.CreateBudget))
+	mux.Handle("GET /orgs/{orgID}/budgets", authedMember(financeH.ListBudgets))
+	mux.Handle("GET /orgs/{orgID}/budgets/{budgetID}/progress", authedMember(financeH.GetBudgetProgress))
+	mux.Handle("DELETE /orgs/{orgID}/budgets/{budgetID}", authedMember(financeH.DeleteBudget))
+	// Goals CRUD + progress
+	mux.Handle("POST /orgs/{orgID}/goals", authedMember(financeH.CreateGoal))
+	mux.Handle("GET /orgs/{orgID}/goals", authedMember(financeH.ListGoals))
+	mux.Handle("GET /orgs/{orgID}/goals/{goalID}", authedMember(financeH.GetGoal))
+	mux.Handle("PATCH /orgs/{orgID}/goals/{goalID}", authedMember(financeH.PatchGoal))
+	mux.Handle("DELETE /orgs/{orgID}/goals/{goalID}", authedMember(financeH.DeleteGoal))
+	// Net worth headline + time series
+	mux.Handle("GET /orgs/{orgID}/net-worth", authedMember(financeH.GetNetWorth))
+	mux.Handle("GET /orgs/{orgID}/net-worth/history", authedMember(financeH.GetNetWorthTimeSeries))
 
 	corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if corsOrigins == "" {

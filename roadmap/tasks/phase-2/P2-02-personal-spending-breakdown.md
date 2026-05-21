@@ -2,9 +2,9 @@
 id: P2-02
 title: Personal — Vault22-style spending breakdown, budgets & net worth
 phase: 2
-status: todo
+status: review
 depends_on: [P2-01]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -63,3 +63,38 @@ for now); bank feeds (P3).
 This + P2-03 are the two faces of the same engine. Share aggregation helpers with
 P2-04 reporting where possible. Net worth is the Vault22 hero metric — make it the
 dashboard headline for personal users.
+
+### Implementation notes (sonnet-agent, 2026-05-21)
+
+New package `backend/internal/finance` (store/handler split mirroring `internal/org`).
+
+**Package layout:**
+- `store.go` — all DB aggregation + CRUD; pure Go + database/sql, no external deps.
+  Exports: `Store`, `SpendingBreakdown`, `TransactionsByCategory`, `CreateBudget`,
+  `ListBudgets`, `GetBudget`, `BudgetProgress`, `DeleteBudget`, `CreateGoal`,
+  `ListGoals`, `GetGoal`, `UpdateGoalAmount`, `DeleteGoal`, `NetWorthNow`,
+  `NetWorthTimeSeries`.
+- `handlers.go` — HTTP handlers wired to the store.
+- `finance_test.go` — 17 unit tests (no DB required): aggregation share math,
+  net-worth FX normalisation, budget progress edges, goal progress clamping,
+  input validation.
+
+**Routes added in `cmd/server/main.go` (all `authedMember`, group `// P2-02`):**
+```
+GET  /orgs/{orgID}/spending                          spending breakdown
+GET  /orgs/{orgID}/spending/{categoryID}             drill-down to transactions
+POST /orgs/{orgID}/budgets                           create budget + lines
+GET  /orgs/{orgID}/budgets                           list budgets
+GET  /orgs/{orgID}/budgets/{budgetID}/progress       actual-vs-budget per line
+DELETE /orgs/{orgID}/budgets/{budgetID}              soft-delete (is_active=false)
+POST /orgs/{orgID}/goals                             create goal
+GET  /orgs/{orgID}/goals                             list goals
+GET  /orgs/{orgID}/goals/{goalID}                    get goal
+PATCH /orgs/{orgID}/goals/{goalID}                   update current_amount/status
+DELETE /orgs/{orgID}/goals/{goalID}                  mark abandoned
+GET  /orgs/{orgID}/net-worth                         current headline (FX-normalised)
+GET  /orgs/{orgID}/net-worth/history                 time series from valuation history
+```
+
+**Test results:** `go test ./internal/finance/...` → 17/17 PASS
+`go build ./... && go vet ./...` — clean.
