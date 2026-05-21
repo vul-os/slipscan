@@ -10,10 +10,16 @@ import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { StatusPill } from "@/components/StatusPill";
-import { useDocuments } from "@/lib/queries";
+import { useDocuments, useTransactions } from "@/lib/queries";
 import { useOrgStore } from "@/stores/org";
 import { useUIStore } from "@/stores/ui";
-import { formatDate, formatMoney, formatRelative } from "@/lib/format";
+import {
+  formatDate,
+  formatMoney,
+  formatRelative,
+  formatConfidence,
+  confidenceLevel,
+} from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { documentsToCSV, downloadCSV } from "@/lib/csv";
 import {
@@ -21,23 +27,85 @@ import {
   DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuCheckboxItem,
 } from "@/components/ui/DropdownMenu";
 
+// Confidence severity → Badge tone
+const CONFIDENCE_TONE = {
+  high: "success",
+  medium: "warning",
+  low: "danger",
+  unknown: "neutral",
+};
+
+// Numeric ordering used for the "low-confidence first" default sort.
+// unknown/low = 0, medium = 1, high = 2
+function confidenceOrder(level) {
+  return level === "high" ? 2 : level === "medium" ? 1 : 0;
+}
+
+function ConfidencePill({ value }) {
+  const level = confidenceLevel(value);
+  const tone = CONFIDENCE_TONE[level];
+  const label = value === null || value === undefined ? "—" : formatConfidence(value);
+  return (
+    <Badge tone={tone} dot>
+      {label}
+    </Badge>
+  );
+}
+
 export default function ReceiptsPage() {
   const orgId = useOrgStore((s) => s.activeOrgId);
-  const { data, isLoading } = useDocuments(orgId);
+  const { data: docsData, isLoading: docsLoading } = useDocuments(orgId);
+  const { data: txData, isLoading: txLoading } = useTransactions(orgId);
   const setUploadOpen = useUIStore((s) => s.setUploadOpen);
   const [q, setQ] = useState("");
   const [statuses, setStatuses] = useState(new Set());
-  const [sort, setSort] = useState({ key: "date", dir: "desc" });
+  // Default: surface low-confidence / unverified first
+  const [sort, setSort] = useState({ key: "confidence", dir: "asc" });
 
-  const docs = data?.documents ?? [];
-  const filtered = useMemo(() => filter(docs, q, statuses, sort), [docs, q, statuses, sort]);
+  const isLoading = docsLoading || txLoading;
+
+  // Build a map from document_id → transaction (first match) for confidence data
+  const txByDocId = useMemo(() => {
+    const txs = Array.isArray(txData) ? txData : [];
+    const map = new Map();
+    for (const tx of txs) {
+      if (tx.document_id && !map.has(tx.document_id)) {
+        map.set(tx.document_id, tx);
+      }
+    }
+    return map;
+  }, [txData]);
+
+  // Enrich each document with its transaction's confidence + merchant
+  const docs = useMemo(() => {
+    const raw = docsData?.documents ?? [];
+    return raw.map((doc) => {
+      const tx = txByDocId.get(doc.id);
+      return {
+        ...doc,
+        // Prefer transaction merchant (normalised) then extraction merchant
+        merchant: tx?.merchant_normalized || tx?.merchant || doc.merchant || null,
+        // Amount + currency from document extraction; tx amount as fallback
+        amount: doc.amount ?? tx?.amount ?? null,
+        currency: doc.currency || tx?.currency || null,
+        // Confidence: extraction confidence from document
+        classification_confidence: tx?.classification_confidence ?? null,
+        // Status from document; tx status as semantic fallback
+        status: doc.status ?? tx?.status ?? "pending",
+      };
+    });
+  }, [docsData, txByDocId]);
+
+  const filtered = useMemo(() => buildView(docs, q, statuses, sort), [docs, q, statuses, sort]);
 
   const onExport = () => {
     if (filtered.length === 0) return;
     const csv = documentsToCSV(filtered);
     const stamp = new Date().toISOString().slice(0, 10);
     downloadCSV(`slipscan-receipts-${stamp}.csv`, csv);
-    toast.success("Exported", { description: `${filtered.length} ${filtered.length === 1 ? "receipt" : "receipts"} as CSV` });
+    toast.success("Exported", {
+      description: `${filtered.length} ${filtered.length === 1 ? "receipt" : "receipts"} as CSV`,
+    });
   };
 
   const toggleStatus = (s) => {
@@ -49,9 +117,11 @@ export default function ReceiptsPage() {
   };
 
   const onSort = (key) => {
-    setSort((prev) => prev.key === key
-      ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
-      : { key, dir: "desc" });
+    setSort((prev) =>
+      prev.key === key
+        ? { key, dir: prev.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key === "confidence" ? "asc" : "desc" },
+    );
   };
 
   return (
@@ -79,7 +149,10 @@ export default function ReceiptsPage() {
 
       <div className="flex flex-wrap items-center gap-2 mb-4">
         <div className="relative flex-1 min-w-[260px] max-w-[420px]">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none" />
+          <Search
+            size={14}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400 pointer-events-none"
+          />
           <Input
             placeholder="Search by merchant…"
             value={q}
@@ -112,7 +185,10 @@ export default function ReceiptsPage() {
 
         <div className="ml-auto text-[12px] text-ink-500 tnum">
           {!isLoading && (
-            <>{filtered.length} {filtered.length === 1 ? "result" : "results"}{q || statuses.size > 0 ? ` of ${docs.length}` : ""}</>
+            <>
+              {filtered.length} {filtered.length === 1 ? "result" : "results"}
+              {q || statuses.size > 0 ? ` of ${docs.length}` : ""}
+            </>
           )}
         </div>
       </div>
@@ -136,7 +212,13 @@ export default function ReceiptsPage() {
             title="Nothing matches"
             description="Try adjusting your search or filters."
             action={
-              <Button variant="ghost" onClick={() => { setQ(""); setStatuses(new Set()); }}>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setQ("");
+                  setStatuses(new Set());
+                }}
+              >
                 Clear filters
               </Button>
             }
@@ -146,15 +228,46 @@ export default function ReceiptsPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-ink-100 bg-ink-50/50">
-                  <Th sortable active={sort.key === "merchant"} dir={sort.dir} onClick={() => onSort("merchant")}>Merchant</Th>
-                  <Th sortable active={sort.key === "date"} dir={sort.dir} onClick={() => onSort("date")}>Date</Th>
+                  <Th
+                    sortable
+                    active={sort.key === "merchant"}
+                    dir={sort.dir}
+                    onClick={() => onSort("merchant")}
+                  >
+                    Merchant
+                  </Th>
+                  <Th
+                    sortable
+                    active={sort.key === "date"}
+                    dir={sort.dir}
+                    onClick={() => onSort("date")}
+                  >
+                    Date
+                  </Th>
+                  <Th
+                    sortable
+                    active={sort.key === "total"}
+                    dir={sort.dir}
+                    onClick={() => onSort("total")}
+                    align="right"
+                  >
+                    Total
+                  </Th>
                   <Th>Status</Th>
-                  <Th>Uploaded</Th>
-                  <Th sortable active={sort.key === "amount"} dir={sort.dir} onClick={() => onSort("amount")} align="right">Amount</Th>
+                  <Th
+                    sortable
+                    active={sort.key === "confidence"}
+                    dir={sort.dir}
+                    onClick={() => onSort("confidence")}
+                  >
+                    Confidence
+                  </Th>
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((d) => <Row key={d.id} doc={d} />)}
+                {filtered.map((d) => (
+                  <Row key={d.id} doc={d} />
+                ))}
               </tbody>
             </table>
           </div>
@@ -165,8 +278,18 @@ export default function ReceiptsPage() {
 }
 
 function Row({ doc }) {
+  const level = confidenceLevel(doc.classification_confidence);
+  const isLowConfidence = level === "low" || level === "unknown";
+
   return (
-    <tr className="group border-b border-ink-100 last:border-0 hover:bg-ink-50/60 transition-colors">
+    <tr
+      className={cn(
+        "group border-b border-ink-100 last:border-0 transition-colors",
+        isLowConfidence
+          ? "bg-amber-50/40 hover:bg-amber-50/70"
+          : "hover:bg-ink-50/60",
+      )}
+    >
       <td className="px-5 py-3">
         <Link to={`/receipts/${doc.id}`} className="block">
           <div className="flex items-center gap-3">
@@ -175,7 +298,9 @@ function Row({ doc }) {
             </div>
             <div className="min-w-0">
               <div className="text-sm font-medium tracking-tight text-ink-900 truncate group-hover:underline underline-offset-4 decoration-ink-300">
-                {doc.merchant || <span className="italic text-ink-400">Awaiting extraction</span>}
+                {doc.merchant || (
+                  <span className="italic text-ink-400">Awaiting extraction</span>
+                )}
               </div>
               {doc.extraction_error && (
                 <div className="flex items-center gap-1 text-[11px] text-amber-700 mt-0.5">
@@ -186,11 +311,17 @@ function Row({ doc }) {
           </div>
         </Link>
       </td>
-      <td className="px-5 py-3 text-ink-700 tnum">{formatDate(doc.transaction_date)}</td>
-      <td className="px-5 py-3"><StatusPill status={doc.status} /></td>
-      <td className="px-5 py-3 text-ink-500">{formatRelative(doc.created_at)}</td>
+      <td className="px-5 py-3 text-ink-700 tnum">
+        {formatDate(doc.transaction_date || doc.posted_date)}
+      </td>
       <td className="px-5 py-3 text-right font-medium text-ink-900 tnum">
         {formatMoney(doc.amount, doc.currency)}
+      </td>
+      <td className="px-5 py-3">
+        <StatusPill status={doc.status} />
+      </td>
+      <td className="px-5 py-3">
+        <ConfidencePill value={doc.classification_confidence} />
       </td>
     </tr>
   );
@@ -204,7 +335,12 @@ function Th({ children, align, sortable, active, dir, onClick }) {
   );
   return (
     <th onClick={onClick} className={cls}>
-      <span className={cn("inline-flex items-center gap-1", align === "right" && "justify-end")}>
+      <span
+        className={cn(
+          "inline-flex items-center gap-1",
+          align === "right" && "justify-end",
+        )}
+      >
         {children}
         {sortable && (
           <ArrowUpDown
@@ -233,10 +369,18 @@ function ListSkeleton() {
                 <Skeleton className="h-3 w-32" />
               </div>
             </td>
-            <td className="px-5 py-3.5"><Skeleton className="h-3 w-16" /></td>
-            <td className="px-5 py-3.5"><Skeleton className="h-4 w-16 rounded-full" /></td>
-            <td className="px-5 py-3.5"><Skeleton className="h-3 w-20" /></td>
-            <td className="px-5 py-3.5 text-right"><Skeleton className="h-3 w-16 ml-auto" /></td>
+            <td className="px-5 py-3.5">
+              <Skeleton className="h-3 w-16" />
+            </td>
+            <td className="px-5 py-3.5 text-right">
+              <Skeleton className="h-3 w-16 ml-auto" />
+            </td>
+            <td className="px-5 py-3.5">
+              <Skeleton className="h-4 w-16 rounded-full" />
+            </td>
+            <td className="px-5 py-3.5">
+              <Skeleton className="h-4 w-14 rounded-full" />
+            </td>
           </tr>
         ))}
       </tbody>
@@ -244,22 +388,36 @@ function ListSkeleton() {
   );
 }
 
-function filter(docs, q, statuses, sort) {
+function buildView(docs, q, statuses, sort) {
   const ql = q.trim().toLowerCase();
   let out = docs.filter((d) => {
     if (statuses.size > 0 && !statuses.has(d.status)) return false;
     if (!ql) return true;
-    return (d.merchant || "").toLowerCase().includes(ql)
-        || (d.notes || "").toLowerCase().includes(ql)
-        || (d.payment_method || "").toLowerCase().includes(ql);
+    return (
+      (d.merchant || "").toLowerCase().includes(ql) ||
+      (d.notes || "").toLowerCase().includes(ql) ||
+      (d.payment_method || "").toLowerCase().includes(ql)
+    );
   });
+
   out = [...out].sort((a, b) => {
     const dir = sort.dir === "asc" ? 1 : -1;
-    if (sort.key === "amount") return ((a.amount ?? 0) - (b.amount ?? 0)) * dir;
-    if (sort.key === "merchant") return (a.merchant || "").localeCompare(b.merchant || "") * dir;
-    const av = a.transaction_date || a.created_at;
-    const bv = b.transaction_date || b.created_at;
+    if (sort.key === "confidence") {
+      const aLevel = confidenceLevel(a.classification_confidence);
+      const bLevel = confidenceLevel(b.classification_confidence);
+      return (confidenceOrder(aLevel) - confidenceOrder(bLevel)) * dir;
+    }
+    if (sort.key === "total") {
+      return ((a.amount ?? 0) - (b.amount ?? 0)) * dir;
+    }
+    if (sort.key === "merchant") {
+      return (a.merchant || "").localeCompare(b.merchant || "") * dir;
+    }
+    // date sort
+    const av = a.transaction_date || a.posted_date || a.created_at;
+    const bv = b.transaction_date || b.posted_date || b.created_at;
     return (new Date(av).getTime() - new Date(bv).getTime()) * dir;
   });
+
   return out;
 }
