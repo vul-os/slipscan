@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "deploy:dev": "npm run build:dev && firebase deploy --only hosting:dev",
-    "deploy:main": "npm run build:main && firebase deploy --only hosting:main"
+    "deploy:main": "npm run build:main && firebase deploy --only hosting:main",
+    "test": "vitest run"
   },
   "dependencies": {
     "@fontsource/geist-mono": "^5.2.7",
@@ -39,14 +40,19 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.13.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@vitejs/plugin-react": "^4.3.3",
     "autoprefixer": "^10.5.0",
     "eslint": "^9.13.0",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.14",
     "globals": "^15.11.0",
+    "jsdom": "^25.0.1",
     "postcss": "^8.5.12",
     "tailwindcss": "^3.4.19",
-    "vite": "^5.4.10"
+    "vite": "^5.4.10",
+    "vitest": "^2.1.9"
   }
 }
