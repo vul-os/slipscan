@@ -2,11 +2,10 @@ package document
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/exolutionza/slipscan/backend/internal/auth"
 	"github.com/exolutionza/slipscan/backend/internal/httpx"
-	"github.com/exolutionza/slipscan/backend/internal/ocr"
 	"github.com/exolutionza/slipscan/backend/internal/storage"
 )
 
@@ -35,42 +33,45 @@ var allowedMimes = map[string]string{
 	"application/pdf": ".pdf",
 }
 
+// PipelineFn is the auto-pipeline callback type. It is called asynchronously
+// after a successful upload and must not panic. Errors are logged internally.
+// auto-pipeline: injectable so tests can verify the trigger fires without
+// making live Gemini calls.
+type PipelineFn func(ctx context.Context, docID, orgID uuid.UUID, uploadedBy uuid.NullUUID)
+
 type Handler struct {
 	store    *Store
 	storage  *storage.Client
-	ocr      *ocr.Client
 	maxBytes int64
+	// auto-pipeline: non-nil triggers extract+classify after each upload.
+	pipeline PipelineFn
 }
 
-func NewHandler(store *Store, st *storage.Client, oc *ocr.Client) *Handler {
-	return &Handler{store: store, storage: st, ocr: oc, maxBytes: maxUploadBytes}
+// NewHandler constructs an upload Handler. Pass nil for pipelineFn to
+// disable auto-triggering (useful in tests that do not have Gemini).
+func NewHandler(store *Store, st *storage.Client, pipelineFn PipelineFn) *Handler {
+	return &Handler{store: store, storage: st, maxBytes: maxUploadBytes, pipeline: pipelineFn}
 }
 
 type documentResponse struct {
-	ID              string          `json:"id"`
-	OrganizationID  string          `json:"organization_id"`
-	UploadedBy      string          `json:"uploaded_by,omitempty"`
-	ObjectKey       string          `json:"object_key"`
-	ImageURL        string          `json:"image_url,omitempty"`
-	Merchant        string          `json:"merchant,omitempty"`
-	Amount          *float64        `json:"amount,omitempty"`
-	Currency        string          `json:"currency,omitempty"`
-	TransactionDate string          `json:"transaction_date,omitempty"`
-	Tax             *float64        `json:"tax,omitempty"`
-	PaymentMethod   string          `json:"payment_method,omitempty"`
-	Category        string          `json:"category,omitempty"`
-	Notes           string          `json:"notes,omitempty"`
-	Status          string          `json:"status"`
-	RawExtraction   json.RawMessage `json:"raw_extraction,omitempty"`
-	ExtractionError string          `json:"extraction_error,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organization_id"`
+	UploadedBy     string    `json:"uploaded_by,omitempty"`
+	ObjectKey      string    `json:"object_key"`
+	ImageURL       string    `json:"image_url,omitempty"`
+	MimeType       string    `json:"mime_type,omitempty"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
-// Upload accepts a multipart file under the "file" field, writes it to B2,
-// runs Gemini extraction synchronously, persists the result, and returns
-// the saved document. If extraction fails the document is still saved
-// with status="pending" and extraction_error set.
+// Upload accepts a multipart file under the "file" field, stores it in B2,
+// persists a documents row, and returns 201 immediately.
+//
+// auto-pipeline: if a pipeline function is configured it is launched in a
+// goroutine so extract+classify run asynchronously without blocking the HTTP
+// response. Any pipeline failure is logged but never surfaces to the caller —
+// the upload is already durable with status=pending.
 func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := orgIDFromPath(r)
 	if !ok {
@@ -119,34 +120,37 @@ func (h *Handler) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Run extraction. Gemini errors don't block the upload — we save the
-	// row with status=pending so the image isn't orphaned.
-	extractCtx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-	defer cancel()
-	receipt, rawJSON, extractErr := h.ocr.Extract(extractCtx, data, mime)
-
 	doc := &Document{
 		OrganizationID: orgID,
 		UploadedBy:     uuid.NullUUID{UUID: uid, Valid: true},
 		ObjectKey:      objectKey,
+		MimeType:       mime,
+		SizeBytes:      int64(len(data)),
 		Status:         StatusPending,
 	}
-	if extractErr == nil {
-		applyReceipt(doc, receipt, rawJSON)
-	}
 	if err := h.store.Create(r.Context(), doc); err != nil {
-		// We already wrote to B2; rolling that back leaves the bucket clean
-		// but we don't want a row mismatch. Best effort cleanup.
+		// Best-effort cleanup: remove the orphaned object from B2.
 		_ = h.storage.Delete(r.Context(), objectKey)
 		httpx.WriteError(w, http.StatusInternalServerError, "save_failed", "could not save document")
 		return
 	}
 
-	resp := toResponse(doc, "")
-	if extractErr != nil {
-		resp.ExtractionError = extractErr.Error()
+	// auto-pipeline: launch extract → classify in a background goroutine.
+	// A fresh context gives the pipeline a 5-minute budget independent of
+	// the HTTP request lifecycle. Failure is logged; the upload is unaffected.
+	if h.pipeline != nil {
+		uploadedBy := uuid.NullUUID{UUID: uid, Valid: true}
+		docID := doc.ID // capture before goroutine
+		go func() {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			slog.InfoContext(bgCtx, "auto-pipeline: starting",
+				"doc_id", docID.String(), "org_id", orgID.String())
+			h.pipeline(bgCtx, docID, orgID, uploadedBy)
+		}()
 	}
-	httpx.WriteJSON(w, http.StatusCreated, resp)
+
+	httpx.WriteJSON(w, http.StatusCreated, toResponse(doc, ""))
 }
 
 func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
@@ -206,81 +210,19 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, toResponse(doc, imageURL))
 }
 
-func applyReceipt(d *Document, r *ocr.Receipt, raw json.RawMessage) {
-	d.RawExtraction = raw
-	if r == nil {
-		return
-	}
-	if r.Merchant != nil {
-		d.Merchant = sql.NullString{String: *r.Merchant, Valid: true}
-	}
-	if r.Total != nil {
-		d.Amount = sql.NullFloat64{Float64: *r.Total, Valid: true}
-	}
-	if r.Currency != nil {
-		c := strings.ToUpper(strings.TrimSpace(*r.Currency))
-		if len(c) == 3 {
-			d.Currency = sql.NullString{String: c, Valid: true}
-		}
-	}
-	if r.Date != nil {
-		if t, err := time.Parse("2006-01-02", *r.Date); err == nil {
-			d.TransactionDate = sql.NullTime{Time: t, Valid: true}
-		}
-	}
-	if r.Tax != nil {
-		d.Tax = sql.NullFloat64{Float64: *r.Tax, Valid: true}
-	}
-	if r.PaymentMethod != nil {
-		d.PaymentMethod = sql.NullString{String: *r.PaymentMethod, Valid: true}
-	}
-	if r.Category != nil && *r.Category != "" {
-		d.Category = sql.NullString{String: strings.ToLower(strings.TrimSpace(*r.Category)), Valid: true}
-	}
-	if r.Notes != nil {
-		d.Notes = sql.NullString{String: *r.Notes, Valid: true}
-	}
-}
-
 func toResponse(d *Document, imageURL string) documentResponse {
 	r := documentResponse{
 		ID:             d.ID.String(),
 		OrganizationID: d.OrganizationID.String(),
 		ObjectKey:      d.ObjectKey,
 		ImageURL:       imageURL,
+		MimeType:       d.MimeType,
 		Status:         string(d.Status),
-		RawExtraction:  d.RawExtraction,
 		CreatedAt:      d.CreatedAt,
 		UpdatedAt:      d.UpdatedAt,
 	}
 	if d.UploadedBy.Valid {
 		r.UploadedBy = d.UploadedBy.UUID.String()
-	}
-	if d.Merchant.Valid {
-		r.Merchant = d.Merchant.String
-	}
-	if d.Amount.Valid {
-		v := d.Amount.Float64
-		r.Amount = &v
-	}
-	if d.Currency.Valid {
-		r.Currency = d.Currency.String
-	}
-	if d.TransactionDate.Valid {
-		r.TransactionDate = d.TransactionDate.Time.Format("2006-01-02")
-	}
-	if d.Tax.Valid {
-		v := d.Tax.Float64
-		r.Tax = &v
-	}
-	if d.PaymentMethod.Valid {
-		r.PaymentMethod = d.PaymentMethod.String
-	}
-	if d.Category.Valid {
-		r.Category = d.Category.String
-	}
-	if d.Notes.Valid {
-		r.Notes = d.Notes.String
 	}
 	return r
 }

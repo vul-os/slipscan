@@ -2,9 +2,9 @@
 id: P4-04
 title: Public API & developer tokens
 phase: 4
-status: todo
+status: review
 depends_on: [P2-03]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -63,3 +63,35 @@ implement later); GraphQL.
 Treat the `/v1` shapes as a public contract from day one — version them and don't
 break them. Tokens are credentials: hash at rest, show once, log usage for the
 P4-03 audit trail.
+
+### Implementation summary (sonnet-agent, 2026-05-21)
+
+New package `backend/internal/apitokens` with:
+
+- `token.go` — `Kind` type, `Token` struct, `generate()` (SHA-256 hash,
+  `sk_{kind}_{base64}` format, 12-char prefix), `VerifyToken()`.
+- `store.go` — `Store.Issue()` / `ListByOrg()` / `Revoke()` / `Authenticate()`;
+  lookups by prefix + hash; best-effort `last_used_at` update on auth.
+- `ratelimit.go` — in-memory sliding-window per-token rate limiter;
+  `DefaultRateLimitPerMin = 60`; falls back when `rate_limit_per_minute = 0`.
+  Multi-node caveat documented (use Redis INCRBY for fleet-wide enforcement).
+- `middleware.go` — `Store.Middleware()` (Bearer auth + rate limit),
+  `RequireScope(scope)` (per-endpoint scope gate), `RequireLive` (blocks test
+  tokens on production data endpoints), `OrgIDFrom()` (cross-org guard).
+- `handlers.go` — `POST/GET/DELETE /orgs/{orgID}/api-tokens` (admin-gated).
+- `v1handlers.go` — `V1Handler` with:
+  - `POST /v1/orgs/{orgID}/documents` → multipart upload → `source='api'` →
+    async extract pipeline triggered via `ExtractionRunner.Run`.
+  - `GET /v1/orgs/{orgID}/transactions` → stable `APITransaction` shape with
+    pagination (`limit`/`offset`).
+
+Routes wired in `cmd/server/main.go` under `// P4-04` comment blocks.
+
+New migration `20260521000005_apitokens_seed_permissions.sql` seeds 4 scope
+rows (`documents:write`, `documents:read`, `transactions:read`, `reports:read`)
+into the existing `api_permissions` catalogue table.
+
+`go build ./... && go vet ./...` pass clean. 15 unit tests cover: hash/verify
+round-trip, token format, scope allow/deny matrix, live-vs-test separation,
+rate-limit allow/deny/window-reset/default-limit/multi-token independence, and
+context round-trip.

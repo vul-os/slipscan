@@ -69,6 +69,23 @@ type Config struct {
 	XeroClientID     string
 	XeroClientSecret string
 	XeroRedirectURL  string
+
+	// P3-01: Bank-feed aggregator (Stitch / SA-first).
+	// StitchClientID, StitchClientSecret and StitchRedirectURL are the OAuth2
+	// credentials from https://stitch.money/developers.
+	// StitchWebhookSecret is the shared secret used to validate webhook
+	// signatures (X-Stitch-Signature header).
+	// When StitchClientID is blank the integration is disabled gracefully
+	// (routes return 503).
+	//
+	// BankfeedSyncEnabled gates the periodic scheduler.  Set to "true" on
+	// EXACTLY ONE fleet member (same leader-guard pattern as FX_SYNC_ENABLED).
+	// BankfeedSyncInterval controls how often connections are polled (default 4h).
+	StitchClientID      string
+	StitchClientSecret  string
+	StitchRedirectURL   string
+	StitchWebhookSecret string
+	BankfeedSyncEnabled bool
 }
 
 func Load() (*Config, error) {
@@ -152,6 +169,13 @@ func Load() (*Config, error) {
 		XeroClientID:     os.Getenv("XERO_CLIENT_ID"),
 		XeroClientSecret: os.Getenv("XERO_CLIENT_SECRET"),
 		XeroRedirectURL:  getOr("XERO_REDIRECT_URL", "http://localhost:8080/integrations/xero/callback"),
+
+		// P3-01: Stitch bank-feed integration (optional — missing client_id disables).
+		StitchClientID:      os.Getenv("STITCH_CLIENT_ID"),
+		StitchClientSecret:  os.Getenv("STITCH_CLIENT_SECRET"),
+		StitchRedirectURL:   getOr("STITCH_REDIRECT_URL", "http://localhost:8080/integrations/bankfeed/callback"),
+		StitchWebhookSecret: os.Getenv("STITCH_WEBHOOK_SECRET"),
+		BankfeedSyncEnabled: os.Getenv("BANKFEED_SYNC_ENABLED") == "true",
 	}, nil
 }
 

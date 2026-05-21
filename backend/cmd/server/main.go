@@ -10,9 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/exolutionza/slipscan/backend/internal/accounting_export"
+	"github.com/exolutionza/slipscan/backend/internal/apitokens"
 	"github.com/exolutionza/slipscan/backend/internal/audit"
 	"github.com/exolutionza/slipscan/backend/internal/auth"
+	"github.com/exolutionza/slipscan/backend/internal/bankfeed"
 	"github.com/exolutionza/slipscan/backend/internal/classify"
 	"github.com/exolutionza/slipscan/backend/internal/config"
 	"github.com/exolutionza/slipscan/backend/internal/db"
@@ -27,6 +31,7 @@ import (
 	"github.com/exolutionza/slipscan/backend/internal/ledger"
 	"github.com/exolutionza/slipscan/backend/internal/ocr"
 	"github.com/exolutionza/slipscan/backend/internal/org"
+	"github.com/exolutionza/slipscan/backend/internal/recon"
 	"github.com/exolutionza/slipscan/backend/internal/reporting"
 	"github.com/exolutionza/slipscan/backend/internal/storage"
 )
@@ -116,7 +121,6 @@ func main() {
 	})
 	orgH := org.NewHandler(orgStore)
 	inviteH := invite.NewHandler(inviteStore, userStore, orgStore, cfg.InvitationTTL, cfg.FrontendBaseURL, mailer)
-	docH := document.NewHandler(docStore, storageClient, ocrClient)
 	insightsH := insights.NewHandler(pool, insights.NewTranslator(ocrClient))
 
 	// P1-01: extraction hardening — typed structured extraction pipeline.
@@ -126,6 +130,22 @@ func main() {
 	// P1-02: classification engine
 	classifyEngine := classify.New(pool, ocrClient)
 	classifyH := classify.NewHandler(pool, classifyEngine)
+
+	// auto-pipeline: wire extract+classify as the document upload callback so
+	// every successful upload automatically kicks off extraction then
+	// classification in a background goroutine. The pipeline degrades
+	// gracefully — a Gemini/extraction failure is logged, never surfaced to
+	// the upload caller.
+	autoPipeline := document.PipelineFn(func(ctx context.Context, docID, orgID uuid.UUID, uploadedBy uuid.NullUUID) {
+		if err := extractSvc.Run(ctx, docID, orgID); err != nil {
+			log.Printf("auto-pipeline: extraction failed doc=%s: %v", docID, err)
+			return
+		}
+		if _, err := classifyEngine.ClassifyDocument(ctx, orgID, docID, uploadedBy); err != nil {
+			log.Printf("auto-pipeline: classification failed doc=%s: %v", docID, err)
+		}
+	})
+	docH := document.NewHandler(docStore, storageClient, autoPipeline)
 	// P1-03: correction-learning loop
 	// PromotionThreshold defaults to 2; override via CLASSIFY_PROMOTION_THRESHOLD.
 	correctionsH := classify.NewCorrectionsHandler(classify.NewCorrectionsStore(pool, classify.CorrectionsConfig{
@@ -160,6 +180,49 @@ func main() {
 	}
 	// P4-03: audit trail — per-org queryable audit log (admin-gated).
 	auditH := audit.NewHandler(audit.NewStore(pool))
+
+	// P3-01: Bank-feed aggregator (Stitch SA-first).
+	// Secrets: STITCH_CLIENT_ID, STITCH_CLIENT_SECRET, STITCH_REDIRECT_URL,
+	//          STITCH_WEBHOOK_SECRET.
+	// When STITCH_CLIENT_ID is blank, all bankfeed routes return 503.
+	// BANKFEED_SYNC_ENABLED must be set on EXACTLY ONE fleet member.
+	bankfeedStore := bankfeed.NewStore(pool)
+	bankfeedCascader := bankfeed.NewFeedCascader(pool)
+	var bankfeedH *bankfeed.Handler
+	{
+		var provider bankfeed.Provider = bankfeed.NewMockProvider() // default: mock (safe for non-live builds)
+		_ = provider // may be overridden by live build tag below
+		bankfeedSyncer := bankfeed.NewSyncer(provider, bankfeedStore, bankfeedCascader)
+		bankfeedH = bankfeed.NewHandler(provider, bankfeedStore, bankfeedSyncer)
+
+		if cfg.BankfeedSyncEnabled {
+			bankfeedScheduler := bankfeed.NewScheduler(bankfeedSyncer, 4*time.Hour)
+			go bankfeedScheduler.Run(ctx)
+			log.Printf("bankfeed: scheduler started (BANKFEED_SYNC_ENABLED=true)")
+		} else {
+			log.Printf("bankfeed: scheduler disabled (BANKFEED_SYNC_ENABLED != true)")
+		}
+	}
+
+	// P3-02: document ↔ bank-feed auto-reconciliation.
+	// Thresholds: auto ≥ 0.85 confidence; suggest ≥ 0.55; date window ±5 days.
+	// Override by constructing recon.Config explicitly if tuning is needed.
+	reconH := recon.NewHandler(recon.NewStore(pool, recon.DefaultConfig()))
+
+	// P4-04: public API & developer tokens.
+	// apiTokenStore: issue/revoke/authenticate developer tokens (hashed at rest).
+	// apiRateLimiter: in-memory per-token sliding window (see apitokens pkg docs
+	//   for multi-node caveat — use Redis INCRBY for true fleet-wide enforcement).
+	apiTokenStore := apitokens.NewStore(pool)
+	apiTokenH := apitokens.NewHandler(apiTokenStore)
+	apiRateLimiter := apitokens.NewRateLimiter()
+	apiV1H := apitokens.NewV1Handler(pool, storageClient, extractSvc)
+	// apiTokened wraps a handler with API-token authentication + rate limiting.
+	apiTokened := func(scope string, h http.HandlerFunc) http.Handler {
+		return apiTokenStore.Middleware(apiRateLimiter)(
+			apitokens.RequireScope(scope)(h),
+		)
+	}
 
 	mux := http.NewServeMux()
 
@@ -223,6 +286,21 @@ func main() {
 		authedMember(correctionsH.PatchClassification))
 	// P4-03: per-org audit log — admin-only; filterable by entity/actor/date.
 	mux.Handle("GET /orgs/{orgID}/audit", authedAdmin(auditH.List))
+
+	// P3-02: document ↔ bank-feed reconciliation.
+	// POST   /orgs/{orgID}/reconcile                       — trigger matcher run
+	// GET    /orgs/{orgID}/reconcile                       — three-bucket view
+	// POST   /orgs/{orgID}/reconcile/{matchID}/confirm     — user confirms match
+	// POST   /orgs/{orgID}/reconcile/{matchID}/reject      — user rejects match
+	mux.Handle("POST /orgs/{orgID}/reconcile", authedMember(reconH.Run))
+	mux.Handle("GET /orgs/{orgID}/reconcile", authedMember(reconH.GetBuckets))
+	mux.Handle("POST /orgs/{orgID}/reconcile/{matchID}/confirm", authedMember(reconH.Confirm))
+	mux.Handle("POST /orgs/{orgID}/reconcile/{matchID}/reject", authedMember(reconH.Reject))
+
+	// P4-04: developer token management — admin-gated JWT routes.
+	mux.Handle("POST /orgs/{orgID}/api-tokens", authedAdmin(apiTokenH.Issue))
+	mux.Handle("GET /orgs/{orgID}/api-tokens", authedAdmin(apiTokenH.List))
+	mux.Handle("DELETE /orgs/{orgID}/api-tokens/{tokenID}", authedAdmin(apiTokenH.Revoke))
 
 	// P2-03: business ledger, chart of accounts, manual journals, contacts
 	// Chart of accounts
@@ -328,6 +406,40 @@ func main() {
 			mux.HandleFunc(pattern, xeroDisabled)
 		}
 	}
+
+	// P3-01: Bank-feed aggregator routes.
+	// Connect/disconnect require admin; read/sync require member.
+	// Webhook is public (validated by HMAC signature inside the handler).
+	if bankfeedH != nil {
+		// OAuth2 link initiation — admin starts the bank-link flow.
+		mux.Handle("GET /orgs/{orgID}/integrations/bankfeed/connect",
+			authedAdmin(bankfeedH.Connect))
+		// OAuth2 callback — no org in path; state encodes orgID.
+		mux.HandleFunc("GET /integrations/bankfeed/callback", bankfeedH.Callback)
+		// Connection management.
+		mux.Handle("GET /orgs/{orgID}/integrations/bankfeed/connections",
+			authedMember(bankfeedH.ListConnections))
+		mux.Handle("GET /orgs/{orgID}/integrations/bankfeed/connections/{connID}",
+			authedMember(bankfeedH.GetConnection))
+		mux.Handle("DELETE /orgs/{orgID}/integrations/bankfeed/connections/{connID}",
+			authedAdmin(bankfeedH.Disconnect))
+		// On-demand sync trigger.
+		mux.Handle("POST /orgs/{orgID}/integrations/bankfeed/connections/{connID}/sync",
+			authedMember(bankfeedH.TriggerSync))
+		// Webhook endpoint — unauthenticated (HMAC-validated inside handler).
+		mux.HandleFunc("POST /integrations/bankfeed/webhook", bankfeedH.Webhook)
+	}
+
+	// P4-04: versioned public surface — authenticated via API token, not JWT.
+	// Scopes are enforced per-endpoint; RequireLive can be chained for
+	// endpoints that must not accept test tokens.
+	//
+	// POST /v1/orgs/{orgID}/documents  → create document (source='api') → pipeline
+	// GET  /v1/orgs/{orgID}/transactions → read transactions (stable shape)
+	mux.Handle("POST /v1/orgs/{orgID}/documents",
+		apiTokened(apitokens.ScopeDocumentsWrite, apiV1H.CreateDocument))
+	mux.Handle("GET /v1/orgs/{orgID}/transactions",
+		apiTokened(apitokens.ScopeTransactionsRead, apiV1H.ListTransactions))
 
 	corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if corsOrigins == "" {

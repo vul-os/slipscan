@@ -37,11 +37,23 @@ type TransactionRow struct {
 
 // ListTransactions returns transactions for an org with their current
 // classification joined in.  Pagination via limit/offset.
-func ListTransactions(ctx context.Context, db *sql.DB, orgID uuid.UUID, limit, offset int) ([]TransactionRow, error) {
+//
+// tx filter: when documentID is non-nil only transactions whose document_id
+// matches are returned.  The caller passes uuid.Nil to fetch all.
+func ListTransactions(ctx context.Context, db *sql.DB, orgID uuid.UUID, limit, offset int, documentID *uuid.UUID) ([]TransactionRow, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	const q = `
+
+	// tx filter: build WHERE clause dynamically to support optional document_id.
+	args := []any{orgID, limit, offset}
+	docFilter := ""
+	if documentID != nil {
+		args = append(args, *documentID)
+		docFilter = " AND t.document_id = $4"
+	}
+
+	q := `
 		SELECT
 			t.id, t.organization_id, t.document_id,
 			t.merchant, t.merchant_normalized, t.description,
@@ -56,11 +68,11 @@ func ListTransactions(ctx context.Context, db *sql.DB, orgID uuid.UUID, limit, o
 			ON tc.id = t.current_classification_id
 		LEFT JOIN categories c
 			ON c.id = tc.category_id
-		WHERE t.organization_id = $1
+		WHERE t.organization_id = $1` + docFilter + `
 		ORDER BY t.posted_date DESC NULLS LAST, t.created_at DESC
 		LIMIT $2 OFFSET $3
 	`
-	rows, err := db.QueryContext(ctx, q, orgID, limit, offset)
+	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}

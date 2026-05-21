@@ -67,7 +67,11 @@ func (h *Handler) Classify(w http.ResponseWriter, r *http.Request) {
 
 // ─── GET /orgs/{orgID}/transactions ───────────────────────────────────────
 
-// ListTransactionsHandler returns paginated transactions for the org.
+// ListTransactions returns paginated transactions for the org.
+//
+// tx filter: accepts an optional ?document_id=<uuid> query parameter so the
+// detail view can fetch one document's transactions server-side instead of
+// filtering client-side.
 func (h *Handler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 	orgID, ok := parseUUID(r, "orgID")
 	if !ok {
@@ -88,7 +92,18 @@ func (h *Handler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rows, err := ListTransactions(r.Context(), h.db, orgID, limit, offset)
+	// tx filter: parse optional document_id query parameter.
+	var documentID *uuid.UUID
+	if v := r.URL.Query().Get("document_id"); v != "" {
+		id, err := uuid.Parse(v)
+		if err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "invalid_document_id", "document_id must be a valid UUID")
+			return
+		}
+		documentID = &id
+	}
+
+	rows, err := ListTransactions(r.Context(), h.db, orgID, limit, offset, documentID)
 	if err != nil {
 		httpx.WriteError(w, http.StatusInternalServerError, "list_failed", "could not list transactions")
 		return
