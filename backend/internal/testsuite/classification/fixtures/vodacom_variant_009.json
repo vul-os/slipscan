@@ -1,0 +1,18 @@
+{
+  "id": "vodacom_variant_009",
+  "kind": "slip",
+  "merchant": "VODACOM AIRTIME POS 88291",
+  "date": "2026-02-20",
+  "currency": "ZAR",
+  "subtotal": 100.00,
+  "tax": 0.00,
+  "total": 100.00,
+  "confidence": 0.90,
+  "line_items": [
+    {"description": "Airtime recharge R100", "qty": 1, "unit": 100.00, "amount": 100.00}
+  ],
+  "_expected_category": "Telecoms",
+  "_merchant_normalized_expected": "vodacom airtime",
+  "_normalize_group": "vodacom",
+  "_normalize_group_note": "Both vodacom_008 and vodacom_variant_009 normalize to keys starting with 'vodacom'; a merchant_contains rule on 'vodacom' covers both"
+}

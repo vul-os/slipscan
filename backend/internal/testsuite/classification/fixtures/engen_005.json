@@ -1,0 +1,18 @@
+{
+  "id": "engen_005",
+  "kind": "slip",
+  "merchant": "ENGEN PETROLEUM LTD - RANDBURG STN",
+  "date": "2026-03-05",
+  "currency": "ZAR",
+  "subtotal": 720.00,
+  "tax": 100.80,
+  "total": 820.80,
+  "confidence": 0.98,
+  "line_items": [
+    {"description": "Unleaded 95 - 40L", "qty": 40, "unit": 18.00, "amount": 720.00}
+  ],
+  "_expected_category": "Fuel/Transport",
+  "_merchant_normalized_expected": "engen petroleum randburg stn",
+  "_normalize_group": "engen_randburg",
+  "_normalize_group_note": "engen_005 and engen_variant_006 both contain 'engen' and 'randburg'; a merchant_contains rule on 'engen randburg' covers both"
+}

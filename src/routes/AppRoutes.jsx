@@ -1,0 +1,60 @@
+import { lazy, Suspense } from "react";
+import { Route, Routes } from "react-router-dom";
+import AuthLayout from "@/layouts/AuthLayout";
+import AppLayout from "@/layouts/AppLayout";
+import { Skeleton } from "@/components/ui/Skeleton";
+
+const LandingPage = lazy(() => import("@/pages/Landing"));
+const LoginPage = lazy(() => import("@/pages/Login"));
+const RegisterPage = lazy(() => import("@/pages/Register"));
+const OnboardingPage = lazy(() => import("@/pages/Onboarding"));
+const AcceptInvitePage = lazy(() => import("@/pages/AcceptInvite"));
+const DashboardPage = lazy(() => import("@/pages/Dashboard"));
+const ReceiptsPage = lazy(() => import("@/pages/Receipts"));
+const ReceiptDetailPage = lazy(() => import("@/pages/ReceiptDetail"));
+const AskPage = lazy(() => import("@/pages/Ask"));
+const MembersPage = lazy(() => import("@/pages/Members"));
+const SettingsPage = lazy(() => import("@/pages/Settings"));
+const NotFoundPage = lazy(() => import("@/pages/NotFound"));
+
+function PageFallback() {
+  return (
+    <div className="p-10 space-y-3">
+      <Skeleton className="h-9 w-64" />
+      <Skeleton className="h-4 w-96" />
+      <Skeleton className="h-64 mt-6" />
+    </div>
+  );
+}
+
+export function AppRoutes() {
+  return (
+    <Suspense fallback={<PageFallback />}>
+      <Routes>
+        <Route path="/" element={<LandingPage />} />
+
+        {/* Public auth routes */}
+        <Route element={<AuthLayout />}>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/register" element={<RegisterPage />} />
+        </Route>
+
+        {/* Authenticated, but no app shell */}
+        <Route path="/onboarding" element={<OnboardingPage />} />
+        <Route path="/invitations/accept" element={<AcceptInvitePage />} />
+
+        {/* Authenticated app */}
+        <Route element={<AppLayout />}>
+          <Route path="/dashboard"           element={<DashboardPage />} />
+          <Route path="/receipts"            element={<ReceiptsPage />} />
+          <Route path="/receipts/:id"        element={<ReceiptDetailPage />} />
+          <Route path="/ask"                 element={<AskPage />} />
+          <Route path="/members"             element={<MembersPage />} />
+          <Route path="/settings"            element={<SettingsPage />} />
+        </Route>
+
+        <Route path="*" element={<NotFoundPage />} />
+      </Routes>
+    </Suspense>
+  );
+}

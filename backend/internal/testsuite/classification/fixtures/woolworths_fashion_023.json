@@ -1,0 +1,19 @@
+{
+  "id": "woolworths_fashion_023",
+  "kind": "slip",
+  "merchant": "WOOLWORTHS FASHION BEAUTY HOME",
+  "date": "2026-03-12",
+  "currency": "ZAR",
+  "subtotal": 1299.00,
+  "tax": 181.86,
+  "total": 1480.86,
+  "confidence": 0.96,
+  "line_items": [
+    {"description": "Linen Blazer Navy L", "qty": 1, "unit": 899.00, "amount": 899.00},
+    {"description": "Cotton Chino Slim 34", "qty": 1, "unit": 400.00, "amount": 400.00}
+  ],
+  "_expected_category": "Clothing/Apparel",
+  "_merchant_normalized_expected": "woolworths fashion beauty home",
+  "_normalize_group": "woolworths_fashion",
+  "_normalize_group_note": "woolworths_jhb_001 normalises to 'woolworths jhb'; woolworths_fashion_023 to 'woolworths fashion beauty home' — these are DIFFERENT keys so learnt rules don't cross-contaminate Groceries vs Clothing"
+}

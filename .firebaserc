@@ -1,5 +1,18 @@
 {
   "projects": {
-    "default": "slipscan-co"
-  }
+    "default": "slip-scan-co"
+  },
+  "targets": {
+    "slip-scan-co": {
+      "hosting": {
+        "dev": [
+          "slipscan-staging"
+        ],
+        "main": [
+          "slipscan-main"
+        ]
+      }
+    }
+  },
+  "etags": {}
 }

@@ -1,0 +1,17 @@
+{
+  "id": "telkom_022",
+  "kind": "invoice",
+  "merchant": "Telkom SA SOC Limited",
+  "date": "2026-04-01",
+  "currency": "ZAR",
+  "subtotal": 899.00,
+  "tax": 125.86,
+  "total": 1024.86,
+  "confidence": 0.99,
+  "line_items": [
+    {"description": "LTE Uncapped 50Mbps - Month", "qty": 1, "unit": 699.00, "amount": 699.00},
+    {"description": "Rental - WiFi Router", "qty": 1, "unit": 200.00, "amount": 200.00}
+  ],
+  "_expected_category": "Telecoms",
+  "_merchant_normalized_expected": "telkom sa soc"
+}

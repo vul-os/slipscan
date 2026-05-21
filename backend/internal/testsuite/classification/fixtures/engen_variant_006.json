@@ -1,0 +1,18 @@
+{
+  "id": "engen_variant_006",
+  "kind": "slip",
+  "merchant": "Engen Randburg",
+  "date": "2026-04-18",
+  "currency": "ZAR",
+  "subtotal": 450.00,
+  "tax": 63.00,
+  "total": 513.00,
+  "confidence": 0.92,
+  "line_items": [
+    {"description": "Diesel 50ppm - 25L", "qty": 25, "unit": 18.00, "amount": 450.00}
+  ],
+  "_expected_category": "Fuel/Transport",
+  "_merchant_normalized_expected": "engen randburg",
+  "_normalize_group": "engen_randburg",
+  "_normalize_group_note": "engen_005 and engen_variant_006 both normalise to contain 'engen randburg' — a merchant_contains rule covers both"
+}
