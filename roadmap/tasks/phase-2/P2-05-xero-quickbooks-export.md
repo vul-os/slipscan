@@ -2,9 +2,9 @@
 id: P2-05
 title: Xero / QuickBooks export (integrate-first go-to-market)
 phase: 2
-status: todo
+status: review
 depends_on: [P2-03]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -64,3 +64,30 @@ so it's pluggable, implement Xero first).
 This is the revenue path — "use us to capture, keep using Xero." Build it
 pluggable; QuickBooks and the eventual "become the ledger" pivot (Phase 4) both
 hinge on this interface being clean.
+
+---
+**Implementation notes (sonnet-agent, 2026-05-21):**
+
+New package `backend/internal/accounting_export` with the following layout:
+
+- `provider.go` — `Provider` interface (`Name`, `AuthURL`, `ExchangeCode`, `RefreshToken`, `PushContact`, `PushTransaction`) + `Contact`, `Transaction`, `PushResult` domain types.
+- `xero.go` — `XeroProvider` implementing `Provider`. `XeroHTTPClient` and `TokenCipher` interfaces allow full unit-test injection (no live calls). `PlaintextCipher` no-op for dev; swap for AES-GCM in prod.
+- `store.go` — `Store` for `accounting_export_mappings` (get/upsert/error) and `oauth_grants` (get/upsert/update/revoke) + data reads from `contacts`, `transactions`, `accounts`, `tax_rates`.
+- `handlers.go` — `Handler` with `Connect`, `Callback`, `Disconnect`, `Status`, `SyncStatus`, `Push` endpoints.
+- `xero_test.go` — 11 unit tests (mapping helpers, payload builders, auth URL, config validation, cipher round-trip); all passing.
+
+New migration: `backend/migrations/20260521000001_accounting_export.sql` — adds `accounting_provider` enum and `accounting_export_mappings` table (idempotent re-push via UNIQUE+ON CONFLICT).
+
+Routes added in `cmd/server/main.go` (grouped `// P2-05`):
+- `GET  /orgs/{orgID}/integrations/xero/connect` (authedAdmin)
+- `DELETE /orgs/{orgID}/integrations/xero/connect` (authedAdmin)
+- `GET  /integrations/xero/callback` (public, CSRF-nonce validated)
+- `GET  /orgs/{orgID}/integrations/xero/status` (authedMember)
+- `GET  /orgs/{orgID}/integrations/xero/sync-status` (authedMember)
+- `POST /orgs/{orgID}/integrations/xero/push` (authedMember)
+
+When Xero credentials are absent all routes return 503 with a clear message.
+
+Required env secrets: `XERO_CLIENT_ID`, `XERO_CLIENT_SECRET`, `XERO_REDIRECT_URL`.
+
+`go build ./... && go vet ./...` clean. 11/11 unit tests passing.
