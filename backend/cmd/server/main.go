@@ -27,6 +27,7 @@ import (
 	"github.com/exolutionza/slipscan/backend/internal/fx"
 	"github.com/exolutionza/slipscan/backend/internal/httpx"
 	"github.com/exolutionza/slipscan/backend/internal/insights"
+	"github.com/exolutionza/slipscan/backend/internal/intelligence"
 	"github.com/exolutionza/slipscan/backend/internal/invite"
 	"github.com/exolutionza/slipscan/backend/internal/ledger"
 	"github.com/exolutionza/slipscan/backend/internal/ocr"
@@ -208,6 +209,9 @@ func main() {
 	// Thresholds: auto ≥ 0.85 confidence; suggest ≥ 0.55; date window ±5 days.
 	// Override by constructing recon.Config explicitly if tuning is needed.
 	reconH := recon.NewHandler(recon.NewStore(pool, recon.DefaultConfig()))
+
+	// P4-02: cross-org intelligence — forecast, anomalies, tax-readiness.
+	intelligenceH := intelligence.NewHandler(intelligence.NewStore(pool))
 
 	// P4-04: public API & developer tokens.
 	// apiTokenStore: issue/revoke/authenticate developer tokens (hashed at rest).
@@ -406,6 +410,11 @@ func main() {
 			mux.HandleFunc(pattern, xeroDisabled)
 		}
 	}
+
+	// P4-02: cross-org intelligence routes.
+	mux.Handle("GET /orgs/{orgID}/forecast", authedMember(intelligenceH.GetForecast))
+	mux.Handle("GET /orgs/{orgID}/anomalies", authedMember(intelligenceH.GetAnomalies))
+	mux.Handle("GET /orgs/{orgID}/tax-readiness", authedMember(intelligenceH.GetTaxReadiness))
 
 	// P3-01: Bank-feed aggregator routes.
 	// Connect/disconnect require admin; read/sync require member.
