@@ -1,0 +1,199 @@
+import { useEffect, useState } from "react";
+import { Navigate, Outlet, useNavigate } from "react-router-dom";
+import { Menu, X, Plus } from "lucide-react";
+import { Sidebar } from "@/components/Sidebar";
+import { Wordmark } from "@/components/Wordmark";
+import { CommandPalette } from "@/components/CommandPalette";
+import { UploadDialog } from "@/components/UploadDialog";
+import { useAuthStore } from "@/stores/auth";
+import { useOrgStore } from "@/stores/org";
+import { useUIStore } from "@/stores/ui";
+import { useMe, useOrgs } from "@/lib/queries";
+import { Skeleton } from "@/components/ui/Skeleton";
+import { cn } from "@/lib/cn";
+
+// Keyboard navigation: vim-style "g X" leaders for routes, plus ⌘K /
+// Ctrl+K to open the command palette anywhere in the app, and "u" to
+// trigger an upload from any non-input context.
+function useGlobalShortcuts() {
+  const navigate = useNavigate();
+  const setPaletteOpen = useUIStore((s) => s.setPaletteOpen);
+  const setUploadOpen = useUIStore((s) => s.setUploadOpen);
+
+  useEffect(() => {
+    let pendingG = 0;
+    const handler = (e) => {
+      const t = e.target;
+      const inField = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen(true);
+        return;
+      }
+
+      if (inField) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+      if (e.key === "u") {
+        e.preventDefault();
+        setUploadOpen(true);
+        return;
+      }
+
+      const now = Date.now();
+      if (e.key === "g") {
+        pendingG = now;
+        return;
+      }
+      if (now - pendingG < 1500) {
+        if (e.key === "d") { navigate("/dashboard"); pendingG = 0; }
+        else if (e.key === "r") { navigate("/receipts"); pendingG = 0; }
+        else if (e.key === "a") { navigate("/ask"); pendingG = 0; }
+        else if (e.key === "m") { navigate("/members"); pendingG = 0; }
+        else if (e.key === "s") { navigate("/settings"); pendingG = 0; }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [navigate, setPaletteOpen, setUploadOpen]);
+}
+
+export default function AppLayout() {
+  const accessToken = useAuthStore((s) => s.accessToken);
+  const setUser = useAuthStore((s) => s.setUser);
+  const storedUser = useAuthStore((s) => s.user);
+  const { activeOrgId, setActiveOrg } = useOrgStore();
+  const { data: orgs, isLoading, isFetching } = useOrgs();
+  const { data: me } = useMe();
+  const paletteOpen = useUIStore((s) => s.paletteOpen);
+  const uploadOpen = useUIStore((s) => s.uploadOpen);
+  const setPaletteOpen = useUIStore((s) => s.setPaletteOpen);
+  const setUploadOpen = useUIStore((s) => s.setUploadOpen);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  useGlobalShortcuts();
+
+  useEffect(() => {
+    if (!orgs) return;
+    const list = orgs.organizations;
+    if (list.length === 0) return;
+    if (!activeOrgId || !list.find((o) => o.id === activeOrgId)) {
+      setActiveOrg(list[0].id);
+    }
+  }, [orgs, activeOrgId, setActiveOrg]);
+
+  // Hydrate the stored user from /auth/me on boot — keeps the sidebar
+  // and dashboard in sync if the user updated their profile elsewhere,
+  // and surfaces stale-token errors before the user clicks anything.
+  useEffect(() => {
+    if (!me) return;
+    const same =
+      storedUser?.id === me.id &&
+      storedUser?.email === me.email &&
+      storedUser?.full_name === me.full_name;
+    if (!same) setUser(me);
+  }, [me, storedUser, setUser]);
+
+  if (!accessToken) return <Navigate to="/login" replace />;
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex">
+        <aside className="hidden lg:block w-[252px] border-r border-ink-100 p-4">
+          <Skeleton className="h-7 w-32 mb-6" />
+          <Skeleton className="h-9 mb-3" />
+          <Skeleton className="h-7 mb-1" />
+          <Skeleton className="h-7 mb-1" />
+          <Skeleton className="h-7" />
+        </aside>
+        <main className="flex-1 p-10">
+          <Skeleton className="h-9 w-64 mb-3" />
+          <Skeleton className="h-4 w-96 mb-10" />
+          <Skeleton className="h-64" />
+        </main>
+      </div>
+    );
+  }
+
+  // Wait for any in-flight refetch to land before declaring "no orgs" —
+  // otherwise a freshly-created org's invalidation would bounce the user
+  // back to onboarding while the refetch is on the wire.
+  if (orgs && orgs.organizations.length === 0 && !isFetching) {
+    return <Navigate to="/onboarding" replace />;
+  }
+
+  return (
+    <div className="min-h-screen flex bg-ink-0">
+      <div className="hidden lg:block">
+        <Sidebar />
+      </div>
+
+      <div className="lg:hidden fixed top-0 inset-x-0 z-30 h-14 px-4 flex items-center gap-2 border-b border-ink-100 bg-ink-0/90 backdrop-blur">
+        <button
+          onClick={() => setDrawerOpen(true)}
+          className="h-9 w-9 inline-flex items-center justify-center rounded hover:bg-ink-100 text-ink-700"
+          aria-label="Open menu"
+        >
+          <Menu size={18} />
+        </button>
+        <Wordmark size="sm" />
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setPaletteOpen(true)}
+            className="h-9 w-9 inline-flex items-center justify-center rounded border border-ink-200 text-ink-500 hover:text-ink-900"
+            aria-label="Open command palette"
+          >
+            <span className="font-mono text-[11px]">⌘K</span>
+          </button>
+          <button
+            onClick={() => setUploadOpen(true)}
+            className="h-9 px-3 inline-flex items-center gap-1.5 rounded-md bg-accent text-accent-fg text-[13px] font-medium tracking-tight hover:bg-[#D9FF40] active:bg-[#B8EE00] transition-colors shadow-card"
+            aria-label="Upload receipt"
+          >
+            <Plus size={14} /> Upload
+          </button>
+        </div>
+      </div>
+
+      <div
+        className={cn(
+          "lg:hidden fixed inset-0 z-40 transition-opacity duration-150",
+          drawerOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none",
+        )}
+        onClick={() => setDrawerOpen(false)}
+        role="dialog"
+        aria-modal="true"
+      >
+        <div className="absolute inset-0 bg-ink-950/40" />
+        <aside
+          onClick={(e) => e.stopPropagation()}
+          className={cn(
+            "absolute top-0 left-0 bottom-0 w-[280px] bg-ink-0 border-r border-ink-100 transition-transform duration-200 ease-out-cubic",
+            drawerOpen ? "translate-x-0" : "-translate-x-full",
+          )}
+        >
+          <button
+            onClick={() => setDrawerOpen(false)}
+            className="absolute top-3 right-3 h-8 w-8 inline-flex items-center justify-center rounded hover:bg-ink-100 text-ink-500 z-10"
+            aria-label="Close menu"
+          >
+            <X size={16} />
+          </button>
+          <Sidebar onNavigate={() => setDrawerOpen(false)} />
+        </aside>
+      </div>
+
+      <main className="flex-1 min-w-0 pt-14 lg:pt-0">
+        <Outlet />
+      </main>
+
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        onUploadOpen={() => setUploadOpen(true)}
+      />
+      <UploadDialog open={uploadOpen} onOpenChange={setUploadOpen} />
+    </div>
+  );
+}
