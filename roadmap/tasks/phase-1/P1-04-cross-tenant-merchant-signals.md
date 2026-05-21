@@ -2,9 +2,9 @@
 id: P1-04
 title: Cross-tenant learning — global merchant signals
 phase: 1
-status: todo
+status: review
 depends_on: [P1-03]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -63,3 +63,44 @@ as a future option); per-org rules (P1-03 owns those).
 This is what makes scale a moat: incumbents using static categorizers can't match
 a system that learns from every correction across the base. Keep the rollup
 explainable (store support_count) so we can debug and show "why this category".
+
+---
+
+## Implementation Notes (sonnet-agent, 2026-05-21)
+
+**Files added:**
+- `backend/internal/classify/signals.go` — `Store`, `Scheduler`, `LookupSignal`, `Aggregate`
+- `backend/internal/classify/signals_test.go` — 8 unit tests (all passing)
+
+**Files modified:**
+- `backend/internal/config/config.go` — added `SignalsAggEnabled bool`, `SignalsMinOrgs int`, `signalsMinOrgs()` helper; env vars `SIGNALS_AGG_ENABLED` and `SIGNALS_MIN_ORGS`
+- `backend/cmd/server/main.go` — wired the `classify.Scheduler` with leader-guard (same pattern as `FX_SYNC_ENABLED`)
+
+**LookupSignal signature (fixed — P1-02 contract):**
+```go
+func (s *Store) LookupSignal(ctx context.Context, merchantNormalized string) (categoryLabel string, votes int, err error)
+```
+Returns the top-voted category label and vote count from `merchant_signals` for the given normalised merchant. Returns `("", 0, nil)` when no signal exists.
+
+**Aggregation approach:**
+Single idempotent SQL upsert: joins `classification_corrections` → `categories`, groups by `(merchant_normalized, cat.name)`, counts `DISTINCT organization_id` as `vote_count`, filters `HAVING COUNT(DISTINCT organization_id) >= $1` (threshold K), inserts/updates `merchant_signals` via `ON CONFLICT (merchant_normalized, category_label) DO UPDATE`.
+
+**Threshold/weighting:**
+- `vote_count` = number of distinct orgs that corrected to this category for the given normalised merchant.
+- `last_seen_at` = `MAX(correction.created_at)` across all agreeing orgs (recency).
+- `SIGNALS_MIN_ORGS` (default: 2): minimum distinct-org count before a signal is trusted and written.
+- Top signal lookup orders by `vote_count DESC, last_seen_at DESC` — highest agreement wins, recency as tie-breaker.
+
+**Privacy invariant test (`TestPrivacyInvariant`):**
+Reflects on the exact INSERT clause `INSERT INTO merchant_signals (merchant_normalized, category_label, vote_count, last_seen_at)` and asserts:
+1. Only those 4 columns are written.
+2. No forbidden field (`amount`, `organization_id`, `user_id`, `corrected_by`, etc.) appears in the INSERT column list.
+3. `organization_id` may only appear inside `COUNT(DISTINCT ...)` — never as a bare projected column.
+Also reflects on `signalRow` struct via `reflect.TypeOf` to assert no PII fields exist in the in-memory type.
+
+**`TestSignalRowFieldSet`:** reflects on `signalRow{}` to assert only `{MerchantNormalized, CategoryLabel, VoteCount, LastSeenAt}` fields exist.
+
+**Build/vet:** `cd backend && go build ./... && go vet ./...` — both pass clean.
+**Tests:** all 8 pass (`go test ./internal/classify/... -v`).
+
+**Worktree note:** The worktree branch was rebased onto `eebb22b` (Phase 1 base: shared merchant normalizer + integration contract) before development — the worktree was originally branched from an earlier commit that lacked the Go backend.

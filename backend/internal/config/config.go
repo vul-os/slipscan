@@ -45,6 +45,15 @@ type Config struct {
 	// FXSyncEnabled gates the hourly scheduler. Set to "true" on exactly ONE
 	// fleet member to enforce the <=24 calls/day single-runner constraint.
 	FXSyncEnabled bool
+
+	// P1-04: Cross-tenant merchant signal aggregation.
+	// SignalsAggEnabled gates the periodic aggregation job. Set to "true" on
+	// exactly ONE fleet member (same leader-guard pattern as FX_SYNC_ENABLED).
+	SignalsAggEnabled bool
+	// SignalsMinOrgs is the minimum number of distinct organisations that must
+	// agree on a (merchant, category) pairing before it is written to
+	// merchant_signals. Defaults to 2.
+	SignalsMinOrgs int
 }
 
 func Load() (*Config, error) {
@@ -119,6 +128,9 @@ func Load() (*Config, error) {
 		ExchangeRateAPIKey: os.Getenv("EXCHANGE_RATE_API_KEY"),
 		ExchangeRateBase:   getOr("EXCHANGE_RATE_BASE", "USD"),
 		FXSyncEnabled:      os.Getenv("FX_SYNC_ENABLED") == "true",
+
+		SignalsAggEnabled: os.Getenv("SIGNALS_AGG_ENABLED") == "true",
+		SignalsMinOrgs:    signalsMinOrgs(),
 	}, nil
 }
 
@@ -157,6 +169,20 @@ func mailrxAllowedTypes() []string {
 		}
 	}
 	return out
+}
+
+// signalsMinOrgs returns the minimum distinct-orgs threshold for merchant
+// signal trust. Defaults to 2 (i.e. at least 2 distinct orgs must agree).
+func signalsMinOrgs() int {
+	v := os.Getenv("SIGNALS_MIN_ORGS")
+	if v == "" {
+		return 2
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 2
+	}
+	return n
 }
 
 func getOr(key, def string) string {

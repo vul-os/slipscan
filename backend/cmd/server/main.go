@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/exolutionza/slipscan/backend/internal/auth"
+	"github.com/exolutionza/slipscan/backend/internal/classify"
 	"github.com/exolutionza/slipscan/backend/internal/config"
 	"github.com/exolutionza/slipscan/backend/internal/db"
 	"github.com/exolutionza/slipscan/backend/internal/document"
@@ -83,6 +84,17 @@ func main() {
 		go fxScheduler.Run(ctx)
 	} else {
 		log.Printf("fx: scheduler disabled (FX_SYNC_ENABLED != true)")
+	}
+
+	// P1-04: Cross-tenant merchant signal aggregation scheduler.
+	// Only starts when SIGNALS_AGG_ENABLED=true. Set that env var on EXACTLY ONE
+	// fleet member so the aggregation job runs on a single node (leader guard).
+	if cfg.SignalsAggEnabled {
+		signalsStore := classify.NewStore(pool)
+		signalsScheduler := classify.NewScheduler(signalsStore, cfg.SignalsMinOrgs, 0)
+		go signalsScheduler.Run(ctx)
+	} else {
+		log.Printf("classify: signal aggregation disabled (SIGNALS_AGG_ENABLED != true)")
 	}
 
 	authH := auth.NewHandler(auth.HandlerConfig{
