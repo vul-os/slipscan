@@ -15,6 +15,11 @@ const ReceiptDetailPage = lazy(() => import("@/pages/ReceiptDetail"));
 const AskPage = lazy(() => import("@/pages/Ask"));
 const MembersPage = lazy(() => import("@/pages/Members"));
 const SettingsPage = lazy(() => import("@/pages/Settings"));
+const BudgetsPage = lazy(() => import("@/pages/Budgets"));
+const NetWorthPage = lazy(() => import("@/pages/NetWorth"));
+const LedgerPage = lazy(() => import("@/pages/Ledger"));
+const ReportsPage = lazy(() => import("@/pages/Reports"));
+const AuditPage = lazy(() => import("@/pages/Audit"));
 const NotFoundPage = lazy(() => import("@/pages/NotFound"));
 
 function PageFallback() {
@@ -49,6 +54,11 @@ export function AppRoutes() {
           <Route path="/receipts"            element={<ReceiptsPage />} />
           <Route path="/receipts/:id"        element={<ReceiptDetailPage />} />
           <Route path="/ask"                 element={<AskPage />} />
+          <Route path="/budgets"             element={<BudgetsPage />} />
+          <Route path="/net-worth"           element={<NetWorthPage />} />
+          <Route path="/ledger"              element={<LedgerPage />} />
+          <Route path="/reports"             element={<ReportsPage />} />
+          <Route path="/audit"               element={<AuditPage />} />
           <Route path="/members"             element={<MembersPage />} />
           <Route path="/settings"            element={<SettingsPage />} />
         </Route>

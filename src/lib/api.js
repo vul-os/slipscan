@@ -174,4 +174,60 @@ export const api = {
         body: accountId ? { category_id: categoryId, account_id: accountId } : { category_id: categoryId },
       },
     ),
+
+  // ── Phase 2: personal finance (internal/finance) ──────────────────────────
+  getSpending: (orgId, { from, to } = {}) =>
+    request(`/orgs/${orgId}/spending${qs({ from, to })}`),
+  getSpendingDrilldown: (orgId, categoryId, { from, to } = {}) =>
+    request(`/orgs/${orgId}/spending/${categoryId}${qs({ from, to })}`),
+  listBudgets: (orgId) => request(`/orgs/${orgId}/budgets`),
+  createBudget: (orgId, body) => request(`/orgs/${orgId}/budgets`, { method: "POST", body }),
+  getBudgetProgress: (orgId, budgetId) => request(`/orgs/${orgId}/budgets/${budgetId}/progress`),
+  deleteBudget: (orgId, budgetId) => request(`/orgs/${orgId}/budgets/${budgetId}`, { method: "DELETE" }),
+  listGoals: (orgId) => request(`/orgs/${orgId}/goals`),
+  createGoal: (orgId, body) => request(`/orgs/${orgId}/goals`, { method: "POST", body }),
+  patchGoal: (orgId, goalId, body) => request(`/orgs/${orgId}/goals/${goalId}`, { method: "PATCH", body }),
+  deleteGoal: (orgId, goalId) => request(`/orgs/${orgId}/goals/${goalId}`, { method: "DELETE" }),
+  getNetWorth: (orgId) => request(`/orgs/${orgId}/net-worth`),
+  getNetWorthHistory: (orgId) => request(`/orgs/${orgId}/net-worth/history`),
+
+  // ── Phase 2: business ledger (internal/ledger) ────────────────────────────
+  listAccounts: (orgId) => request(`/orgs/${orgId}/accounts`),
+  createAccount: (orgId, body) => request(`/orgs/${orgId}/accounts`, { method: "POST", body }),
+  patchAccount: (orgId, accountId, body) => request(`/orgs/${orgId}/accounts/${accountId}`, { method: "PATCH", body }),
+  deleteAccount: (orgId, accountId) => request(`/orgs/${orgId}/accounts/${accountId}`, { method: "DELETE" }),
+  getAccountLedger: (orgId, accountId, { from, to } = {}) =>
+    request(`/orgs/${orgId}/accounts/${accountId}/ledger${qs({ from, to })}`),
+  getTrialBalance: (orgId, { from, to } = {}) => request(`/orgs/${orgId}/trial-balance${qs({ from, to })}`),
+  postTransaction: (orgId, txId) => request(`/orgs/${orgId}/transactions/${txId}/post`, { method: "POST" }),
+  listJournals: (orgId) => request(`/orgs/${orgId}/journals`),
+  createJournal: (orgId, body) => request(`/orgs/${orgId}/journals`, { method: "POST", body }),
+  deleteJournal: (orgId, journalId) => request(`/orgs/${orgId}/journals/${journalId}`, { method: "DELETE" }),
+  listContacts: (orgId) => request(`/orgs/${orgId}/contacts`),
+  createContact: (orgId, body) => request(`/orgs/${orgId}/contacts`, { method: "POST", body }),
+  patchContact: (orgId, contactId, body) => request(`/orgs/${orgId}/contacts/${contactId}`, { method: "PATCH", body }),
+  deleteContact: (orgId, contactId) => request(`/orgs/${orgId}/contacts/${contactId}`, { method: "DELETE" }),
+
+  // ── Phase 2: reports (internal/reporting) ─────────────────────────────────
+  // name ∈ profit-and-loss | balance-sheet | vat-summary | cash-flow | spending-trend | net-worth
+  getReport: (orgId, name, { from, to, format } = {}) =>
+    request(`/orgs/${orgId}/reports/${name}${qs({ from, to, format })}`),
+
+  // ── Phase 2: Xero integration (internal/accounting_export) ────────────────
+  xeroStatus: (orgId) => request(`/orgs/${orgId}/integrations/xero/status`),
+  xeroSyncStatus: (orgId) => request(`/orgs/${orgId}/integrations/xero/sync-status`),
+  xeroConnectURL: (orgId) => `${BASE_URL}/orgs/${orgId}/integrations/xero/connect`,
+  xeroPush: (orgId, body) => request(`/orgs/${orgId}/integrations/xero/push`, { method: "POST", body: body || {} }),
+
+  // ── Phase 4: audit trail (internal/audit) ─────────────────────────────────
+  listAudit: (orgId, { entity_type, action, limit = 100 } = {}) =>
+    request(`/orgs/${orgId}/audit${qs({ entity_type, action, limit })}`),
 };
+
+// qs builds a query string from defined, non-empty values (drops undefined/null/"").
+function qs(params) {
+  const parts = Object.entries(params || {})
+    .filter(([, v]) => v !== undefined && v !== null && v !== "")
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+  return parts.length ? `?${parts.join("&")}` : "";
+}

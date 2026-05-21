@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   LayoutDashboard, Receipt, Users, Settings, Plus, ChevronsUpDown,
-  LogOut, Check, Search, Sparkles,
+  LogOut, Check, Search, Sparkles, Target, TrendingUp, BookOpen, BarChart3, ShieldCheck,
 } from "lucide-react";
 import { Wordmark } from "@/components/Wordmark";
 import {
@@ -20,7 +20,12 @@ import { cn } from "@/lib/cn";
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, shortcut: "g d" },
   { to: "/receipts",  label: "Receipts",  icon: Receipt,         shortcut: "g r" },
+  { to: "/budgets",   label: "Budgets",   icon: Target,          shortcut: "g b" },
+  { to: "/net-worth", label: "Net worth", icon: TrendingUp,      shortcut: "g n" },
+  { to: "/ledger",    label: "Ledger",    icon: BookOpen,        shortcut: "g l" },
+  { to: "/reports",   label: "Reports",   icon: BarChart3,       shortcut: "g p" },
   { to: "/ask",       label: "Ask",       icon: Sparkles,        shortcut: "g a" },
+  { to: "/audit",     label: "Audit",     icon: ShieldCheck,     shortcut: "g u" },
   { to: "/members",   label: "Members",   icon: Users,           shortcut: "g m" },
   { to: "/settings",  label: "Settings",  icon: Settings,        shortcut: "g s" },
 ];

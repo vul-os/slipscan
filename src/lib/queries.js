@@ -13,7 +13,22 @@ export const qk = {
   document:   (orgId, id)     => ["document", orgId, id],
   transactions:(orgId)        => ["transactions", orgId],
   categories: (orgId)         => ["categories", orgId],
+  spending:   (orgId, r)      => ["spending", orgId, r],
+  budgets:    (orgId)         => ["budgets", orgId],
+  goals:      (orgId)         => ["goals", orgId],
+  netWorth:   (orgId)         => ["net-worth", orgId],
+  netWorthHistory:(orgId)     => ["net-worth-history", orgId],
+  accounts:   (orgId)         => ["accounts", orgId],
+  trialBalance:(orgId, r)     => ["trial-balance", orgId, r],
+  journals:   (orgId)         => ["journals", orgId],
+  contacts:   (orgId)         => ["contacts", orgId],
+  report:     (orgId, n, r)   => ["report", orgId, n, r],
+  xeroStatus: (orgId)         => ["xero-status", orgId],
+  audit:      (orgId, f)      => ["audit", orgId, f],
 };
+
+// arr normalizes a `{ <key>: [...] }` envelope or bare array to an array.
+const arr = (res, key) => (Array.isArray(res) ? res : res?.[key] ?? []);
 
 export const useMe = () =>
   useQuery({ queryKey: qk.me, queryFn: api.me });
@@ -209,5 +224,43 @@ export const useAcceptInvitation = () => {
         return { organizations: [...existing, newOrg] };
       });
     },
+  });
+};
+
+// ── Phase 2/4 read hooks (finance, ledger, reporting, audit, xero) ──────────
+const enabledQuery = (orgId, key, fn, extra = {}) =>
+  useQuery({ queryKey: orgId ? key : ["none"], queryFn: fn, enabled: !!orgId, ...extra });
+
+export const useSpending = (orgId, range = {}) =>
+  enabledQuery(orgId, qk.spending(orgId, range), () => api.getSpending(orgId, range));
+export const useBudgets = (orgId) =>
+  enabledQuery(orgId, qk.budgets(orgId), async () => arr(await api.listBudgets(orgId), "budgets"));
+export const useGoals = (orgId) =>
+  enabledQuery(orgId, qk.goals(orgId), async () => arr(await api.listGoals(orgId), "goals"));
+export const useNetWorth = (orgId) =>
+  enabledQuery(orgId, qk.netWorth(orgId), () => api.getNetWorth(orgId));
+export const useNetWorthHistory = (orgId) =>
+  enabledQuery(orgId, qk.netWorthHistory(orgId), () => api.getNetWorthHistory(orgId));
+export const useAccounts = (orgId) =>
+  enabledQuery(orgId, qk.accounts(orgId), async () => arr(await api.listAccounts(orgId), "accounts"));
+export const useTrialBalance = (orgId, range = {}) =>
+  enabledQuery(orgId, qk.trialBalance(orgId, range), () => api.getTrialBalance(orgId, range));
+export const useJournals = (orgId) =>
+  enabledQuery(orgId, qk.journals(orgId), async () => arr(await api.listJournals(orgId), "journals"));
+export const useContacts = (orgId) =>
+  enabledQuery(orgId, qk.contacts(orgId), async () => arr(await api.listContacts(orgId), "contacts"));
+export const useReport = (orgId, name, range = {}) =>
+  useQuery({ queryKey: orgId && name ? qk.report(orgId, name, range) : ["none"], queryFn: () => api.getReport(orgId, name, range), enabled: !!orgId && !!name });
+export const useXeroStatus = (orgId) =>
+  enabledQuery(orgId, qk.xeroStatus(orgId), () => api.xeroStatus(orgId), { retry: false });
+export const useAudit = (orgId, filter = {}) =>
+  enabledQuery(orgId, qk.audit(orgId, filter), async () => arr(await api.listAudit(orgId, filter), "entries"));
+
+// Generic mutation factory: runs fn(orgId, vars) then invalidates the given keys.
+export const useOrgMutation = (orgId, fn, invalidateKeys = []) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars) => fn(orgId, vars),
+    onSuccess: () => invalidateKeys.forEach((k) => qc.invalidateQueries({ queryKey: k })),
   });
 };
