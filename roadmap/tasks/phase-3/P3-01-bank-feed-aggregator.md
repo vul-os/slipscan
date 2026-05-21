@@ -2,9 +2,9 @@
 id: P3-01
 title: Bank-feed aggregator integration (Stitch / Mono / Plaid)
 phase: 3
-status: todo
+status: review
 depends_on: [P2-03]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -67,3 +67,61 @@ documents — keep working).
 Recommend buying coverage rather than building scrapers. Keep the interface clean
 so a second provider (international) drops in. This + P3-02 is the killer combo:
 feeds *and* documents, auto-reconciled — which neither Vault22 nor Dext does.
+
+### Implementation summary (sonnet-agent, 2026-05-21)
+
+**Provider recommendation: Stitch (https://stitch.money)**
+
+Comparison:
+
+| Criterion | Stitch | Mono | Plaid |
+|---|---|---|---|
+| SA bank coverage | 11 SA banks (FNB, ABSA, Std, Nedbank, Capitec, Investec, Tymebank, Discovery, African, Bidvest, Grindrod) | FNB, Nedbank, Absa (growing) | No SA banks |
+| API style | GraphQL + OAuth2/PKCE | REST + OAuth2 | REST + OAuth2 |
+| Sandbox | Full mock sandbox, no live bank needed | Partial sandbox | Yes |
+| Pricing | Per linked account/month | Per linked account/month | Per connection/month (higher) |
+| Data scopes | accounts, balances, transactions, merchantName, merchantCategory | accounts, balances, transactions | Similar |
+| POPIA / SA compliance | Yes, SA data residency | Yes | No SA residency |
+| Webhook support | Yes (HMAC-SHA256) | Yes | Yes |
+| Recommendation | ✅ SA-first choice | Runner-up (fewer banks) | International fallback only |
+
+**Stitch** chosen: broadest SA bank coverage, mature GraphQL API, full sandbox,
+POPIA-compliant, webhook support with HMAC verification.
+
+**Package: `internal/bankfeed`**
+
+Files:
+- `provider.go` — Provider interface + ProviderName, LinkedAccount, ProviderTransaction, FeedStatus types.
+- `mock.go` — MockProvider (always compiled; deterministic for tests).
+- `stitch.go` — Live Stitch implementation (gated: `//go:build live`).
+- `store.go` — DB layer: CreateConnection, GetConnection, ListConnections, ListDueConnections, UpdateConnectionStatus, MarkSynced, UpdateTokens, EnsureStatement, UpsertLine, LinkTransaction, CreateTransaction.
+- `handlers.go` — HTTP handlers: Connect, Callback, ListConnections, GetConnection, Disconnect, TriggerSync, Webhook.
+- `syncer.go` — Syncer: SyncAll, SyncConnection, upsertBatch with dedup + token-refresh re-auth handling.
+- `cascade.go` — FeedCascader: rule→signal cascade for feed-imported transactions (no LLM stage; no doc context available).
+- `scheduler.go` — Leader-guarded periodic scheduler (BANKFEED_SYNC_ENABLED=true on exactly one fleet member).
+- `bankfeed_test.go` — 25 unit tests: MockProvider compliance, dedup sentinels, payload mapping, status transitions, auth-error keywords, Scheduler construction.
+
+**Routes added (P3-01 block in main.go):**
+- `GET  /orgs/{orgID}/integrations/bankfeed/connect` (authedAdmin)
+- `GET  /integrations/bankfeed/callback` (public, HMAC-validated)
+- `GET  /orgs/{orgID}/integrations/bankfeed/connections` (authedMember)
+- `GET  /orgs/{orgID}/integrations/bankfeed/connections/{connID}` (authedMember)
+- `DELETE /orgs/{orgID}/integrations/bankfeed/connections/{connID}` (authedAdmin)
+- `POST /orgs/{orgID}/integrations/bankfeed/connections/{connID}/sync` (authedMember)
+- `POST /integrations/bankfeed/webhook` (public, HMAC-validated)
+
+**New migration: `20260521000003_bankfeed_provider_txn_id.sql`**
+- Adds `bank_feed_connections` FK + `provider_txn_id` column to `statement_lines`.
+- Adds unique partial index `statement_lines_feed_dedup_idx` (provider_txn_id IS NOT NULL).
+- Adds `stitch` to `bank_feed_provider` enum.
+
+**Required environment variables:**
+- `STITCH_CLIENT_ID` — OAuth2 client ID from Stitch developer portal (enables live integration).
+- `STITCH_CLIENT_SECRET` — OAuth2 client secret.
+- `STITCH_REDIRECT_URL` — Callback URL (default: `http://localhost:8080/integrations/bankfeed/callback`).
+- `STITCH_WEBHOOK_SECRET` — Shared secret for HMAC webhook validation.
+- `BANKFEED_SYNC_ENABLED=true` — Set on EXACTLY ONE fleet member to enable the 4-hour poll scheduler.
+
+All env vars are optional; when absent the mock provider runs (safe for dev/CI).
+
+**Test results:** 25/25 unit tests pass; `go build ./... && go vet ./...` clean.
