@@ -1,7 +1,8 @@
 .PHONY: deps tidy \
 	migrate migrate-status migrate-reset migrate-dev migrate-main migrate-dev-status migrate-main-status \
 	server server-dev server-main run-server \
-	build build-server build-migrate build-tests \
+	mailrx mailrx-dev mailrx-main \
+	build build-server build-migrate build-mailrx build-tests \
 	fmt vet \
 	tests test test-list
 
@@ -46,14 +47,27 @@ server-dev:
 server-main:
 	APP_ENV=main go run ./cmd/server
 
+# ---------- mailrx ----------
+mailrx:
+	go run ./cmd/mailrx
+
+mailrx-dev:
+	APP_ENV=dev go run ./cmd/mailrx
+
+mailrx-main:
+	APP_ENV=main go run ./cmd/mailrx
+
 # ---------- build ----------
-build: build-server build-migrate build-tests
+build: build-server build-migrate build-mailrx build-tests
 
 build-server:
 	go build -o bin/server ./cmd/server
 
 build-migrate:
 	go build -o bin/migrate ./cmd/migrate
+
+build-mailrx:
+	go build -o bin/mailrx ./cmd/mailrx
 
 build-tests:
 	go build -o bin/tests ./cmd/tests

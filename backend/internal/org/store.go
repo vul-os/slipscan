@@ -334,6 +334,29 @@ type OrgWithRole struct {
 	JoinedAt time.Time
 }
 
+// ByRxLocalPart fetches the organization whose rx_local_part matches the
+// given value (case-insensitive). Returns ErrNotFound when no row matches.
+func (s *Store) ByRxLocalPart(ctx context.Context, localPart string) (*Organization, error) {
+	const q = `
+		SELECT id, kind, name, slug, rx_local_part, currency,
+		       created_by, created_at, updated_at
+		FROM organizations
+		WHERE rx_local_part = LOWER($1)
+	`
+	var o Organization
+	err := s.db.QueryRowContext(ctx, q, localPart).Scan(
+		&o.ID, &o.Kind, &o.Name, &o.Slug, &o.RxLocalPart, &o.Currency,
+		&o.CreatedBy, &o.CreatedAt, &o.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
 // ByID fetches a single organization by id. Returns ErrNotFound when the
 // row is absent.
 func (s *Store) ByID(ctx context.Context, orgID uuid.UUID) (*Organization, error) {
