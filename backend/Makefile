@@ -1,10 +1,17 @@
-.PHONY: deps tidy migrate migrate-status migrate-reset server build fmt vet tests test test-list
+.PHONY: deps tidy \
+	migrate migrate-status migrate-reset migrate-dev migrate-main migrate-dev-status migrate-main-status \
+	server server-dev server-main run-server \
+	build build-server build-migrate build-tests \
+	fmt vet \
+	tests test test-list
 
+# ---------- deps ----------
 deps:
 	go mod tidy
 
 tidy: deps
 
+# ---------- migrate (local) ----------
 migrate:
 	go run ./cmd/migrate
 
@@ -14,21 +21,51 @@ migrate-status:
 migrate-reset:
 	go run ./cmd/migrate --reset
 
-server:
+# ---------- migrate (dev / main) ----------
+migrate-dev:
+	go run ./cmd/migrate --env=dev
+
+migrate-dev-status:
+	go run ./cmd/migrate --env=dev --status
+
+migrate-main:
+	go run ./cmd/migrate --env=main
+
+migrate-main-status:
+	go run ./cmd/migrate --env=main --status
+
+# ---------- server ----------
+server: run-server
+
+run-server:
 	go run ./cmd/server
 
-build:
+server-dev:
+	APP_ENV=dev go run ./cmd/server
+
+server-main:
+	APP_ENV=main go run ./cmd/server
+
+# ---------- build ----------
+build: build-server build-migrate build-tests
+
+build-server:
 	go build -o bin/server ./cmd/server
+
+build-migrate:
 	go build -o bin/migrate ./cmd/migrate
+
+build-tests:
 	go build -o bin/tests ./cmd/tests
 
+# ---------- code health ----------
 fmt:
 	go fmt ./...
 
 vet:
 	go vet ./...
 
-# Operational test suite (cmd/tests) — runs all registered tests by default.
+# ---------- operational test suite (cmd/tests) ----------
 tests:
 	go run ./cmd/tests
 

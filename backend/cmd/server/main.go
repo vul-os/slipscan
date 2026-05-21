@@ -24,8 +24,10 @@ import (
 )
 
 func main() {
-	if err := config.LoadDotenv(".env"); err != nil {
-		log.Fatalf("dotenv: %v", err)
+	for _, name := range envFilesForAppEnv(os.Getenv("APP_ENV")) {
+		if err := config.LoadDotenv(name); err != nil {
+			log.Fatalf("dotenv %s: %v", name, err)
+		}
 	}
 
 	cfg, err := config.Load()
@@ -64,11 +66,20 @@ func main() {
 	}
 
 	userStore := auth.NewStore(pool)
+	tokenStore := auth.NewTokenStore(pool)
 	orgStore := org.NewStore(pool)
 	inviteStore := invite.NewStore(pool)
 	docStore := document.NewStore(pool)
 
-	authH := auth.NewHandler(userStore, signer)
+	authH := auth.NewHandler(auth.HandlerConfig{
+		Users:           userStore,
+		Tokens:          tokenStore,
+		Signer:          signer,
+		Orgs:            orgStore,
+		Mailer:          mailer,
+		FrontendBaseURL: cfg.FrontendBaseURL,
+		RxDomain:        os.Getenv("RX_DOMAIN"),
+	})
 	orgH := org.NewHandler(orgStore)
 	inviteH := invite.NewHandler(inviteStore, userStore, orgStore, cfg.InvitationTTL, cfg.FrontendBaseURL, mailer)
 	docH := document.NewHandler(docStore, storageClient, ocrClient)
@@ -88,6 +99,11 @@ func main() {
 	mux.HandleFunc("POST /auth/register", authH.Register)
 	mux.HandleFunc("POST /auth/login", authH.Login)
 	mux.HandleFunc("POST /auth/refresh", authH.Refresh)
+	mux.HandleFunc("POST /auth/verify", authH.VerifyEmail)
+	mux.HandleFunc("GET /auth/verify", authH.VerifyEmail)
+	mux.HandleFunc("POST /auth/verify/resend", authH.ResendVerify)
+	mux.HandleFunc("POST /auth/password-reset/request", authH.RequestPasswordReset)
+	mux.HandleFunc("POST /auth/password-reset/confirm", authH.ConfirmPasswordReset)
 
 	// Authenticated routes.
 	authed := func(h http.HandlerFunc) http.Handler {
@@ -150,5 +166,20 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
+	}
+}
+
+// envFilesForAppEnv returns the dotenv files to load, in priority order. Earlier
+// files win because LoadDotenv only sets keys that are not already in the
+// environment. The base .env is always loaded last as a fallback for keys not
+// overridden by the env-specific file.
+func envFilesForAppEnv(appEnv string) []string {
+	switch appEnv {
+	case "main":
+		return []string{".env.main", ".env"}
+	case "dev":
+		return []string{".env.dev", ".env"}
+	default:
+		return []string{".env"}
 	}
 }

@@ -8,25 +8,25 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/exolutionza/slipscan/backend/internal/httpx"
+	"github.com/exolutionza/slipscan/backend/internal/identity"
 )
 
 type ctxKey int
 
-const (
-	ctxUserID ctxKey = iota
-	ctxClaims
-)
+const ctxClaims ctxKey = iota
 
+// WithClaims stashes the decoded JWT claims and the user id under the
+// shared identity key, so downstream packages (org, document, …) can read
+// the user id without importing auth.
 func WithClaims(ctx context.Context, c *Claims) context.Context {
 	ctx = context.WithValue(ctx, ctxClaims, c)
-	ctx = context.WithValue(ctx, ctxUserID, c.UserID)
+	ctx = identity.WithUserID(ctx, c.UserID)
 	return ctx
 }
 
-func UserIDFrom(ctx context.Context) (uuid.UUID, bool) {
-	v, ok := ctx.Value(ctxUserID).(uuid.UUID)
-	return v, ok
-}
+// UserIDFrom is a thin re-export so existing auth callers keep working.
+// Prefer identity.UserIDFrom in new code.
+func UserIDFrom(ctx context.Context) (uuid.UUID, bool) { return identity.UserIDFrom(ctx) }
 
 func ClaimsFrom(ctx context.Context) (*Claims, bool) {
 	v, ok := ctx.Value(ctxClaims).(*Claims)

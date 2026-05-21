@@ -87,6 +87,22 @@ func (s *Store) TouchLogin(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+// MarkVerified flips users.email_verified_at to NOW() if not already set.
+// Idempotent: re-clicking a verification link is a no-op.
+func (s *Store) MarkVerified(ctx context.Context, id uuid.UUID) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET email_verified_at = NOW() WHERE id = $1 AND email_verified_at IS NULL`,
+		id,
+	)
+	return err
+}
+
+// UpdatePasswordHash sets a new password_hash for the user.
+func (s *Store) UpdatePasswordHash(ctx context.Context, id uuid.UUID, hash string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = $1 WHERE id = $2`, hash, id)
+	return err
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

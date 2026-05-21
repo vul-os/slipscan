@@ -2,22 +2,46 @@ package org
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
 
+// Kind matches the SQL enum organization_kind.
+type Kind string
+
+const (
+	KindPersonal Kind = "personal"
+	KindBusiness Kind = "business"
+)
+
+func (k Kind) Valid() bool { return k == KindPersonal || k == KindBusiness }
+
+// Role matches the SQL enum membership_role.
 type Role string
 
 const (
-	RoleAdmin  Role = "admin"
-	RoleMember Role = "member"
+	RoleOwner      Role = "owner"
+	RoleAdmin      Role = "admin"
+	RoleAccountant Role = "accountant"
+	RoleMember     Role = "member"
+	RoleViewer     Role = "viewer"
 )
 
-func (r Role) Valid() bool { return r == RoleAdmin || r == RoleMember }
+func (r Role) Valid() bool {
+	switch r {
+	case RoleOwner, RoleAdmin, RoleAccountant, RoleMember, RoleViewer:
+		return true
+	}
+	return false
+}
 
 var (
 	ErrNotFound  = errors.New("organization not found")
@@ -26,12 +50,15 @@ var (
 )
 
 type Organization struct {
-	ID        uuid.UUID
-	Name      string
-	Slug      string
-	CreatedBy uuid.NullUUID
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID          uuid.UUID
+	Kind        Kind
+	Name        string
+	Slug        string
+	RxLocalPart string
+	Currency    string
+	CreatedBy   uuid.NullUUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type Member struct {
@@ -42,28 +69,83 @@ type Member struct {
 	JoinedAt time.Time
 }
 
+// PersonalProfile is the personal_profiles row paired 1:1 with a personal org.
+type PersonalProfile struct {
+	FullName string
+}
+
+// BusinessProfile is the business_profiles row paired 1:1 with a business org.
+// Only legal_name is required at signup; the rest can be filled in via Settings.
+type BusinessProfile struct {
+	LegalName          string
+	RegistrationNumber string
+	TaxNumber          string
+	Industry           string
+	Website            string
+	Country            string // ISO-3166 alpha-2; written to organizations.country
+}
+
 type Store struct{ db *sql.DB }
 
 func NewStore(db *sql.DB) *Store { return &Store{db: db} }
 
-// Create inserts an organization and the creator's admin membership in a
-// single transaction. Both rows commit together, so a partially-created
-// org with no admin can never exist.
-func (s *Store) Create(ctx context.Context, name, slug string, createdBy uuid.UUID) (*Organization, error) {
+// CreateOptions bundles everything needed to spin up an organization at
+// registration time: the org's kind, a display name, the per-kind profile
+// payload, and the user that becomes the owner.
+type CreateOptions struct {
+	Kind        Kind
+	Name        string
+	Personal    *PersonalProfile // required iff Kind == KindPersonal
+	Business    *BusinessProfile // required iff Kind == KindBusiness
+	OwnerUserID uuid.UUID
+}
+
+// Create inserts an organization, the matching profile row, and the owner
+// membership in one transaction. Slug + rx_local_part are auto-generated
+// from Name with a numeric suffix on collision.
+func (s *Store) Create(ctx context.Context, opts CreateOptions) (*Organization, error) {
+	if !opts.Kind.Valid() {
+		return nil, fmt.Errorf("invalid kind %q", opts.Kind)
+	}
+	name := strings.TrimSpace(opts.Name)
+	if name == "" {
+		return nil, errors.New("organization name is required")
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
+	slug, err := allocSlug(ctx, tx, name)
+	if err != nil {
+		return nil, err
+	}
+	rx, err := allocRxLocalPart(ctx, tx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	country := sql.NullString{}
+	if opts.Kind == KindBusiness && opts.Business != nil {
+		c := strings.ToUpper(strings.TrimSpace(opts.Business.Country))
+		if c != "" {
+			country = sql.NullString{String: c, Valid: true}
+		}
+	}
+
 	const insertOrg = `
-		INSERT INTO organizations (name, slug, created_by)
-		VALUES ($1, $2, $3)
-		RETURNING id, name, slug, created_by, created_at, updated_at
+		INSERT INTO organizations (kind, name, slug, rx_local_part, country, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, kind, name, slug, rx_local_part, currency, created_by, created_at, updated_at
 	`
 	var o Organization
-	if err := tx.QueryRowContext(ctx, insertOrg, name, slug, createdBy).Scan(
-		&o.ID, &o.Name, &o.Slug, &o.CreatedBy, &o.CreatedAt, &o.UpdatedAt,
+	if err := tx.QueryRowContext(ctx, insertOrg,
+		string(opts.Kind), name, slug, rx, country, opts.OwnerUserID,
+	).Scan(
+		&o.ID, &o.Kind, &o.Name, &o.Slug, &o.RxLocalPart, &o.Currency,
+		&o.CreatedBy, &o.CreatedAt, &o.UpdatedAt,
 	); err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrSlugTaken
@@ -71,11 +153,43 @@ func (s *Store) Create(ctx context.Context, name, slug string, createdBy uuid.UU
 		return nil, err
 	}
 
-	const insertMember = `
-		INSERT INTO memberships (organization_id, user_id, role)
-		VALUES ($1, $2, 'admin')
-	`
-	if _, err := tx.ExecContext(ctx, insertMember, o.ID, createdBy); err != nil {
+	switch opts.Kind {
+	case KindPersonal:
+		p := opts.Personal
+		if p == nil || strings.TrimSpace(p.FullName) == "" {
+			return nil, errors.New("personal profile full_name is required")
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO personal_profiles (organization_id, full_name) VALUES ($1, $2)`,
+			o.ID, strings.TrimSpace(p.FullName),
+		); err != nil {
+			return nil, err
+		}
+	case KindBusiness:
+		p := opts.Business
+		if p == nil || strings.TrimSpace(p.LegalName) == "" {
+			return nil, errors.New("business profile legal_name is required")
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO business_profiles (
+				organization_id, legal_name, registration_number, tax_number, industry, website
+			) VALUES ($1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''))
+		`,
+			o.ID,
+			strings.TrimSpace(p.LegalName),
+			strings.TrimSpace(p.RegistrationNumber),
+			strings.TrimSpace(p.TaxNumber),
+			strings.TrimSpace(p.Industry),
+			strings.TrimSpace(p.Website),
+		); err != nil {
+			return nil, err
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO memberships (organization_id, user_id, role) VALUES ($1, $2, 'owner')`,
+		o.ID, opts.OwnerUserID,
+	); err != nil {
 		return nil, err
 	}
 
@@ -85,11 +199,108 @@ func (s *Store) Create(ctx context.Context, name, slug string, createdBy uuid.UU
 	return &o, nil
 }
 
+// allocSlug generates a candidate slug from name and finds the first
+// non-colliding variant, retrying with -2, -3, … then a random suffix.
+// Runs inside the caller's transaction so colliding inserts during signup
+// rollback together.
+func allocSlug(ctx context.Context, tx *sql.Tx, name string) (string, error) {
+	base := slugify(name)
+	if base == "" {
+		// Fall back to a random slug rather than rejecting the request.
+		base = "org"
+	}
+	return findFreeIdentifier(ctx, tx,
+		"SELECT 1 FROM organizations WHERE slug = $1",
+		base,
+	)
+}
+
+// allocRxLocalPart generates a candidate inbound-mail local-part. Schema
+// allows dots/dashes/underscores so we can be more forgiving than the slug.
+func allocRxLocalPart(ctx context.Context, tx *sql.Tx, name string) (string, error) {
+	base := slugify(name)
+	if base == "" {
+		base = "rx"
+	}
+	return findFreeIdentifier(ctx, tx,
+		"SELECT 1 FROM organizations WHERE rx_local_part = $1",
+		base,
+	)
+}
+
+func findFreeIdentifier(ctx context.Context, tx *sql.Tx, lookupSQL, base string) (string, error) {
+	check := func(candidate string) (bool, error) {
+		var x int
+		err := tx.QueryRowContext(ctx, lookupSQL, candidate).Scan(&x)
+		if errors.Is(err, sql.ErrNoRows) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	if free, err := check(base); err != nil {
+		return "", err
+	} else if free {
+		return base, nil
+	}
+	for i := 2; i < 100; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if free, err := check(candidate); err != nil {
+			return "", err
+		} else if free {
+			return candidate, nil
+		}
+	}
+	// 100 collisions in a row is statistically impossible for a real name.
+	// Fall through to a random hex suffix so signup never fails.
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s-%s", base, hex.EncodeToString(b[:])), nil
+}
+
+var slugTrim = regexp.MustCompile(`(^-+|-+$)`)
+var slugSquash = regexp.MustCompile(`-+`)
+
+// slugify converts a free-form name into a slug compatible with the
+// organizations.slug + rx_local_part check constraints
+// (^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$).
+func slugify(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ' || r == '-' || r == '_' || r == '.' || r == '/' || r == '+' || r == '&':
+			b.WriteByte('-')
+		}
+	}
+	out := slugSquash.ReplaceAllString(b.String(), "-")
+	out = slugTrim.ReplaceAllString(out, "")
+	if len(out) < 3 {
+		// Pad short slugs so they pass the length check.
+		out = out + "-org"
+		out = slugTrim.ReplaceAllString(out, "")
+	}
+	if len(out) > 60 {
+		out = out[:60]
+		out = slugTrim.ReplaceAllString(out, "")
+	}
+	return out
+}
+
 // ListForUser returns every organization the user belongs to, plus their
 // role in each one.
 func (s *Store) ListForUser(ctx context.Context, userID uuid.UUID) ([]OrgWithRole, error) {
 	const q = `
-		SELECT o.id, o.name, o.slug, o.created_by, o.created_at, o.updated_at,
+		SELECT o.id, o.kind, o.name, o.slug, o.rx_local_part, o.currency,
+		       o.created_by, o.created_at, o.updated_at,
 		       m.role, m.joined_at
 		FROM organizations o
 		JOIN memberships m ON m.organization_id = o.id
@@ -106,7 +317,8 @@ func (s *Store) ListForUser(ctx context.Context, userID uuid.UUID) ([]OrgWithRol
 	for rows.Next() {
 		var o OrgWithRole
 		if err := rows.Scan(
-			&o.ID, &o.Name, &o.Slug, &o.CreatedBy, &o.CreatedAt, &o.UpdatedAt,
+			&o.ID, &o.Kind, &o.Name, &o.Slug, &o.RxLocalPart, &o.Currency,
+			&o.CreatedBy, &o.CreatedAt, &o.UpdatedAt,
 			&o.Role, &o.JoinedAt,
 		); err != nil {
 			return nil, err
@@ -126,13 +338,15 @@ type OrgWithRole struct {
 // row is absent.
 func (s *Store) ByID(ctx context.Context, orgID uuid.UUID) (*Organization, error) {
 	const q = `
-		SELECT id, name, slug, created_by, created_at, updated_at
+		SELECT id, kind, name, slug, rx_local_part, currency,
+		       created_by, created_at, updated_at
 		FROM organizations
 		WHERE id = $1
 	`
 	var o Organization
 	err := s.db.QueryRowContext(ctx, q, orgID).Scan(
-		&o.ID, &o.Name, &o.Slug, &o.CreatedBy, &o.CreatedAt, &o.UpdatedAt,
+		&o.ID, &o.Kind, &o.Name, &o.Slug, &o.RxLocalPart, &o.Currency,
+		&o.CreatedBy, &o.CreatedAt, &o.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

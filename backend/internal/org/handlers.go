@@ -3,14 +3,13 @@ package org
 import (
 	"errors"
 	"net/http"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
-	"github.com/exolutionza/slipscan/backend/internal/auth"
 	"github.com/exolutionza/slipscan/backend/internal/httpx"
+	"github.com/exolutionza/slipscan/backend/internal/identity"
 )
 
 type Handler struct {
@@ -20,16 +19,28 @@ type Handler struct {
 func NewHandler(store *Store) *Handler { return &Handler{store: store} }
 
 type createRequest struct {
-	Name string `json:"name"`
-	Slug string `json:"slug"`
+	Kind     Kind   `json:"kind"`
+	Name     string `json:"name"`
+	FullName string `json:"full_name,omitempty"`
+
+	// Business-only
+	LegalName          string `json:"legal_name,omitempty"`
+	RegistrationNumber string `json:"registration_number,omitempty"`
+	TaxNumber          string `json:"tax_number,omitempty"`
+	Industry           string `json:"industry,omitempty"`
+	Website            string `json:"website,omitempty"`
+	Country            string `json:"country,omitempty"`
 }
 
 type orgResponse struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Slug      string    `json:"slug"`
-	Role      Role      `json:"role,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          string    `json:"id"`
+	Kind        Kind      `json:"kind"`
+	Name        string    `json:"name"`
+	Slug        string    `json:"slug"`
+	RxLocalPart string    `json:"rx_local_part"`
+	Currency    string    `json:"currency"`
+	Role        Role      `json:"role,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type memberResponse struct {
@@ -40,10 +51,16 @@ type memberResponse struct {
 	JoinedAt time.Time `json:"joined_at"`
 }
 
-var slugRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}[a-z0-9]$`)
+func toResponse(o Organization, role Role) orgResponse {
+	return orgResponse{
+		ID: o.ID.String(), Kind: o.Kind, Name: o.Name, Slug: o.Slug,
+		RxLocalPart: o.RxLocalPart, Currency: o.Currency,
+		Role: role, CreatedAt: o.CreatedAt,
+	}
+}
 
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
-	uid, ok := auth.UserIDFrom(r.Context())
+	uid, ok := identity.UserIDFrom(r.Context())
 	if !ok {
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized", "missing identity")
 		return
@@ -59,28 +76,48 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_name", "name is required (max 120 chars)")
 		return
 	}
-	slug := strings.ToLower(strings.TrimSpace(req.Slug))
-	if !slugRe.MatchString(slug) {
-		httpx.WriteError(w, http.StatusBadRequest, "invalid_slug", "slug must be lowercase letters, digits, dashes (3-64 chars)")
+	if !req.Kind.Valid() {
+		httpx.WriteError(w, http.StatusBadRequest, "invalid_kind", "kind must be 'personal' or 'business'")
 		return
 	}
 
-	o, err := h.store.Create(r.Context(), name, slug, uid)
+	opts := CreateOptions{Kind: req.Kind, Name: name, OwnerUserID: uid}
+	switch req.Kind {
+	case KindPersonal:
+		fn := strings.TrimSpace(req.FullName)
+		if fn == "" {
+			fn = name
+		}
+		opts.Personal = &PersonalProfile{FullName: fn}
+	case KindBusiness:
+		legal := strings.TrimSpace(req.LegalName)
+		if legal == "" {
+			legal = name
+		}
+		opts.Business = &BusinessProfile{
+			LegalName:          legal,
+			RegistrationNumber: req.RegistrationNumber,
+			TaxNumber:          req.TaxNumber,
+			Industry:           req.Industry,
+			Website:            req.Website,
+			Country:            req.Country,
+		}
+	}
+
+	o, err := h.store.Create(r.Context(), opts)
 	if err != nil {
 		if errors.Is(err, ErrSlugTaken) {
 			httpx.WriteError(w, http.StatusConflict, "slug_taken", "slug already in use")
 			return
 		}
-		httpx.WriteError(w, http.StatusInternalServerError, "create_failed", "could not create organization")
+		httpx.WriteError(w, http.StatusBadRequest, "create_failed", err.Error())
 		return
 	}
-	httpx.WriteJSON(w, http.StatusCreated, orgResponse{
-		ID: o.ID.String(), Name: o.Name, Slug: o.Slug, Role: RoleAdmin, CreatedAt: o.CreatedAt,
-	})
+	httpx.WriteJSON(w, http.StatusCreated, toResponse(*o, RoleOwner))
 }
 
 func (h *Handler) ListMine(w http.ResponseWriter, r *http.Request) {
-	uid, ok := auth.UserIDFrom(r.Context())
+	uid, ok := identity.UserIDFrom(r.Context())
 	if !ok {
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized", "missing identity")
 		return
@@ -92,9 +129,7 @@ func (h *Handler) ListMine(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]orgResponse, 0, len(orgs))
 	for _, o := range orgs {
-		out = append(out, orgResponse{
-			ID: o.ID.String(), Name: o.Name, Slug: o.Slug, Role: o.Role, CreatedAt: o.CreatedAt,
-		})
+		out = append(out, toResponse(o.Organization, o.Role))
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"organizations": out})
 }
@@ -106,7 +141,7 @@ func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_org_id", "invalid organization id")
 		return
 	}
-	uid, ok := auth.UserIDFrom(r.Context())
+	uid, ok := identity.UserIDFrom(r.Context())
 	if !ok {
 		httpx.WriteError(w, http.StatusUnauthorized, "unauthorized", "missing identity")
 		return
@@ -139,6 +174,10 @@ func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"members": out})
 }
 
+// roleAtLeastAdmin is true for roles that should pass an admin gate.
+// Owner and Admin both qualify; accountants/members/viewers do not.
+func roleAtLeastAdmin(r Role) bool { return r == RoleOwner || r == RoleAdmin }
+
 // RequireMember is middleware that 403s unless the caller is a member of the
 // org named by the {orgID} path parameter (any role).
 func RequireMember(store *Store) func(http.Handler) http.Handler {
@@ -149,7 +188,7 @@ func RequireMember(store *Store) func(http.Handler) http.Handler {
 				httpx.WriteError(w, http.StatusBadRequest, "invalid_org_id", "invalid organization id")
 				return
 			}
-			uid, ok := auth.UserIDFrom(r.Context())
+			uid, ok := identity.UserIDFrom(r.Context())
 			if !ok {
 				httpx.WriteError(w, http.StatusUnauthorized, "unauthorized", "missing identity")
 				return
@@ -167,8 +206,8 @@ func RequireMember(store *Store) func(http.Handler) http.Handler {
 	}
 }
 
-// RequireAdmin is middleware that 403s unless the caller is an admin of the
-// org named by the {orgID} path parameter.
+// RequireAdmin is middleware that 403s unless the caller is an owner or
+// admin of the org named by the {orgID} path parameter.
 func RequireAdmin(store *Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +216,7 @@ func RequireAdmin(store *Store) func(http.Handler) http.Handler {
 				httpx.WriteError(w, http.StatusBadRequest, "invalid_org_id", "invalid organization id")
 				return
 			}
-			uid, ok := auth.UserIDFrom(r.Context())
+			uid, ok := identity.UserIDFrom(r.Context())
 			if !ok {
 				httpx.WriteError(w, http.StatusUnauthorized, "unauthorized", "missing identity")
 				return
@@ -191,7 +230,7 @@ func RequireAdmin(store *Store) func(http.Handler) http.Handler {
 				httpx.WriteError(w, http.StatusInternalServerError, "lookup_failed", "could not verify membership")
 				return
 			}
-			if role != RoleAdmin {
+			if !roleAtLeastAdmin(role) {
 				httpx.WriteError(w, http.StatusForbidden, "forbidden", "admin role required")
 				return
 			}

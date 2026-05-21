@@ -6,8 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:dev": "vite build --mode dev",
+    "build:main": "vite build --mode main",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "deploy:dev": "npm run build:dev && firebase deploy --only hosting:dev",
+    "deploy:main": "npm run build:main && firebase deploy --only hosting:main"
   },
   "dependencies": {
     "@fontsource/geist-mono": "^5.2.7",
