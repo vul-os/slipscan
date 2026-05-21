@@ -13,5 +13,8 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.js"],
     globals: true,
+    // Only our own src/ tests — never sibling agent worktrees under .claude/.
+    include: ["src/**/*.{test,spec}.{js,jsx}"],
+    exclude: ["**/node_modules/**", "**/.claude/**", "**/dist*/**"],
   },
 });
