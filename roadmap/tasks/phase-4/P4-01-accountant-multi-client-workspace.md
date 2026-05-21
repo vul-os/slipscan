@@ -2,9 +2,9 @@
 id: P4-01
 title: Accountant multi-client workspace
 phase: 4
-status: todo
+status: review
 depends_on: [P2-04]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -58,3 +58,31 @@ white-label branding; bulk operations across clients beyond the task list.
 Define exactly what `accountant` can do vs `admin`/`owner` before building UI —
 that role's permissions are the contract. This is a growth lever: every
 accountant brings multiple client orgs.
+
+### Implementation (sonnet-agent, 2026-05-21)
+Backend of P4-01 implemented in `backend/internal/workspace` (new package).
+
+**`GET /workspace`** — user-scoped (authed/JWT only). Single-query aggregation
+using four CTEs (unverified, unmatched, pending_docs, suggested) joined back
+to member_orgs. Returns `{"orgs":[{id,name,kind,role,attention:{...}}]}`.
+
+**Attention metric queries:**
+- `unverified_transactions`: `transactions WHERE status <> 'verified'`
+- `unmatched_lines`: `statement_lines` with no active (non-rejected)
+  `reconciliation_matches` row
+- `pending_documents`: `documents WHERE status IN ('pending','processing')`
+- `suggested_matches`: `reconciliation_matches WHERE state = 'suggested'`
+
+**Route wired** in `cmd/server/main.go` as `GET /workspace` under `authed`
+(grouped `// P4-01`).
+
+**Invitation role fix** — `internal/invite/handlers.go`: the `Create` handler
+already passes `role` through to the DB correctly; fixed the misleading error
+message that said "must be 'admin' or 'member'" (accountant is also valid).
+
+**Tests**: `go test ./internal/workspace/... -v` — 3 tests pass:
+- `TestAggregationQueryShape` (live DB query-shape against local postgres)
+- `TestOrgEntryShape` (struct field / value checks)
+- `TestAttentionZeroValues` (zero-value sanity)
+
+`go build ./... && go vet ./...` both clean.
