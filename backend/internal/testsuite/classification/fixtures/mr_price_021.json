@@ -1,0 +1,18 @@
+{
+  "id": "mr_price_021",
+  "kind": "slip",
+  "merchant": "MR PRICE GROUP LTD - CRESTA",
+  "date": "2026-02-05",
+  "currency": "ZAR",
+  "subtotal": 459.97,
+  "tax": 64.40,
+  "total": 524.37,
+  "confidence": 0.94,
+  "line_items": [
+    {"description": "T-Shirt 3-Pack Medium", "qty": 1, "unit": 159.99, "amount": 159.99},
+    {"description": "Tracksuit Pants Large", "qty": 1, "unit": 199.99, "amount": 199.99},
+    {"description": "Socks 5-Pack Men", "qty": 1, "unit": 99.99, "amount": 99.99}
+  ],
+  "_expected_category": "Clothing/Apparel",
+  "_merchant_normalized_expected": "mr price group cresta"
+}

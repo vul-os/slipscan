@@ -1,0 +1,17 @@
+{
+  "id": "edgars_020",
+  "kind": "slip",
+  "merchant": "EDGARS SANDTON CITY STORE 0045",
+  "date": "2026-01-20",
+  "currency": "ZAR",
+  "subtotal": 899.00,
+  "tax": 125.86,
+  "total": 1024.86,
+  "confidence": 0.95,
+  "line_items": [
+    {"description": "Formal Shirt Blue XL", "qty": 2, "unit": 299.99, "amount": 599.98},
+    {"description": "Chino Pants Khaki 34W", "qty": 1, "unit": 299.02, "amount": 299.02}
+  ],
+  "_expected_category": "Clothing/Apparel",
+  "_merchant_normalized_expected": "edgars sandton city store"
+}

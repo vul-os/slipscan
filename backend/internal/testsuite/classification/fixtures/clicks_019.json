@@ -1,0 +1,18 @@
+{
+  "id": "clicks_019",
+  "kind": "slip",
+  "merchant": "CLICKS STORES PTY LTD #0392",
+  "date": "2026-03-18",
+  "currency": "ZAR",
+  "subtotal": 185.50,
+  "tax": 25.97,
+  "total": 211.47,
+  "confidence": 0.96,
+  "line_items": [
+    {"description": "Colgate Toothpaste 100ml", "qty": 2, "unit": 29.99, "amount": 59.98},
+    {"description": "Head & Shoulders Shampoo 400ml", "qty": 1, "unit": 79.99, "amount": 79.99},
+    {"description": "Moisturiser Spf15 200ml", "qty": 1, "unit": 45.53, "amount": 45.53}
+  ],
+  "_expected_category": "Health/Pharmacy",
+  "_merchant_normalized_expected": "clicks stores"
+}

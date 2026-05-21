@@ -1,0 +1,17 @@
+{
+  "id": "mcdonalds_015",
+  "kind": "slip",
+  "merchant": "McDonald's Fourways",
+  "date": "2026-03-30",
+  "currency": "ZAR",
+  "subtotal": 129.90,
+  "tax": 18.19,
+  "total": 148.09,
+  "confidence": 0.96,
+  "line_items": [
+    {"description": "Big Mac Meal Large", "qty": 1, "unit": 89.90, "amount": 89.90},
+    {"description": "McFlurry Oreo", "qty": 1, "unit": 40.00, "amount": 40.00}
+  ],
+  "_expected_category": "Restaurants/Fast Food",
+  "_merchant_normalized_expected": "mcdonald s fourways"
+}
