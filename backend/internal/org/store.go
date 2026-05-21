@@ -7,11 +7,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/exolutionza/slipscan/backend/internal/audit" // P4-03 audit
 )
 
 // Kind matches the SQL enum organization_kind.
@@ -218,6 +221,28 @@ func (s *Store) Create(ctx context.Context, opts CreateOptions) (*Organization, 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+
+	// P4-03 audit: record organization creation in the append-only audit log.
+	{
+		ownerID := opts.OwnerUserID
+		orgID := o.ID
+		auditErr := audit.Write(ctx, s.db, audit.Entry{
+			OrganizationID: &orgID,
+			ActorUserID:    &ownerID,
+			EntityType:     "organization",
+			EntityID:       &orgID,
+			Action:         "organization.created",
+			After: audit.MarshalAfter(map[string]any{
+				"kind": o.Kind,
+				"name": o.Name,
+				"slug": o.Slug,
+			}),
+		})
+		if auditErr != nil {
+			log.Printf("audit: organization.created write failed: %v", auditErr)
+		}
+	}
+
 	return &o, nil
 }
 
@@ -449,7 +474,24 @@ func (s *Store) AddMember(ctx context.Context, orgID, userID uuid.UUID, role Rol
 		VALUES ($1, $2, $3)
 		ON CONFLICT (organization_id, user_id) DO NOTHING
 	`, orgID, userID, role)
-	return err
+	if err != nil {
+		return err
+	}
+	// P4-03 audit: record membership addition in the append-only audit log.
+	auditErr := audit.Write(ctx, s.db, audit.Entry{
+		OrganizationID: &orgID,
+		EntityType:     "membership",
+		EntityID:       &userID,
+		Action:         "membership.added",
+		After: audit.MarshalAfter(map[string]any{
+			"user_id": userID,
+			"role":    role,
+		}),
+	})
+	if auditErr != nil {
+		log.Printf("audit: membership.added write failed: %v", auditErr)
+	}
+	return nil
 }
 
 func isUniqueViolation(err error) bool {

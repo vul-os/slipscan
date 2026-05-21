@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/exolutionza/slipscan/backend/internal/audit" // P4-03 audit
 	"github.com/exolutionza/slipscan/backend/internal/merchant"
 )
 
@@ -259,6 +260,33 @@ func (s *CorrectionsStore) ApplyCorrection(
 
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit correction: %w", err)
+	}
+
+	// P4-03 audit: record classification correction in the append-only audit log.
+	{
+		actor := correctedBy
+		entityID := txID
+		auditErr := audit.Write(ctx, s.db, audit.Entry{
+			OrganizationID: &orgID,
+			ActorUserID:    &actor,
+			EntityType:     "transaction",
+			EntityID:       &entityID,
+			Action:         "classification.corrected",
+			Before:         audit.MarshalBefore(map[string]any{
+				"category_id":       cur.CategoryID,
+				"classification_id": cur.ID,
+				"source":            cur.Source,
+			}),
+			After: audit.MarshalAfter(map[string]any{
+				"category_id":       input.NewCategoryID,
+				"account_id":        input.NewAccountID,
+				"classification_id": newClsID,
+				"source":            "user",
+			}),
+		})
+		if auditErr != nil {
+			log.Printf("audit: classify correction write failed: %v", auditErr)
+		}
 	}
 
 	// 7. Check for promotion (outside the transaction; idempotent upsert).

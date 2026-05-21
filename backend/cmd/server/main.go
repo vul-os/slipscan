@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exolutionza/slipscan/backend/internal/audit"
 	"github.com/exolutionza/slipscan/backend/internal/auth"
 	"github.com/exolutionza/slipscan/backend/internal/classify"
 	"github.com/exolutionza/slipscan/backend/internal/config"
@@ -126,6 +127,8 @@ func main() {
 	correctionsH := classify.NewCorrectionsHandler(classify.NewCorrectionsStore(pool, classify.CorrectionsConfig{
 		PromotionThreshold: cfg.ClassifyPromotionThreshold,
 	}))
+	// P4-03: audit trail — per-org queryable audit log (admin-gated).
+	auditH := audit.NewHandler(audit.NewStore(pool))
 
 	mux := http.NewServeMux()
 
@@ -187,6 +190,8 @@ func main() {
 	// ?apply_to_existing=true  →  also reclassifies past non-user transactions
 	mux.Handle("PATCH /orgs/{orgID}/transactions/{txID}/classification",
 		authedMember(correctionsH.PatchClassification))
+	// P4-03: per-org audit log — admin-only; filterable by entity/actor/date.
+	mux.Handle("GET /orgs/{orgID}/audit", authedAdmin(auditH.List))
 
 	corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if corsOrigins == "" {
