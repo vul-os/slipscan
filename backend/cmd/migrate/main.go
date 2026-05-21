@@ -6,12 +6,16 @@
 //
 // Usage:
 //
-//    go run ./cmd/migrate                    # local (default), apply pending
-//    go run ./cmd/migrate --env=dev          # uses .env.dev
-//    go run ./cmd/migrate --env=local        # uses .env.local (or .env)
-//    go run ./cmd/migrate --status           # show migration status
-//    go run ./cmd/migrate --reset            # drop schema and re-run all
-//    go run ./cmd/migrate --env=dev --reset  # reset dev database
+//    go run ./cmd/migrate                         # local (default), apply pending
+//    go run ./cmd/migrate --env=dev               # uses .env.dev
+//    go run ./cmd/migrate --env=local             # uses .env.local (or .env)
+//    go run ./cmd/migrate --env-file=/path/.env   # explicit env file path
+//    go run ./cmd/migrate --status                # show migration status
+//    go run ./cmd/migrate --reset                 # drop schema and re-run all
+//    go run ./cmd/migrate --env=dev --reset       # reset dev database
+//
+// DATABASE_URL may also be set directly in the process environment; any value
+// already set takes precedence over what is found in the env file.
 package main
 
 import (
@@ -75,10 +79,20 @@ func loadEnvFile(envFile string) string {
 }
 
 func loadDatabaseURL(env string) (string, string) {
-	envFile := envFiles[env]
-	if env == "local" {
-		if _, err := os.Stat(envFile); err != nil {
-			envFile = filepath.Join(repoRoot, ".env")
+	return loadDatabaseURLWithFile(env, "")
+}
+
+// loadDatabaseURLWithFile resolves the env file and returns (databaseURL, resolvedEnvFilePath).
+// If envFileOverride is non-empty it is used directly, bypassing the --env lookup.
+func loadDatabaseURLWithFile(env, envFileOverride string) (string, string) {
+	envFile := envFileOverride
+	if envFile == "" {
+		envFile = envFiles[env]
+		if env == "local" {
+			if _, err := os.Stat(envFile); err != nil {
+				// .env.local not found — fall back to plain .env at repo root.
+				envFile = filepath.Join(repoRoot, ".env")
+			}
 		}
 	}
 	if dbURL := loadEnvFile(envFile); dbURL != "" {
@@ -87,7 +101,12 @@ func loadDatabaseURL(env string) (string, string) {
 	if url := os.Getenv("DATABASE_URL"); url != "" {
 		return url, envFile
 	}
-	fmt.Fprintf(os.Stderr, "ERROR: DATABASE_URL not found in %s\n", envFile)
+	fmt.Fprintf(os.Stderr,
+		"ERROR: DATABASE_URL not found.\n"+
+			"  Looked in env file: %s\n"+
+			"  Also checked $DATABASE_URL environment variable.\n"+
+			"  Set DATABASE_URL in your env file or export it in your shell.\n",
+		envFile)
 	os.Exit(1)
 	return "", envFile
 }
@@ -230,21 +249,24 @@ func cmdReset(ctx context.Context, conn *pgx.Conn) {
 
 func main() {
 	env := flag.String("env", "local", "Target environment: local (default), dev, or main")
+	envFile := flag.String("env-file", "", "Explicit path to an env file (overrides --env file lookup)")
 	status := flag.Bool("status", false, "Show migration status")
 	reset := flag.Bool("reset", false, "Drop schema and re-run all")
 	flag.Parse()
 
-	if _, ok := envFiles[*env]; !ok {
-		fmt.Fprintf(os.Stderr, "ERROR: unknown --env %q (must be local, dev, or main)\n", *env)
-		os.Exit(2)
+	if *envFile == "" {
+		if _, ok := envFiles[*env]; !ok {
+			fmt.Fprintf(os.Stderr, "ERROR: unknown --env %q (must be local, dev, or main)\n", *env)
+			os.Exit(2)
+		}
 	}
-	if *reset && *env == "main" {
-		fmt.Fprintln(os.Stderr, "refusing to --reset with --env=main")
+	if *reset && *env == "main" && *envFile == "" {
+		fmt.Fprintln(os.Stderr, "refusing to --reset with --env=main (pass --env-file if you really mean it)")
 		os.Exit(1)
 	}
 
-	dbURL, envFile := loadDatabaseURL(*env)
-	fmt.Printf("env: %s  (%s)\n", *env, filepath.Base(envFile))
+	dbURL, resolvedEnvFile := loadDatabaseURLWithFile(*env, *envFile)
+	fmt.Printf("env: %s  (%s)\n", *env, filepath.Base(resolvedEnvFile))
 	if len(dbURL) > 60 {
 		fmt.Printf("db:  %s...\n\n", dbURL[:60])
 	} else {
