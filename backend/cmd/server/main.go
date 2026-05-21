@@ -88,6 +88,17 @@ func main() {
 		log.Printf("fx: scheduler disabled (FX_SYNC_ENABLED != true)")
 	}
 
+	// P1-04: Cross-tenant merchant signal aggregation scheduler.
+	// Only starts when SIGNALS_AGG_ENABLED=true. Set that env var on EXACTLY ONE
+	// fleet member so the aggregation job runs on a single node (leader guard).
+	if cfg.SignalsAggEnabled {
+		signalsStore := classify.NewStore(pool)
+		signalsScheduler := classify.NewScheduler(signalsStore, cfg.SignalsMinOrgs, 0)
+		go signalsScheduler.Run(ctx)
+	} else {
+		log.Printf("classify: signal aggregation disabled (SIGNALS_AGG_ENABLED != true)")
+	}
+
 	authH := auth.NewHandler(auth.HandlerConfig{
 		Users:           userStore,
 		Tokens:          tokenStore,

@@ -51,6 +51,14 @@ type Config struct {
 	// (same merchant_normalized → same category) before a classification_rules
 	// row is upserted. Defaults to 2 when 0. Set via CLASSIFY_PROMOTION_THRESHOLD.
 	ClassifyPromotionThreshold int
+	// P1-04: Cross-tenant merchant signal aggregation.
+	// SignalsAggEnabled gates the periodic aggregation job. Set to "true" on
+	// exactly ONE fleet member (same leader-guard pattern as FX_SYNC_ENABLED).
+	SignalsAggEnabled bool
+	// SignalsMinOrgs is the minimum number of distinct organisations that must
+	// agree on a (merchant, category) pairing before it is written to
+	// merchant_signals. Defaults to 2.
+	SignalsMinOrgs int
 }
 
 func Load() (*Config, error) {
@@ -127,6 +135,8 @@ func Load() (*Config, error) {
 		FXSyncEnabled:      os.Getenv("FX_SYNC_ENABLED") == "true",
 
 		ClassifyPromotionThreshold: classifyPromotionThreshold(),
+		SignalsAggEnabled:          os.Getenv("SIGNALS_AGG_ENABLED") == "true",
+		SignalsMinOrgs:             signalsMinOrgs(),
 	}, nil
 }
 
@@ -179,6 +189,20 @@ func classifyPromotionThreshold() int {
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 0 {
 		return 0
+	}
+	return n
+}
+
+// signalsMinOrgs returns the minimum distinct-orgs threshold for merchant
+// signal trust. Defaults to 2 (i.e. at least 2 distinct orgs must agree).
+func signalsMinOrgs() int {
+	v := os.Getenv("SIGNALS_MIN_ORGS")
+	if v == "" {
+		return 2
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 2
 	}
 	return n
 }
