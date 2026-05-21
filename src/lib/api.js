@@ -142,4 +142,36 @@ export const api = {
       body: { question },
       signal,
     }),
+
+  // ── Phase 1: extraction, classification, corrections ──────────────────────
+
+  // Re-run the typed extraction pipeline (P1-01) on an existing document.
+  triggerExtract: (orgId, docId) =>
+    request(`/orgs/${orgId}/documents/${docId}/extract`, { method: "POST" }),
+
+  // (Re-)run the classification cascade (P1-02) for a document.
+  // Returns { transactions: [...] }.
+  classifyDocument: (orgId, docId) =>
+    request(`/orgs/${orgId}/documents/${docId}/classify`, { method: "POST" }),
+
+  // List the org's transactions (P1-02). Each row carries its current
+  // classification inline: category_id, category_name, classification_source,
+  // classification_confidence. Filter by document client-side on `document_id`.
+  listTransactions: (orgId, { limit = 100, offset = 0 } = {}) =>
+    request(`/orgs/${orgId}/transactions?limit=${limit}&offset=${offset}`),
+
+  // The org's category tree (for the correction picker). Returns
+  // { categories: [{ id, parent_id, name, kind, icon, color }] }.
+  listCategories: (orgId) => request(`/orgs/${orgId}/categories`),
+
+  // Recategorize a transaction (P1-03). When applyToExisting is true the
+  // backend also reclassifies past non-user transactions for the same merchant.
+  patchClassification: (orgId, txId, { categoryId, accountId } = {}, { applyToExisting = false } = {}) =>
+    request(
+      `/orgs/${orgId}/transactions/${txId}/classification${applyToExisting ? "?apply_to_existing=true" : ""}`,
+      {
+        method: "PATCH",
+        body: accountId ? { category_id: categoryId, account_id: accountId } : { category_id: categoryId },
+      },
+    ),
 };

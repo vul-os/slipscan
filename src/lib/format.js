@@ -58,3 +58,24 @@ export function initials(name, fallback = "?") {
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
+
+// ── Confidence display (Phase 1) ────────────────────────────────────────────
+// Backend confidence is a 0–1 float (extraction `confidence`, classification
+// `classification_confidence`). Helpers below give a consistent % + severity.
+
+export function formatConfidence(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return `${Math.round(value * 100)}%`;
+}
+
+// confidenceLevel maps a 0–1 confidence to a severity bucket used for pill
+// colours and the "review low-confidence first" default sort.
+//   high   ≥ 0.85   green
+//   medium ≥ 0.60   amber
+//   low    < 0.60   red
+export function confidenceLevel(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "unknown";
+  if (value >= 0.85) return "high";
+  if (value >= 0.6) return "medium";
+  return "low";
+}

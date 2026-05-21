@@ -181,6 +181,7 @@ func main() {
 	// P1-02: classification engine routes
 	mux.Handle("POST /orgs/{orgID}/documents/{docID}/classify", authedMember(classifyH.Classify))
 	mux.Handle("GET /orgs/{orgID}/transactions", authedMember(classifyH.ListTransactions))
+	mux.Handle("GET /orgs/{orgID}/categories", authedMember(classifyH.ListCategories))
 	// P1-03: correction-learning loop
 	// PATCH /orgs/{orgID}/transactions/{txID}/classification
 	// ?apply_to_existing=true  →  also reclassifies past non-user transactions

@@ -11,6 +11,8 @@ export const qk = {
   invitations:(orgId)         => ["invitations", orgId],
   documents:  (orgId)         => ["documents", orgId],
   document:   (orgId, id)     => ["document", orgId, id],
+  transactions:(orgId)        => ["transactions", orgId],
+  categories: (orgId)         => ["categories", orgId],
 };
 
 export const useMe = () =>
@@ -46,6 +48,85 @@ export const useDocument = (orgId, docId) =>
     queryFn: () => api.getDocument(orgId, docId),
     enabled: !!orgId && !!docId,
   });
+
+// ── Phase 1: transactions, categories, classification corrections ───────────
+
+// Normalizes the list endpoint's `{ transactions: [...] }` (or bare array) to
+// an array. Each item carries its current classification inline.
+export const useTransactions = (orgId) =>
+  useQuery({
+    queryKey: orgId ? qk.transactions(orgId) : ["transactions", "none"],
+    queryFn: async () => {
+      const res = await api.listTransactions(orgId);
+      return Array.isArray(res) ? res : res?.transactions ?? [];
+    },
+    enabled: !!orgId,
+  });
+
+export const useCategories = (orgId) =>
+  useQuery({
+    queryKey: orgId ? qk.categories(orgId) : ["categories", "none"],
+    queryFn: async () => {
+      const res = await api.listCategories(orgId);
+      return Array.isArray(res) ? res : res?.categories ?? [];
+    },
+    enabled: !!orgId,
+    staleTime: 5 * 60 * 1000, // categories rarely change
+  });
+
+export const useClassifyDocument = (orgId) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (docId) => api.classifyDocument(orgId, docId),
+    onSuccess: () => {
+      if (orgId) qc.invalidateQueries({ queryKey: qk.transactions(orgId) });
+    },
+  });
+};
+
+export const useTriggerExtract = (orgId) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (docId) => api.triggerExtract(orgId, docId),
+    onSuccess: (_data, docId) => {
+      if (orgId) {
+        qc.invalidateQueries({ queryKey: qk.document(orgId, docId) });
+        qc.invalidateQueries({ queryKey: qk.documents(orgId) });
+      }
+    },
+  });
+};
+
+// Recategorize a transaction with an optimistic cache update. Variables:
+// { txId, categoryId, categoryName?, accountId?, applyToExisting? }.
+export const usePatchClassification = (orgId) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ txId, categoryId, accountId, applyToExisting }) =>
+      api.patchClassification(orgId, txId, { categoryId, accountId }, { applyToExisting }),
+    onMutate: async ({ txId, categoryId, categoryName }) => {
+      if (!orgId) return {};
+      await qc.cancelQueries({ queryKey: qk.transactions(orgId) });
+      const prev = qc.getQueryData(qk.transactions(orgId));
+      qc.setQueryData(qk.transactions(orgId), (old) =>
+        Array.isArray(old)
+          ? old.map((t) =>
+              t.id === txId
+                ? { ...t, category_id: categoryId, category_name: categoryName ?? t.category_name, classification_source: "user", classification_confidence: 1 }
+                : t,
+            )
+          : old,
+      );
+      return { prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (orgId && ctx?.prev !== undefined) qc.setQueryData(qk.transactions(orgId), ctx.prev);
+    },
+    onSettled: () => {
+      if (orgId) qc.invalidateQueries({ queryKey: qk.transactions(orgId) });
+    },
+  });
+};
 
 export const useCreateOrg = () => {
   const qc = useQueryClient();
