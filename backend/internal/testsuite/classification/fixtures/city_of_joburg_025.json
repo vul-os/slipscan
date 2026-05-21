@@ -1,0 +1,18 @@
+{
+  "id": "city_of_joburg_025",
+  "kind": "invoice",
+  "merchant": "City of Johannesburg Metropolitan Municipality",
+  "date": "2026-04-30",
+  "currency": "ZAR",
+  "subtotal": 2100.00,
+  "tax": 294.00,
+  "total": 2394.00,
+  "confidence": 0.97,
+  "line_items": [
+    {"description": "Water & Sanitation - April 2026", "qty": 1, "unit": 800.00, "amount": 800.00},
+    {"description": "Refuse Removal - April 2026", "qty": 1, "unit": 350.00, "amount": 350.00},
+    {"description": "Property Rates - April 2026", "qty": 1, "unit": 950.00, "amount": 950.00}
+  ],
+  "_expected_category": "Utilities",
+  "_merchant_normalized_expected": "city of johannesburg metropolitan municipality"
+}

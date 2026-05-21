@@ -1,0 +1,19 @@
+{
+  "id": "nandos_016",
+  "kind": "slip",
+  "merchant": "NANDO'S CHICKEN PTY LTD - MELROSE ARCH",
+  "date": "2026-04-08",
+  "currency": "ZAR",
+  "subtotal": 235.00,
+  "tax": 32.90,
+  "total": 267.90,
+  "confidence": 0.95,
+  "line_items": [
+    {"description": "1/2 Chicken PERi-PERi Hot", "qty": 1, "unit": 129.00, "amount": 129.00},
+    {"description": "Spicy Rice", "qty": 1, "unit": 35.00, "amount": 35.00},
+    {"description": "Coleslaw", "qty": 1, "unit": 29.00, "amount": 29.00},
+    {"description": "Refill Drink", "qty": 1, "unit": 42.00, "amount": 42.00}
+  ],
+  "_expected_category": "Restaurants/Fast Food",
+  "_merchant_normalized_expected": "nando s chicken melrose arch"
+}
