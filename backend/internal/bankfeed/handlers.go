@@ -75,7 +75,9 @@ func (h *Handler) Connect(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "link_url_error", err.Error())
 		return
 	}
-	http.Redirect(w, r, linkURL, http.StatusFound)
+	// Return the provider link as JSON rather than redirecting: this endpoint is
+	// JWT-header-authed, so the frontend reads link_url then navigates the window.
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"link_url": linkURL})
 }
 
 // Callback handles GET /integrations/bankfeed/callback.

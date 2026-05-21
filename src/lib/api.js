@@ -222,6 +222,22 @@ export const api = {
   // ── Phase 4: audit trail (internal/audit) ─────────────────────────────────
   listAudit: (orgId, { entity_type, action, limit = 100 } = {}) =>
     request(`/orgs/${orgId}/audit${qs({ entity_type, action, limit })}`),
+
+  // ── Phase 3: bank feeds (internal/bankfeed) ───────────────────────────────
+  // Connect returns { link_url } — the caller navigates the window to it.
+  bankfeedConnect: (orgId) => request(`/orgs/${orgId}/integrations/bankfeed/connect`),
+  listBankConnections: (orgId) => request(`/orgs/${orgId}/integrations/bankfeed/connections`),
+  getBankConnection: (orgId, connId) => request(`/orgs/${orgId}/integrations/bankfeed/connections/${connId}`),
+  disconnectBank: (orgId, connId) =>
+    request(`/orgs/${orgId}/integrations/bankfeed/connections/${connId}`, { method: "DELETE" }),
+  triggerBankSync: (orgId, connId) =>
+    request(`/orgs/${orgId}/integrations/bankfeed/connections/${connId}/sync`, { method: "POST" }),
+
+  // ── Phase 3: reconciliation (internal/recon) ──────────────────────────────
+  runReconcile: (orgId) => request(`/orgs/${orgId}/reconcile`, { method: "POST" }),
+  getReconcile: (orgId) => request(`/orgs/${orgId}/reconcile`), // { matched, suggested, unmatched }
+  confirmMatch: (orgId, matchId) => request(`/orgs/${orgId}/reconcile/${matchId}/confirm`, { method: "POST" }),
+  rejectMatch: (orgId, matchId) => request(`/orgs/${orgId}/reconcile/${matchId}/reject`, { method: "POST" }),
 };
 
 // qs builds a query string from defined, non-empty values (drops undefined/null/"").

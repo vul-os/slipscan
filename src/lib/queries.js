@@ -25,6 +25,8 @@ export const qk = {
   report:     (orgId, n, r)   => ["report", orgId, n, r],
   xeroStatus: (orgId)         => ["xero-status", orgId],
   audit:      (orgId, f)      => ["audit", orgId, f],
+  bankConnections:(orgId)     => ["bank-connections", orgId],
+  reconcile:  (orgId)         => ["reconcile", orgId],
 };
 
 // arr normalizes a `{ <key>: [...] }` envelope or bare array to an array.
@@ -264,3 +266,9 @@ export const useOrgMutation = (orgId, fn, invalidateKeys = []) => {
     onSuccess: () => invalidateKeys.forEach((k) => qc.invalidateQueries({ queryKey: k })),
   });
 };
+
+// ── Phase 3 read hooks (bank feeds, reconciliation) ─────────────────────────
+export const useBankConnections = (orgId) =>
+  enabledQuery(orgId, qk.bankConnections(orgId), async () => arr(await api.listBankConnections(orgId), "connections"));
+export const useReconcile = (orgId) =>
+  enabledQuery(orgId, qk.reconcile(orgId), () => api.getReconcile(orgId));
