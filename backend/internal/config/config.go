@@ -59,6 +59,16 @@ type Config struct {
 	// agree on a (merchant, category) pairing before it is written to
 	// merchant_signals. Defaults to 2.
 	SignalsMinOrgs int
+
+	// P2-05: Xero / QuickBooks export.
+	// XeroClientID and XeroClientSecret are the OAuth2 app credentials from
+	// https://developer.xero.com/app/manage. XeroRedirectURL must match the
+	// redirect URI registered in the Xero developer portal exactly.
+	// When any of these is blank the Xero integration is disabled gracefully
+	// (connect routes return 503).
+	XeroClientID     string
+	XeroClientSecret string
+	XeroRedirectURL  string
 }
 
 func Load() (*Config, error) {
@@ -137,6 +147,11 @@ func Load() (*Config, error) {
 		ClassifyPromotionThreshold: classifyPromotionThreshold(),
 		SignalsAggEnabled:          os.Getenv("SIGNALS_AGG_ENABLED") == "true",
 		SignalsMinOrgs:             signalsMinOrgs(),
+
+		// P2-05: Xero integration (optional — missing secrets disable the feature).
+		XeroClientID:     os.Getenv("XERO_CLIENT_ID"),
+		XeroClientSecret: os.Getenv("XERO_CLIENT_SECRET"),
+		XeroRedirectURL:  getOr("XERO_REDIRECT_URL", "http://localhost:8080/integrations/xero/callback"),
 	}, nil
 }
 

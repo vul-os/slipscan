@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/exolutionza/slipscan/backend/internal/accounting_export"
 	"github.com/exolutionza/slipscan/backend/internal/auth"
 	"github.com/exolutionza/slipscan/backend/internal/classify"
 	"github.com/exolutionza/slipscan/backend/internal/config"
@@ -133,6 +134,29 @@ func main() {
 	ledgerH := ledger.NewHandler(ledger.NewStore(pool))
 	// P2-04: reporting by org kind.
 	reportH := reporting.NewHandler(pool)
+
+	// P2-05: Xero / QuickBooks export — integrate-first go-to-market.
+	// Secrets: XERO_CLIENT_ID, XERO_CLIENT_SECRET, XERO_REDIRECT_URL.
+	// When Xero credentials are absent the feature is disabled gracefully
+	// (requests return 503 with a clear message). QuickBooks can be wired in
+	// by satisfying the accounting_export.Provider interface.
+	var xeroH *accounting_export.Handler
+	xeroStore := accounting_export.NewStore(pool)
+	if cfg.XeroClientID != "" && cfg.XeroClientSecret != "" {
+		xeroCfg := accounting_export.XeroConfig{
+			ClientID:     cfg.XeroClientID,
+			ClientSecret: cfg.XeroClientSecret,
+			RedirectURL:  cfg.XeroRedirectURL,
+		}
+		xeroProvider, err := accounting_export.NewXeroProvider(xeroCfg, xeroStore)
+		if err != nil {
+			log.Fatalf("xero: %v", err)
+		}
+		xeroH = accounting_export.NewHandler(xeroProvider, xeroStore)
+		log.Printf("xero: integration enabled (client_id=%s)", cfg.XeroClientID)
+	} else {
+		log.Printf("xero: integration disabled (XERO_CLIENT_ID / XERO_CLIENT_SECRET not set)")
+	}
 
 	mux := http.NewServeMux()
 
@@ -263,6 +287,42 @@ func main() {
 	// Net worth headline + time series
 	mux.Handle("GET /orgs/{orgID}/net-worth", authedMember(financeH.GetNetWorth))
 	mux.Handle("GET /orgs/{orgID}/net-worth/history", authedMember(financeH.GetNetWorthTimeSeries))
+	// P2-05: Xero integration routes.
+	// All routes are gated on xeroH being non-nil (i.e. credentials configured).
+	// Connect/disconnect require at least admin; push/status require member.
+	if xeroH != nil {
+		// OAuth2 connect / disconnect
+		mux.Handle("GET /orgs/{orgID}/integrations/xero/connect",
+			authedAdmin(xeroH.Connect))
+		mux.Handle("DELETE /orgs/{orgID}/integrations/xero/connect",
+			authedAdmin(xeroH.Disconnect))
+		// OAuth2 callback (no org in path — state encodes orgID)
+		mux.HandleFunc("GET /integrations/xero/callback", xeroH.Callback)
+		// Status and sync
+		mux.Handle("GET /orgs/{orgID}/integrations/xero/status",
+			authedMember(xeroH.Status))
+		mux.Handle("GET /orgs/{orgID}/integrations/xero/sync-status",
+			authedMember(xeroH.SyncStatus))
+		// Manual push action
+		mux.Handle("POST /orgs/{orgID}/integrations/xero/push",
+			authedMember(xeroH.Push))
+	} else {
+		// Stub routes return 503 when credentials are not configured.
+		xeroDisabled := func(w http.ResponseWriter, r *http.Request) {
+			httpx.WriteError(w, http.StatusServiceUnavailable, "xero_not_configured",
+				"Xero integration is not configured (XERO_CLIENT_ID/XERO_CLIENT_SECRET missing)")
+		}
+		for _, pattern := range []string{
+			"GET /orgs/{orgID}/integrations/xero/connect",
+			"DELETE /orgs/{orgID}/integrations/xero/connect",
+			"GET /integrations/xero/callback",
+			"GET /orgs/{orgID}/integrations/xero/status",
+			"GET /orgs/{orgID}/integrations/xero/sync-status",
+			"POST /orgs/{orgID}/integrations/xero/push",
+		} {
+			mux.HandleFunc(pattern, xeroDisabled)
+		}
+	}
 
 	corsOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
 	if corsOrigins == "" {
