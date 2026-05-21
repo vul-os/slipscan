@@ -2,9 +2,9 @@
 id: P2-04
 title: Reporting that diverges by org kind
 phase: 2
-status: todo
+status: review
 depends_on: [P2-02, P2-03]
-owner: unassigned
+owner: sonnet-agent
 ---
 
 ## Goal
@@ -62,3 +62,29 @@ it; defer); scheduled report emails (Phase 4); statutory filing.
 Keep report functions pure and table-driven so Phase 4 can reuse them for
 scheduled emails and forecasting. Reconciliation with the ledger is the
 correctness anchor for business reports.
+
+### Implementation (sonnet-agent, 2026-05-21)
+
+New package `backend/internal/reporting` with four files:
+
+- `reports.go` — pure report builder functions + report registry (ValidateReport gates by org kind)
+- `store.go` — DB read layer (FetchPLLines, FetchBSLines, FetchVATLines, FetchCashFlowRows, FetchSpendingTrendRows, FetchNetWorthSeries) + OrgKind lookup
+- `handlers.go` — HTTP handler (GET /orgs/{orgID}/reports/{name}?from&to[&format=csv])
+- `csv.go` — CSV serialiser for all six report types
+
+Route added in `cmd/server/main.go` under `// P2-04`:
+```
+GET /orgs/{orgID}/reports/{name}  →  authedMember(reportH.Get)
+```
+
+Reports and correctness anchors:
+- `profit-and-loss` (business): income net = credit−debit; expense net = debit−credit; NetIncome = TotalIncome − TotalExpense
+- `balance-sheet` (business): Balanced flag true when |assets − (liabilities + equity)| ≤ 0.01; Diff exposed for auditing
+- `vat-summary` (business): output vs input split by account type; NetVATPayable = output − input (negative = refund)
+- `cash-flow` (personal): credits=inflow, debits=outflow, transfers excluded; ordered by month
+- `spending-trend` (personal): debit transactions grouped (category, month)
+- `net-worth` (personal): monthly series from asset_valuations + liability_balances using latest-value-per-month CTE
+
+Tests: 19 unit tests covering report math with fixtures, balance-sheet balances, P&L loss scenario, VAT refund case, cash-flow with transfers ignored, month ordering, period boundaries, CSV serialisation.
+
+`go build ./...` and `go vet ./...` clean. 19/19 tests pass.

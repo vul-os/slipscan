@@ -66,3 +66,38 @@ contacts CRUD; a ledger/account-transactions view; trial-balance query.
 Double-entry correctness is non-negotiable — every code path that writes
 `ledger_entries` must balance or fail. This is the integrity backbone for P2-04
 reports and P2-05 Xero export.
+
+---
+**Implementation summary (sonnet-agent, 2026-05-21)**
+
+New package `backend/internal/ledger` (store.go + handlers.go + ledger_test.go).
+
+**Store layer** (`ledger.Store`):
+- Chart-of-accounts CRUD: `ListAccounts`, `GetAccount`, `CreateAccount`, `UpdateAccount` (blocks name/code changes on `is_system` accounts), `DeleteAccount` (blocks on `is_system`).
+- Double-entry posting: `PostTransaction` — on a `verified` transaction with a classification account, deletes any prior entries and writes two balanced `ledger_entries` rows (DR expense / CR bank for debits; DR bank / CR income for credits). Counter-account resolves via code `090` (Bank Accounts) with fallback to first asset account.
+- `ReverseTransaction` — removes all `source_type='transaction'` entries for a given transaction.
+- Manual journal CRUD: `CreateManualJournal` validates Σdebit=Σcredit (returns `ErrUnbalanced`/`ErrNoLines`/`ErrInvalidAmount`) then writes `manual_journals` + `ledger_entries` atomically; `GetManualJournal` (with lines), `ListManualJournals`, `DeleteManualJournal` (cascades entries).
+- Contacts CRUD: `CreateContact`, `GetContact`, `ListContacts`, `UpdateContact`, `DeleteContact`.
+- Queries: `AccountLedger` (entries for one account, optional date range), `TrialBalance` (all accounts' DR/CR totals; well-formed ledger nets to zero).
+
+**Routes added (all `authedMember`, grouped `// P2-03`)**:
+```
+GET/POST        /orgs/{orgID}/accounts
+GET/PATCH/DELETE /orgs/{orgID}/accounts/{accountID}
+GET             /orgs/{orgID}/accounts/{accountID}/ledger
+GET             /orgs/{orgID}/trial-balance
+POST            /orgs/{orgID}/transactions/{txID}/post
+GET/POST        /orgs/{orgID}/journals
+GET/DELETE      /orgs/{orgID}/journals/{journalID}
+GET/POST        /orgs/{orgID}/contacts
+GET/PATCH/DELETE /orgs/{orgID}/contacts/{contactID}
+```
+
+**Tests** (15/15 pass, `go test ./internal/ledger/... -v`):
+- `validateJournalLines`: balanced, unbalanced, too-few-lines, both-sides-set, neither-set, multiline, floating-point epsilon.
+- Double-entry balance invariant: expense posting, income posting, reversal-then-repost nets to zero.
+- `TestTrialBalanceNetToZero`: grand Σdebit = Σcredit across multiple balanced journals.
+- `TestManualJournalBalanceEnforcement`: table-driven (5 sub-cases).
+- `TestAccountLedgerDateRange`: inclusive date-range filter logic.
+
+`go build ./... && go vet ./...` clean.
