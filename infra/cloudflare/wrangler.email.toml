@@ -1,0 +1,30 @@
+# Cloudflare Email Worker config for slipscan inbound email ingestion
+#
+# This is a SEPARATE Worker from the container router.  It receives inbound
+# email via Cloudflare Email Routing and POSTs the raw RFC-822 message to the
+# Go monolith's /internal/inbound-email endpoint.
+#
+# Deploy with:
+#   wrangler deploy --config infra/cloudflare/wrangler.email.toml
+#
+# Inbound email routing:
+#   In the Cloudflare dashboard → Email Routing → Routing rules, add a
+#   catch-all rule: *@mail.slipscan.app → send to Worker → slipscan-email-ingest
+#   (See README.md for full setup steps.)
+#
+# No special wrangler.toml binding is needed for INBOUND email handling.
+# The email() handler is activated purely by Cloudflare Email Routing pointing
+# to this Worker.  The [[send_email]] binding is only required if this Worker
+# also needs to SEND outbound email, which it does not.
+
+name               = "slipscan-email-ingest"
+main               = "src/email.ts"
+compatibility_date = "2026-05-01"
+
+# ── Secrets (set via `wrangler secret put`) ───────────────────────────────────
+# INGEST_BASE_URL        — e.g. https://api.slipscan.app  (can be plain var)
+# INBOUND_INGEST_SECRET  — shared secret verified by the Go ingest handler
+#
+# Plain (non-secret) env var example; override with actual URL:
+[vars]
+INGEST_BASE_URL = "https://api.slipscan.app"

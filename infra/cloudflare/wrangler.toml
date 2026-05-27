@@ -1,0 +1,45 @@
+# Cloudflare Workers + Containers config for slipscan API
+# Router Worker fronts the Go monolith container at api.slipscan.app
+#
+# Build-context assumption:
+#   `wrangler deploy` must be run from the repo root (or set --config path).
+#   The `image` path is relative to THIS config file, so ../../backend/Dockerfile
+#   resolves to <repo-root>/backend/Dockerfile, which is where the other agent
+#   is placing it.  The Docker build context sent to Cloudflare is the backend/
+#   directory (CF uses the directory containing the Dockerfile as the build context).
+
+name            = "slipscan-api"
+main            = "src/index.ts"
+compatibility_date = "2026-05-01"
+
+# ── Custom domain route ────────────────────────────────────────────────────────
+routes = [
+  { pattern = "api.slipscan.app/*", custom_domain = true },
+]
+
+# ── Secrets / plain env vars ───────────────────────────────────────────────────
+# Plain (non-secret) vars can live here; secrets are injected via
+#   wrangler secret put <NAME>
+# See README.md for the full list.
+
+# ── Container definition ───────────────────────────────────────────────────────
+# The Container class bridges the Worker <-> the running Go binary.
+# instance_type "standard-2" = 2 vCPU / 4 GB RAM.  Adjust as needed.
+# Other options: "lite" (0.25 vCPU/256 MB), "basic" (0.5 vCPU/512 MB),
+#   "standard-1" (1 vCPU/2 GB), "standard-2" ... "standard-4".
+[[containers]]
+class_name    = "GoBackend"
+image         = "../../backend/Dockerfile"
+max_instances = 5
+instance_type = "standard-2"
+
+# ── Durable Object binding ─────────────────────────────────────────────────────
+# Every Container is backed by a Durable Object (SQLite-based).
+[[durable_objects.bindings]]
+name       = "BACKEND"
+class_name = "GoBackend"
+
+# ── Durable Object migrations ──────────────────────────────────────────────────
+[[migrations]]
+tag                = "v1"
+new_sqlite_classes = ["GoBackend"]

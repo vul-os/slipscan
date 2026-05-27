@@ -1,0 +1,21 @@
+{
+  "name": "slipscan-cloudflare-workers",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Workers + Container router and Email Worker for slipscan",
+  "scripts": {
+    "deploy": "wrangler deploy --config wrangler.toml",
+    "deploy:email": "wrangler deploy --config wrangler.email.toml",
+    "deploy:all": "npm run deploy && npm run deploy:email",
+    "dev": "wrangler dev --config wrangler.toml",
+    "dev:email": "wrangler dev --config wrangler.email.toml",
+    "type-check": "tsc --noEmit",
+    "secret:ingest": "wrangler secret put INBOUND_INGEST_SECRET --config wrangler.email.toml"
+  },
+  "devDependencies": {
+    "@cloudflare/containers": "^0.1.0",
+    "@cloudflare/workers-types": "^4.20240924.0",
+    "typescript": "^5.5.4",
+    "wrangler": "^4.0.0"
+  }
+}
