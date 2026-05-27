@@ -5,6 +5,7 @@
  * operations. Every org-scoped query includes WHERE organization_id = $ (belt
  * and suspenders — RLS is also enforced at the DB layer).
  */
+import { Pool } from "@neondatabase/serverless";
 import { queryRows, queryOne, withOrg } from "../../db/client";
 import type { Env } from "../../bindings";
 import type { DocRow, Extracted, DocumentKind, DocumentStatus } from "./types";
@@ -244,8 +245,8 @@ export async function claimPendingDocuments(
   // targeting a plain transaction (the worker connects as table owner).
   // We use withOrg with an empty orgId since set_config does not affect DML.
   let claimed: Array<{ id: string; organization_id: string }> = [];
-  const pool = (await import("@neondatabase/serverless")).Pool;
-  const client = await new pool({ connectionString: env.DATABASE_URL }).connect();
+  const pool = new Pool({ connectionString: env.DATABASE_URL });
+  const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const res = await client.query(
@@ -271,6 +272,7 @@ export async function claimPendingDocuments(
     throw e;
   } finally {
     (client as { release: () => void }).release();
+    void pool.end().catch(() => {});
   }
   return claimed;
 }
