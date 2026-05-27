@@ -20,8 +20,8 @@ import type {
 
 export async function loadCurrentExtraction(
   env: Env,
-  orgId: string,
   docId: string,
+  orgId: string,
 ): Promise<{ extracted: Extracted; extractionId: string } | null> {
   const row = await queryOne(
     env,
