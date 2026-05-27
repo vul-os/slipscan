@@ -1,4 +1,4 @@
-# Cloudflare Pages headers — ported from firebase.json.
+# Cloudflare Pages headers.
 # HTML and everything by default: never cache (always revalidate the SPA shell).
 /*
   Cache-Control: no-cache, no-store, must-revalidate

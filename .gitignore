@@ -4,7 +4,8 @@ dist
 dist-dev
 dist-main
 
-.firebase
+# Wrangler / Cloudflare local state
+.wrangler
 
 # Real env files (contain secrets). .env.example is the committed template.
 .env

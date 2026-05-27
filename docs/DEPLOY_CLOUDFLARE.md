@@ -484,20 +484,7 @@ Roll back within Cloudflare — no external fallback stack is involved:
 
 ---
 
-## 8. Superseded Files
-
-These are leftovers from the pre-Cloudflare design and are no longer part of
-any deployment path. They can be deleted once the Cloudflare stack is live.
-
-| File | Status | Was |
-|---|---|---|
-| `firebase.json` | Superseded by Pages | Firebase Hosting multi-site config |
-| `.firebaserc` | Superseded by Pages | Firebase project + target aliases |
-| `.github/workflows/firebase-hosting-merge.yml` | Disabled | CI deploy to Firebase |
-
----
-
-## 9. Operational Notes
+## 8. Operational Notes
 
 ### Container cold starts
 
