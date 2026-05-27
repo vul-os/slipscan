@@ -16,6 +16,15 @@ import classifyRouter from "./modules/classify/routes";
 import ledgerRouter from "./modules/ledger/routes";
 import financeRouter from "./modules/finance/routes";
 import reportingRouter from "./modules/reporting/routes";
+import reconRouter from "./modules/recon/routes";
+import bankfeedRouter from "./modules/bankfeed/routes";
+import intelligenceRouter from "./modules/intelligence/routes";
+import workspaceRouter from "./modules/workspace/routes";
+import insightsRouter from "./modules/insights/routes";
+import auditRouter from "./modules/audit/routes";
+import apiTokensRouter from "./modules/apitokens/routes";
+import apiV1Router from "./modules/apitokens/v1routes";
+import xeroRouter from "./modules/xero/routes";
 import { handleScheduled } from "./cron/scheduled";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -54,6 +63,16 @@ app.route("/", classifyRouter); // /orgs/:orgID/{documents/:docID/classify,trans
 app.route("/", ledgerRouter); // /orgs/:orgID/{accounts,journals,contacts,trial-balance,transactions/:id/post}
 app.route("/", financeRouter); // /orgs/:orgID/{spending,budgets,goals,net-worth}
 app.route("/", reportingRouter); // /orgs/:orgID/reports/:name
+// Wave 3 feature modules (absolute paths from root).
+app.route("/", reconRouter); // /orgs/:orgID/reconcile*
+app.route("/", bankfeedRouter); // /orgs/:orgID/integrations/bankfeed/*, /integrations/bankfeed/{callback,webhook}
+app.route("/", intelligenceRouter); // /orgs/:orgID/{forecast,anomalies,tax-readiness}
+app.route("/", workspaceRouter); // /workspace (user-scoped)
+app.route("/", insightsRouter); // /orgs/:orgID/ask
+app.route("/", auditRouter); // /orgs/:orgID/audit
+app.route("/", apiTokensRouter); // /orgs/:orgID/api-tokens*
+app.route("/", apiV1Router); // /v1/orgs/:orgID/*
+app.route("/", xeroRouter); // /orgs/:orgID/integrations/xero/*, /integrations/xero/callback
 
 app.notFound((c) => writeError(c, 404, "not_found", "not found"));
 app.onError((err, c) => {
