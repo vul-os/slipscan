@@ -110,12 +110,12 @@ describe("register input validation", () => {
     expect(normalizeEmail("not-an-email")).toBeNull();
   });
 
-  test("password too short throws from hashPassword", () => {
-    expect(() => hashPassword("short")).toThrow(/short/);
+  test("password too short rejects from hashPassword", async () => {
+    await expect(hashPassword("short")).rejects.toThrow(/short/);
   });
 
-  test("password too long throws from hashPassword", () => {
-    expect(() => hashPassword("x".repeat(257))).toThrow(/long/);
+  test("password too long rejects from hashPassword", async () => {
+    await expect(hashPassword("x".repeat(257))).rejects.toThrow(/long/);
   });
 });
 

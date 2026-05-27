@@ -92,7 +92,7 @@ r.post("/register", async (c) => {
 
   let hash: string;
   try {
-    hash = hashPassword(rawPassword);
+    hash = await hashPassword(rawPassword);
   } catch (e) {
     return writeError(c, 400, "invalid_password", e instanceof Error ? e.message : "invalid password");
   }
@@ -159,14 +159,14 @@ r.post("/login", async (c) => {
     // Constant-time-ish: hash a dummy value so timing reveals less about
     // whether the email exists.
     try {
-      verifyPassword(rawPassword, "scrypt$16384$8$1$0000000000000000000000000000000000000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000");
+      await verifyPassword(rawPassword, "pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
     } catch {
       // ignore
     }
     return writeError(c, 401, "invalid_credentials", "invalid email or password");
   }
 
-  if (!verifyPassword(rawPassword, user.password_hash)) {
+  if (!(await verifyPassword(rawPassword, user.password_hash))) {
     return writeError(c, 401, "invalid_credentials", "invalid email or password");
   }
 
@@ -350,7 +350,7 @@ r.post("/password-reset/confirm", async (c) => {
 
   let hash: string;
   try {
-    hash = hashPassword(newPassword);
+    hash = await hashPassword(newPassword);
   } catch (e) {
     return writeError(c, 400, "invalid_password", e instanceof Error ? e.message : "invalid password");
   }

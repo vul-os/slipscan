@@ -20,11 +20,11 @@ test("money uses decimal precision (no float drift)", () => {
   expect(cmp("10.00", "10.000")).toBe(0);
 });
 
-test("password scrypt round-trips and rejects wrong", () => {
-  const h = hashPassword("correct horse battery");
-  expect(verifyPassword("correct horse battery", h)).toBe(true);
-  expect(verifyPassword("wrong", h)).toBe(false);
-  expect(h.startsWith("scrypt$")).toBe(true);
+test("password pbkdf2 round-trips and rejects wrong", async () => {
+  const h = await hashPassword("correct horse battery");
+  expect(await verifyPassword("correct horse battery", h)).toBe(true);
+  expect(await verifyPassword("wrong", h)).toBe(false);
+  expect(h.startsWith("pbkdf2$")).toBe(true);
 });
 
 test("jwt issue/parse round-trips; rejects wrong type", async () => {

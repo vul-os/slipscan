@@ -11,6 +11,18 @@ workers_dev = true
 binding = "DOCS"
 bucket_name = "slipscan"
 
+# KV for public-API token rate limiting.
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "bc7fd97a3f644405837c40ddb0caf092"
+
+# One-time migration: drop the orphaned GoBackend Durable Object left on this
+# Worker name by the earlier (abandoned) Cloudflare Containers attempt. The
+# container never ran (deploy hit the Workers-Paid gate), so there's no data.
+[[migrations]]
+tag = "v2"
+deleted_classes = ["GoBackend"]
+
 # Non-secret config. Secrets (DATABASE_URL, JWT_SECRET, GEMINI_API_KEY,
 # INBOUND_INGEST_SECRET, AWS_*, STITCH_*, XERO_*) are set with `wrangler secret put`.
 [vars]
