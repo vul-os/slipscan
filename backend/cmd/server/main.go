@@ -24,6 +24,7 @@ import (
 	"github.com/exolutionza/slipscan/backend/internal/email"
 	"github.com/exolutionza/slipscan/backend/internal/extract"
 	"github.com/exolutionza/slipscan/backend/internal/finance"
+	"github.com/exolutionza/slipscan/backend/internal/mailout"
 	"github.com/exolutionza/slipscan/backend/internal/fx"
 	"github.com/exolutionza/slipscan/backend/internal/httpx"
 	"github.com/exolutionza/slipscan/backend/internal/insights"
@@ -74,10 +75,33 @@ func main() {
 	ocrClient := ocr.New(cfg.GeminiAPIKey)
 
 	var mailer email.Sender = email.NoopSender{}
-	if cfg.ResendAPIKey != "" {
-		mailer = email.NewResend(cfg.ResendAPIKey, cfg.ResendFrom)
+	if cfg.EmailFrom != "" && cfg.AWSRegion != "" {
+		sesClient, sesErr := email.NewSES(ctx, email.SESConfig{
+			Region:           cfg.AWSRegion,
+			From:             cfg.EmailFrom,
+			ConfigurationSet: cfg.SESConfigurationSet,
+			AccessKeyID:      cfg.AWSAccessKeyID,
+			SecretAccessKey:  cfg.AWSSecretAccessKey,
+		})
+		if sesErr != nil {
+			log.Fatalf("ses: %v", sesErr)
+		}
+		outboxStore := mailout.NewStore(pool)
+		queue := mailout.NewQueue(outboxStore, cfg.EmailFrom)
+		mailer = queue
+
+		// Email outbox delivery worker — set EMAIL_WORKER_ENABLED=true on
+		// EXACTLY ONE fleet member so duplicate sends are avoided on multi-node
+		// deployments.
+		if cfg.EmailWorkerEnabled {
+			workerInterval, _ := parseDuration(cfg.EmailWorkerInterval, 5*time.Second)
+			go mailout.NewWorker(outboxStore, sesClient, workerInterval).Run(ctx)
+			log.Printf("mailout: worker started (EMAIL_WORKER_ENABLED=true, interval=%s)", workerInterval)
+		} else {
+			log.Printf("mailout: worker disabled (EMAIL_WORKER_ENABLED != true)")
+		}
 	} else {
-		log.Printf("RESEND_API_KEY not set — invitation emails disabled (admin still gets the link)")
+		log.Printf("EMAIL_FROM or AWS_REGION not set — email sending disabled (NoopSender)")
 	}
 
 	userStore := auth.NewStore(pool)
@@ -489,6 +513,19 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
 	}
+}
+
+// parseDuration parses s as a time.Duration, returning def when s is empty or
+// unparseable.
+func parseDuration(s string, def time.Duration) (time.Duration, error) {
+	if s == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return def, err
+	}
+	return d, nil
 }
 
 // envFilesForAppEnv returns the dotenv files to load, in priority order. Earlier

@@ -25,8 +25,13 @@ func clearEnv(t *testing.T) {
 		"B2_REGION",
 		"B2_ENDPOINT",
 		"GEMINI_API_KEY",
-		"RESEND_API_KEY",
-		"RESEND_FROM",
+		"AWS_REGION",
+		"AWS_ACCESS_KEY_ID",
+		"AWS_SECRET_ACCESS_KEY",
+		"EMAIL_FROM",
+		"SES_CONFIGURATION_SET",
+		"EMAIL_WORKER_ENABLED",
+		"EMAIL_WORKER_INTERVAL",
 	}
 	saved := make(map[string]string, len(keys))
 	for _, k := range keys {
@@ -190,17 +195,23 @@ func TestLoad_InvalidTTL(t *testing.T) {
 	}
 }
 
-func TestLoad_ResendOptional(t *testing.T) {
+func TestLoad_EmailOptional(t *testing.T) {
 	clearEnv(t)
 	setMinimal(t)
-	// RESEND_API_KEY not set — should still load OK
+	// No email env set — should still load OK and leave SES fields empty.
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() unexpected error: %v", err)
 	}
-	if cfg.ResendAPIKey != "" {
-		t.Errorf("expected empty ResendAPIKey, got %q", cfg.ResendAPIKey)
+	if cfg.EmailFrom != "" {
+		t.Errorf("expected empty EmailFrom, got %q", cfg.EmailFrom)
+	}
+	if cfg.AWSRegion != "" {
+		t.Errorf("expected empty AWSRegion, got %q", cfg.AWSRegion)
+	}
+	if cfg.EmailWorkerEnabled {
+		t.Errorf("expected EmailWorkerEnabled to default to false")
 	}
 }
 
@@ -210,8 +221,8 @@ func TestLoad_Success(t *testing.T) {
 	_ = os.Setenv("PORT", "9090")
 	_ = os.Setenv("APP_BASE_URL", "https://api.example.com")
 	_ = os.Setenv("FRONTEND_BASE_URL", "https://example.com")
-	_ = os.Setenv("RESEND_API_KEY", "re_test")
-	_ = os.Setenv("RESEND_FROM", "test@example.com")
+	_ = os.Setenv("AWS_REGION", "eu-west-1")
+	_ = os.Setenv("EMAIL_FROM", "slip/scan <noreply@mail.slipscan.app>")
 
 	cfg, err := Load()
 	if err != nil {
@@ -223,8 +234,11 @@ func TestLoad_Success(t *testing.T) {
 	if cfg.AppBaseURL != "https://api.example.com" {
 		t.Errorf("unexpected AppBaseURL %q", cfg.AppBaseURL)
 	}
-	if cfg.ResendAPIKey != "re_test" {
-		t.Errorf("expected ResendAPIKey re_test, got %q", cfg.ResendAPIKey)
+	if cfg.AWSRegion != "eu-west-1" {
+		t.Errorf("expected AWSRegion eu-west-1, got %q", cfg.AWSRegion)
+	}
+	if cfg.EmailFrom != "slip/scan <noreply@mail.slipscan.app>" {
+		t.Errorf("expected EmailFrom set, got %q", cfg.EmailFrom)
 	}
 	if string(cfg.JWTSecret) != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
 		t.Errorf("unexpected JWTSecret")

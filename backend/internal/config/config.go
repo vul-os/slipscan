@@ -27,8 +27,19 @@ type Config struct {
 
 	GeminiAPIKey string
 
-	ResendAPIKey string
-	ResendFrom   string
+	// Email sending via Amazon SES + outbox queue.
+	// All fields are optional — when EMAIL_FROM or AWS_REGION is unset the
+	// application falls back to NoopSender and logs a warning.
+	AWSRegion           string
+	AWSAccessKeyID      string
+	AWSSecretAccessKey  string
+	EmailFrom           string
+	SESConfigurationSet string
+	// EmailWorkerEnabled gates the background outbox delivery worker.
+	// Set to "true" on EXACTLY ONE fleet member (same leader-guard pattern as
+	// FX_SYNC_ENABLED) to avoid duplicate sends on multi-node deployments.
+	EmailWorkerEnabled   bool
+	EmailWorkerInterval  string // optional, e.g. "10s"; empty → default 5s
 
 	// Mail receiver (cmd/mailrx)
 	RxDomain        string
@@ -149,8 +160,13 @@ func Load() (*Config, error) {
 
 		GeminiAPIKey: geminiKey,
 
-		ResendAPIKey: os.Getenv("RESEND_API_KEY"),
-		ResendFrom:   os.Getenv("RESEND_FROM"),
+		AWSRegion:           os.Getenv("AWS_REGION"),
+		AWSAccessKeyID:      os.Getenv("AWS_ACCESS_KEY_ID"),
+		AWSSecretAccessKey:  os.Getenv("AWS_SECRET_ACCESS_KEY"),
+		EmailFrom:           os.Getenv("EMAIL_FROM"),
+		SESConfigurationSet: os.Getenv("SES_CONFIGURATION_SET"),
+		EmailWorkerEnabled:  os.Getenv("EMAIL_WORKER_ENABLED") == "true",
+		EmailWorkerInterval: os.Getenv("EMAIL_WORKER_INTERVAL"),
 
 		RxDomain:        getOr("RX_DOMAIN", "mail.slipscan.app"),
 		MailrxAddr:      getOr("MAILRX_ADDR", ":2525"),
