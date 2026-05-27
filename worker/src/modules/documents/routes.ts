@@ -71,11 +71,17 @@ router.post(
       return writeError(c, 400, "invalid_upload", "could not parse multipart form (max 10MB)");
     }
 
-    const fileField = formData.get("file");
-    if (!fileField || !(fileField instanceof File)) {
+    // CF workers-types declares FormData.get() as string|null, but at runtime
+    // it returns string|File|null for multipart forms. We cast via unknown.
+    const fileField = formData.get("file") as unknown;
+    // A File is a Blob with a name; check for arrayBuffer method as discriminator.
+    const isFileLike = (v: unknown): v is Blob =>
+      v !== null && typeof v === "object" && typeof (v as Blob).arrayBuffer === "function";
+
+    if (!fileField || !isFileLike(fileField)) {
       return writeError(c, 400, "missing_file", `expected a file under field "file"`);
     }
-    const file = fileField as File;
+    const file = fileField as Blob & { name?: string; type: string; size: number };
 
     if (file.size > MAX_UPLOAD_BYTES) {
       return writeError(c, 400, "invalid_upload", "could not parse multipart form (max 10MB)");
@@ -112,6 +118,7 @@ router.post(
     let doc: DocumentRow;
     try {
       doc = await withOrg(c.env, orgId, userId, async (q) => {
+        const originalName = (file as { name?: string }).name ?? null;
         return insertUploadDocument(
           q,
           orgId,
@@ -119,7 +126,7 @@ router.post(
           objectKey,
           mime,
           data.length,
-          file.name || null,
+          originalName,
         );
       });
     } catch (err) {
