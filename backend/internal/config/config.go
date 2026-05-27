@@ -151,23 +151,26 @@ func Load() (*Config, error) {
 		port = "8080"
 	}
 
-	// B2_* legacy vars — still required as the baseline so existing deployments
-	// don't silently lose storage config.
+	// Object storage — Cloudflare R2 by default; any S3-compatible endpoint
+	// works. STORAGE_* are the primary vars; the legacy B2_* names are accepted
+	// as a fallback so older deployments keep working.
 	b2KeyID := os.Getenv("B2_KEY_ID")
 	b2AppKey := os.Getenv("B2_APPLICATION_KEY")
 	b2Bucket := os.Getenv("B2_BUCKET")
 	b2Region := os.Getenv("B2_REGION")
 	b2Endpoint := os.Getenv("B2_ENDPOINT")
-	if b2KeyID == "" || b2AppKey == "" || b2Bucket == "" || b2Region == "" || b2Endpoint == "" {
-		return nil, errors.New("B2_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET, B2_REGION, B2_ENDPOINT are all required")
-	}
 
-	// STORAGE_* vars fall back to B2_* when not explicitly set.
 	storageKeyID    := getOr("STORAGE_KEY_ID", b2KeyID)
 	storageSecret   := getOr("STORAGE_SECRET", b2AppKey)
 	storageBucket   := getOr("STORAGE_BUCKET", b2Bucket)
-	storageRegion   := getOr("STORAGE_REGION", b2Region)
 	storageEndpoint := getOr("STORAGE_ENDPOINT", b2Endpoint)
+	storageRegion   := getOr("STORAGE_REGION", b2Region)
+	if storageRegion == "" {
+		storageRegion = "auto" // R2's region
+	}
+	if storageKeyID == "" || storageSecret == "" || storageBucket == "" || storageEndpoint == "" {
+		return nil, errors.New("object storage not configured: set STORAGE_KEY_ID, STORAGE_SECRET, STORAGE_BUCKET, STORAGE_ENDPOINT (R2) — or the legacy B2_* equivalents")
+	}
 
 	geminiKey := os.Getenv("GEMINI_API_KEY")
 	if geminiKey == "" {

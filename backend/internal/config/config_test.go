@@ -100,11 +100,13 @@ func TestLoad_RequiresJWTSecretMinLength(t *testing.T) {
 	}
 }
 
-func TestLoad_RequiresB2Vars(t *testing.T) {
-	b2Vars := []string{
-		"B2_KEY_ID", "B2_APPLICATION_KEY", "B2_BUCKET", "B2_REGION", "B2_ENDPOINT",
+// Storage requires the resolved key/secret/bucket/endpoint (via STORAGE_* or
+// the legacy B2_* fallback). Region is optional — it defaults to "auto" (R2).
+func TestLoad_RequiresStorageVars(t *testing.T) {
+	required := []string{
+		"B2_KEY_ID", "B2_APPLICATION_KEY", "B2_BUCKET", "B2_ENDPOINT",
 	}
-	for _, missing := range b2Vars {
+	for _, missing := range required {
 		t.Run("missing_"+missing, func(t *testing.T) {
 			clearEnv(t)
 			setMinimal(t)
@@ -115,6 +117,38 @@ func TestLoad_RequiresB2Vars(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("region_optional_defaults_auto", func(t *testing.T) {
+		clearEnv(t)
+		setMinimal(t)
+		_ = os.Unsetenv("B2_REGION")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("region should be optional: %v", err)
+		}
+		if cfg.StorageRegion != "auto" {
+			t.Errorf("expected StorageRegion to default to \"auto\", got %q", cfg.StorageRegion)
+		}
+	})
+
+	t.Run("storage_vars_satisfy_without_b2", func(t *testing.T) {
+		clearEnv(t)
+		setMinimal(t)
+		for _, k := range []string{"B2_KEY_ID", "B2_APPLICATION_KEY", "B2_BUCKET", "B2_REGION", "B2_ENDPOINT"} {
+			_ = os.Unsetenv(k)
+		}
+		_ = os.Setenv("STORAGE_KEY_ID", "r2-key")
+		_ = os.Setenv("STORAGE_SECRET", "r2-secret")
+		_ = os.Setenv("STORAGE_BUCKET", "slipscan-docs")
+		_ = os.Setenv("STORAGE_ENDPOINT", "https://acct.r2.cloudflarestorage.com")
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("STORAGE_* alone should satisfy storage config: %v", err)
+		}
+		if cfg.StorageBucket != "slipscan-docs" {
+			t.Errorf("unexpected StorageBucket %q", cfg.StorageBucket)
+		}
+	})
 }
 
 func TestLoad_RequiresGeminiAPIKey(t *testing.T) {
