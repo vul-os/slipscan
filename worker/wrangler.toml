@@ -1,0 +1,28 @@
+# slip/scan API — Cloudflare Worker (free tier, no Containers).
+# Runs the TypeScript port of the Go backend.
+name = "slipscan-api"
+main = "src/index.ts"
+compatibility_date = "2026-05-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Object storage — R2 binding (no S3 keys needed for put/get).
+[[r2_buckets]]
+binding = "DOCS"
+bucket_name = "slipscan"
+
+# Non-secret config. Secrets (DATABASE_URL, JWT_SECRET, GEMINI_API_KEY,
+# INBOUND_INGEST_SECRET, AWS_*, STITCH_*, XERO_*) are set with `wrangler secret put`.
+[vars]
+RX_DOMAIN = "mail.slipscan.app"
+EXCHANGE_RATE_BASE = "USD"
+FRONTEND_BASE_URL = "https://slipscan-staging.pages.dev"
+APP_BASE_URL = "https://slipscan-api.slipscanco.workers.dev"
+CORS_ALLOWED_ORIGINS = "*"
+
+# Cron triggers (free) — background jobs added wave-by-wave:
+#   * * * * *   → email outbox + document extraction poll (every minute)
+#   0 * * * *   → FX sync + merchant-signal aggregation (hourly)
+#   0 */4 * * * → bankfeed sync (every 4h)
+# [triggers]
+# crons = ["* * * * *", "0 * * * *", "0 */4 * * *"]
