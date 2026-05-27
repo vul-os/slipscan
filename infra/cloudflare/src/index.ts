@@ -1,92 +1,106 @@
 /**
  * Router Worker — slipscan API container proxy
  *
- * Routes every incoming request on api.slipscan.app/* through to the Go
- * monolith running inside a Cloudflare Container.
+ * Forwards every request on this Worker's route to the Go monolith running in a
+ * Cloudflare Container, and injects the backend's configuration (DB, storage,
+ * secrets) into the container's environment at start.
  *
- * API reference used:
- *   https://developers.cloudflare.com/containers/container-package/
- *   https://developers.cloudflare.com/containers/get-started/
- *
- * Container binding pattern (verified from CF docs, 2026-05):
- *   - Import { Container, getContainer } from "@cloudflare/containers"
- *   - Subclass Container; set defaultPort to match $PORT in the Go binary (8080).
- *   - Use getContainer(binding, name).fetch(request) to forward the request.
- *     getContainer returns a DurableObjectStub; calling .fetch() on it:
- *       1. Boots the container if it isn't running.
- *       2. Waits for the health-check port (pingEndpoint) to be ready.
- *       3. Streams the HTTP response back — this preserves chunked transfer
- *          encoding and SSE (no response body buffering occurs in the DO stub).
- *
- * Streaming / SSE note:
- *   DurableObjectStub.fetch() returns the Response as a stream; the Worker
- *   runtime forwards it without buffering, so SSE and chunked responses used
- *   by the chat endpoints pass through correctly.
+ * Refs: https://developers.cloudflare.com/containers/  ·  @cloudflare/containers
  */
 
 import { Container, getContainer } from "@cloudflare/containers";
 
-// ── Environment type ──────────────────────────────────────────────────────────
+// Bindings available to the Worker/DO. Non-secret values come from [vars] in
+// wrangler.toml; secrets are added with `wrangler secret put <NAME>`.
 export interface Env {
-  /** Container / DO binding declared in wrangler.toml */
+  /** Container / Durable Object binding declared in wrangler.toml */
   BACKEND: DurableObjectNamespace<GoBackend>;
+
+  // Secrets (wrangler secret put) — required by the Go server's config.Load:
+  DATABASE_URL: string;
+  JWT_SECRET: string;
+  STORAGE_KEY_ID: string;
+  STORAGE_SECRET: string;
+  GEMINI_API_KEY: string;
+  INBOUND_INGEST_SECRET: string;
+  // Optional secrets (SES outbound email):
+  AWS_ACCESS_KEY_ID?: string;
+  AWS_SECRET_ACCESS_KEY?: string;
+
+  // Non-secret config ([vars] in wrangler.toml):
+  STORAGE_ENDPOINT: string;
+  STORAGE_BUCKET: string;
+  STORAGE_REGION: string;
+  RX_DOMAIN?: string;
+  APP_BASE_URL?: string;
+  FRONTEND_BASE_URL?: string;
+  EXCHANGE_RATE_BASE?: string;
+  EMAIL_WORKER_ENABLED?: string;
+  AWS_REGION?: string;
+  EMAIL_FROM?: string;
+  SES_CONFIGURATION_SET?: string;
 }
 
-// ── Container class ───────────────────────────────────────────────────────────
+// Env keys forwarded into the container's process environment. Anything unset
+// is simply omitted (the Go config treats a missing var the same as empty).
+const CONTAINER_ENV_KEYS = [
+  "DATABASE_URL",
+  "JWT_SECRET",
+  "STORAGE_ENDPOINT",
+  "STORAGE_KEY_ID",
+  "STORAGE_SECRET",
+  "STORAGE_BUCKET",
+  "STORAGE_REGION",
+  "GEMINI_API_KEY",
+  "INBOUND_INGEST_SECRET",
+  "AWS_REGION",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+  "EMAIL_FROM",
+  "SES_CONFIGURATION_SET",
+  "EMAIL_WORKER_ENABLED",
+  "RX_DOMAIN",
+  "APP_BASE_URL",
+  "FRONTEND_BASE_URL",
+  "EXCHANGE_RATE_BASE",
+] as const;
 
 /**
- * GoBackend wraps the Go monolith container.
- *
- * defaultPort   — must match the $PORT the Go binary listens on (default 8080).
- * pingEndpoint  — CF polls this path to determine when the container is ready.
- *                 The Go server exposes GET /healthz (confirmed by the backend
- *                 agent); we strip the leading "/" because pingEndpoint is a
- *                 relative path, not a URL path component.
- * sleepAfter    — keeps the container alive for 10 minutes after the last
- *                 request; tune to balance cold-start latency vs cost.
- * envVars       — static env passed at container start.  Secrets are injected
- *                 by Cloudflare as worker secrets and must be forwarded as env
- *                 vars; see README.md for the full list and the container env
- *                 injection method.
+ * GoBackend wraps the Go monolith container (cmd/server on $PORT=8080).
+ * The container needs outbound internet (Neon, R2, Gemini), so enableInternet
+ * is true. Configuration is forwarded from the Worker's bindings into the
+ * container env in the constructor.
  */
-export class GoBackend extends Container {
-  defaultPort  = 8080;
-  pingEndpoint = "healthz"; // GET /healthz — CF prepends "/"
-  sleepAfter   = "10m";
+export class GoBackend extends Container<Env> {
+  defaultPort = 8080;
+  sleepAfter = "10m";
+  enableInternet = true;
+
+  constructor(ctx: DurableObjectState<{}>, env: Env) {
+    super(ctx, env);
+    const vars: Record<string, string> = { PORT: "8080" };
+    const e = env as unknown as Record<string, unknown>;
+    for (const key of CONTAINER_ENV_KEYS) {
+      const v = e[key];
+      if (typeof v === "string" && v.length > 0) vars[key] = v;
+    }
+    this.envVars = vars;
+  }
 
   override onStart(): void {
     console.log("[GoBackend] container started");
   }
 
-  override onStop({ exitCode, reason }: { exitCode: number; reason: "exit" | "runtime_signal" }): void {
-    console.log(`[GoBackend] container stopped: exitCode=${exitCode} reason=${reason}`);
-  }
-
   override onError(error: unknown): void {
     console.error("[GoBackend] container error:", error);
-    throw error; // re-throw so CF retries / surfaces the error
+    throw error;
   }
 }
 
-// ── Worker entry point ────────────────────────────────────────────────────────
-
 export default {
-  /**
-   * fetch — forward every request to the singleton container instance.
-   *
-   * We use a single named instance ("singleton") so all traffic shares one
-   * container.  To scale horizontally, switch to getRandom() from
-   * @cloudflare/containers and increase max_instances in wrangler.toml.
-   *
-   * Request forwarding preserves:
-   *   - Method, URL (path + query string)
-   *   - All request headers
-   *   - Request body (streaming, so large uploads work)
-   *   - Response headers and status
-   *   - Response body stream (SSE / chunked transfer-encoding not broken)
-   */
+  // Forward the request to the singleton container; the DO stub streams the
+  // response back without buffering (SSE / chunked responses survive).
   async fetch(request: Request, env: Env): Promise<Response> {
-    const stub = getContainer(env.BACKEND, "singleton");
-    return stub.fetch(request);
+    return getContainer(env.BACKEND, "singleton").fetch(request);
   },
 } satisfies ExportedHandler<Env>;

@@ -12,6 +12,7 @@
  * When XERO_CLIENT_ID is unset all routes return 503.
  */
 import { Hono } from "hono";
+import type { MiddlewareHandler } from "hono";
 import type { AppEnv } from "../../types/app";
 import { writeError } from "../../lib/errors";
 import { requireAdmin, requireMember } from "../../middleware/org";
@@ -45,13 +46,20 @@ function generateNonce(): string {
 
 const r = new Hono<AppEnv>();
 
-/** 503 guard for missing Xero credentials. */
-r.use("*", async (c, next) => {
+/**
+ * 503 guard for missing Xero credentials. Scoped to the Xero route families
+ * only: this router is mounted at "/" in index.ts, so a bare `use("*")` would
+ * shadow every unmatched request (e.g. "/", "/nonexistent") and return 503
+ * instead of letting it fall through to the app's 404 handler.
+ */
+const xeroConfigured: MiddlewareHandler<AppEnv> = async (c, next) => {
   if (!c.env.XERO_CLIENT_ID) {
     return writeError(c, 503, "xero_not_configured", "Xero integration is not configured");
   }
   await next();
-});
+};
+r.use("/orgs/:orgID/integrations/xero/*", xeroConfigured);
+r.use("/integrations/xero/*", xeroConfigured);
 
 // ── GET /orgs/:orgID/integrations/xero/status ─────────────────────────────────
 

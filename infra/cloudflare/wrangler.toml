@@ -12,15 +12,23 @@ name            = "slipscan-api"
 main            = "src/index.ts"
 compatibility_date = "2026-05-01"
 
-# ── Custom domain route ────────────────────────────────────────────────────────
-routes = [
-  { pattern = "api.slipscan.app/*", custom_domain = true },
-]
+# ── Public URL ──────────────────────────────────────────────────────────────────
+# Dev: deploy to a *.workers.dev subdomain (no custom domain needed yet).
+# Prod: once slipscan.app is on Cloudflare, switch to the custom-domain route.
+workers_dev = true
+# routes = [ { pattern = "api.slipscan.app/*", custom_domain = true } ]
 
-# ── Secrets / plain env vars ───────────────────────────────────────────────────
-# Plain (non-secret) vars can live here; secrets are injected via
-#   wrangler secret put <NAME>
-# See README.md for the full list.
+# ── Non-secret config forwarded into the container ──────────────────────────────
+# Secrets (DATABASE_URL, JWT_SECRET, STORAGE_KEY_ID, STORAGE_SECRET,
+# GEMINI_API_KEY, INBOUND_INGEST_SECRET, AWS_*) are set with `wrangler secret put`.
+[vars]
+STORAGE_ENDPOINT     = "https://10f67eca9b3b5e812b16689f979f33f7.r2.cloudflarestorage.com"
+STORAGE_BUCKET       = "slipscan"
+STORAGE_REGION       = "auto"
+RX_DOMAIN            = "mail.slipscan.app"
+FRONTEND_BASE_URL    = "https://slipscan-staging.pages.dev"
+EXCHANGE_RATE_BASE   = "USD"
+EMAIL_WORKER_ENABLED = "false"
 
 # ── Container definition ───────────────────────────────────────────────────────
 # The Container class bridges the Worker <-> the running Go binary.

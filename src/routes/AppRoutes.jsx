@@ -24,6 +24,7 @@ const BankFeedsPage = lazy(() => import("@/pages/BankFeeds"));
 const ReconcilePage = lazy(() => import("@/pages/Reconcile"));
 const WorkspacePage = lazy(() => import("@/pages/Workspace"));
 const InsightsPage = lazy(() => import("@/pages/Insights"));
+const AuthCallbackPage = lazy(() => import("@/pages/AuthCallback"));
 const NotFoundPage = lazy(() => import("@/pages/NotFound"));
 
 function PageFallback() {
@@ -47,6 +48,9 @@ export function AppRoutes() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
         </Route>
+
+        {/* OAuth callback — must be public (user is not yet in the store) */}
+        <Route path="/auth/callback" element={<AuthCallbackPage />} />
 
         {/* Authenticated, but no app shell */}
         <Route path="/onboarding" element={<OnboardingPage />} />

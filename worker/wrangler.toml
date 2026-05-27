@@ -36,7 +36,44 @@ FRONTEND_BASE_URL = "https://slipscan-staging.pages.dev"
 APP_BASE_URL = "https://slipscan-api.slipscanco.workers.dev"
 CORS_ALLOWED_ORIGINS = "*"
 
-# Cron triggers (free): minute = extraction + outbox; hourly = signals + FX;
-# every 4h = bank-feed sync.
+# Free tier = 5 cron triggers per ACCOUNT (shared with prod slipscan-api-main,
+# which uses all 3). Dev/staging runs only the minute tick (core extraction +
+# email outbox pipeline) to stay under the shared cap; hourly signals/FX and 4h
+# bank-feed sync can be triggered manually on dev.
 [triggers]
+crons = ["* * * * *"]
+
+# ── Production (main) ──────────────────────────────────────────────────────
+# Prod Worker on the MAIN Neon branch, served at api.slipscan.com.
+#   deploy:  npx wrangler deploy --env main
+#   secrets: npx wrangler secret put <NAME> --env main
+# Named environments do NOT inherit bindings/vars/triggers — all redeclared here.
+[env.main]
+name = "slipscan-api-main"
+workers_dev = true
+routes = [{ pattern = "api.slipscan.com", custom_domain = true }]
+
+# Own (no-op) migration list so this fresh Worker doesn't inherit the top-level
+# GoBackend Durable Object deletion (that class never existed on this Worker).
+[[env.main.migrations]]
+tag = "v1"
+
+[[env.main.r2_buckets]]
+binding = "DOCS"
+bucket_name = "slipscan-main"
+
+[[env.main.kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "bc7fd97a3f644405837c40ddb0caf092"
+
+[env.main.vars]
+RX_DOMAIN = "mail.slipscan.com"
+EXCHANGE_RATE_BASE = "USD"
+RESEND_FROM = "slip/scan <noreply@slipsnap.co.za>"
+GOOGLE_REDIRECT_URL = "https://api.slipscan.com/auth/google/callback"
+FRONTEND_BASE_URL = "https://slipscan.com"
+APP_BASE_URL = "https://api.slipscan.com"
+CORS_ALLOWED_ORIGINS = "https://slipscan.com"
+
+[env.main.triggers]
 crons = ["* * * * *", "0 * * * *", "0 */4 * * *"]

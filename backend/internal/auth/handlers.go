@@ -125,7 +125,7 @@ type orgResponse struct {
 
 type registerResponse struct {
 	User         userResponse `json:"user"`
-	Organization orgResponse  `json:"organization"`
+	Organization *orgResponse `json:"organization,omitempty"`
 	Tokens       TokenPair    `json:"tokens"`
 	VerifySent   bool         `json:"verify_email_sent"`
 }
@@ -146,7 +146,10 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_email", err.Error())
 		return
 	}
-	if !req.Kind.Valid() {
+	// Kind is optional at signup. The frontend collects credentials here and
+	// captures the org kind + profile in the subsequent /onboarding step
+	// (POST /orgs). Only reject a kind that was supplied but is invalid.
+	if req.Kind != "" && !req.Kind.Valid() {
 		httpx.WriteError(w, http.StatusBadRequest, "invalid_kind", "kind must be 'personal' or 'business'")
 		return
 	}
@@ -167,13 +170,20 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	orgName, opts := buildOrgOptions(req, user)
-	o, err := h.orgs.Create(ctx, opts)
-	if err != nil {
-		// User row is created but org creation failed. Surface the error so
-		// the client can retry; signup hasn't fully completed.
-		httpx.WriteError(w, http.StatusBadRequest, "org_create_failed", err.Error())
-		return
+	// Create the org inline only when a kind was supplied. Otherwise the
+	// client finishes onboarding (kind + profile) via POST /orgs.
+	var orgResp *orgResponse
+	if req.Kind.Valid() {
+		_, opts := buildOrgOptions(req, user)
+		o, err := h.orgs.Create(ctx, opts)
+		if err != nil {
+			// User row is created but org creation failed. Surface the error so
+			// the client can retry; signup hasn't fully completed.
+			httpx.WriteError(w, http.StatusBadRequest, "org_create_failed", err.Error())
+			return
+		}
+		resp := orgToResponse(*o, org.RoleOwner)
+		orgResp = &resp
 	}
 
 	pair, err := h.signer.Issue(user.ID, user.Email)
@@ -183,11 +193,10 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	verifySent := h.sendVerifyEmail(ctx, user)
-	_ = orgName // reserved for future logging
 
 	httpx.WriteJSON(w, http.StatusCreated, registerResponse{
 		User:         userToResponse(user),
-		Organization: orgToResponse(*o, org.RoleOwner),
+		Organization: orgResp,
 		Tokens:       pair,
 		VerifySent:   verifySent,
 	})
