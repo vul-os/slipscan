@@ -1,0 +1,47 @@
+# Render Blueprint — free deploy of the slip/scan Go backend.
+#
+# Render builds backend/Dockerfile and runs cmd/server, injecting $PORT.
+# Non-secret config is set inline below; secrets (sync:false) are entered once
+# in the Render dashboard and never committed.
+#
+# To use: Render dashboard → New → Blueprint → pick this repo. Render reads this
+# file, then prompts for the sync:false values.
+services:
+  - type: web
+    name: slipscan-api
+    runtime: docker
+    repo: https://github.com/exolutionza/slipscan-mono
+    branch: new-slip
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: frankfurt
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      # ---- non-secret config (safe to commit) ----
+      - key: STORAGE_ENDPOINT
+        value: https://10f67eca9b3b5e812b16689f979f33f7.r2.cloudflarestorage.com
+      - key: STORAGE_BUCKET
+        value: slipscan
+      - key: STORAGE_REGION
+        value: auto
+      - key: RX_DOMAIN
+        value: mail.slipscan.app
+      - key: EXCHANGE_RATE_BASE
+        value: USD
+      - key: EMAIL_WORKER_ENABLED
+        value: "true"
+      # ---- secrets: set these in the Render dashboard (sync:false) ----
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: STORAGE_KEY_ID
+        sync: false
+      - key: STORAGE_SECRET
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: INBOUND_INGEST_SECRET
+        sync: false
