@@ -13,6 +13,9 @@ import orgsRouter, { inviteAcceptRouter } from "./modules/orgs/routes";
 import documentsRouter from "./modules/documents/routes";
 import extractRouter from "./modules/extract/routes";
 import classifyRouter from "./modules/classify/routes";
+import ledgerRouter from "./modules/ledger/routes";
+import financeRouter from "./modules/finance/routes";
+import reportingRouter from "./modules/reporting/routes";
 import { handleScheduled } from "./cron/scheduled";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -47,6 +50,10 @@ app.route("/invitations", inviteAcceptRouter); // POST /invitations/accept
 app.route("/orgs", extractRouter); // /:orgID/documents/:docID/extract
 app.route("/", documentsRouter); // /orgs/:orgID/documents, /internal/inbound-email
 app.route("/", classifyRouter); // /orgs/:orgID/{documents/:docID/classify,transactions,categories}
+// Wave 2 feature modules (absolute paths from root).
+app.route("/", ledgerRouter); // /orgs/:orgID/{accounts,journals,contacts,trial-balance,transactions/:id/post}
+app.route("/", financeRouter); // /orgs/:orgID/{spending,budgets,goals,net-worth}
+app.route("/", reportingRouter); // /orgs/:orgID/reports/:name
 
 app.notFound((c) => writeError(c, 404, "not_found", "not found"));
 app.onError((err, c) => {
