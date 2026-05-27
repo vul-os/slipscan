@@ -19,11 +19,28 @@ type Config struct {
 	AppBaseURL      string
 	FrontendBaseURL string
 
+	// B2_* legacy storage vars — kept for backward compatibility.
+	// Prefer STORAGE_* when migrating to R2 or any other S3-compatible backend.
 	B2KeyID          string
 	B2ApplicationKey string
 	B2Bucket         string
 	B2Region         string
 	B2Endpoint       string
+
+	// STORAGE_* generic S3-compatible object-storage config.
+	// Each field falls back to the corresponding B2_* value when unset, so
+	// existing deployments continue to work without change.
+	// When migrating to Cloudflare R2, set:
+	//   STORAGE_ENDPOINT=https://<accountid>.r2.cloudflarestorage.com
+	//   STORAGE_KEY_ID=<R2 access key id>
+	//   STORAGE_SECRET=<R2 secret access key>
+	//   STORAGE_BUCKET=<bucket name>
+	//   STORAGE_REGION=auto   (R2 ignores the region; "auto" is conventional)
+	StorageEndpoint string
+	StorageKeyID    string
+	StorageSecret   string
+	StorageBucket   string
+	StorageRegion   string
 
 	GeminiAPIKey string
 
@@ -46,6 +63,12 @@ type Config struct {
 	MailrxAddr      string
 	MailrxMaxBytes  int64
 	MailrxAllowedTypes []string
+
+	// InboundIngestSecret is the shared secret required by the
+	// POST /internal/inbound-email HTTP endpoint used by Cloudflare Email Workers.
+	// When empty the route is disabled (returns 404).
+	// Set via INBOUND_INGEST_SECRET.
+	InboundIngestSecret string
 
 	// FX / exchange-rate sync.
 	// ExchangeRateAPIKey is optional. When empty, the free Frankfurter.app
@@ -128,6 +151,8 @@ func Load() (*Config, error) {
 		port = "8080"
 	}
 
+	// B2_* legacy vars — still required as the baseline so existing deployments
+	// don't silently lose storage config.
 	b2KeyID := os.Getenv("B2_KEY_ID")
 	b2AppKey := os.Getenv("B2_APPLICATION_KEY")
 	b2Bucket := os.Getenv("B2_BUCKET")
@@ -136,6 +161,13 @@ func Load() (*Config, error) {
 	if b2KeyID == "" || b2AppKey == "" || b2Bucket == "" || b2Region == "" || b2Endpoint == "" {
 		return nil, errors.New("B2_KEY_ID, B2_APPLICATION_KEY, B2_BUCKET, B2_REGION, B2_ENDPOINT are all required")
 	}
+
+	// STORAGE_* vars fall back to B2_* when not explicitly set.
+	storageKeyID    := getOr("STORAGE_KEY_ID", b2KeyID)
+	storageSecret   := getOr("STORAGE_SECRET", b2AppKey)
+	storageBucket   := getOr("STORAGE_BUCKET", b2Bucket)
+	storageRegion   := getOr("STORAGE_REGION", b2Region)
+	storageEndpoint := getOr("STORAGE_ENDPOINT", b2Endpoint)
 
 	geminiKey := os.Getenv("GEMINI_API_KEY")
 	if geminiKey == "" {
@@ -158,6 +190,12 @@ func Load() (*Config, error) {
 		B2Region:         b2Region,
 		B2Endpoint:       b2Endpoint,
 
+		StorageKeyID:    storageKeyID,
+		StorageSecret:   storageSecret,
+		StorageBucket:   storageBucket,
+		StorageRegion:   storageRegion,
+		StorageEndpoint: storageEndpoint,
+
 		GeminiAPIKey: geminiKey,
 
 		AWSRegion:           os.Getenv("AWS_REGION"),
@@ -168,10 +206,12 @@ func Load() (*Config, error) {
 		EmailWorkerEnabled:  os.Getenv("EMAIL_WORKER_ENABLED") == "true",
 		EmailWorkerInterval: os.Getenv("EMAIL_WORKER_INTERVAL"),
 
-		RxDomain:        getOr("RX_DOMAIN", "mail.slipscan.app"),
-		MailrxAddr:      getOr("MAILRX_ADDR", ":2525"),
-		MailrxMaxBytes:  mailrxMaxBytes(),
+		RxDomain:           getOr("RX_DOMAIN", "mail.slipscan.app"),
+		MailrxAddr:         getOr("MAILRX_ADDR", ":2525"),
+		MailrxMaxBytes:     mailrxMaxBytes(),
 		MailrxAllowedTypes: mailrxAllowedTypes(),
+
+		InboundIngestSecret: os.Getenv("INBOUND_INGEST_SECRET"),
 
 		ExchangeRateAPIKey: os.Getenv("EXCHANGE_RATE_API_KEY"),
 		ExchangeRateBase:   getOr("EXCHANGE_RATE_BASE", "USD"),

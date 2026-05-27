@@ -38,6 +38,7 @@ type Backend struct {
 	orgs     OrgLookup
 	store    *Store
 	storage  *storage.Client
+	ingester *Ingester
 }
 
 // NewBackend constructs a Backend.
@@ -58,10 +59,11 @@ func NewBackend(cfg Config, orgs OrgLookup, store *Store, st *storage.Client) *B
 		}
 	}
 	return &Backend{
-		cfg:     cfg,
-		orgs:    orgs,
-		store:   store,
-		storage: st,
+		cfg:      cfg,
+		orgs:     orgs,
+		store:    store,
+		storage:  st,
+		ingester: NewIngester(cfg, orgs, store, st),
 	}
 }
 
@@ -144,7 +146,9 @@ func (s *session) Rcpt(to string, _ *gosmtp.RcptOptions) error {
 }
 
 // Data is called with the full RFC 822 message once all recipients are set.
-// We buffer the raw bytes, parse MIME, store attachments to B2, and insert DB rows.
+// We buffer the raw bytes, parse MIME, store attachments to object storage,
+// and insert DB rows — delegating all per-recipient work to the Ingester so
+// there is exactly one code path shared with the HTTP ingest endpoint.
 func (s *session) Data(r io.Reader) error {
 	if len(s.recipients) == 0 {
 		return &gosmtp.SMTPError{Code: 554, Message: "no valid recipients"}
@@ -165,7 +169,7 @@ func (s *session) Data(r io.Reader) error {
 	}
 	rawBytes := buf.Bytes()
 
-	// Parse MIME.
+	// Parse MIME once for all recipients.
 	parsed, err := ParseMessage(bytes.NewReader(rawBytes), s.backend.cfg.MaxBytes, s.backend.cfg.AllowedTypes)
 	if err != nil {
 		log.Printf("mailrx data: parse: %v", err)
@@ -184,108 +188,16 @@ func (s *session) Data(r io.Reader) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	// Deliver to every accepted recipient org.
+	// Deliver to every accepted recipient org via the shared Ingester path.
 	for _, recip := range s.recipients {
-		if err := s.deliver(ctx, recip, parsed, rawBytes); err != nil {
+		_, domain, _ := splitAddress(recip.address)
+		if err := s.backend.ingester.deliver(ctx, recip, domain, parsed, rawBytes); err != nil {
 			log.Printf("mailrx deliver to %s: %v", recip.address, err)
 			// Don't return the error — SMTP 250 is already implicit if we
 			// accepted the recipient; we log and move on.
 		}
 	}
 
-	return nil
-}
-
-// deliver handles one (recipient, message) combination:
-// 1. Store raw email to B2.
-// 2. Insert inbound_emails row.
-// 3. For each valid attachment: store bytes to B2 + insert documents row.
-// 4. Mark email processed (or rejected if no usable attachments).
-func (s *session) deliver(ctx context.Context, recip recipientOrg, parsed *ParsedMessage, rawBytes []byte) error {
-	o := recip.org
-	localPart := recip.localPart
-	_, domain, _ := splitAddress(recip.address)
-
-	// 1. Store raw email.
-	rawKey := storageKeyForEmail(o.ID, parsed.MessageID)
-	rawStorageURL := ""
-	if s.backend.storage != nil {
-		if err := s.backend.storage.Put(ctx, rawKey, rawBytes, "message/rfc822"); err != nil {
-			log.Printf("mailrx store raw email: %v", err)
-			// Non-fatal; continue.
-		} else {
-			rawStorageURL = rawKey
-		}
-	}
-
-	// 2. Insert inbound_emails row.
-	email := &InboundEmail{
-		OrganizationID:     uuid.NullUUID{UUID: o.ID, Valid: true},
-		MessageID:          parsed.MessageID,
-		FromAddress:        parsed.FromAddress,
-		RecipientLocalPart: localPart,
-		RecipientDomain:    strings.ToLower(domain),
-		Subject:            parsed.Subject,
-		RawStorageURL:      rawStorageURL,
-		SizeBytes:          int64(len(rawBytes)),
-		Status:             "received",
-	}
-
-	if err := s.backend.store.InsertInboundEmail(ctx, email); err != nil {
-		return fmt.Errorf("insert inbound_email: %w", err)
-	}
-
-	// 3. Process attachments.
-	var savedCount int
-	var lastErr string
-
-	for _, att := range parsed.Attachments {
-		attKey := storageKeyForAttachment(o.ID, extForMIME(att.ContentType))
-		if s.backend.storage != nil {
-			if err := s.backend.storage.Put(ctx, attKey, att.Data, att.ContentType); err != nil {
-				log.Printf("mailrx store attachment %q: %v", att.Filename, err)
-				lastErr = err.Error()
-				continue
-			}
-		}
-
-		doc := &Doc{
-			OrganizationID: o.ID,
-			InboundEmailID: uuid.NullUUID{UUID: email.ID, Valid: true},
-			Source:         "email",
-			Kind:           "unknown",
-			StorageURL:     attKey,
-			MimeType:       att.ContentType,
-			SizeBytes:      int64(len(att.Data)),
-			OriginalName:   att.Filename,
-			Status:         "pending",
-		}
-		if err := s.backend.store.InsertDocument(ctx, doc); err != nil {
-			log.Printf("mailrx insert document %q: %v", att.Filename, err)
-			lastErr = err.Error()
-			continue
-		}
-		savedCount++
-	}
-
-	// 4. Mark email status.
-	finalStatus := "processed"
-	finalErr := ""
-	if savedCount == 0 {
-		if len(parsed.Attachments) == 0 {
-			finalStatus = "processed" // no attachments is fine
-		} else {
-			finalStatus = "rejected"
-			finalErr = "no usable attachments; " + lastErr
-		}
-	}
-
-	if err := s.backend.store.MarkEmailProcessed(ctx, email.ID, finalStatus, finalErr); err != nil {
-		log.Printf("mailrx mark processed %s: %v", email.ID, err)
-	}
-
-	log.Printf("mailrx delivered msg=%s org=%s attachments=%d status=%s",
-		parsed.MessageID, o.Slug, savedCount, finalStatus)
 	return nil
 }
 

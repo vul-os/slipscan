@@ -54,12 +54,14 @@ func main() {
 	}
 	defer pool.Close()
 
+	// Use STORAGE_* vars (falling back to B2_* via config) so the same binary
+	// works with Backblaze B2 today and Cloudflare R2 after migration.
 	storageClient, err := storage.New(storage.Config{
-		KeyID:          cfg.B2KeyID,
-		ApplicationKey: cfg.B2ApplicationKey,
-		Bucket:         cfg.B2Bucket,
-		Region:         cfg.B2Region,
-		Endpoint:       cfg.B2Endpoint,
+		KeyID:          cfg.StorageKeyID,
+		ApplicationKey: cfg.StorageSecret,
+		Bucket:         cfg.StorageBucket,
+		Region:         cfg.StorageRegion,
+		Endpoint:       cfg.StorageEndpoint,
 	})
 	if err != nil {
 		log.Fatalf("storage: %v", err)

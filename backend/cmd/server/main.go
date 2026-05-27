@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -31,6 +32,7 @@ import (
 	"github.com/exolutionza/slipscan/backend/internal/intelligence"
 	"github.com/exolutionza/slipscan/backend/internal/invite"
 	"github.com/exolutionza/slipscan/backend/internal/ledger"
+	"github.com/exolutionza/slipscan/backend/internal/mailrx"
 	"github.com/exolutionza/slipscan/backend/internal/ocr"
 	"github.com/exolutionza/slipscan/backend/internal/org"
 	"github.com/exolutionza/slipscan/backend/internal/recon"
@@ -62,12 +64,14 @@ func main() {
 
 	signer := auth.NewSigner(cfg.JWTSecret, cfg.AccessTokenTTL, cfg.RefreshTTL, "slipscan")
 
+	// Use STORAGE_* vars (falling back to B2_* via config) so the same binary
+	// works with Backblaze B2 today and Cloudflare R2 after migration.
 	storageClient, err := storage.New(storage.Config{
-		KeyID:          cfg.B2KeyID,
-		ApplicationKey: cfg.B2ApplicationKey,
-		Bucket:         cfg.B2Bucket,
-		Region:         cfg.B2Region,
-		Endpoint:       cfg.B2Endpoint,
+		KeyID:          cfg.StorageKeyID,
+		ApplicationKey: cfg.StorageSecret,
+		Bucket:         cfg.StorageBucket,
+		Region:         cfg.StorageRegion,
+		Endpoint:       cfg.StorageEndpoint,
 	})
 	if err != nil {
 		log.Fatalf("storage: %v", err)
@@ -109,6 +113,16 @@ func main() {
 	// P1-02: wire category seeder into org creation so every new org gets a
 	// sensible default category (and, for business orgs, account) tree.
 	orgStore := org.NewStore(pool).WithCategorySeeder(classify.SeedDefaultCategories)
+
+	// Inbound-email ingester — shares the same MIME-parse + DB-write path as
+	// cmd/mailrx.  The HTTP handler (POST /internal/inbound-email) uses this.
+	mailrxStore := mailrx.NewStore(pool)
+	ingestSvc := mailrx.NewIngester(mailrx.Config{
+		RxDomain:     cfg.RxDomain,
+		MaxBytes:     cfg.MailrxMaxBytes,
+		AllowedTypes: cfg.MailrxAllowedTypes,
+	}, orgStore, mailrxStore, storageClient)
+
 	inviteStore := invite.NewStore(pool)
 	docStore := document.NewStore(pool)
 
@@ -266,6 +280,20 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	// Internal inbound-email ingest endpoint — called by Cloudflare Email Workers.
+	// Disabled (404) when INBOUND_INGEST_SECRET is not set.
+	// Contract:
+	//   POST /internal/inbound-email?recipient=<localpart>
+	//   Header: X-Inbound-Secret: <INBOUND_INGEST_SECRET>
+	//   Content-Type: message/rfc822
+	//   Body: raw RFC 822 message bytes (max MAILRX_MAX_MESSAGE_BYTES)
+	//   → 202 Accepted on success
+	//   → 401 Unauthorized if secret is missing or wrong
+	//   → 400 Bad Request if recipient param is missing or body is empty
+	//   → 5xx on internal error (so Cloudflare will retry)
+	mux.HandleFunc("POST /internal/inbound-email", inboundEmailHandler(cfg.InboundIngestSecret, cfg.MailrxMaxBytes, ingestSvc))
+
 	mux.HandleFunc("POST /auth/register", authH.Register)
 	mux.HandleFunc("POST /auth/login", authH.Login)
 	mux.HandleFunc("POST /auth/refresh", authH.Refresh)
@@ -512,6 +540,56 @@ func main() {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown: %v", err)
+	}
+}
+
+// inboundEmailHandler returns the HTTP handler for POST /internal/inbound-email.
+// If secret is empty the handler always returns 404 (route disabled).
+func inboundEmailHandler(secret string, maxBytes int64, ing *mailrx.Ingester) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Route is disabled when no secret is configured.
+		if secret == "" {
+			http.NotFound(w, r)
+			return
+		}
+
+		// Authenticate via shared secret header.
+		if r.Header.Get("X-Inbound-Secret") != secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		// Validate recipient query param.
+		recipient := r.URL.Query().Get("recipient")
+		if recipient == "" {
+			http.Error(w, "missing recipient query parameter", http.StatusBadRequest)
+			return
+		}
+
+		// Read body with size cap.
+		lr := http.MaxBytesReader(w, r.Body, maxBytes)
+		raw, err := io.ReadAll(lr)
+		if err != nil {
+			// MaxBytesReader returns a specific error for over-limit bodies.
+			http.Error(w, "request body too large or unreadable", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if len(raw) == 0 {
+			http.Error(w, "empty request body", http.StatusBadRequest)
+			return
+		}
+
+		if err := ing.Ingest(r.Context(), raw, recipient); err != nil {
+			if errors.Is(err, mailrx.ErrUnknownRecipient) {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			log.Printf("inbound-email ingest: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusAccepted)
 	}
 }
 

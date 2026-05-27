@@ -3,6 +3,7 @@
 	server server-dev server-main run-server \
 	mailrx mailrx-dev mailrx-main \
 	build build-server build-migrate build-mailrx build-tests \
+	docker-build \
 	fmt vet \
 	tests test test-list
 
@@ -71,6 +72,14 @@ build-mailrx:
 
 build-tests:
 	go build -o bin/tests ./cmd/tests
+
+# ---------- Docker ----------
+# Builds the production image for cmd/server.
+# All configuration is injected at runtime via environment variables.
+# Usage:  make docker-build [IMAGE=my-registry/slipscan-backend:latest]
+IMAGE ?= slipscan-backend:latest
+docker-build:
+	docker build -t $(IMAGE) .
 
 # ---------- code health ----------
 fmt:
