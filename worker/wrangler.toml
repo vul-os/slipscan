@@ -29,6 +29,9 @@ deleted_classes = ["GoBackend"]
 RX_DOMAIN = "mail.slipscan.app"
 EXCHANGE_RATE_BASE = "USD"
 RESEND_FROM = "slip/scan <noreply@slipsnap.co.za>"
+# Google sign-in: this prod callback must be registered in the Google OAuth client.
+# GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET are set via `wrangler secret put`.
+GOOGLE_REDIRECT_URL = "https://slipscan-api.slipscanco.workers.dev/auth/google/callback"
 FRONTEND_BASE_URL = "https://slipscan-staging.pages.dev"
 APP_BASE_URL = "https://slipscan-api.slipscanco.workers.dev"
 CORS_ALLOWED_ORIGINS = "*"

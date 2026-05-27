@@ -18,6 +18,11 @@ export interface Env {
   RESEND_API_KEY?: string;
   RESEND_FROM?: string;
 
+  // Google sign-in (OAuth2). REDIRECT_URL is non-secret (var); ID/SECRET are secrets.
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
+  GOOGLE_REDIRECT_URL?: string;
+
   // SES (legacy alternative; unused now that Resend is wired)
   AWS_REGION?: string;
   AWS_ACCESS_KEY_ID?: string;
