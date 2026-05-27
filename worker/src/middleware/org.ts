@@ -11,6 +11,7 @@ import type { Role } from "../types/schema";
 import { roleAtLeastAdmin } from "../types/schema";
 import { queryRows } from "../db/client";
 import { writeError } from "../lib/errors";
+import { authenticate } from "./auth";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -27,8 +28,8 @@ export async function memberRole(env: Env, orgId: string, userId: string): Promi
 export const requireMember: MiddlewareHandler<AppEnv> = async (c, next) => {
   const orgId = c.req.param("orgID");
   if (!orgId || !UUID_RE.test(orgId)) return writeError(c, 400, "invalid_org_id", "invalid organization id");
+  if ((await authenticate(c)) !== "ok") return writeError(c, 401, "unauthorized", "missing identity");
   const userId = c.get("userId");
-  if (!userId) return writeError(c, 401, "unauthorized", "missing identity");
   const role = await memberRole(c.env, orgId, userId);
   if (!role) return writeError(c, 403, "forbidden", "not a member of this organization");
   c.set("orgRole", role);
@@ -38,8 +39,8 @@ export const requireMember: MiddlewareHandler<AppEnv> = async (c, next) => {
 export const requireAdmin: MiddlewareHandler<AppEnv> = async (c, next) => {
   const orgId = c.req.param("orgID");
   if (!orgId || !UUID_RE.test(orgId)) return writeError(c, 400, "invalid_org_id", "invalid organization id");
+  if ((await authenticate(c)) !== "ok") return writeError(c, 401, "unauthorized", "missing identity");
   const userId = c.get("userId");
-  if (!userId) return writeError(c, 401, "unauthorized", "missing identity");
   const role = await memberRole(c.env, orgId, userId);
   if (!role) return writeError(c, 403, "forbidden", "not a member of this organization");
   if (!roleAtLeastAdmin(role)) return writeError(c, 403, "forbidden", "admin role required");
