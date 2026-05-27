@@ -14,7 +14,11 @@ export interface Env {
   GEMINI_API_KEY: string;
   INBOUND_INGEST_SECRET?: string; // gates POST /internal/inbound-email
 
-  // SES (outbound email) — optional; NoopSender when absent
+  // Resend (outbound email — PRIMARY; HTTPS API, works on Workers free tier)
+  RESEND_API_KEY?: string;
+  RESEND_FROM?: string;
+
+  // SES (legacy alternative; unused now that Resend is wired)
   AWS_REGION?: string;
   AWS_ACCESS_KEY_ID?: string;
   AWS_SECRET_ACCESS_KEY?: string;

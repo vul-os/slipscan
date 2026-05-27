@@ -30,9 +30,9 @@ export interface EnqueueInput {
  * Throws if from address is unresolvable (no fallback available).
  */
 export async function enqueue(env: Env, params: EnqueueInput): Promise<void> {
-  const from = params.from ?? env.EMAIL_FROM;
+  const from = params.from ?? env.RESEND_FROM ?? env.EMAIL_FROM;
   if (!from) {
-    throw new Error("mailer: enqueue: missing from address (set EMAIL_FROM)");
+    throw new Error("mailer: enqueue: missing from address (set RESEND_FROM)");
   }
 
   await enqueueEmail(env, {

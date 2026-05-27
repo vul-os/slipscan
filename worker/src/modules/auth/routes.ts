@@ -44,6 +44,8 @@ import type {
   RegisterResponse,
   AuthResponse,
 } from "./types";
+import { enqueue } from "../email/mailer";
+import { verifyEmail, passwordResetEmail } from "../email/templates";
 
 // Default TTLs match Go constants (15 min access, 7 days refresh, 24h verify, 1h reset)
 const DEFAULT_ACCESS_TTL = 900;    // 15 min
@@ -117,14 +119,21 @@ r.post("/register", async (c) => {
     return writeError(c, 500, "token_failed", "could not issue tokens");
   }
 
-  // Issue verify token (NoopSender — create row but don't send email)
+  // Issue verify token + enqueue the verification email (Resend via outbox).
   let verifySent = false;
   try {
-    await issueToken(c.env, "email_verify", user.id, VERIFY_TOKEN_TTL);
-    // verifySent stays false: email delivery is deferred
+    const vtok = await issueToken(c.env, "email_verify", user.id, VERIFY_TOKEN_TTL);
+    const base = c.env.FRONTEND_BASE_URL ?? "";
+    const verifyURL = `${base}/verify?token=${encodeURIComponent(vtok)}`;
+    const em = verifyEmail(user.full_name ?? "", verifyURL);
+    await enqueue(c.env, {
+      to: user.email, subject: em.subject, html: em.html, text: em.text,
+      kind: "verify", userId: user.id,
+    });
+    verifySent = true;
   } catch (e) {
-    console.error("register: issueToken(verify):", e);
-    // Non-fatal — registration still succeeds
+    console.error("register: verify email:", e);
+    // Non-fatal — registration still succeeds (user can hit /resend later)
   }
 
   const resp: RegisterResponse = {
@@ -320,10 +329,16 @@ r.post("/password-reset/request", async (c) => {
 
   try {
     await invalidateUserTokens(c.env, "password_reset", user.id);
-    await issueToken(c.env, "password_reset", user.id, RESET_TOKEN_TTL);
-    // Email delivery is deferred (NoopSender)
+    const rtok = await issueToken(c.env, "password_reset", user.id, RESET_TOKEN_TTL);
+    const base = c.env.FRONTEND_BASE_URL ?? "";
+    const resetURL = `${base}/reset-password?token=${encodeURIComponent(rtok)}`;
+    const em = passwordResetEmail(user.full_name ?? "", resetURL);
+    await enqueue(c.env, {
+      to: user.email, subject: em.subject, html: em.html, text: em.text,
+      kind: "password_reset", userId: user.id,
+    });
   } catch (e) {
-    console.error("password-reset/request: issueToken:", e);
+    console.error("password-reset/request:", e);
     // Still return 200 — don't leak failures
   }
 

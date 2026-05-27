@@ -232,3 +232,51 @@ export function inviteEmail(
 
   return { subject, html, text };
 }
+
+// ── verifyEmail (port of Go email.VerifyEmail) ─────────────────────────────────
+
+export function verifyEmail(
+  fullName: string,
+  verifyURL: string,
+): { subject: string; html: string; text: string } {
+  const subject = "Verify your email for slip/scan";
+  const fn = (fullName ?? "").trim();
+  const greet = fn ? `Welcome to slip/scan, ${escapeHTML(fn)}.` : "Welcome to slip/scan.";
+  const content: LayoutContent = {
+    subject,
+    preheader: "Click to confirm your slip/scan email address.",
+    eyebrow: "Verify your email",
+    headline: "One quick step",
+    introHTML: `${greet} Confirm your email so we can secure your account and send you receipts, summaries, and the things that matter.`,
+    ctaText: "Verify email",
+    ctaURL: verifyURL,
+    footnoteHTML:
+      "This link expires in 24 hours. If you didn't sign up for slip/scan, you can safely ignore this email.",
+  };
+  return { subject, html: renderLayout(content), text: renderText(content) };
+}
+
+// ── passwordResetEmail (port of Go email.PasswordResetEmail) ───────────────────
+
+export function passwordResetEmail(
+  fullName: string,
+  resetURL: string,
+): { subject: string; html: string; text: string } {
+  const subject = "Reset your slip/scan password";
+  const fn = (fullName ?? "").trim();
+  const greet = fn
+    ? `Hi ${escapeHTML(fn)}, we got a request to reset your slip/scan password.`
+    : "We got a request to reset your slip/scan password.";
+  const content: LayoutContent = {
+    subject,
+    preheader: "Click to choose a new slip/scan password.",
+    eyebrow: "Reset password",
+    headline: "Choose a new password",
+    introHTML: `${greet} Click the button below to set a new one.`,
+    ctaText: "Reset password",
+    ctaURL: resetURL,
+    footnoteHTML:
+      "This link expires in 1 hour. If you didn't request a reset, you can safely ignore this email — your password stays unchanged.",
+  };
+  return { subject, html: renderLayout(content), text: renderText(content) };
+}

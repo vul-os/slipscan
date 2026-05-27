@@ -20,7 +20,7 @@ import {
   markDead,
   isSuppressed,
 } from "./queries";
-import { sesSend, isTransient } from "./ses";
+import { resendSend, isTransient } from "./resend";
 import type { OutboxJob } from "./queries";
 
 // ── Constants (mirrors Go mailout/worker.go) ──────────────────────────────────
@@ -78,7 +78,7 @@ async function deliver(env: Env, j: OutboxJob): Promise<void> {
   // 2. Send.
   const attempts = j.attempts + 1;
   try {
-    const result = await sesSend(env, {
+    const result = await resendSend(env, {
       from:    j.fromAddress,
       to:      j.toAddress,
       subject: j.subject,

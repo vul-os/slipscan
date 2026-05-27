@@ -28,6 +28,7 @@ deleted_classes = ["GoBackend"]
 [vars]
 RX_DOMAIN = "mail.slipscan.app"
 EXCHANGE_RATE_BASE = "USD"
+RESEND_FROM = "slip/scan <noreply@slipsnap.co.za>"
 FRONTEND_BASE_URL = "https://slipscan-staging.pages.dev"
 APP_BASE_URL = "https://slipscan-api.slipscanco.workers.dev"
 CORS_ALLOWED_ORIGINS = "*"
