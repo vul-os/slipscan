@@ -17,13 +17,12 @@ import type { Env } from "../bindings";
 export type Row = Record<string, unknown>;
 export type Query = (text: string, params?: unknown[]) => Promise<Row[]>;
 
-// neon()'s HTTP `.query(text, params)` returns a rows array but isn't in the
-// published types for NeonQueryFunction; cast to the documented shape.
-type NeonHttp = { query: (text: string, params?: unknown[]) => Promise<Row[]> };
-
+// neon() HTTP supports a direct parameterized call: sql(queryString, params)
+// (per NeonQueryFunction overload). With the default options the promise
+// resolves to the rows array.
 export async function queryRows(env: Env, text: string, params: unknown[] = []): Promise<Row[]> {
-  const sql = neon(env.DATABASE_URL) as unknown as NeonHttp;
-  return await sql.query(text, params);
+  const sql = neon(env.DATABASE_URL);
+  return (await sql(text, params as never[])) as unknown as Row[];
 }
 
 export async function queryOne(env: Env, text: string, params: unknown[] = []): Promise<Row | null> {
