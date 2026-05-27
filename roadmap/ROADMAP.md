@@ -1,7 +1,10 @@
 # slip/scan — Product Roadmap
 
-> The big-picture vision and the phased plan to get there. Engineering tickets
-> live in `roadmap/tasks/`; conventions for agents live in `roadmap/README.md`.
+> Big-picture vision and the forward plan. Historical engineering tickets for
+> the delivered phases live in `roadmap/tasks/` (kept as an archive); agent
+> conventions live in `roadmap/README.md`.
+
+Last updated: 2026-05-27
 
 ## 1. Vision
 
@@ -14,7 +17,7 @@ in), extracts and classifies every transaction with an LLM, lets the user
 correct it, and learns from those corrections — per-org and across the whole
 platform. The same engine powers a **Vault22-style spending breakdown** for
 personal users and a **Xero-style ledger** for businesses, in a single
-multi-tenant product priced for the African market (Paystack, ZAR-first).
+multi-tenant product priced for the African market (ZAR-first).
 
 ## 2. Positioning — who we beat and how
 
@@ -26,89 +29,99 @@ multi-tenant product priced for the African market (Paystack, ZAR-first).
 | Expense / spend | Expensify, Ramp | One product spanning **personal + business** at local pricing |
 
 **The two things only we do, done well together:**
-1. A **classification-learning loop** (per-org + cross-tenant). — Phase 1
-2. **Document ↔ bank-feed auto-reconciliation**. — Phase 3
+1. A **classification-learning loop** (per-org + cross-tenant).
+2. **Document ↔ bank-feed auto-reconciliation**.
 
-Everything else, an incumbent already does. These two are the moat.
+These two are the moat; everything else an incumbent already does.
 
 ## 3. Strategic decision: integrate before replace
 
 We launch as the **LLM-native capture-and-reconcile layer** and **push to
-Xero/QuickBooks** rather than replacing them. This gets us to revenue in months
-and rides the incumbents' ecosystem. The full-ledger "replace Xero" path is a
-Phase 4 option, not a launch requirement. The schema already supports both — we
-choose ordering, not architecture.
+Xero/QuickBooks** rather than replacing them. The schema already supports the
+full-ledger "replace Xero" path — that's an ordering choice, not an
+architecture change.
 
-## 4. What already exists (as of this roadmap)
+## 4. The stack (current)
 
-- **Backend (Go):** auth (JWT, email verify, password reset), orgs +
-  memberships + invitations, document upload/list/get, Gemini OCR, B2 storage,
-  insights "Ask". Compiles clean.
-- **Schema:** 5 migrations covering a remarkably complete domain — identity/RLS,
-  documents/chat/queries, full accounting (personal + business), billing/metering.
-  Most roadmap tables **already exist** (see each task's "Existing assets").
-- **Frontend (React/Vite/Tailwind/Firebase):** Landing, auth, onboarding,
-  dashboard, receipts, ask, members, settings. Firebase dev+main hosting wired.
+Everything runs on **Cloudflare + Neon**. The only external dependencies are
+outbound HTTPS API calls — no servers we operate.
 
-### Not yet built (the roadmap)
-mailrx SMTP receiver · Hetzner deploy fleet · exchange-rate cron ·
-classification engine + learning loop · personal/business reporting ·
-Xero export · bank feeds · reconciliation · accountant workspace · public API.
+| Layer | Service |
+| --- | --- |
+| Frontend | **Cloudflare Pages** (Vite SPA, dev + main) |
+| Backend (API + background workers) | **Cloudflare Container** running the Go `cmd/server` binary, fronted by a router Worker |
+| Inbound mail | **Cloudflare Email Routing → Email Worker** → `POST /internal/inbound-email` (reuses the Go MIME parser) |
+| Outbound mail | **Amazon SES** (HTTPS) via the durable Postgres outbox worker |
+| Object storage | **Cloudflare R2** (S3-compatible) |
+| Database | **Neon Postgres** (main + dev branches, RLS-tenanted) |
+| AI | **Google Gemini** (OCR / extraction / classification) |
+| Integrations | **Xero/QuickBooks** (export), **Stitch** (SA bank feeds) |
 
-## 5. Phases
+Canonical deploy runbook: `docs/DEPLOY_CLOUDFLARE.md`. Backend design:
+`backend/ARCHITECTURE.md`. Email: `backend/docs/EMAIL_SENDING.md`.
 
-Each phase has a single competitive goal. Don't start a phase before the prior
-phase's **exit criteria** are met — that's what keeps scope from exploding.
+## 5. Delivered (Phases 0–4 — the product is built)
 
-### Phase 0 — Ship the foundation
-*Goal: a user can register, email in a slip, and see it processed in prod.*
-mailrx · Hetzner deploy + DNS + LB · Neon + env + Firebase pipeline ·
-exchange-rate cron.
-**Exit:** end-to-end document-in-to-processed works on a deployed environment.
+All twenty feature tickets are implemented and green locally (`go build/vet/
+test`, `npm build/test`). Tickets archived under `roadmap/tasks/`.
 
-### Phase 1 — Win the wedge (capture + learning classification)
-*Goal: classification beats Dext out-of-the-box and visibly improves with use.*
-Extraction hardening · classification engine · correction-learning loop ·
-cross-tenant merchant signals · document review UI.
-**Exit:** corrections measurably raise accuracy; the loop is the demo.
+| Phase | Outcome | Status |
+| --- | --- | --- |
+| **0 — Foundation** | Email-in → processed pipeline, exchange-rate cron, env/build | ✅ built (infra re-platformed to Cloudflare; the old Hetzner/Firebase P0 tickets are superseded by `docs/DEPLOY_CLOUDFLARE.md`) |
+| **1 — Capture + learning** | Extraction hardening, classification engine, correction-learning loop, cross-tenant merchant signals, document review UI | ✅ built |
+| **2 — One vault** | Onboarding by org-kind, Vault22 personal breakdown, business ledger + manual journals, kind-aware reporting, Xero/QuickBooks export | ✅ built |
+| **3 — Completeness** | Stitch bank-feed aggregator, document ↔ bank auto-reconciliation | ✅ built |
+| **4 — Depth** | Accountant multi-client workspace, cross-org intelligence (forecast/anomalies/tax-readiness), compliance audit trail, public API + tokens | ✅ built |
 
-### Phase 2 — One vault (personal + business)
-*Goal: one login serves a freelancer's personal + business money; SMB feeds Xero.*
-Onboarding by org-kind · Vault22 spending breakdown · business ledger + manual
-journals · reporting that diverges by kind · Xero/QuickBooks export.
-**Exit:** both org kinds have a complete, distinct, useful product surface.
+## 6. Forward roadmap — Now / Next / Later
 
-### Phase 3 — Completeness (bank feeds + reconciliation)
-*Goal: the financial picture is complete without manual upload — and reconciled.*
-Bank-feed aggregator (Stitch/Mono/Plaid) · document↔bank auto-reconciliation.
-**Exit:** transactions auto-import and auto-match to documents.
+The frontier is no longer "build features" — it's **ship, harden, and turn on
+the integrations**.
 
-### Phase 4 — Depth + durable moat
-*Goal: defend, go upmarket, become indispensable.*
-Accountant multi-client workspace · cross-org intelligence (forecasting,
-anomalies, tax-readiness) · compliance/audit trail · public API · optional
-full-ledger "replace Xero" pivot.
+### Phase 5 — Go live on Cloudflare  *(Now — the only thing blocking revenue)*
+*Goal: real users hit the product on the Cloudflare stack.*
+- Provision CF account + move `slipscan.app` zone to Cloudflare.
+- Neon dev + main branches; run migrations.
+- R2 buckets + **migrate documents/raw emails from B2 → R2** (`rclone`).
+- Deploy: container Worker, Email Worker, Pages (dev first).
+- Enable Email Routing catch-all on `mail.slipscan.app`.
+- **Dev cutover → smoke test (upload, email-in, invite send) → main cutover.**
+- **Exit:** a user registers, emails a slip to `<slug>@mail.slipscan.app`, and
+  sees it processed in production; an invite email is delivered.
 
-## 6. Dependency graph (high level)
+### Phase 6 — Operational hardening  *(Next — make it trustworthy)*
+*Goal: the live system is observable, recoverable, and email is reliable.*
+- **SES bounce/complaint webhook** (`POST /webhooks/ses`) + populate
+  `email_suppressions` (currently unimplemented — see EMAIL_SENDING.md).
+- Move SES out of the sandbox (production sending access).
+- Monitoring/alerting: CF Container analytics, SES bounce-rate alarm, Neon
+  query volume; structured logs.
+- Fix the **Reports CSV download** (shared `request()` JSON-parses; needs a
+  raw-text path for `format=csv`).
+- Backups/DR: confirm Neon PITR; R2 lifecycle; secret rotation runbook.
+- **Exit:** known failure modes alert; no silent data loss; clean email reputation.
 
-```
-P0-03 env/deploy ─┬─> P0-01 mailrx ──┐
-                  ├─> P0-02 hetzner ─┤
-                  └─> P0-04 fx-cron ─┘
-P0-01 ──> P1-01 extraction ──> P1-02 classify ──> P1-03 learn ──> P1-04 cross-tenant
-                                      └──> P1-05 review UI
-P1-02 ──> P2-01 onboarding ─┬─> P2-02 personal breakdown
-                            ├─> P2-03 business ledger ──> P2-05 Xero export
-                            └─> P2-04 reporting
-P2-03 + bank_feed schema ──> P3-01 bank feeds ──> P3-02 reconciliation
-P2 done ──> P4-01 accountant · P4-02 intelligence · P4-03 compliance · P4-04 API
-```
+### Phase 7 — Activate integrations & billing  *(Next)*
+*Goal: turn on the revenue + data-completeness surfaces that are coded but dark.*
+- **Xero/QuickBooks**: live OAuth app + end-to-end export test.
+- **Stitch bank feeds**: live OAuth + webhook signature validation in prod.
+- **Billing**: Paystack (schema/metering exist; webhook + wallet settlement
+  not yet wired — scope and build).
+- **WhatsApp channel**: designed in schema/architecture but not wired (no creds
+  yet) — decide if in-scope, then build the webhook + send client.
+- **Exit:** at least Xero export + bank feeds working against live accounts.
 
-## 7. Success metrics per phase
+### Phase 8 — Growth & depth  *(Later)*
+*Goal: defend the moat, go upmarket.* Sharpen the classification-learning loop
+and reconciliation accuracy with live data; accountant/multi-client growth;
+optional full-ledger "replace Xero" pivot. **Open for new product bets — add
+priorities here.**
 
-- **P0:** time from email-in to extracted < 60s; deploy is one command.
-- **P1:** auto-classification precision on a labelled SA slip set; correction
-  rate trending down per active org over time.
-- **P2:** % of orgs that complete onboarding; business orgs exporting to Xero.
-- **P3:** % of bank lines auto-matched to a document with no user action.
-- **P4:** multi-client accountants onboarded; forecast accuracy.
+## 7. Success metrics
+
+- **P5 (live):** email-in → extracted < 60 s in prod; deploy is one command.
+- **P6 (trust):** email bounce rate < 2%; every known failure mode alerts.
+- **P7 (integrations):** business orgs exporting to Xero; % bank lines
+  auto-imported and auto-matched to a document with no user action.
+- **P8 (depth):** correction rate trending down per active org; multi-client
+  accountants onboarded; forecast accuracy.
