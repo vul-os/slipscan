@@ -8,6 +8,12 @@
 import { Hono } from "hono";
 import type { Env } from "./bindings";
 import { ApiError, writeError } from "./lib/errors";
+import authRouter from "./modules/auth/routes";
+import orgsRouter, { inviteAcceptRouter } from "./modules/orgs/routes";
+import documentsRouter from "./modules/documents/routes";
+import extractRouter from "./modules/extract/routes";
+import classifyRouter from "./modules/classify/routes";
+import { handleScheduled } from "./cron/scheduled";
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -34,10 +40,13 @@ app.use("*", async (c, next) => {
 
 app.get("/healthz", (c) => c.text("ok"));
 
-// Feature modules mount here (Wave 1+):
-//   app.route("/auth", authRoutes);
-//   app.route("/orgs", orgRoutes);
-//   ...
+// Wave 1 feature modules.
+app.route("/auth", authRouter); // /auth/register, /login, /me, ...
+app.route("/orgs", orgsRouter); // POST /orgs, /:orgID/members, /:orgID/invitations
+app.route("/invitations", inviteAcceptRouter); // POST /invitations/accept
+app.route("/orgs", extractRouter); // /:orgID/documents/:docID/extract
+app.route("/", documentsRouter); // /orgs/:orgID/documents, /internal/inbound-email
+app.route("/", classifyRouter); // /orgs/:orgID/{documents/:docID/classify,transactions,categories}
 
 app.notFound((c) => writeError(c, 404, "not_found", "not found"));
 app.onError((err, c) => {
@@ -48,4 +57,5 @@ app.onError((err, c) => {
 
 export default {
   fetch: app.fetch,
+  scheduled: handleScheduled,
 } satisfies ExportedHandler<Env>;

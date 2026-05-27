@@ -20,9 +20,6 @@ FRONTEND_BASE_URL = "https://slipscan-staging.pages.dev"
 APP_BASE_URL = "https://slipscan-api.slipscanco.workers.dev"
 CORS_ALLOWED_ORIGINS = "*"
 
-# Cron triggers (free) — background jobs added wave-by-wave:
-#   * * * * *   → email outbox + document extraction poll (every minute)
-#   0 * * * *   → FX sync + merchant-signal aggregation (hourly)
-#   0 */4 * * * → bankfeed sync (every 4h)
-# [triggers]
-# crons = ["* * * * *", "0 * * * *", "0 */4 * * *"]
+# Cron triggers (free). Wave 1: extraction poll (minute) + signal agg (hourly).
+[triggers]
+crons = ["* * * * *", "0 * * * *"]

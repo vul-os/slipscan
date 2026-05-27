@@ -56,7 +56,7 @@ const router = new Hono<AppEnv>();
 
 // ---- POST /orgs/:orgID/documents ----
 router.post(
-  "/:orgID/documents",
+  "/orgs/:orgID/documents",
   requireAuth,
   requireMember,
   async (c) => {
@@ -142,7 +142,7 @@ router.post(
 
 // ---- GET /orgs/:orgID/documents ----
 router.get(
-  "/:orgID/documents",
+  "/orgs/:orgID/documents",
   requireAuth,
   requireMember,
   async (c) => {
@@ -171,7 +171,7 @@ router.get(
 
 // ---- GET /orgs/:orgID/documents/:docID ----
 router.get(
-  "/:orgID/documents/:docID",
+  "/orgs/:orgID/documents/:docID",
   requireAuth,
   requireMember,
   async (c) => {
