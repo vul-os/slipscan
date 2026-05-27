@@ -2,10 +2,10 @@
 
 Last updated: 2026-05-27
 
-This is the canonical deployment runbook for the Cloudflare-hosted stack.
-The Hetzner VM / Firebase Hosting design described in `backend/DEPLOY.md` and
-`backend/ARCHITECTURE.md` (legacy sections) remains as a rollback path until
-the new stack is verified green end-to-end.
+This is the canonical deployment runbook for the slip/scan stack:
+**Cloudflare** (Pages frontend, Container backend, Email Routing inbound mail,
+R2 storage) + **Neon** (database). Outbound mail is delivered by Amazon SES
+over HTTPS. There are no servers we operate.
 
 ---
 
@@ -461,41 +461,39 @@ Run `backend/scripts/cloudflare-ses-dns.sh` to create them:
 8. Smoke-test: upload a document, verify processing, send an invite email,
    forward a receipt to `<slug>@mail.slipscan.app`.
 
-**Phase 3 — Verify green (keep old stack warm)**
+**Phase 3 — Verify green**
 
-- Leave the Hetzner VM fleet running and Firebase Hosting live for at least
-  48 hours after the DNS switch.
+- For the first cutover, do not switch `main` DNS until dev is verified
+  end-to-end; there is nothing to "keep warm" because the stack was never
+  previously deployed elsewhere.
 - Monitor: Cloudflare Container analytics, SES bounce rate, Neon query volume.
 
 ### 7.2 Rollback
 
-To revert to the Hetzner + Firebase stack at any point:
+Roll back within Cloudflare — no external fallback stack is involved:
 
-1. **DNS:** Change `api.slipscan.app` CNAME from the Worker route back to the
-   Hetzner LB IP (A record). TTL is 5 minutes (auto by Cloudflare for proxied
-   records — effective immediately once proxied).
-2. **MX:** Remove the Cloudflare Email Routing MX records; restore the Hetzner
-   VM MX records pointing to `rx.slipscan.app` A records.
-3. **Pages:** Re-activate Firebase Hosting via `firebase deploy` (targets
-   `slipscan-main` and `slipscan-staging` — see `firebase.json`).
-4. **Data:** Any documents uploaded to R2 during the CF window need to be
-   synced back to B2 (`rclone sync r2:... b2:...`).
-
-The Hetzner fleet (`backend/deploy.sh`) and Firebase Hosting config
-(`firebase.json`, `.firebaserc`) are **legacy — kept for rollback only**.
-Do not use them as the active deployment path.
+1. **Backend:** `wrangler rollback` reverts the Worker/Container to the prior
+   deployment. Re-run with the previous image if needed.
+2. **Frontend:** redeploy the previous Pages build (`wrangler pages deployment
+   list` → promote the last-good deployment), or `npm run deploy:main` from the
+   prior commit.
+3. **DNS / Email Routing:** if a DNS change caused the issue, revert the record
+   in the Cloudflare dashboard (proxied records take effect within ~5 min).
+4. **Data:** R2 is the source of truth for new uploads; no cross-provider sync
+   is required.
 
 ---
 
-## 8. Legacy Files (for rollback only)
+## 8. Superseded Files
 
-| File | Status | Purpose |
+These are leftovers from the pre-Cloudflare design and are no longer part of
+any deployment path. They can be deleted once the Cloudflare stack is live.
+
+| File | Status | Was |
 |---|---|---|
-| `firebase.json` | Legacy | Firebase Hosting multi-site config (rollback) |
-| `.firebaserc` | Legacy | Firebase project + target aliases (rollback) |
-| `backend/deploy.sh` | Legacy | Hetzner VM provisioning (rollback) |
-| `backend/DEPLOY.md` | Legacy | Hetzner deploy runbook (rollback) |
-| `.github/workflows/firebase-hosting-merge.yml` | Legacy | CI deploy to Firebase (disabled) |
+| `firebase.json` | Superseded by Pages | Firebase Hosting multi-site config |
+| `.firebaserc` | Superseded by Pages | Firebase project + target aliases |
+| `.github/workflows/firebase-hosting-merge.yml` | Disabled | CI deploy to Firebase |
 
 ---
 

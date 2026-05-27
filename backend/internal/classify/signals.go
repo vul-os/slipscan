@@ -21,7 +21,7 @@
 // (configurable via SIGNALS_MIN_ORGS, default 2).
 //
 // Leader guard: the scheduler only runs when SIGNALS_AGG_ENABLED=true. Set that
-// env var on exactly ONE fleet member (same pattern as FX_SYNC_ENABLED).
+// env var on exactly ONE container instance (same pattern as FX_SYNC_ENABLED).
 package classify
 
 import (
@@ -187,8 +187,8 @@ func (s *Store) Aggregate(ctx context.Context, minOrgs int) error {
 	return nil
 }
 
-// Scheduler runs the periodic merchant-signal aggregation job. Only one fleet
-// member should run this (set SIGNALS_AGG_ENABLED=true on exactly one VM).
+// Scheduler runs the periodic merchant-signal aggregation job. Only one
+// instance should run this (set SIGNALS_AGG_ENABLED=true on exactly one).
 type Scheduler struct {
 	store    *Store
 	minOrgs  int

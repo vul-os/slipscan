@@ -53,8 +53,8 @@ type Config struct {
 	EmailFrom           string
 	SESConfigurationSet string
 	// EmailWorkerEnabled gates the background outbox delivery worker.
-	// Set to "true" on EXACTLY ONE fleet member (same leader-guard pattern as
-	// FX_SYNC_ENABLED) to avoid duplicate sends on multi-node deployments.
+	// Set to "true" on EXACTLY ONE container instance (same leader-guard pattern as
+	// FX_SYNC_ENABLED) to avoid duplicate sends on multi-instance deployments.
 	EmailWorkerEnabled   bool
 	EmailWorkerInterval  string // optional, e.g. "10s"; empty → default 5s
 
@@ -77,7 +77,7 @@ type Config struct {
 	// ExchangeRateBase is the base currency for all stored rates (default USD).
 	ExchangeRateBase string
 	// FXSyncEnabled gates the hourly scheduler. Set to "true" on exactly ONE
-	// fleet member to enforce the <=24 calls/day single-runner constraint.
+	// container instance to enforce the <=24 calls/day single-runner constraint.
 	FXSyncEnabled bool
 
 	// P1-03: correction-learning loop
@@ -87,7 +87,7 @@ type Config struct {
 	ClassifyPromotionThreshold int
 	// P1-04: Cross-tenant merchant signal aggregation.
 	// SignalsAggEnabled gates the periodic aggregation job. Set to "true" on
-	// exactly ONE fleet member (same leader-guard pattern as FX_SYNC_ENABLED).
+	// exactly ONE container instance (same leader-guard pattern as FX_SYNC_ENABLED).
 	SignalsAggEnabled bool
 	// SignalsMinOrgs is the minimum number of distinct organisations that must
 	// agree on a (merchant, category) pairing before it is written to
@@ -113,7 +113,7 @@ type Config struct {
 	// (routes return 503).
 	//
 	// BankfeedSyncEnabled gates the periodic scheduler.  Set to "true" on
-	// EXACTLY ONE fleet member (same leader-guard pattern as FX_SYNC_ENABLED).
+	// EXACTLY ONE container instance (same leader-guard pattern as FX_SYNC_ENABLED).
 	// BankfeedSyncInterval controls how often connections are polled (default 4h).
 	StitchClientID      string
 	StitchClientSecret  string

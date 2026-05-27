@@ -11,15 +11,15 @@ import (
 //
 // Single-runner guard
 // -------------------
-// On a multi-VM fleet (e.g. three Hetzner nodes) a naive ticker would fire
-// 24×3 = 72 times per day, exhausting free-tier quotas. We prevent this with
-// an environment-controlled "leader" flag: only the instance where
-// FX_SYNC_ENABLED=true runs the scheduler. The Hetzner cloud-init for exactly
-// one VM sets that variable; the others leave it unset (defaulting to false).
-// This is the simplest, zero-dependency approach for a fleet this size — no
+// Across multiple container instances a naive ticker would fire 24×N times
+// per day, exhausting free-tier quotas. We prevent this with an
+// environment-controlled "leader" flag: only the instance where
+// FX_SYNC_ENABLED=true runs the scheduler. Set that variable on exactly one
+// instance; the others leave it unset (defaulting to false).
+// This is the simplest, zero-dependency approach at this scale — no
 // Redis, no DB advisory lock needed. If the leader goes down, the next sync
-// fires on the next cloud-init restart (acceptable: stale FX by <1 day on a
-//24-h ticker).
+// fires on the next restart (acceptable: stale FX by <1 day on a
+// 24-h ticker).
 //
 // Jitter
 // ------

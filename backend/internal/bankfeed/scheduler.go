@@ -3,9 +3,9 @@ package bankfeed
 // scheduler.go — leader-guarded periodic poll scheduler for bank-feed sync.
 //
 // Single-runner guard (same pattern as internal/fx/scheduler.go):
-// On a multi-VM fleet only the instance where BANKFEED_SYNC_ENABLED=true runs
-// the scheduler.  All other fleet members leave it unset.  This prevents
-// duplicate sync runs across the fleet without requiring a distributed lock.
+// Across multiple container instances only the one where
+// BANKFEED_SYNC_ENABLED=true runs the scheduler.  All other instances leave it
+// unset.  This prevents duplicate sync runs without requiring a distributed lock.
 //
 // Jitter: a random ±60 s delay is applied before each poll cycle to prevent
 // thundering-herd if the env var is accidentally set on multiple instances.

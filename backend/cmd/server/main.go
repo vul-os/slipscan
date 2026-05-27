@@ -95,8 +95,8 @@ func main() {
 		mailer = queue
 
 		// Email outbox delivery worker — set EMAIL_WORKER_ENABLED=true on
-		// EXACTLY ONE fleet member so duplicate sends are avoided on multi-node
-		// deployments.
+		// EXACTLY ONE container instance so duplicate sends are avoided on
+		// multi-instance deployments.
 		if cfg.EmailWorkerEnabled {
 			workerInterval, _ := parseDuration(cfg.EmailWorkerInterval, 5*time.Second)
 			go mailout.NewWorker(outboxStore, sesClient, workerInterval).Run(ctx)
@@ -127,8 +127,8 @@ func main() {
 	docStore := document.NewStore(pool)
 
 	// FX rate scheduler — only starts when FX_SYNC_ENABLED=true.
-	// This env var must be set on EXACTLY ONE fleet member so the ≤24 calls/day
-	// cap is respected across the whole fleet. A missing API key disables the
+	// This env var must be set on EXACTLY ONE container instance so the ≤24 calls/day
+	// cap is respected across all instances. A missing API key disables the
 	// scheduler gracefully (logs a warning; does not crash).
 	if cfg.FXSyncEnabled {
 		fxClient := fx.NewClient(cfg.ExchangeRateAPIKey)
@@ -141,7 +141,7 @@ func main() {
 
 	// P1-04: Cross-tenant merchant signal aggregation scheduler.
 	// Only starts when SIGNALS_AGG_ENABLED=true. Set that env var on EXACTLY ONE
-	// fleet member so the aggregation job runs on a single node (leader guard).
+	// container instance so the aggregation job runs on a single instance (leader guard).
 	if cfg.SignalsAggEnabled {
 		signalsStore := classify.NewStore(pool)
 		signalsScheduler := classify.NewScheduler(signalsStore, cfg.SignalsMinOrgs, 0)
@@ -227,7 +227,7 @@ func main() {
 	// Secrets: STITCH_CLIENT_ID, STITCH_CLIENT_SECRET, STITCH_REDIRECT_URL,
 	//          STITCH_WEBHOOK_SECRET.
 	// When STITCH_CLIENT_ID is blank, all bankfeed routes return 503.
-	// BANKFEED_SYNC_ENABLED must be set on EXACTLY ONE fleet member.
+	// BANKFEED_SYNC_ENABLED must be set on EXACTLY ONE container instance.
 	bankfeedStore := bankfeed.NewStore(pool)
 	bankfeedCascader := bankfeed.NewFeedCascader(pool)
 	var bankfeedH *bankfeed.Handler
@@ -257,7 +257,7 @@ func main() {
 	// P4-04: public API & developer tokens.
 	// apiTokenStore: issue/revoke/authenticate developer tokens (hashed at rest).
 	// apiRateLimiter: in-memory per-token sliding window (see apitokens pkg docs
-	//   for multi-node caveat — use Redis INCRBY for true fleet-wide enforcement).
+	//   for multi-instance caveat — needs a shared counter for cluster-wide enforcement).
 	apiTokenStore := apitokens.NewStore(pool)
 	apiTokenH := apitokens.NewHandler(apiTokenStore)
 	apiRateLimiter := apitokens.NewRateLimiter()

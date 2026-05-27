@@ -54,7 +54,7 @@ log.  The retry worker polls it with `FOR UPDATE SKIP LOCKED`, so running
 multiple worker instances is safe (each row is claimed by one worker).
 However, running exactly one worker instance is recommended to avoid
 unnecessary API calls on transient failures — set `EMAIL_WORKER_ENABLED=true`
-on one node only, matching the same pattern as `FX_SYNC_ENABLED`.
+on one container instance only, matching the same pattern as `FX_SYNC_ENABLED`.
 
 **Bounce / complaint webhook.**  The `POST /webhooks/ses` endpoint and the
 `email_suppressions` table are the **intended future design**; they are
@@ -127,12 +127,11 @@ SES requires two DNS records on the MAIL FROM subdomain:
 |------|-------------------------------|--------------------------------------|------|----------|
 | TXT  | `bounce.mail.slipscan.app`    | `v=spf1 include:amazonses.com ~all`  | 300  | DNS only |
 
-> **Inbound MX conflict note.**  The inbound mail receiver uses `RX_DOMAIN`
-> (currently `mail.slipscan.app`) and expects an MX record pointing to the
-> Hetzner VM IPs at `rx.mail.slipscan.app` / `vm*.rx.mail.slipscan.app`.
-> The SES custom MAIL FROM MX lives on `bounce.mail.slipscan.app` — a
+> **Inbound MX conflict note.**  Inbound mail for `mail.slipscan.app` is
+> received by **Cloudflare Email Routing**, whose MX records live on that
+> label.  The SES custom MAIL FROM MX lives on `bounce.mail.slipscan.app` — a
 > distinct subdomain — so there is **no conflict**.  Never add the SES MAIL
-> FROM MX record to the same label as the inbound MX.
+> FROM MX record to the `mail.slipscan.app` label used by Email Routing.
 
 ### 2.4 SPF on the From address domain
 
@@ -274,7 +273,8 @@ configuration set ARN.
 ```
 
 Store the access key and secret as `AWS_ACCESS_KEY_ID` and
-`AWS_SECRET_ACCESS_KEY` in `/etc/slipscan/env` (mode 0600).
+`AWS_SECRET_ACCESS_KEY` Cloudflare Container/Worker secrets
+(`wrangler secret put AWS_SECRET_ACCESS_KEY`).
 
 ---
 
@@ -418,86 +418,38 @@ delivery log, or CloudWatch Logs if enabled).
 
 ---
 
-## 6. Cloudflare Workers Migration Notes
+## 6. Running on Cloudflare (Container model)
 
-When the Go backend moves entirely to Cloudflare Workers, the email subsystem
-changes as follows.
+The Go monolith runs inside a **Cloudflare Container** (`backend/Dockerfile`,
+fronted by the router Worker in `infra/cloudflare/`). Because the binary runs
+as-is, the entire email subsystem works without change:
 
-### What stays the same
+- The `aws-sdk-go-v2 sesv2.SendEmail` client runs in the container — no need
+  for a SigV4-signed `fetch()` or a TS rewrite.
+- The `email_outbox` retry worker stays a normal Go goroutine, gated by
+  `EMAIL_WORKER_ENABLED=true` on exactly one container instance.
+- The outbox is queried with the same `pgx` pool over the Neon connection
+  string — no serverless driver / Hyperdrive needed.
+- `email_outbox` and `email_suppressions` tables and the SES identity, DNS,
+  configuration set, SNS topic, and IAM policy are all unchanged.
 
-- The `email_outbox` and `email_suppressions` Postgres tables remain as-is.
-- The SES identity, DNS records, configuration set, SNS topic, and IAM policy
-  are unchanged — SES is transport-agnostic.
-- The env var names (`AWS_REGION`, `AWS_ACCESS_KEY_ID`, etc.) are the same;
-  they become Worker secrets (`wrangler secret put`).
+The only operational difference from a self-managed host is **secrets**:
+`AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `EMAIL_FROM`,
+`SES_CONFIGURATION_SET`, `EMAIL_WORKER_ENABLED` are injected as Cloudflare
+Container/Worker secrets (`wrangler secret put …`) rather than read from a
+file.
 
-### What changes
+#### `/webhooks/ses` SNS handler (future)
 
-#### SES API calls: SigV4-signed `fetch()` instead of the Go SDK
-
-Cloudflare Workers cannot run the AWS Go SDK (no CGo, no goroutines).
-Instead, make a SigV4-signed HTTP request directly to the SES v2 endpoint:
-
-```
-POST https://email.us-east-1.amazonaws.com/v2/email/outbound-emails
-```
-
-You must implement or import an ES/TS SigV4 signer (e.g.
-[`aws4fetch`](https://github.com/mhart/aws4fetch)) since the Workers runtime
-only exposes the Web Crypto API (`crypto.subtle`).
-
-#### Database access: Neon serverless driver via Hyperdrive
-
-The retry worker queries the `email_outbox` table.  In Workers, use:
-
-- The [Neon serverless driver](https://neon.tech/docs/serverless/serverless-driver)
-  (`@neondatabase/serverless`) which speaks the Postgres wire protocol over
-  WebSockets, compatible with the Workers runtime.
-- Wrap it with [Cloudflare Hyperdrive](https://developers.cloudflare.com/hyperdrive/)
-  for connection pooling and reduced cold-start latency.
-
-#### Retry worker: Cron Trigger Worker or Cloudflare Queues
-
-The Go retry-worker goroutine must become one of:
-
-**Option A — Cron Trigger Worker (simpler):**
-Configure a `[triggers] crons = ["* * * * *"]` in `wrangler.toml`.  The
-Worker's `scheduled()` handler runs `FOR UPDATE SKIP LOCKED` against the
-outbox and calls SES for each pending row.  This is the direct equivalent of
-the current goroutine approach.
-
-**Option B — Cloudflare Queue consumer (more scalable):**
-On enqueue, write to both `email_outbox` (for durability) and push a message
-to a [Cloudflare Queue](https://developers.cloudflare.com/queues/).  A Queue
-consumer Worker calls SES.  On permanent failure (after max retries), update
-`email_outbox` status to `dead` and optionally DLQ to a separate Queue.
-Queues provide automatic exponential backoff and dead-letter support.
-
-For the current scale of slip/scan, Option A is sufficient and simpler to
-operate.
-
-#### `/webhooks/ses` SNS handler: Worker route
-
-The SNS subscription endpoint becomes a Worker route (e.g.
-`api.slipscan.app/webhooks/ses`).  The handler must:
+The bounce/complaint webhook is a Go HTTP handler on the monolith
+(`api.slipscan.app/webhooks/ses`), implemented in a later phase. It must:
 
 1. Verify the `x-amz-sns-message-type` header.
 2. On `SubscriptionConfirmation`: fetch the `SubscribeURL` to confirm.
 3. On `Notification`: parse the SES event JSON, check `notificationType`
    (`Bounce` or `Complaint`), and upsert the affected address into
-   `email_suppressions` via the Neon driver.
-4. Validate the SNS message signature (fetch the signing cert from
-   `SigningCertURL`, verify with `crypto.subtle.verify`).
-
-#### Summary table
-
-| Component              | Go / Hetzner today                  | Cloudflare Workers                              |
-|------------------------|-------------------------------------|-------------------------------------------------|
-| SES API call           | `aws-sdk-go-v2 sesv2.SendEmail`     | SigV4-signed `fetch()` via `aws4fetch`          |
-| Outbox DB access       | `pgx` connection pool               | Neon serverless driver + Hyperdrive             |
-| Retry loop             | Goroutine (`time.Ticker`)           | Cron Trigger Worker (`scheduled` handler)       |
-| Bounce webhook         | Go HTTP handler (`net/http`)        | Worker route (`fetch` handler)                  |
-| Secrets                | `/etc/slipscan/env` (mode 0600)     | `wrangler secret put` (encrypted at rest)       |
+   `email_suppressions`.
+4. Validate the SNS message signature against the cert at `SigningCertURL`.
 
 ---
 
@@ -562,7 +514,7 @@ bounces (type `Transient`) may be retried after a cooling-off period.
 
 ### 7.5 Runtime environment variables
 
-Set these in `/etc/slipscan/env` (Hetzner deployment) or as Worker secrets:
+Set these as Cloudflare Container/Worker secrets (`wrangler secret put …`):
 
 | Variable                  | Example value                                     | Notes                                                    |
 |---------------------------|---------------------------------------------------|----------------------------------------------------------|

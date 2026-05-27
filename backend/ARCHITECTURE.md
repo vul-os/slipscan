@@ -3,14 +3,14 @@
 Last reviewed: 2026-05-27 · Branch: `new-slip`
 
 This document is the canonical description of how the backend is deployed, why
-it is shaped this way, and the contracts between components.
+it is shaped this way, and the contracts between components. The stack is
+**Cloudflare** (frontend, backend, inbound mail, object storage) + **Neon**
+(database). The only non-Cloudflare dependencies are outbound HTTPS calls to
+SaaS APIs (Gemini, Amazon SES, Stitch, Xero) — none require servers we operate.
 
 ---
 
-## 1. One-page overview (current — Cloudflare)
-
-The primary production topology is Cloudflare-hosted.  The Hetzner VM design
-is retained as a rollback path; see §1.1 (legacy) and `backend/DEPLOY.md`.
+## 1. One-page overview
 
 ```
 Users
@@ -53,86 +53,44 @@ Users
     ┌─────────────────────────────────────────────────────────────────┐
     │  Cloudflare R2  (slipscan-docs-main / -dev)                     │
     │  — original docs + raw RFC822 emails                            │
-    │  — S3-compatible; same Go storage client as B2 (no code change) │
+    │  — S3-compatible; standard Go AWS SDK S3 client (no code change) │
     └─────────────────────────────────────────────────────────────────┘
 
-  External APIs:
+  External APIs (outbound HTTPS only — nothing self-hosted):
     — Gemini (OCR / extraction / classification)
-    — Amazon SES (outbound transactional email)
+    — Amazon SES (outbound transactional email delivery)
     — Stitch (bank-feed aggregator, SA-first)
     — Xero / QuickBooks (accounting export)
     — Frankfurter / openexchangerates (FX rates)
 ```
 
-### 1.1 Legacy overview (Hetzner — rollback path)
-
-The Hetzner VM topology documented below and in `backend/DEPLOY.md` is kept as
-an active rollback path until the Cloudflare stack is verified green.  Do not
-use it as the active deployment target.
-
-```
-                          ┌─────────────────────────────────────┐
-                          │   Firebase Hosting (slipscan.app)   │
-                          │   sites: slipscan-main / slipscan-  │
-                          │   dev — static SPA, immutable cache │
-                          └───────────────┬─────────────────────┘
-                                          │ HTTPS
-                                          ▼
-                          ┌─────────────────────────────────────┐
-                          │  Hetzner Cloud Load Balancer (LB11) │
-                          │  api.slipscan.app  → :443 HTTPS     │
-                          └───────────────┬─────────────────────┘
-                                          │
-                ┌─────────────────────────┼──────────────────────┐
-                ▼                         ▼                       ▼
-        ┌────────────────┐       ┌────────────────┐     ┌────────────────┐
-        │  Hetzner CX22  │  ...  │  Hetzner CX22  │     │  Hetzner CX22  │
-        │  caddy :443    │       │  caddy :443    │     │  caddy :443    │
-        │  server :8080  │       │  server :8080  │     │  server :8080  │
-        │  mailrx :25/:587│      │  mailrx        │     │  mailrx        │
-        │  rDNS:rx1.rx.… │       │  rDNS:rx2.rx.… │     │  rDNS:rxN.rx.… │
-        └────────────────┘       └────────────────┘     └────────────────┘
-                │
-                ▼
-        Neon Postgres + Backblaze B2 + Redis VM
-```
-
-Inbound mail (Hetzner legacy):
-```
-sender ──MX:rx.slipscan.app──► VM:25 (mailrx) ──► process ──► Neon + B2
-```
-
-Inbound mail (Cloudflare — current):
-```
-sender ──MX:mail.slipscan.app──► CF Email Routing
-    ──► Email Worker ──► POST /internal/inbound-email ──► Go monolith
-```
+Why email is split across two transports: Cloudflare cannot originate
+outbound SMTP (port 25 is blocked) and Email Routing only **receives**. So
+**receiving** is fully Cloudflare-native (Email Routing → Email Worker → our
+HTTP ingest), while **sending** delegates delivery to Amazon SES over HTTPS —
+an API call, not a host. See `backend/docs/EMAIL_SENDING.md`.
 
 ---
 
 ## 2. Compute model
 
-### 2.1 Why Cloudflare Containers (current)
+### 2.1 Why Cloudflare Containers
+
+The backend is a stateful Go monolith: in-process background workers,
+per-request `SET LOCAL` RLS, and SSE streaming. A Container runs that binary
+unchanged, fronted by a router Worker — no rewrite, no VMs to operate.
 
 | Concern | Cloudflare Container + Worker |
 |---|---|
 | Infra ops | Zero VM management; CF handles host, TLS, CDN, DDoS |
-| SMTP ingress | Cloudflare Email Routing replaces port-25 VMs |
+| SMTP ingress | Cloudflare Email Routing replaces port-25 servers |
 | Cold starts | ~3–8 s first request; subsequent requests warm |
-| Background workers | In-process goroutines gated by env vars (same pattern) |
-| Egress cost | Included in Workers plan for typical traffic |
-| Scaling | `max_instances` in `wrangler.toml`; no fleet scripts |
+| Background workers | In-process goroutines gated by env vars |
+| Egress cost | Included in the Workers plan for typical traffic |
+| Scaling | `max_instances` in `wrangler.toml`; no provisioning scripts |
 | Deployment | `wrangler deploy` from the repo |
 
-### 2.2 Why Hetzner VMs (legacy — rollback only)
-
-See original rationale in `backend/DEPLOY.md`.  In summary: native SMTP on
-port 25, IP reputation control, no cold starts, included egress.  These
-advantages are superseded by Cloudflare Email Routing (no port 25 needed) and
-the Cloudflare container model.  `backend/deploy.sh` remains functional for
-rollback.
-
-### 2.3 Container sizing
+### 2.2 Container sizing
 
 Declared in `infra/cloudflare/wrangler.toml`:
 
@@ -149,7 +107,7 @@ Adjust `instance_type` and `max_instances` in `wrangler.toml` as load grows.
 ## 3. Process layout
 
 The Go monolith (`cmd/server`) runs as a single process inside a Cloudflare
-Container.  It listens on `$PORT` (default `8080`) and exposes `GET /healthz`.
+Container. It listens on `$PORT` (default `8080`) and exposes `GET /healthz`.
 
 Background goroutines run in-process, gated by env vars (single-runner guard):
 
@@ -163,7 +121,7 @@ Background goroutines run in-process, gated by env vars (single-runner guard):
 | Bank-feed sync | `BANKFEED_SYNC_ENABLED=true` | 4 h |
 
 In a multi-instance container deployment, set each guarded env var to `true`
-on exactly one instance.  Postgres `FOR UPDATE SKIP LOCKED` ensures correct
+on exactly one instance. Postgres `FOR UPDATE SKIP LOCKED` ensures correct
 single-worker semantics even if multiple instances accidentally run the same
 worker — no duplicate sends, just wasted polling.
 
@@ -200,7 +158,7 @@ See `internal/auth`.
 Tenant isolation: Postgres RLS using `app_current_organization_id()` set
 per-request via `SET LOCAL`. Connection pool resets with `RESET ALL`.
 
-### 4.2 Inbound email path (Cloudflare — current)
+### 4.2 Inbound email path
 
 ```
 sender
@@ -209,7 +167,7 @@ sender
 Cloudflare Email Routing MX (mail.slipscan.app)
   │ catch-all rule → Email Worker
   ▼
-Email Worker (src/email.ts)
+Email Worker (infra/cloudflare/src/email.ts)
   │ size check (25 MB limit)
   │ read raw RFC-822 stream → ArrayBuffer
   ▼
@@ -228,25 +186,17 @@ Go monolith: parse recipient → lookup org → INSERT inbound_emails
 extraction worker picks up pending documents
 ```
 
-Why Email Routing instead of port-25 VMs:
-- No VM fleet to manage; CF handles MX, TLS, delivery retries.
+The HTTP ingest handler (`POST /internal/inbound-email`) and the SMTP path
+(`cmd/mailrx`, used only for local development) share one parser/store code
+path via `internal/mailrx` `Ingester` — there is a single implementation.
+
+Why Email Routing instead of a port-25 server:
+- No VM to manage; CF handles MX, TLS, delivery retries.
 - The Go monolith receives a clean HTTP POST — same code path as web uploads.
 - SPF/DKIM/DMARC for inbound is handled by CF Email Routing; for outbound by
   Amazon SES (see `backend/docs/EMAIL_SENDING.md`).
 
-### 4.3 Inbound email path (Hetzner — legacy)
-
-```
-sender ──MX:rx.slipscan.app──► VM:25 (mailrx)
-  HELO/EHLO → MAIL FROM → RCPT TO → reject 550 if no match → DATA
-  stream raw RFC822 to B2 → INSERT inbound_emails
-  parse MIME → INSERT documents → upload to B2 → extraction worker
-```
-
-This path requires the `cmd/mailrx` binary and is only active on the Hetzner
-VM fleet.
-
-### 4.4 Document extraction
+### 4.3 Document extraction
 
 ```
 documents (status='pending')
@@ -273,7 +223,7 @@ documents.status='extracted'
 
 All ai_runs are billed via `usage_events` → `usage_charges`.
 
-### 4.5 Outbound email path
+### 4.4 Outbound email path
 
 ```
 Application handler
@@ -289,13 +239,13 @@ Bounce/complaint events:
 Amazon SES → SNS topic → POST /webhooks/ses → email_suppressions
 ```
 
-See `backend/docs/EMAIL_SENDING.md` for full SES setup runbook.
+See `backend/docs/EMAIL_SENDING.md` for the full SES setup runbook.
 
 ---
 
 ## 5. Deploys
 
-### 5.1 Cloudflare deploy (current)
+### 5.1 Cloudflare deploy
 
 ```bash
 cd infra/cloudflare
@@ -303,8 +253,12 @@ npm run deploy          # Router Worker + Container (wrangler.toml)
 npm run deploy:email    # Email Worker (wrangler.email.toml)
 ```
 
-Pages deploy is handled by Cloudflare's git integration (push to `main` or
-`dev` branch triggers a build and deploy).
+Frontend Pages deploy from the repo root:
+
+```bash
+npm run deploy:dev      # build dist-dev → wrangler pages deploy (slipscan-staging)
+npm run deploy:main     # build dist-main → wrangler pages deploy (slipscan-main)
+```
 
 DNS records:
 ```bash
@@ -314,19 +268,7 @@ backend/scripts/cloudflare-ses-dns.sh   # SES SPF/DKIM/DMARC
 
 Full runbook: `docs/DEPLOY_CLOUDFLARE.md`.
 
-### 5.2 `backend/deploy.sh` (Hetzner — legacy/rollback)
-
-The Hetzner provisioning script is the legacy deployment path.  It is
-**NOT the active deployment path** but is kept functional for rollback.
-
-Verbs:
-- `provision` — create a new Hetzner VM, attach to LB, configure DNS
-- `provision --replace <count>` — rolling blue/green replacement
-- `--list` / `--status` — show fleet state
-
-See `backend/DEPLOY.md` for the full Hetzner runbook.
-
-### 5.3 Failure modes & recovery
+### 5.2 Failure modes & recovery
 
 | Failure | Detection | Recovery |
 |---|---|---|
@@ -335,8 +277,7 @@ See `backend/DEPLOY.md` for the full Hetzner runbook.
 | R2 down | Document upload fails | Retry via worker (`documents.status='pending'`) |
 | SES down / paused | `email_outbox` rows stuck in `sending` | Check SES console; rows retry on next worker tick |
 | Email Worker fails | CF retries; sender gets transient SMTP error | Check Worker logs; fix and redeploy |
-| DNS misconfiguration | Traffic loss | Revert DNS to old values (TTL ~5 min for proxied) |
-| Rollback needed | Any of the above at scale | See §1.1 and `docs/DEPLOY_CLOUDFLARE.md` §7.2 |
+| Bad deploy | Errors after `wrangler deploy` / Pages build | `wrangler rollback` (Worker) or redeploy the previous Pages build; revert DNS if changed (TTL ~5 min) |
 
 ---
 
@@ -346,7 +287,7 @@ See `backend/DEPLOY.md` for the full Hetzner runbook.
 backend/
   cmd/
     server/        HTTP API + background workers (one binary, leader-elected jobs)
-    mailrx/        SMTP receiver — legacy path (Hetzner only)
+    mailrx/        Standalone SMTP receiver — local-dev / alternative ingest
     migrate/       SQL migrations runner
   internal/
     auth/          JWT, password, middleware
@@ -354,22 +295,21 @@ backend/
     config/        env loading (.env / .env.dev / .env.main)
     db/            pgx pool + RLS helpers
     document/      upload, list, signed-URL handlers
-    email/         outbound email + templates (SES)
+    email/         outbound email transport (SES) + templates
     extract/       structured extraction pipeline (Gemini)
     mailout/       email_outbox store + retry worker
-    mailrx/        SMTP MIME parser + recipient resolver (legacy)
+    mailrx/        SMTP MIME parser, recipient resolver, shared Ingester
     ocr/           Gemini OCR integration
     org/           org create/update, slug + rx_local_part management
-    storage/       S3-compatible client (B2 / R2 — same code)
+    storage/       S3-compatible client (R2; same code worked with B2)
     ... (see full list: accounting_export, apitokens, audit, bankfeed, etc.)
   migrations/      SQL migration files (applied via cmd/migrate)
+  Dockerfile       Container image for cmd/server
   docs/
     EMAIL_SENDING.md   Amazon SES setup runbook
   scripts/
     cloudflare-ses-dns.sh   Create SES SPF/DKIM/DMARC records in CF
     cloudflare-app-dns.sh   Create app/api CNAME + Email Routing records in CF
-  deploy.sh        Hetzner fleet provisioning — LEGACY (rollback only)
-  DEPLOY.md        Hetzner deploy runbook — LEGACY (rollback only)
   ARCHITECTURE.md  this file
 infra/
   cloudflare/
@@ -379,8 +319,6 @@ infra/
     src/email.ts          Email Worker source
 docs/
   DEPLOY_CLOUDFLARE.md  Canonical Cloudflare deployment runbook
-firebase.json            Firebase Hosting config — LEGACY (rollback only)
-.firebaserc              Firebase project aliases — LEGACY (rollback only)
 ```
 
 ---
@@ -388,11 +326,12 @@ firebase.json            Firebase Hosting config — LEGACY (rollback only)
 ## 7. Security posture
 
 - All DB access RLS-tenanted; app role has no `BYPASSRLS`.
-- Secrets injected as Cloudflare Worker secrets (`wrangler secret put`),
-  never committed.  Legacy: `/etc/slipscan/env` (mode 0600) on Hetzner VMs.
+- Secrets injected as Cloudflare Worker/Container secrets (`wrangler secret
+  put`), never committed.
 - TLS everywhere: Cloudflare terminates TLS for all external traffic.
 - Inbound email: Cloudflare Email Routing validates SPF/DKIM before delivery.
-  The Go handler additionally checks `X-Inbound-Secret` to reject forged POSTs.
+  The Go handler additionally checks `X-Inbound-Secret` to reject forged POSTs,
+  and the route is disabled entirely when that secret is unset.
 - WhatsApp webhook verifies HMAC before any DB lookup.
 - Paystack webhook verifies HMAC.
 - R2 bucket is private; downloads are presigned, short-lived.
@@ -403,13 +342,11 @@ firebase.json            Firebase Hosting config — LEGACY (rollback only)
 
 ## 8. Open architecture questions
 
-- Cloudflare Containers is in beta (2026-05): `envVars` injection API, health
-  check config, `instance_type` values may change.  Pin the wrangler version
-  and test upgrades carefully.
+- Cloudflare Containers is in beta (2026-05): the `envVars` injection API,
+  health-check config, and `instance_type` values may change. Pin the wrangler
+  version and test upgrades carefully.
 - Single-runner jobs on multi-instance deployments: currently controlled by
-  env vars.  Postgres advisory locks (already used for extraction) provide a
-  stronger guarantee if env var coordination is error-prone.
-- R2 vs B2 migration: once the Cloudflare stack is verified green, B2 buckets
-  can be set to read-only and eventually deleted.
-- `cmd/mailrx` binary: remains buildable but is only exercised by the Hetzner
-  rollback path.  Can be archived if rollback is retired.
+  env vars. Postgres advisory locks (already used for extraction) provide a
+  stronger guarantee if env-var coordination proves error-prone.
+- R2 vs B2 migration: once the Cloudflare stack is verified green, the old B2
+  buckets can be set to read-only and eventually deleted.
