@@ -157,7 +157,8 @@ export async function fetchVATLines(
        AND t.posted_date <= $3
        AND t.tax_rate_id IS NOT NULL
        AND COALESCE(t.tax, 0) > 0
-     GROUP BY tr.id, tr.code, tr.name, tr.rate, direction
+     GROUP BY tr.id, tr.code, tr.name, tr.rate,
+              CASE WHEN a.type IN ('income') THEN 'output' ELSE 'input' END
      ORDER BY direction DESC, tr.code, tr.name`,
     [orgId, from, to],
   );
