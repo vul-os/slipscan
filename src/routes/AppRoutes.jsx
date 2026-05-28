@@ -27,6 +27,17 @@ const InsightsPage = lazy(() => import("@/pages/Insights"));
 const AuthCallbackPage = lazy(() => import("@/pages/AuthCallback"));
 const NotFoundPage = lazy(() => import("@/pages/NotFound"));
 
+// Docs — public, outside AppLayout
+const DocsLayout = lazy(() => import("@/components/docs/DocsLayout"));
+const DocsIndex = lazy(() => import("@/pages/docs/DocsIndex"));
+const Quickstart = lazy(() => import("@/pages/docs/Quickstart"));
+const Concepts = lazy(() => import("@/pages/docs/Concepts"));
+const FeaturesIndex = lazy(() => import("@/pages/docs/FeaturesIndex"));
+const IntegrationsIndex = lazy(() => import("@/pages/docs/IntegrationsIndex"));
+const FaqDocs = lazy(() => import("@/pages/docs/Faq"));
+const Security = lazy(() => import("@/pages/docs/Security"));
+const Changelog = lazy(() => import("@/pages/docs/Changelog"));
+
 function PageFallback() {
   return (
     <div className="p-10 space-y-3">
@@ -73,6 +84,18 @@ export function AppRoutes() {
           <Route path="/audit"               element={<AuditPage />} />
           <Route path="/members"             element={<MembersPage />} />
           <Route path="/settings"            element={<SettingsPage />} />
+        </Route>
+
+        {/* Public docs site — outside AppLayout, no auth required */}
+        <Route path="/docs" element={<DocsLayout />}>
+          <Route index                element={<DocsIndex />} />
+          <Route path="quickstart"    element={<Quickstart />} />
+          <Route path="concepts"      element={<Concepts />} />
+          <Route path="features"      element={<FeaturesIndex />} />
+          <Route path="integrations"  element={<IntegrationsIndex />} />
+          <Route path="faq"           element={<FaqDocs />} />
+          <Route path="security"      element={<Security />} />
+          <Route path="changelog"     element={<Changelog />} />
         </Route>
 
         <Route path="*" element={<NotFoundPage />} />

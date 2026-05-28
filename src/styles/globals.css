@@ -88,6 +88,33 @@
   }
 }
 
+/* Docs prose — h2/h3 with an id get a low-opacity `#` glyph on hover,
+   editorial anchor affordance. Scoped to .docs-prose so it doesn't leak. */
+.docs-prose h2[id]:hover::after,
+.docs-prose h3[id]:hover::after {
+  content: " #";
+  margin-left: 0.35rem;
+  color: theme(colors.ink.400);
+  font-weight: 400;
+}
+
+/* Native <details> open/close transition for FAQ-style disclosures.
+   grid-template-rows: 0fr → 1fr animates content height without
+   measuring. Wrap each <details>'s content in a single .disclosure-content
+   child whose grandchild has `overflow: hidden; min-height: 0`. */
+details.disclosure > .disclosure-content {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 250ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+details.disclosure > .disclosure-content > * {
+  overflow: hidden;
+  min-height: 0;
+}
+details.disclosure[open] > .disclosure-content {
+  grid-template-rows: 1fr;
+}
+
 /* Print: hide chrome (sidebar, top bar), expand main, drop background tints. */
 @media print {
   aside,

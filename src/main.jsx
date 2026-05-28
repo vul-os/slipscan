@@ -7,6 +7,21 @@ import { TooltipProvider } from "@/components/ui/Tooltip";
 
 import "@/styles/globals.css";
 import { AppRoutes } from "@/routes/AppRoutes";
+import { useAuthStore } from "@/stores/auth";
+import { useOrgStore } from "@/stores/org";
+
+// Dev-only demo bootstrap. When `?__demo=1` is in the URL, synchronously seed
+// the auth + org stores from `window.__DEMO_STATE__` so the screenshot harness
+// can capture authenticated pages without a real backend session. Stripped at
+// build time — `import.meta.env.DEV` is false in production.
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("__demo") === "1" && window.__DEMO_STATE__) {
+    const { user, accessToken, refreshToken, orgId } = window.__DEMO_STATE__;
+    useAuthStore.setState({ user, accessToken, refreshToken });
+    useOrgStore.setState({ activeOrgId: orgId });
+  }
+}
 
 const queryClient = new QueryClient({
   defaultOptions: {

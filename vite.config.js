@@ -16,6 +16,17 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
+      watch: {
+        ignored: [
+          "**/.claude/worktrees/**",
+          "**/dist/**",
+          "**/dist-*/**",
+          "**/backend/**",
+          "**/worker/**",
+          "**/.git/**",
+          "**/node_modules/**",
+        ],
+      },
     },
     build: {
       outDir,
