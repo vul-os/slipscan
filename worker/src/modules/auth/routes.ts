@@ -33,6 +33,7 @@ import {
   touchLogin,
   markVerified,
   updatePasswordHash,
+  updateUser,
   issueToken,
   consumeToken,
   invalidateUserTokens,
@@ -43,6 +44,7 @@ import type {
   UserResponse,
   RegisterResponse,
   AuthResponse,
+  UpdateProfileRequest,
 } from "./types";
 import { enqueue } from "../email/mailer";
 import { verifyEmail, passwordResetEmail } from "../email/templates";
@@ -64,6 +66,7 @@ function userToResponse(u: UserRow): UserResponse {
     created_at: u.created_at,
   };
   if (u.full_name) resp.full_name = u.full_name;
+  if (u.avatar_url) resp.avatar_url = u.avatar_url;
   if (u.email_verified_at) resp.email_verified_at = u.email_verified_at;
   return resp;
 }
@@ -383,6 +386,43 @@ r.post("/password-reset/confirm", async (c) => {
   );
 
   return c.json({ reset: true }, 200);
+});
+
+// ---- PATCH /auth/me ----
+
+r.patch("/me", requireAuth, async (c) => {
+  const userId = c.get("userId");
+  if (!userId) {
+    return writeError(c, 401, "unauthorized", "missing identity");
+  }
+
+  let body: UpdateProfileRequest;
+  try {
+    body = await c.req.json();
+  } catch {
+    return writeError(c, 400, "invalid_body", "request body must be JSON");
+  }
+
+  const fields: { full_name?: string; avatar_url?: string | null } = {};
+  if ("full_name" in body) {
+    fields.full_name = typeof body.full_name === "string" ? body.full_name.trim() : "";
+  }
+  if ("avatar_url" in body) {
+    fields.avatar_url = typeof body.avatar_url === "string" ? body.avatar_url.trim() : null;
+  }
+
+  if (!Object.keys(fields).length) {
+    const user = await getUserById(c.env, userId);
+    if (!user) return writeError(c, 404, "not_found", "user not found");
+    return c.json(userToResponse(user), 200);
+  }
+
+  const updated = await updateUser(c.env, userId, fields);
+  if (!updated) {
+    return writeError(c, 404, "not_found", "user not found");
+  }
+
+  return c.json(userToResponse(updated), 200);
 });
 
 // ---- GET /auth/me ----

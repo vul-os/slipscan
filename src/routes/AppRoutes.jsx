@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/Skeleton";
 const LandingPage = lazy(() => import("@/pages/Landing"));
 const LoginPage = lazy(() => import("@/pages/Login"));
 const RegisterPage = lazy(() => import("@/pages/Register"));
+const ForgotPasswordPage = lazy(() => import("@/pages/ForgotPassword"));
 const OnboardingPage = lazy(() => import("@/pages/Onboarding"));
 const AcceptInvitePage = lazy(() => import("@/pages/AcceptInvite"));
 const DashboardPage = lazy(() => import("@/pages/Dashboard"));
@@ -26,6 +27,7 @@ const WorkspacePage = lazy(() => import("@/pages/Workspace"));
 const InsightsPage = lazy(() => import("@/pages/Insights"));
 const AuthCallbackPage = lazy(() => import("@/pages/AuthCallback"));
 const NotFoundPage = lazy(() => import("@/pages/NotFound"));
+const BrandPreviewPage = lazy(() => import("@/pages/BrandPreview"));
 
 // Docs — public, outside AppLayout
 const DocsLayout = lazy(() => import("@/components/docs/DocsLayout"));
@@ -58,6 +60,7 @@ export function AppRoutes() {
         <Route element={<AuthLayout />}>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
         </Route>
 
         {/* OAuth callback — must be public (user is not yet in the store) */}
@@ -97,6 +100,9 @@ export function AppRoutes() {
           <Route path="security"      element={<Security />} />
           <Route path="changelog"     element={<Changelog />} />
         </Route>
+
+        {/* Internal — brand mark preview, not linked anywhere */}
+        <Route path="/_brand" element={<BrandPreviewPage />} />
 
         <Route path="*" element={<NotFoundPage />} />
       </Routes>

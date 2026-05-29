@@ -287,6 +287,29 @@ export async function listPendingInvitations(env: Env, orgId: string): Promise<I
   return rows as unknown as InvitationRow[];
 }
 
+/**
+ * List all non-expired, non-consumed invitations addressed to a given email.
+ * Used by GET /invitations/pending (caller-scoped) so the invitee can discover
+ * pending invites after login without needing the token URL.
+ */
+export async function listPendingInvitationsForEmail(env: Env, email: string): Promise<(InvitationRow & { org_name: string })[]> {
+  const rows = await queryRows(
+    env,
+    `SELECT i.id, i.organization_id, i.email, i.role, i.invited_by, i.expires_at,
+            i.accepted_at, i.accepted_by, i.revoked_at, i.created_at,
+            o.name AS org_name
+     FROM invitations i
+     JOIN organizations o ON o.id = i.organization_id
+     WHERE LOWER(i.email) = LOWER($1)
+       AND i.accepted_at IS NULL
+       AND i.revoked_at IS NULL
+       AND i.expires_at > NOW()
+     ORDER BY i.created_at DESC`,
+    [email],
+  );
+  return rows as unknown as (InvitationRow & { org_name: string })[];
+}
+
 /** Port of Go invite.Store.Revoke — returns false when not found/already consumed. */
 export async function revokeInvitation(env: Env, orgId: string, inviteId: string): Promise<boolean> {
   const rows = await queryRows(
@@ -394,4 +417,67 @@ export async function acceptInvitationByTokenHash(
 export async function getUserEmail(env: Env, userId: string): Promise<string | null> {
   const row = await queryOne(env, "SELECT email FROM users WHERE id = $1", [userId]);
   return row ? (row.email as string) : null;
+}
+
+/**
+ * Accept an invitation by its UUID (not token).  Used by the auto-detect
+ * InvitationPrompt path where the frontend has the invite id from
+ * GET /invitations/pending but not the plain token.
+ *
+ * Same email-match and expiry validation as acceptInvitationByTokenHash.
+ */
+export async function acceptInvitationById(
+  env: Env,
+  inviteId: string,
+  userId: string,
+  callerEmail: string,
+): Promise<InvitationRow> {
+  return withOrg(env, userId, userId, async (q) => {
+    const rows = await q(
+      `SELECT id, organization_id, email, role, invited_by, expires_at,
+              accepted_at, accepted_by, revoked_at, created_at
+       FROM invitations
+       WHERE id = $1
+       FOR UPDATE`,
+      [inviteId],
+    );
+
+    if (!rows.length) {
+      const e = new Error("invitation not found");
+      (e as unknown as { code: string }).code = "not_found";
+      throw e;
+    }
+
+    const inv = rows[0] as unknown as InvitationRow;
+
+    if (inv.accepted_at !== null || inv.revoked_at !== null) {
+      const e = new Error("invitation already accepted or revoked");
+      (e as unknown as { code: string }).code = "consumed";
+      throw e;
+    }
+    if (new Date() > new Date(inv.expires_at)) {
+      const e = new Error("invitation has expired");
+      (e as unknown as { code: string }).code = "expired";
+      throw e;
+    }
+    if (callerEmail.trim().toLowerCase() !== inv.email.toLowerCase()) {
+      const e = new Error("this invitation was sent to a different email address");
+      (e as unknown as { code: string }).code = "email_mismatch";
+      throw e;
+    }
+
+    await q(
+      `INSERT INTO memberships (organization_id, user_id, role)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (organization_id, user_id) DO NOTHING`,
+      [inv.organization_id, userId, inv.role],
+    );
+
+    await q(
+      `UPDATE invitations SET accepted_at = NOW(), accepted_by = $2 WHERE id = $1`,
+      [inv.id, userId],
+    );
+
+    return { ...inv, accepted_at: new Date().toISOString(), accepted_by: userId };
+  });
 }

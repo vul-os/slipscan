@@ -61,7 +61,19 @@ export default function LoginPage() {
           )}
         </FormField>
 
-        <FormField label="Password" error={errors.password?.message} required>
+        <FormField
+          label="Password"
+          hint={
+            <Link
+              to="/forgot-password"
+              className="text-[12px] text-ink-500 hover:text-ink-900 underline underline-offset-2 decoration-ink-300"
+            >
+              Forgot password?
+            </Link>
+          }
+          error={errors.password?.message}
+          required
+        >
           {(id) => (
             <Input
               id={id}

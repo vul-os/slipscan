@@ -25,8 +25,8 @@ export default function Quickstart() {
       <p>Three ways to get a document into slip/scan:</p>
       <ol>
         <li>
-          <strong>Mobile:</strong> Open <Link to="/receipts">/receipts</Link> on your phone, tap
-          the upload button, and take a photo. Processing starts immediately.
+          <strong>Mobile:</strong> Open the Receipts page on your phone, tap the upload button,
+          and take a photo. Processing starts immediately.
         </li>
         <li>
           <strong>Email:</strong> Forward any receipt to your inbox alias. We&apos;ll process it
@@ -34,7 +34,7 @@ export default function Quickstart() {
         </li>
         <li>
           <strong>Drag-and-drop:</strong> From your desktop, drop a PDF or photo directly onto
-          the <Link to="/receipts">/receipts</Link> page.
+          the Receipts page.
         </li>
       </ol>
 
@@ -58,8 +58,8 @@ export default function Quickstart() {
       <h2 id="step-5-add-a-bank-feed">Step 5 — Add a bank feed (optional)</h2>
       <p>
         Go to <strong>Settings → Integrations → Stitch</strong>. Authorise read-only access to
-        your bank account. Within 24 hours we&apos;ll start matching feed transactions to your
-        scanned documents. See the <Link to="/reconcile">Reconcile</Link> page for the match
+        your bank account. Initial sync can take up to 24 hours. After that, feeds refresh four
+        times daily and matching runs on each refresh. See the Reconcile page for the match
         queue — a single keystroke accepts a match.
       </p>
 

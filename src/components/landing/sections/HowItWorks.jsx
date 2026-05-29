@@ -9,7 +9,7 @@ const STEPS = [
     body: (
       <>
         Photo from your phone, a PDF from your inbox, a forwarded email to{" "}
-        <span className="font-mono text-[13px] text-ink-700 break-all">you@mail.slipscan.app</span>
+        <span className="font-mono text-[13px] text-ink-700 break-all">&lt;your-slug&gt;@mail.slipscan.app</span>
         , or a folder of statements. We take it any way you have it.
       </>
     ),

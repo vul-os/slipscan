@@ -71,6 +71,15 @@ export interface AcceptResponse {
   organization: AcceptOrgShape;
 }
 
+export interface PendingInviteForUserResponse {
+  id: string;
+  organization_id: string;
+  org_name: string;
+  role: Role;
+  expires_at: string;
+  created_at: string;
+}
+
 // ---- Internal DB row shapes ----
 
 export interface OrgRow {

@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   LayoutDashboard, Receipt, Users, Settings, Plus, ChevronsUpDown,
-  LogOut, Check, Search, Sparkles, Target, TrendingUp, BookOpen, BarChart3, ShieldCheck,
+  Check, Search, Target, TrendingUp, BookOpen, BarChart3, ShieldCheck,
   Landmark, GitCompareArrows, Briefcase, Brain,
 } from "lucide-react";
 import { Wordmark } from "@/components/Wordmark";
@@ -12,11 +12,15 @@ import {
 } from "@/components/ui/DropdownMenu";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
-import { useAuthStore } from "@/stores/auth";
 import { useOrgStore } from "@/stores/org";
 import { useUIStore } from "@/stores/ui";
 import { useOrgs } from "@/lib/queries";
 import { cn } from "@/lib/cn";
+
+// Items shown only for team/business orgs (hidden for personal kind)
+const TEAM_ONLY_ROUTES = new Set([
+  "/ledger", "/reports", "/bank-feeds", "/reconcile", "/audit", "/members",
+]);
 
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, shortcut: "g d" },
@@ -29,15 +33,12 @@ const nav = [
   { to: "/reconcile", label: "Reconcile", icon: GitCompareArrows,shortcut: "g c" },
   { to: "/insights",  label: "Insights",  icon: Brain,           shortcut: "g i" },
   { to: "/workspace", label: "Workspace", icon: Briefcase,       shortcut: "g w" },
-  { to: "/ask",       label: "Ask",       icon: Sparkles,        shortcut: "g a" },
   { to: "/audit",     label: "Audit",     icon: ShieldCheck,     shortcut: "g u" },
   { to: "/members",   label: "Members",   icon: Users,           shortcut: "g m" },
   { to: "/settings",  label: "Settings",  icon: Settings,        shortcut: "g s" },
 ];
 
 export function Sidebar({ onNavigate } = {}) {
-  const user = useAuthStore((s) => s.user);
-  const logout = useAuthStore((s) => s.logout);
   const navigate = useNavigate();
   const { activeOrgId, setActiveOrg } = useOrgStore();
   const setPaletteOpen = useUIStore((s) => s.setPaletteOpen);
@@ -47,13 +48,12 @@ export function Sidebar({ onNavigate } = {}) {
   const active = orgs?.organizations.find((o) => o.id === activeOrgId) ?? orgs?.organizations[0];
   const isMac = typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
 
-  const onLogout = () => {
-    logout();
-    navigate("/login");
-  };
+  // Hide team-only items when the active org is personal
+  const isPersonal = active?.kind !== "business";
+  const visibleNav = nav.filter((item) => !isPersonal || !TEAM_ONLY_ROUTES.has(item.to));
 
   return (
-    <aside className="flex flex-col w-[252px] shrink-0 border-r border-ink-100 bg-ink-50/40 h-full">
+    <aside className="flex flex-col w-[252px] shrink-0 border-r border-ink-100 bg-ink-50/40 sticky top-[52px] h-[calc(100vh-52px)] overflow-y-auto">
       <div className="px-4 py-4">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -119,7 +119,7 @@ export function Sidebar({ onNavigate } = {}) {
       </div>
 
       <nav className="px-3 flex-1 space-y-0.5">
-        {nav.map((item) => (
+        {visibleNav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -157,32 +157,6 @@ export function Sidebar({ onNavigate } = {}) {
         </button>
       </div>
 
-      <div className="px-3 py-3 border-t border-ink-100">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-ink-100 transition-colors">
-              <Avatar name={user?.full_name || user?.email} size="sm" />
-              <span className="flex-1 min-w-0 text-left">
-                <span className="block text-sm font-medium text-ink-900 truncate tracking-tight">
-                  {user?.full_name || user?.email?.split("@")[0]}
-                </span>
-                <span className="block text-[11px] text-ink-500 truncate">{user?.email}</span>
-              </span>
-              <ChevronsUpDown size={14} className="text-ink-400" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" side="top" className="min-w-[200px]">
-            <DropdownMenuLabel>Account</DropdownMenuLabel>
-            <DropdownMenuItem onClick={() => { navigate("/settings"); onNavigate?.(); }}>
-              <Settings size={14} /> Settings
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem destructive onClick={onLogout}>
-              <LogOut size={14} /> Log out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
     </aside>
   );
 }

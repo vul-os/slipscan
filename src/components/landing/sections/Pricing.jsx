@@ -16,7 +16,7 @@ const TIERS = [
       "Email-in (1 inbox alias)",
       "Xero export",
     ],
-    ctaLabel: "Start free →",
+    ctaLabel: "Get started — free →",
     ctaVariant: "secondary",
     ctaHref: "/register",
     highlighted: false,
@@ -29,7 +29,7 @@ const TIERS = [
       "Up to 500 documents / mo",
       "5 users, 3 orgs",
       "Auto-reconcile with Stitch feeds",
-      "Slack approvals",
+      "Email-in approvals & alerts",
       "Classification learning loop",
       "Priority email support",
     ],
@@ -65,7 +65,7 @@ export default function Pricing() {
         <div className="max-w-3xl mx-auto text-center mb-12 lg:mb-16">
           <p className="label-eyebrow !text-accent-ring">Pricing</p>
           <h2 className="mt-3 text-[2rem] sm:text-[2.5rem] lg:text-[3rem] font-medium leading-[1.1] tracking-tightest text-ink-900">
-            One price. Every kind of money.
+            Clear pricing. ZAR-first.
           </h2>
           <p className="mt-4 text-[16px] sm:text-[17px] leading-relaxed text-ink-500">
             Free during early access. When we charge, it&apos;ll be one transparent monthly price, ZAR-first, with predictable per-document overages.

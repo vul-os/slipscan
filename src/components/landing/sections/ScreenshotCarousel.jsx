@@ -72,7 +72,7 @@ export default function ScreenshotCarousel() {
         />
 
         {/* Screenshot stack — raw image, no chrome */}
-        <div className="relative w-full aspect-[1440/776] rounded-lg overflow-hidden shadow-[0_30px_80px_-20px_rgb(0_0_0/0.6)] ring-1 ring-ink-0/10">
+        <div className="relative w-full aspect-[1440/761] rounded-lg overflow-hidden shadow-[0_30px_80px_-20px_rgb(0_0_0/0.6)] ring-1 ring-ink-0/10">
           {SLIDES.map((slide, i) => (
             <img
               key={slide.id}

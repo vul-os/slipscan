@@ -15,8 +15,14 @@ export default function NotFoundPage() {
           <p className="mt-3 text-ink-500 max-w-md mx-auto">
             The page you're looking for doesn't exist, or it's been moved.
           </p>
-          <div className="mt-8">
-            <Button asChild><Link to="/dashboard">Back to dashboard</Link></Button>
+          <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-3">
+            <Button asChild><Link to="/">Back to home</Link></Button>
+            <Link
+              to="/docs"
+              className="text-sm text-ink-500 hover:text-ink-900 underline underline-offset-4 decoration-ink-300 hover:decoration-ink-700 transition-colors"
+            >
+              Or read the docs →
+            </Link>
           </div>
         </div>
       </main>

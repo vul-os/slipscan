@@ -54,7 +54,7 @@ export default function WorkspacePage() {
   }
 
   return (
-    <div className="p-6 md:p-10 max-w-[1280px] mx-auto">
+    <div className="page-shell max-w-[1280px]">
       <PageHeader
         eyebrow="Practice"
         title="Workspace"

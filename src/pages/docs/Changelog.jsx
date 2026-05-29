@@ -8,7 +8,7 @@ export default function Changelog() {
 
       <p className="lead">
         Notable changes to slip/scan, most recent first. For patch-level fixes see the{" "}
-        <a href="https://github.com/anthropics/slipscan/releases" target="_blank" rel="noopener noreferrer">
+        <a href="https://github.com/slipscan/slipscan/releases" target="_blank" rel="noopener noreferrer">
           GitHub releases page
         </a>.
       </p>

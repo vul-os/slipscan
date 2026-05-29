@@ -27,6 +27,7 @@ import {
   listOrgMembers,
   createInvitation,
   listPendingInvitations,
+  listPendingInvitationsForEmail,
   revokeInvitation,
   resendInvitation,
   acceptInvitationByTokenHash,
@@ -40,6 +41,7 @@ import type {
   CreateInviteRequest,
   InviteResponse,
   AcceptInviteRequest,
+  PendingInviteForUserResponse,
   OrgRow,
   OrgWithRoleRow,
   MemberRow,
@@ -294,10 +296,32 @@ router.delete("/:orgID/invitations/:inviteID", requireAuth, requireAdmin, async 
 
 // ---------------------------------------------------------------------------
 // POST /invitations/accept — consume token (requireAuth)
-// NOTE: mounted at /invitations/accept from the parent app, but we register
-//       it here as /accept for the sub-router that is mounted at /invitations.
+// GET  /invitations/pending — list pending invites for the current user (requireAuth)
+// NOTE: mounted at /invitations from the parent app.
 // ---------------------------------------------------------------------------
 export const inviteAcceptRouter = new Hono<AppEnv>();
+
+// GET /invitations/pending — return all non-expired pending invites for the
+// authenticated user's email address.  No token required; the frontend calls
+// this after every login to auto-detect invites.
+inviteAcceptRouter.get("/pending", requireAuth, async (c) => {
+  const userId = c.get("userId");
+  const callerEmail = await getUserEmail(c.env, userId);
+  if (!callerEmail) {
+    return writeError(c, 500, "user_lookup_failed", "could not load caller");
+  }
+  const rows = await listPendingInvitationsForEmail(c.env, callerEmail);
+  const invitations: PendingInviteForUserResponse[] = rows.map((r) => ({
+    id: r.id,
+    organization_id: r.organization_id,
+    org_name: r.org_name,
+    role: r.role,
+    expires_at: r.expires_at,
+    created_at: r.created_at,
+  }));
+  return c.json({ invitations });
+});
+
 inviteAcceptRouter.post("/accept", requireAuth, async (c) => {
   const userId = c.get("userId");
 
@@ -339,6 +363,61 @@ inviteAcceptRouter.post("/accept", requireAuth, async (c) => {
   }
 
   // Fetch org for the response payload.
+  const { getOrgById } = await import("./queries");
+  const org = await getOrgById(c.env, inv.organization_id);
+  if (!org) {
+    return writeError(c, 500, "org_lookup_failed", "could not load organization");
+  }
+
+  return c.json({
+    organization: {
+      id: org.id,
+      name: org.name,
+      slug: org.slug,
+      role: inv.role,
+      created_at: org.created_at,
+    },
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /invitations/:id/accept — accept by invite ID (caller email matched
+// server-side). Used by the auto-detect InvitationPrompt UI which has the
+// invite id from GET /invitations/pending but not the plain token.
+// ---------------------------------------------------------------------------
+inviteAcceptRouter.post("/:id/accept", requireAuth, async (c) => {
+  const userId = c.get("userId");
+  const inviteId = c.req.param("id");
+
+  if (!UUID_RE.test(inviteId)) {
+    return writeError(c, 400, "invalid_invite_id", "invalid invitation id");
+  }
+
+  const callerEmail = await getUserEmail(c.env, userId);
+  if (!callerEmail) {
+    return writeError(c, 500, "user_lookup_failed", "could not load caller");
+  }
+
+  const { acceptInvitationById } = await import("./queries");
+  let inv;
+  try {
+    inv = await acceptInvitationById(c.env, inviteId, userId, callerEmail);
+  } catch (err) {
+    const e = err as { code?: string };
+    switch (e.code) {
+      case "not_found":
+        return writeError(c, 404, "not_found", "invitation not found");
+      case "expired":
+        return writeError(c, 410, "expired", "invitation has expired");
+      case "consumed":
+        return writeError(c, 409, "consumed", "invitation already accepted or revoked");
+      case "email_mismatch":
+        return writeError(c, 403, "email_mismatch", "this invitation was sent to a different email address");
+      default:
+        return writeError(c, 500, "accept_failed", "could not accept invitation");
+    }
+  }
+
   const { getOrgById } = await import("./queries");
   const org = await getOrgById(c.env, inv.organization_id);
   if (!org) {

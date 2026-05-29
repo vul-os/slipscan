@@ -47,7 +47,7 @@ export default function DocsLayout() {
       <footer className="border-t border-ink-200 mt-auto">
         <div className="mx-auto max-w-screen-2xl px-6 lg:px-10 py-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-[13px] text-ink-500">
           <a
-            href="https://github.com/anthropics/slipscan"
+            href="https://github.com/slipscan"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center py-2 hover:text-ink-900 transition-colors underline underline-offset-2 decoration-ink-300 hover:decoration-ink-700"

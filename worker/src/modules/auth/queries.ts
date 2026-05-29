@@ -124,6 +124,36 @@ export async function updatePasswordHash(env: Env, id: string, hash: string): Pr
   await queryRows(env, `UPDATE users SET password_hash = $1 WHERE id = $2`, [hash, id]);
 }
 
+export async function updateUser(
+  env: Env,
+  id: string,
+  fields: { full_name?: string; avatar_url?: string | null },
+): Promise<UserRow | null> {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  let idx = 1;
+  if ("full_name" in fields) {
+    sets.push(`full_name = NULLIF($${idx++}, '')`);
+    params.push(fields.full_name ?? "");
+  }
+  if ("avatar_url" in fields) {
+    sets.push(`avatar_url = NULLIF($${idx++}, '')`);
+    params.push(fields.avatar_url ?? "");
+  }
+  if (!sets.length) return null;
+  sets.push(`updated_at = NOW()`);
+  params.push(id);
+  const rows = await queryRows(
+    env,
+    `UPDATE users SET ${sets.join(", ")}
+     WHERE id = $${idx}
+     RETURNING id, email, password_hash, full_name, avatar_url,
+               email_verified_at, last_login_at, created_at, updated_at`,
+    params,
+  );
+  return rows.length ? (rows[0] as unknown as UserRow) : null;
+}
+
 // ---- Token store (mirrors Go internal/auth/tokens.go) ----
 
 type TokenKind = "email_verify" | "password_reset";

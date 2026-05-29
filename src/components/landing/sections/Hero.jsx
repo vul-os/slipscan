@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowRight, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 import { AuroraBg } from "@/components/landing/motion";
+import HeroIllustration from "@/components/landing/illustrations/HeroIllustration.jsx";
 import { useAuthStore } from "@/stores/auth";
 import { cn } from "@/lib/cn";
 
@@ -40,18 +41,13 @@ export default function Hero() {
       {/* Ambient aurora + grain (sits behind photo + lime radial) */}
       <AuroraBg variant="hero" />
 
-      <img
-        src="/images/hero-image.jpeg"
-        alt=""
-        aria-hidden
-        draggable={false}
-        loading="eager"
-        decoding="async"
+      <HeroIllustration
         className={cn(
           "hidden lg:block",
           "absolute right-0 top-1/2 -translate-y-1/2",
           "w-[58%] xl:w-[55%] max-w-none",
           "select-none pointer-events-none",
+          "text-ink-0",
         )}
       />
 
@@ -68,7 +64,7 @@ export default function Hero() {
         className="absolute inset-0 pointer-events-none opacity-40"
         style={{
           backgroundImage:
-            "radial-gradient(ellipse 38% 30% at 78% 22%, rgb(200 255 0 / 0.55) 0%, transparent 65%)",
+            "radial-gradient(ellipse 32% 28% at 84% 54%, rgb(200 255 0 / 0.55) 0%, transparent 65%)",
         }}
         aria-hidden
       />
@@ -144,15 +140,7 @@ export default function Hero() {
           }}
           aria-hidden
         />
-        <img
-          src="/images/hero-image.jpeg"
-          alt=""
-          aria-hidden
-          draggable={false}
-          loading="eager"
-          decoding="async"
-          className="block w-full h-auto select-none pointer-events-none"
-        />
+        <HeroIllustration className="block w-full h-auto text-ink-0 select-none pointer-events-none" />
       </div>
 
       {/* Scroll hint — visible on lg+, hidden once user scrolls past 80px */}

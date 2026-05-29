@@ -7,6 +7,8 @@ import { create } from "zustand";
 export const useUIStore = create((set) => ({
   uploadOpen: false,
   paletteOpen: false,
+  chatOpen: false,
   setUploadOpen: (open) => set({ uploadOpen: open }),
   setPaletteOpen: (open) => set({ paletteOpen: open }),
+  setChatOpen: (open) => set({ chatOpen: open }),
 }));

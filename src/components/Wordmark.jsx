@@ -16,9 +16,12 @@ const MARK_SIZE = {
 
 // Brand lockup. The slash is the mark — paired with a small SVG square so
 // the wordmark reads even at small sizes (sidebar, favicon adjacency).
+// The mark is always the black-tile version; only the wordmark text flips
+// for dark backgrounds (the white-tile variant felt washed out against
+// the dark hero).
 export function Wordmark({ className, size = "md", variant = "full", tone = "auto" }) {
   const px = MARK_SIZE[size];
-  const markSrc = tone === "dark" ? "/images/logo-mark-light.svg" : "/images/logo-mark.svg";
+  const markSrc = "/images/logo-mark.svg";
 
   if (variant === "mark") {
     return (

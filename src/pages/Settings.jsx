@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useAuthStore } from "@/stores/auth";
 import { useOrgStore } from "@/stores/org";
-import { useOrgs, useXeroStatus } from "@/lib/queries";
+import { useOrgs, useXeroStatus, useUpdateProfile } from "@/lib/queries";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -211,16 +211,36 @@ function XeroCard({ org }) {
   );
 }
 
-// ── User account card ─────────────────────────────────────────────────────────
+// ── User account card (with avatar URL editing) ───────────────────────────────
 
 function UserCard({ user }) {
+  const setUser = useAuthStore((s) => s.setUser);
+  const { mutate: updateProfile, isPending } = useUpdateProfile();
+  const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url ?? "");
+  const [fullName, setFullName] = useState(user?.full_name ?? "");
+  const [dirty, setDirty] = useState(false);
+
+  const onSave = () => {
+    updateProfile(
+      { avatar_url: avatarUrl || null, full_name: fullName },
+      {
+        onSuccess: (data) => {
+          if (data) setUser(data);
+          setDirty(false);
+          toast.success("Profile saved");
+        },
+        onError: (e) => toast.error(e?.message || "Could not save profile"),
+      },
+    );
+  };
+
   return (
     <Card>
-      <div className="flex items-center gap-4 px-5 py-4">
-        <Avatar name={user?.full_name || user?.email} size="lg" />
+      <div className="flex items-center gap-4 px-5 py-4 border-b border-ink-100">
+        <Avatar name={fullName || user?.email} src={avatarUrl || user?.avatar_url} size="lg" />
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium tracking-tight text-ink-900">
-            {user?.full_name || "Unnamed user"}
+            {fullName || user?.full_name || "Unnamed user"}
           </div>
           <div className="text-[13px] text-ink-500 truncate">{user?.email}</div>
           {user?.created_at && (
@@ -234,6 +254,49 @@ function UserCard({ user }) {
             <User size={11} /> Account
           </Badge>
         </div>
+      </div>
+
+      <div className="px-5 py-4 space-y-4">
+        <div>
+          <label className="block text-[11px] uppercase tracking-[0.07em] text-ink-400 mb-1" htmlFor="profile-name">
+            Display name
+          </label>
+          <input
+            id="profile-name"
+            type="text"
+            value={fullName}
+            placeholder="Your name"
+            onChange={(e) => { setFullName(e.target.value); setDirty(true); }}
+            className="w-full rounded-md border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 placeholder:text-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-900/20"
+          />
+        </div>
+
+        <div>
+          <label className="block text-[11px] uppercase tracking-[0.07em] text-ink-400 mb-1" htmlFor="profile-avatar">
+            Avatar URL
+          </label>
+          <input
+            id="profile-avatar"
+            type="url"
+            value={avatarUrl}
+            placeholder="https://… (leave blank to use initials)"
+            onChange={(e) => { setAvatarUrl(e.target.value); setDirty(true); }}
+            className="w-full rounded-md border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 placeholder:text-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-900/20"
+          />
+          <p className="mt-1 text-[11px] text-ink-400">
+            {user?.avatar_url && !avatarUrl
+              ? "Clearing will remove your current avatar."
+              : "Google profile photo is used automatically when you sign in with Google."}
+          </p>
+        </div>
+
+        {dirty && (
+          <div className="flex justify-end">
+            <Button size="sm" loading={isPending} onClick={onSave}>
+              Save profile
+            </Button>
+          </div>
+        )}
       </div>
     </Card>
   );

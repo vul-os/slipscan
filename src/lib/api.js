@@ -101,6 +101,7 @@ export const api = {
     request("/auth/login", { method: "POST", body: input, noAuth: true }),
 
   me: () => request("/auth/me"),
+  updateProfile: (body) => request("/auth/me", { method: "PATCH", body }),
 
   listOrgs: () => request("/orgs"),
   createOrg: (input) =>
@@ -116,6 +117,10 @@ export const api = {
     request(`/orgs/${orgId}/invitations/${inviteId}`, { method: "DELETE" }),
   resendInvitation: (orgId, inviteId) =>
     request(`/orgs/${orgId}/invitations/${inviteId}/resend`, { method: "POST" }),
+  listPendingInvitations: () =>
+    request("/invitations/pending"),
+  acceptInvitationById: (inviteId) =>
+    request(`/invitations/${inviteId}/accept`, { method: "POST" }),
   acceptInvitation: (token) =>
     request("/invitations/accept", {
       method: "POST",

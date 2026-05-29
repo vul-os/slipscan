@@ -1,69 +1,35 @@
 import { Link } from "react-router-dom";
-import {
-  FileText,
-  BookOpen,
-  Banknote,
-  Mail,
-  MessageSquare,
-  Folder,
-  Zap,
-  Terminal,
-} from "lucide-react";
+import XeroIcon from "@/components/brand/integrations/XeroIcon";
+import StitchIcon from "@/components/brand/integrations/StitchIcon";
+import GmailIcon from "@/components/brand/integrations/GmailIcon";
+import ApiIcon from "@/components/brand/integrations/ApiIcon";
 import { RevealGroup } from "@/components/landing/motion";
 import { cn } from "@/lib/cn";
 
 const TILES = [
   {
-    Icon: FileText,
+    Icon: XeroIcon,
     name: "Xero",
     description: "Push journals & bills",
     status: "Live",
     href: null,
   },
   {
-    Icon: BookOpen,
-    name: "QuickBooks",
-    description: "Coming soon",
-    status: "Beta",
-    href: null,
-  },
-  {
-    Icon: Banknote,
+    Icon: StitchIcon,
     name: "Stitch",
     description: "SA bank feeds",
     status: "Live",
     href: null,
   },
   {
-    Icon: Mail,
+    Icon: GmailIcon,
     name: "Gmail",
     description: "Forward slips by email",
     status: "Live",
     href: null,
   },
   {
-    Icon: MessageSquare,
-    name: "Slack",
-    description: "Approvals & alerts",
-    status: "Beta",
-    href: null,
-  },
-  {
-    Icon: Folder,
-    name: "Google Drive",
-    description: "Watch a folder",
-    status: "Beta",
-    href: null,
-  },
-  {
-    Icon: Zap,
-    name: "Zapier",
-    description: "Webhooks & automations",
-    status: "Beta",
-    href: null,
-  },
-  {
-    Icon: Terminal,
+    Icon: ApiIcon,
     name: "API",
     description: "REST + tokens",
     status: "Live",
@@ -87,7 +53,7 @@ export default function Integrations() {
             Connects to where your money already lives.
           </h2>
           <p className="mt-4 text-[16px] sm:text-[17px] leading-relaxed text-ink-500">
-            We&apos;re a capture-and-reconcile layer, not a walled garden. Push to your existing ledger; pull in your bank feeds; loop us into Slack when something needs your eye.
+            We&apos;re a capture-and-reconcile layer, not a walled garden. Push to your existing ledger, pull in your bank feeds, and forward slips by email.
           </p>
         </div>
 
@@ -101,10 +67,13 @@ export default function Integrations() {
               <div
                 className={cn(
                   "group aspect-[5/3] flex flex-col items-start justify-between p-5 rounded-lg border border-ink-200 bg-ink-0",
-                  "hover:border-ink-300 hover:shadow-card hover:-translate-y-0.5 transition-all duration-200",
+                  "transition-all duration-200",
+                  tile.href && "hover:border-ink-300 hover:shadow-card hover:-translate-y-0.5",
                 )}
               >
-                <tile.Icon size={20} className="text-ink-400 group-hover:text-ink-600 transition-colors" />
+                <div className="mb-4">
+                  <tile.Icon className="w-6 h-6" />
+                </div>
                 <div className="flex-1 mt-3">
                   <p className="text-[15px] font-medium text-ink-900">{tile.name}</p>
                   <p className="text-[13px] text-ink-500 mt-0.5">{tile.description}</p>

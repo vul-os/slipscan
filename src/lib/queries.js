@@ -7,6 +7,7 @@ import { api } from "./api";
 export const qk = {
   me:                            ["me"],
   orgs:                          ["orgs"],
+  pendingInvitations:            ["pending-invitations"],
   members:    (orgId)         => ["members", orgId],
   invitations:(orgId)         => ["invitations", orgId],
   documents:  (orgId)         => ["documents", orgId],
@@ -39,8 +40,28 @@ const arr = (res, key) => (Array.isArray(res) ? res : res?.[key] ?? []);
 export const useMe = () =>
   useQuery({ queryKey: qk.me, queryFn: api.me });
 
+export const useUpdateProfile = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body) => api.updateProfile(body),
+    onSuccess: (data) => {
+      if (data) qc.setQueryData(qk.me, data);
+    },
+  });
+};
+
 export const useOrgs = () =>
   useQuery({ queryKey: qk.orgs, queryFn: api.listOrgs });
+
+// Fetch pending invitations addressed to the authenticated user's email.
+// Enabled only when the user is logged in (accessToken present).
+export const usePendingInvitations = (accessToken) =>
+  useQuery({
+    queryKey: qk.pendingInvitations,
+    queryFn: () => api.listPendingInvitations().then((r) => r?.invitations ?? []),
+    enabled: !!accessToken,
+    staleTime: 30 * 1000, // re-check every 30 s max
+  });
 
 export const useMembers = (orgId) =>
   useQuery({

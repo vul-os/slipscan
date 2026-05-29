@@ -2,34 +2,23 @@ import { Link } from "react-router-dom";
 import { Github, Twitter, Linkedin } from "lucide-react";
 import { Wordmark } from "@/components/Wordmark";
 
+// Only links that resolve. Legal (1 item — Security) is merged under Resources.
 const LINKS = {
   Product: [
     { label: "Features", href: "/#features", internal: true },
     { label: "How it works", href: "/#how-it-works", internal: true },
     { label: "Pricing", href: "/#pricing", internal: true },
     { label: "Integrations", href: "/#integrations", internal: true },
-    { label: "Live demo", href: "/#live-demo", internal: true },
-    { label: "Changelog", href: "/changelog", internal: true },
+    { label: "Screenshots", href: "/#screenshots", internal: true },
   ],
   Company: [
-    { label: "About", href: "/about", internal: true },
-    { label: "Roadmap", href: "/roadmap", internal: true },
-    { label: "Careers", href: "/careers", internal: true },
     { label: "Contact", href: "mailto:hello@slipscan.app", internal: false },
-    { label: "Brand assets", href: "/brand", internal: true },
   ],
   Resources: [
     { label: "Docs", href: "/docs", internal: true },
     { label: "Quickstart", href: "/docs/quickstart", internal: true },
-    { label: "API reference", href: "/docs/api", internal: true },
-    { label: "Status", href: "https://status.slipscan.app", internal: false },
-  ],
-  Legal: [
-    { label: "Terms", href: "/legal/terms", internal: true },
-    { label: "Privacy", href: "/legal/privacy", internal: true },
-    { label: "DPA", href: "/legal/dpa", internal: true },
+    { label: "Changelog", href: "/docs/changelog", internal: true },
     { label: "Security", href: "/docs/security", internal: true },
-    { label: "POPIA compliance", href: "/legal/popia", internal: true },
   ],
 };
 
@@ -84,8 +73,8 @@ export default function Footer() {
             </div>
           </div>
 
-          {/* Link columns */}
-          <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-4 gap-8">
+          {/* Link columns — 3 cols (Product, Company, Resources) */}
+          <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-8">
             {Object.entries(LINKS).map(([group, links]) => (
               <div key={group}>
                 <p className="label-eyebrow !text-ink-500 mb-3">{group}</p>

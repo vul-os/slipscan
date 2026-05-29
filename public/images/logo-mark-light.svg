@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="slip/scan mark">
-  <rect width="32" height="32" rx="7" fill="#FAFAFA" stroke="#E4E4E7" stroke-width="1"/>
-  <path d="M19.6 6.5L12.4 25.5" stroke="#0A0A0A" stroke-width="3" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="slip/scan mark" fill="none">
+  <rect width="32" height="32" rx="7" fill="#FFFFFF"/>
+  <path d="M23 9 H13 L10.5 15.5" stroke="#0A0A0A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M10.5 15.5 H21.5" stroke="#C8FF00" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M21.5 15.5 L19 22 H9" stroke="#0A0A0A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

@@ -98,7 +98,7 @@ export default function Faq() {
       <ul>
         <li>
           <strong>What&apos;s the early-access pricing?</strong> During early access, slip/scan is
-          free for up to 100 documents per month. Paid tiers with higher limits and team features
+          free for up to 50 documents per month. Paid tiers with higher limits and team features
           are coming soon.
         </li>
         <li>

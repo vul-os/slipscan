@@ -6,7 +6,7 @@ import ScreenshotCarousel from "./ScreenshotCarousel";
 
 export default function LiveDemo() {
   return (
-    <section id="live-demo" className="relative bg-ink-950 py-28 lg:py-40 overflow-hidden">
+    <section id="screenshots" className="relative bg-ink-950 py-28 lg:py-40 overflow-hidden">
       {/* Ambient aurora + grain */}
       <AuroraBg variant="demo" />
 
@@ -37,7 +37,7 @@ export default function LiveDemo() {
               <div className="mt-8 flex flex-col sm:flex-row gap-3">
                 <Button variant="accent" size="lg" asChild>
                   <Link to="/register">
-                    Start free
+                    Get started — free
                     <ArrowRight size={16} />
                   </Link>
                 </Button>

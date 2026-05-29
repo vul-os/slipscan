@@ -17,7 +17,7 @@ import { writeError } from "../../lib/errors";
 import { issueTokens } from "../../lib/jwt";
 import { hashPassword } from "../../lib/password";
 import { newRandomToken } from "../../lib/crypto";
-import { getUserByEmail, createUser, markVerified } from "./queries";
+import { getUserByEmail, createUser, markVerified, updateUser } from "./queries";
 
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -96,9 +96,11 @@ r.get("/google/callback", async (c) => {
   // 2. Fetch the user's profile.
   const uiRes = await fetch(USERINFO_URL, { headers: { Authorization: `Bearer ${tokJson.access_token}` } });
   if (!uiRes.ok) return fail("userinfo_failed");
-  const profile = (await uiRes.json()) as { email?: string; email_verified?: boolean; name?: string };
+  const profile = (await uiRes.json()) as { email?: string; email_verified?: boolean; name?: string; picture?: string };
   const email = (profile.email ?? "").trim().toLowerCase();
   if (!email) return fail("no_email");
+
+  const googlePicture = typeof profile.picture === "string" && profile.picture ? profile.picture : undefined;
 
   // 3. Find-or-create the user. New OAuth users get a random, unusable password
   //    hash (they sign in via Google; can set a password later via reset).
@@ -112,6 +114,23 @@ r.get("/google/callback", async (c) => {
       } catch {
         /* non-fatal */
       }
+    }
+    // Persist the Google profile picture for new users.
+    if (googlePicture) {
+      try {
+        const updated = await updateUser(c.env, user.id, { avatar_url: googlePicture });
+        if (updated) user = updated;
+      } catch {
+        /* non-fatal */
+      }
+    }
+  } else if (googlePicture && !user.avatar_url) {
+    // Backfill avatar_url for existing Google users who signed in before this feature.
+    try {
+      const updated = await updateUser(c.env, user.id, { avatar_url: googlePicture });
+      if (updated) user = updated;
+    } catch {
+      /* non-fatal */
     }
   }
 

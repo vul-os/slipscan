@@ -52,8 +52,14 @@ export interface UserResponse {
   id: string;
   email: string;
   full_name?: string;
+  avatar_url?: string;
   email_verified_at?: string; // ISO-8601 or absent
   created_at: string; // ISO-8601
+}
+
+export interface UpdateProfileRequest {
+  full_name?: string;
+  avatar_url?: string | null;
 }
 
 export interface RegisterResponse {

@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { Reveal } from "@/components/landing/motion";
 import { ChevronDown } from "lucide-react";
 
@@ -8,7 +9,20 @@ const FAQS = [
   },
   {
     q: "What happens to my receipts and bank data?",
-    a: "Documents live in Cloudflare R2 in your region. Bank-feed credentials are held by Stitch, not us — we receive read-only transaction data. Neon Postgres is row-level-security tenanted, so your org is invisible to every other org on the platform. Full detail at /docs/security.",
+    a: (
+      <>
+        Documents live in Cloudflare R2 in your region. Bank-feed credentials are held by Stitch,
+        not us — we receive read-only transaction data. Neon Postgres is row-level-security tenanted,
+        so your org is invisible to every other org on the platform. Full detail in our{" "}
+        <Link
+          to="/docs/security"
+          className="underline decoration-ink-300 hover:decoration-ink-700"
+        >
+          security page
+        </Link>
+        .
+      </>
+    ),
   },
   {
     q: "Do I have to leave Xero?",
@@ -16,7 +30,7 @@ const FAQS = [
   },
   {
     q: "Does it work for personal finance?",
-    a: "Yes. Create a personal org during onboarding and you get a Vault22-style spending breakdown over your bank feeds and emailed slips. Same engine, different surface.",
+    a: "Yes. Create a personal org during onboarding and you get a household-style spending breakdown over your bank feeds and emailed slips. Same engine, different surface.",
   },
   {
     q: "Which banks do you support?",

@@ -9,32 +9,23 @@ import {
   Users,
 } from "lucide-react";
 import { RevealGroup } from "@/components/landing/motion";
-import {
-  I4_PaperToTable,
-  I7_ReconcileMatch,
-  I8_LearningLoop,
-} from "@/components/landing/illustrations";
 import { cn } from "@/lib/cn";
 
 const CATEGORY_LABELS = ["?", "Office Supplies", "?", "Travel", "?", "Meals"];
 
 function ClassifyPill() {
   const [idx, setIdx] = useState(0);
-
   useEffect(() => {
-    const id = setInterval(() => {
-      setIdx((i) => (i + 1) % CATEGORY_LABELS.length);
-    }, 2000);
+    const id = setInterval(() => setIdx((i) => (i + 1) % CATEGORY_LABELS.length), 2000);
     return () => clearInterval(id);
   }, []);
-
   const label = CATEGORY_LABELS[idx];
   const isQuestion = label === "?";
-
   return (
     <span
       className={cn(
-        "inline-flex items-center px-2.5 py-1 rounded-full text-[12px] font-medium transition-all duration-300",
+        "inline-flex items-center px-2.5 py-1 rounded-full text-[12px] font-medium",
+        "transition-all duration-300",
         isQuestion
           ? "bg-ink-100 text-ink-400 border border-ink-200"
           : "bg-accent/15 text-ink-900 border border-accent/30",
@@ -44,6 +35,87 @@ function ClassifyPill() {
     </span>
   );
 }
+
+function ReconcileLine() {
+  return (
+    <div className="flex items-center gap-2 text-[10px] font-mono text-ink-400">
+      <span className="px-2 py-0.5 rounded border border-ink-200 bg-ink-50 text-ink-600">slip</span>
+      <span className="flex-1 border-t border-dashed border-accent/60 relative">
+        <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-3 h-3 rounded-full bg-accent flex items-center justify-center text-[8px] text-accent-fg">✓</span>
+      </span>
+      <span className="px-2 py-0.5 rounded border border-ink-200 bg-ink-50 text-ink-600">feed</span>
+    </div>
+  );
+}
+
+const FEATURES = [
+  {
+    icon: FileText,
+    title: "Extraction that handles real receipts.",
+    body: "Vendor, line items, totals, VAT, FX rate, and payment method — pulled from photos, PDFs, and emailed scans. Confidence scores on every field.",
+    accent: (
+      <div className="flex flex-wrap gap-1.5">
+        {["Vendor", "Line items", "VAT", "FX", "Confidence"].map((c) => (
+          <span
+            key={c}
+            className="text-[10px] font-mono px-2 py-0.5 rounded border border-ink-200 text-ink-600"
+          >
+            {c}
+          </span>
+        ))}
+      </div>
+    ),
+  },
+  {
+    icon: Brain,
+    title: "Classification that learns.",
+    body: "Correct a category once and we remember — for your team and, with consent, across the platform. Cold-start merchants come in pre-classified.",
+    accent: (
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-mono text-ink-400">Coffee Shop →</span>
+        <ClassifyPill />
+      </div>
+    ),
+  },
+  {
+    icon: GitMerge,
+    title: "Auto-reconciliation against your bank feed.",
+    body: "Stitch-powered SA bank feeds match against extracted slips. We surface the matches; you accept with one keystroke.",
+    accent: <ReconcileLine />,
+  },
+  {
+    icon: Wallet,
+    title: "Personal vault. Business ledger. Same engine.",
+    body: "Personal-finance spending breakdown for personal; Xero-style ledger for business — pick one or run both side by side.",
+    accent: (
+      <div className="flex gap-1.5">
+        <span className="text-[10px] font-mono px-2 py-0.5 rounded border border-ink-200 text-ink-600">Personal</span>
+        <span className="text-[10px] font-mono px-2 py-0.5 rounded border border-accent/30 bg-accent/10 text-ink-800">Business</span>
+      </div>
+    ),
+  },
+  {
+    icon: MessageCircle,
+    title: "Ask anything.",
+    body: "Natural-language queries over your ledger, with sources cited back to the original receipts.",
+    accent: (
+      <p className="text-[12px] font-mono text-ink-500 italic">
+        &ldquo;How much on fuel last quarter?&rdquo;
+      </p>
+    ),
+  },
+  {
+    icon: Users,
+    title: "Multi-client, built for accountants.",
+    body: "One inbox across every client. Forecast, anomalies, and tax-readiness in one view.",
+    accent: (
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] font-mono px-2 py-0.5 rounded border border-ink-200 text-ink-600">Business tier</span>
+        <span className="text-[11px] text-ink-400 tabular-nums">12 orgs · 1 inbox</span>
+      </div>
+    ),
+  },
+];
 
 export default function Features() {
   return (
@@ -60,115 +132,42 @@ export default function Features() {
           </p>
         </div>
 
-        {/* Bento grid */}
+        {/* Uniform 3 × 2 grid */}
         <RevealGroup
           stagger={60}
-          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4"
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 auto-rows-fr"
         >
-          {/* Card 1 — Extraction — large, col-span-3 row-span-2 */}
-          <div className="lg:col-span-3 lg:row-span-2 bg-ink-0 rounded-xl border border-ink-200 hover:border-ink-300 transition-colors p-8 lg:p-10 flex flex-col">
-            <div className="flex items-center gap-2 mb-4">
-              <FileText size={16} className="text-accent-ring" />
-              <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-400">Extraction</span>
-            </div>
-            <h3 className="text-[20px] lg:text-[22px] font-medium tracking-tight text-ink-900 mb-3">
-              Extraction that handles real receipts.
-            </h3>
-            <p className="text-[14px] lg:text-[15px] leading-relaxed text-ink-500 mb-6">
-              Vendor, line items, totals, VAT, FX rate, payment method — pulled from photos, PDFs, and emailed PDFs. Confidence scores on every field, side-by-side with the original.
-            </p>
-            <div className="flex-1 flex items-end justify-center">
-              <I4_PaperToTable className="w-full max-w-sm text-ink-900" />
-            </div>
-          </div>
-
-          {/* Card 2 — Classification */}
-          <div className="lg:col-span-3 bg-ink-0 rounded-xl border border-ink-200 hover:border-ink-300 transition-colors p-6 lg:p-8 flex flex-col">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <Brain size={16} className="text-accent-ring" />
-                <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-400">Classification</span>
+          {FEATURES.map(({ icon: Icon, title, body, accent }) => (
+            <div
+              key={title}
+              className={cn(
+                "group relative bg-ink-0 rounded-xl border border-ink-200 p-6 lg:p-7",
+                "flex flex-col h-full",
+                "transition-all duration-200 ease-out-cubic",
+                "hover:border-ink-300 hover:shadow-card-hover hover:-translate-y-0.5",
+              )}
+            >
+              {/* Icon chip */}
+              <div className="w-10 h-10 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center mb-5 shrink-0">
+                <Icon size={18} className="text-accent-ring" strokeWidth={1.75} />
               </div>
-              <ClassifyPill />
-            </div>
-            <h3 className="text-[19px] font-medium tracking-tight text-ink-900 mb-3">
-              Classification that learns.
-            </h3>
-            <p className="text-[14px] leading-relaxed text-ink-500 mb-5">
-              Correct a category once and we remember — for your team and, with consent, across the platform. Cold-start merchants come in pre-classified after the first user teaches us.
-            </p>
-            <div className="flex items-end justify-end mt-auto">
-              <I8_LearningLoop className="w-24 h-16 text-ink-900" />
-            </div>
-          </div>
 
-          {/* Card 3 — Reconcile */}
-          <div className="lg:col-span-3 bg-ink-0 rounded-xl border border-ink-200 hover:border-ink-300 transition-colors p-6 lg:p-8 flex flex-col">
-            <div className="flex items-center gap-2 mb-4">
-              <GitMerge size={16} className="text-accent-ring" />
-              <span className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-400">Reconcile</span>
-            </div>
-            <h3 className="text-[19px] font-medium tracking-tight text-ink-900 mb-3">
-              Document ↔ bank-feed auto-reconciliation.
-            </h3>
-            <p className="text-[14px] leading-relaxed text-ink-500 mb-5">
-              Stitch-powered SA bank feeds match against extracted slips. We surface the matches; you accept with one keystroke.
-            </p>
-            <div className="flex items-end justify-end mt-auto">
-              <I7_ReconcileMatch className="w-24 h-16 text-ink-900" />
-            </div>
-          </div>
+              {/* Title */}
+              <h3 className="text-[17px] lg:text-[18px] font-medium tracking-tight text-ink-900 leading-snug mb-2">
+                {title}
+              </h3>
 
-          {/* Card 4 — Personal + Business vault */}
-          <div className="lg:col-span-2 bg-ink-0 rounded-xl border border-ink-200 hover:border-ink-300 transition-colors p-6 flex flex-col">
-            <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center mb-4">
-              <Wallet size={16} className="text-accent-ring" />
-            </div>
-            <h3 className="text-[17px] font-medium tracking-tight text-ink-900 mb-2">
-              Personal vault. Business ledger. Same engine.
-            </h3>
-            <p className="text-[13px] leading-relaxed text-ink-500">
-              Vault22-style spending breakdown for personal, Xero-style ledger for business — pick one or run both side by side.
-            </p>
-            <div className="mt-4 flex gap-1.5 flex-wrap">
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-ink-50 border border-ink-200 text-ink-600">Personal</span>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-accent/10 border border-accent/20 text-ink-700">Business</span>
-            </div>
-          </div>
+              {/* Body — grows to push accent to bottom */}
+              <p className="text-[14px] leading-[1.6] text-ink-500 flex-1">
+                {body}
+              </p>
 
-          {/* Card 5 — Ask anything */}
-          <div className="lg:col-span-2 bg-ink-0 rounded-xl border border-ink-200 hover:border-ink-300 transition-colors p-6 flex flex-col">
-            <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center mb-4">
-              <MessageCircle size={16} className="text-accent-ring" />
+              {/* Accent footer — equal vertical space across cards */}
+              <div className="mt-6 pt-5 border-t border-ink-100">
+                {accent}
+              </div>
             </div>
-            <h3 className="text-[17px] font-medium tracking-tight text-ink-900 mb-2">
-              Ask anything.
-            </h3>
-            <p className="text-[13px] leading-relaxed text-ink-500">
-              &ldquo;How much did we spend on fuel last quarter?&rdquo; Natural-language queries over your ledger, with sources cited back to the receipts.
-            </p>
-            <div className="mt-4">
-              <span className="text-[11px] font-mono text-ink-400 italic">
-                &ldquo;Fuel last quarter?&rdquo;
-              </span>
-            </div>
-          </div>
-
-          {/* Card 6 — Multi-client accountants */}
-          <div className="lg:col-span-2 bg-ink-0 rounded-xl border border-ink-200 hover:border-ink-300 transition-colors p-6 flex flex-col">
-            <div className="w-8 h-8 rounded-lg bg-accent/10 flex items-center justify-center mb-4">
-              <Users size={16} className="text-accent-ring" />
-            </div>
-            <h3 className="text-[17px] font-medium tracking-tight text-ink-900 mb-2">
-              Multi-client, built for accountants.
-            </h3>
-            <p className="text-[13px] leading-relaxed text-ink-500">
-              One inbox across every client. Forecast, anomalies, and tax-readiness in one view.
-            </p>
-            <div className="mt-4 flex gap-1.5">
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-ink-50 border border-ink-200 text-ink-600">Business tier</span>
-            </div>
-          </div>
+          ))}
         </RevealGroup>
 
         {/* Bottom CTA */}
