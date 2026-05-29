@@ -1,20 +1,13 @@
-import { NavLink, useNavigate } from "react-router-dom";
-import { toast } from "sonner";
+import { NavLink } from "react-router-dom";
 import {
-  LayoutDashboard, Receipt, Users, Settings, Plus, ChevronsUpDown,
-  Check, Search, Target, TrendingUp, BookOpen, BarChart3, ShieldCheck,
+  LayoutDashboard, Receipt, Users, Settings, Plus, Search,
+  Target, TrendingUp, BookOpen, BarChart3, ShieldCheck,
   Landmark, GitCompareArrows, Briefcase, Brain, CreditCard,
-  LogOut,
 } from "lucide-react";
 import { Wordmark } from "@/components/Wordmark";
-import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
-  DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
-} from "@/components/ui/DropdownMenu";
 import { Avatar } from "@/components/ui/Avatar";
 import { Badge } from "@/components/ui/Badge";
 import { useOrgStore } from "@/stores/org";
-import { useAuthStore } from "@/stores/auth";
 import { useUIStore } from "@/stores/ui";
 import { useOrgs } from "@/lib/queries";
 import { cn } from "@/lib/cn";
@@ -42,12 +35,9 @@ const nav = [
 ];
 
 export function Sidebar({ onNavigate } = {}) {
-  const navigate = useNavigate();
-  const { activeOrgId, setActiveOrg } = useOrgStore();
+  const { activeOrgId } = useOrgStore();
   const setPaletteOpen = useUIStore((s) => s.setPaletteOpen);
   const setUploadOpen = useUIStore((s) => s.setUploadOpen);
-  const user = useAuthStore((s) => s.user);
-  const logout = useAuthStore((s) => s.logout);
   const { data: orgs } = useOrgs();
 
   const active = orgs?.organizations.find((o) => o.id === activeOrgId) ?? orgs?.organizations[0];
@@ -56,12 +46,6 @@ export function Sidebar({ onNavigate } = {}) {
   // Hide team-only items when the active org is personal
   const isPersonal = active?.kind !== "business";
   const visibleNav = nav.filter((item) => !isPersonal || !TEAM_ONLY_ROUTES.has(item.to));
-
-  const onLogout = () => {
-    logout();
-    navigate("/login");
-    onNavigate?.();
-  };
 
   return (
     <aside className="flex flex-col w-[252px] shrink-0 border-r border-ink-100 bg-ink-50/40 sticky top-[52px] h-[calc(100vh-52px)] overflow-y-auto">
@@ -134,81 +118,6 @@ export function Sidebar({ onNavigate } = {}) {
           <Plus size={14} /> Upload receipt
           <kbd className="hidden sm:inline ml-1 font-mono text-[10px] text-accent-fg/60">U</kbd>
         </button>
-      </div>
-
-      {/* ── Bottom: org switcher + user row ────────────────────────────────── */}
-      <div className="border-t border-ink-100 px-3 py-3 space-y-1">
-        {/* Org switcher row */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className="w-full inline-flex items-center gap-2 px-2 py-1.5 rounded hover:bg-ink-100 transition-colors group">
-              <Avatar name={active?.name} size="xs" />
-              <span className="flex-1 min-w-0 text-left">
-                <span className="block text-[12px] font-medium text-ink-900 truncate tracking-tight">{active?.name ?? "—"}</span>
-                <span className="block text-[10px] text-ink-500 truncate">/{active?.slug ?? ""}</span>
-              </span>
-              <ChevronsUpDown size={13} className="shrink-0 text-ink-400 group-hover:text-ink-700" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent side="top" align="start" className="min-w-[240px]">
-            <DropdownMenuLabel>Switch organizations</DropdownMenuLabel>
-            {orgs?.organizations.map((o) => (
-              <DropdownMenuItem
-                key={o.id}
-                onClick={() => {
-                  if (o.id === active?.id) return;
-                  setActiveOrg(o.id);
-                  toast.success(`Switched to ${o.name}`, {
-                    description: "Receipts and members for this workspace are now loading.",
-                  });
-                }}
-                className="justify-between"
-              >
-                <span className="flex items-center gap-2 min-w-0">
-                  <Avatar name={o.name} size="xs" />
-                  <span className="truncate">{o.name}</span>
-                </span>
-                {o.id === active?.id && <Check size={14} className="text-ink-700" />}
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => { navigate("/onboarding"); onNavigate?.(); }}>
-              <Plus size={14} /> New organization
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-
-        {/* User row */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className="w-full inline-flex items-center gap-2 px-2 py-1.5 rounded hover:bg-ink-100 transition-colors group">
-              <Avatar name={user?.full_name || user?.email} src={user?.avatar_url} size="xs" />
-              <span className="flex-1 min-w-0 text-left">
-                <span className="block text-[12px] font-medium text-ink-900 truncate tracking-tight">
-                  {user?.full_name || user?.email?.split("@")[0] || "Account"}
-                </span>
-                <span className="block text-[10px] text-ink-500 truncate">{user?.email ?? ""}</span>
-              </span>
-              <ChevronsUpDown size={13} className="shrink-0 text-ink-400 group-hover:text-ink-700" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent side="top" align="start" className="min-w-[220px]">
-            <DropdownMenuLabel>
-              <div className="font-medium text-ink-900 truncate">
-                {user?.full_name || user?.email?.split("@")[0]}
-              </div>
-              <div className="text-[11px] font-normal text-ink-500 truncate">{user?.email}</div>
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => { navigate("/settings"); onNavigate?.(); }}>
-              <Settings size={14} /> Settings
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem destructive onClick={onLogout}>
-              <LogOut size={14} /> Log out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
       </div>
     </aside>
   );

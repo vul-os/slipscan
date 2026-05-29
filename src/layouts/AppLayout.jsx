@@ -1,11 +1,17 @@
 import { useEffect, useState } from "react";
 import { Navigate, Outlet, useNavigate } from "react-router-dom";
-import { Menu, X, Plus, MessageSquare } from "lucide-react";
+import { toast } from "sonner";
+import { Menu, X, Plus, MessageSquare, Check, Settings, LogOut } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatPanel } from "@/components/ChatPanel";
 import { Wordmark } from "@/components/Wordmark";
 import { CommandPalette } from "@/components/CommandPalette";
 import { UploadDialog } from "@/components/UploadDialog";
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
+} from "@/components/ui/DropdownMenu";
+import { Avatar } from "@/components/ui/Avatar";
 import { useAuthStore } from "@/stores/auth";
 import { useOrgStore } from "@/stores/org";
 import { useUIStore } from "@/stores/ui";
@@ -66,6 +72,7 @@ export default function AppLayout() {
   const accessToken = useAuthStore((s) => s.accessToken);
   const setUser = useAuthStore((s) => s.setUser);
   const storedUser = useAuthStore((s) => s.user);
+  const logout = useAuthStore((s) => s.logout);
   const { activeOrgId, setActiveOrg } = useOrgStore();
   const { data: orgs, isLoading, isFetching } = useOrgs();
   const { data: me } = useMe();
@@ -76,6 +83,22 @@ export default function AppLayout() {
   const setUploadOpen = useUIStore((s) => s.setUploadOpen);
   const setChatOpen = useUIStore((s) => s.setChatOpen);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const navigate = useNavigate();
+  const user = storedUser ?? me;
+  const activeOrg = orgs?.organizations.find((o) => o.id === activeOrgId) ?? orgs?.organizations?.[0];
+
+  const onLogout = () => {
+    logout();
+    navigate("/login");
+  };
+
+  const onSwitchOrg = (id, name) => {
+    if (id === activeOrg?.id) return;
+    setActiveOrg(id);
+    toast.success(`Switched to ${name}`, {
+      description: "Receipts and members for this workspace are now loading.",
+    });
+  };
 
   useGlobalShortcuts();
 
@@ -151,6 +174,58 @@ export default function AppLayout() {
           >
             <MessageSquare size={16} />
           </button>
+
+          {/* Profile / org dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                className="h-8 w-8 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 ml-1"
+                aria-label="Profile and organizations"
+              >
+                <Avatar
+                  name={user?.full_name || user?.email}
+                  src={user?.avatar_url}
+                  size="sm"
+                />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="min-w-[260px]">
+              <DropdownMenuLabel>
+                <div className="font-medium text-ink-900 truncate">
+                  {user?.full_name || user?.email?.split("@")[0]}
+                </div>
+                <div className="text-[11px] font-normal text-ink-500 truncate">{user?.email}</div>
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+
+              <DropdownMenuLabel>Organizations</DropdownMenuLabel>
+              {orgs?.organizations.map((o) => (
+                <DropdownMenuItem
+                  key={o.id}
+                  onClick={() => onSwitchOrg(o.id, o.name)}
+                  className="justify-between"
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    <Avatar name={o.name} size="xs" />
+                    <span className="truncate">{o.name}</span>
+                  </span>
+                  {o.id === activeOrg?.id && <Check size={14} className="text-ink-700" />}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuItem onClick={() => navigate("/onboarding")}>
+                <Plus size={14} /> New organization
+              </DropdownMenuItem>
+
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => navigate("/settings")}>
+                <Settings size={14} /> Settings
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem destructive onClick={onLogout}>
+                <LogOut size={14} /> Log out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </header>
 
