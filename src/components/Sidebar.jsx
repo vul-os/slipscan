@@ -5,8 +5,6 @@ import {
   Landmark, GitCompareArrows, Briefcase, Brain, CreditCard,
 } from "lucide-react";
 import { Wordmark } from "@/components/Wordmark";
-import { Avatar } from "@/components/ui/Avatar";
-import { Badge } from "@/components/ui/Badge";
 import { useOrgStore } from "@/stores/org";
 import { useUIStore } from "@/stores/ui";
 import { useOrgs } from "@/lib/queries";
@@ -52,19 +50,6 @@ export function Sidebar({ onNavigate } = {}) {
       {/* Wordmark header */}
       <div className="px-4 py-4">
         <Wordmark size="sm" />
-      </div>
-
-      <div className="px-3 mb-2">
-        {active && (
-          <div className="w-full flex items-center gap-2 px-2 py-1.5 rounded">
-            <Avatar name={active.name} size="sm" />
-            <span className="flex-1 min-w-0 text-left">
-              <span className="block text-sm font-medium text-ink-900 truncate tracking-tight">{active.name}</span>
-              <span className="block text-[11px] text-ink-500 truncate">/{active.slug}</span>
-            </span>
-            {active.role === "admin" && <Badge tone="accent">Admin</Badge>}
-          </div>
-        )}
       </div>
 
       <div className="px-3 mb-3">
