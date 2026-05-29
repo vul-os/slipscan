@@ -8,7 +8,7 @@
 import { Hono } from "hono";
 import type { Env } from "./bindings";
 import { ApiError, writeError } from "./lib/errors";
-import authRouter from "./modules/auth/routes";
+import authRouter, { avatarRouter } from "./modules/auth/routes";
 import googleAuthRouter from "./modules/auth/google";
 import orgsRouter, { inviteAcceptRouter } from "./modules/orgs/routes";
 import documentsRouter from "./modules/documents/routes";
@@ -57,6 +57,7 @@ app.get("/healthz", (c) => c.text("ok"));
 // Wave 1 feature modules.
 app.route("/auth", authRouter); // /auth/register, /login, /me, ...
 app.route("/auth", googleAuthRouter); // /auth/google, /auth/google/callback
+app.route("/", avatarRouter); // public GET /avatars/:userId/:filename
 app.route("/orgs", orgsRouter); // POST /orgs, /:orgID/members, /:orgID/invitations
 app.route("/invitations", inviteAcceptRouter); // POST /invitations/accept
 app.route("/orgs", extractRouter); // /:orgID/documents/:docID/extract

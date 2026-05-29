@@ -52,6 +52,9 @@ export const useUpdateProfile = () => {
   });
 };
 
+export const useUploadAvatar = () =>
+  useMutation({ mutationFn: (file) => api.uploadAvatar(file) });
+
 export const useOrgs = () =>
   useQuery({ queryKey: qk.orgs, queryFn: api.listOrgs });
 

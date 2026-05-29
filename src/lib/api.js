@@ -102,6 +102,11 @@ export const api = {
 
   me: () => request("/auth/me"),
   updateProfile: (body) => request("/auth/me", { method: "PATCH", body }),
+  uploadAvatar: (file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request("/auth/me/avatar", { method: "POST", formData: fd });
+  },
 
   listOrgs: () => request("/orgs"),
   createOrg: (input) =>
