@@ -28,7 +28,7 @@ export default function Security() {
       <p>
         Extracted text, classification results, and metadata are co-located with the document rows
         in Neon. No third-party analytics or data-warehouse service receives your document content
-        unless you explicitly enable an integration (e.g. Xero, QuickBooks).
+        unless you explicitly enable an integration (e.g. Xero).
       </p>
 
       <h2 id="encryption">Encryption</h2>

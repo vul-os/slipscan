@@ -19,7 +19,7 @@ export default function DocsIndex() {
         <li>Extract every field with confidence scores.</li>
         <li>Classify transactions — and have the system learn your preferences.</li>
         <li>Reconcile against your bank feeds (Stitch, SA).</li>
-        <li>Push to Xero/QuickBooks or run the ledger natively.</li>
+        <li>Push to Xero or run the ledger natively.</li>
       </ul>
 
       <h2 id="who-its-for">Who it&apos;s for</h2>
@@ -34,7 +34,7 @@ export default function DocsIndex() {
         <strong>Getting Started</strong> covers setup — from creating your first org to your first
         posted transaction. <strong>Features</strong> documents each of the eight product surfaces
         in detail. <strong>Integrations</strong> covers the third-party connections (Xero, Stitch,
-        Gmail, Slack, QuickBooks). <strong>Reference</strong> holds the FAQ, security posture, and
+        Gmail, API). <strong>Reference</strong> holds the FAQ, security posture, and
         the changelog.
       </p>
 

@@ -8,7 +8,7 @@ export default function IntegrationsIndex() {
 
       <p className="lead">
         slip/scan plays inside the stack you already run. Push to your ledger, pull in your feeds,
-        loop in your team chat. This page covers every supported integration with its setup steps
+        forward slips by email. This page covers every supported integration with its setup steps
         and capabilities.
       </p>
 
@@ -59,46 +59,6 @@ export default function IntegrationsIndex() {
         <li>Choose <strong>Forward to</strong> and paste your slip/scan inbox alias. Save the filter.</li>
         <li>Gmail will ask you to confirm the forwarding address — click the link in the confirmation email that slip/scan sends back.</li>
       </ol>
-
-      <h2 id="slack">Slack <span className="text-[13px] font-normal text-ink-400 ml-2">Beta</span></h2>
-      <p>
-        A daily digest of new transactions awaiting review is posted to your chosen Slack channel.
-        Per-channel approval flows let team members hit <strong>Approve</strong> directly in Slack
-        — the action posts the document without opening the web app.
-      </p>
-      <ol>
-        <li>Go to <strong>Settings → Integrations → Slack</strong> and click <strong>Add to Slack</strong>.</li>
-        <li>Authorise slip/scan to post to your Slack workspace.</li>
-        <li>Select the channel for digest messages and approval notifications.</li>
-        <li>Choose which event types trigger notifications: new uploads, match suggestions, budget alerts.</li>
-      </ol>
-
-      <h2 id="quickbooks">QuickBooks <span className="text-[13px] font-normal text-ink-400 ml-2">Beta</span></h2>
-      <p>
-        Same push model as Xero: posting a document creates a bill in QuickBooks with the original
-        file attached. Chart-of-accounts mapping is configurable per vendor.
-      </p>
-      <ol>
-        <li>Go to <strong>Settings → Integrations → QuickBooks</strong> and click <strong>Connect QuickBooks</strong>.</li>
-        <li>Sign in with your Intuit account and select the company file to connect.</li>
-        <li>Set your default expense account mapping under <strong>QuickBooks Settings</strong>.</li>
-        <li>Post a document — the bill will appear in QuickBooks within seconds.</li>
-      </ol>
-
-      <h2 id="google-drive">Google Drive <span className="text-[13px] font-normal text-ink-400 ml-2">Coming soon</span></h2>
-      <p>
-        Watch-folder sync: any receipt dropped into a nominated Drive folder is automatically
-        ingested into slip/scan. No manual upload step required.
-      </p>
-      <p className="lead">Coming soon — dedicated setup page in progress.</p>
-
-      <h2 id="zapier">Zapier <span className="text-[13px] font-normal text-ink-400 ml-2">Coming soon</span></h2>
-      <p>
-        Trigger Zaps on document events — posted, flagged, matched — and push data to 6 000+
-        apps. Useful for notifying accountants via email, logging to a Google Sheet, or syncing to
-        a project management tool.
-      </p>
-      <p className="lead">Coming soon — dedicated setup page in progress.</p>
 
       <h2 id="api">API &amp; Tokens</h2>
       <p>

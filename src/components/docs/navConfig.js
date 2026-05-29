@@ -39,10 +39,8 @@ export const DOCS_NAV = [
     group: "INTEGRATIONS",
     items: [
       { title: "Xero",                path: "/docs/integrations/xero" },
-      { title: "QuickBooks (Beta)",   path: "/docs/integrations/quickbooks" },
       { title: "Stitch bank feeds",   path: "/docs/integrations/stitch" },
       { title: "Gmail forward-in",    path: "/docs/integrations/gmail" },
-      { title: "Slack",               path: "/docs/integrations/slack" },
       { title: "API & Tokens",        path: "/docs/integrations/api" },
     ],
   },

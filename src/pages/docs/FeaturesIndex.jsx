@@ -12,7 +12,7 @@ export default function FeaturesIndex() {
       <h2 id="receipts-extraction">Receipts &amp; Extraction</h2>
       <p>
         Capture documents from your phone camera, drag-and-drop on the desktop, forwarded email,
-        or Google Drive. The extraction pipeline parses photos, PDFs, and HTML receipt bodies —
+        or the public API. The extraction pipeline parses photos, PDFs, and HTML receipt bodies —
         pulling out vendor, date, totals, individual line items, VAT/GST, currency, and FX rate.
         Each field carries a confidence score. The side-by-side review UI at{" "}
         <code>/receipts/:id</code> shows the source image alongside the extracted fields so you
