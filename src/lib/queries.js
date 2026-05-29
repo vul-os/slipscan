@@ -7,6 +7,8 @@ import { api } from "./api";
 export const qk = {
   me:                            ["me"],
   orgs:                          ["orgs"],
+  billingUsage:   (orgId)      => ["billing-usage", orgId],
+  extractionModels:(orgId)     => ["extraction-models", orgId],
   pendingInvitations:            ["pending-invitations"],
   members:    (orgId)         => ["members", orgId],
   invitations:(orgId)         => ["invitations", orgId],
@@ -312,3 +314,31 @@ export const useAnomalies = (orgId) =>
   enabledQuery(orgId, qk.anomalies(orgId), async () => arr(await api.getAnomalies(orgId), "anomalies"));
 export const useTaxReadiness = (orgId) =>
   enabledQuery(orgId, qk.taxReadiness(orgId), () => api.getTaxReadiness(orgId));
+
+// ── Billing ─────────────────────────────────────────────────────────────────
+
+export const useBillingUsage = (orgId) =>
+  useQuery({
+    queryKey: orgId ? qk.billingUsage(orgId) : ["none"],
+    queryFn: () => api.getBillingUsage(orgId),
+    enabled: !!orgId,
+    refetchInterval: 60_000, // refresh every 60 s
+  });
+
+export const useExtractionModels = (orgId) =>
+  useQuery({
+    queryKey: orgId ? qk.extractionModels(orgId) : ["none"],
+    queryFn: () => api.listExtractionModels(orgId),
+    enabled: !!orgId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+export const useSetExtractionModel = (orgId) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (modelId) => api.setExtractionModel(orgId, modelId),
+    onSuccess: () => {
+      if (orgId) qc.invalidateQueries({ queryKey: qk.extractionModels(orgId) });
+    },
+  });
+};

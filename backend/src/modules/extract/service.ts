@@ -29,6 +29,7 @@ import {
   failExtraction,
   getExtraction,
 } from "./queries";
+import { resolveOrgModelName } from "../billing/queries";
 
 // ---- helpers ----
 
@@ -173,7 +174,10 @@ export async function extractDocument(
   docId: string,
 ): Promise<string> {
   const startMs = Date.now();
-  const g = new Gemini(env.GEMINI_API_KEY);
+
+  // Resolve the org's preferred extraction model (or the global default).
+  const modelName = await resolveOrgModelName(env, orgId);
+  const g = new Gemini(env.GEMINI_API_KEY, modelName);
 
   // 1. Fetch document (org-filtered).
   const doc = await getDocument(env, docId, orgId);

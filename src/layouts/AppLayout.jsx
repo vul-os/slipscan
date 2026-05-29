@@ -1,16 +1,11 @@
 import { useEffect, useState } from "react";
 import { Navigate, Outlet, useNavigate } from "react-router-dom";
-import { Menu, X, Plus, MessageSquare, Settings, LogOut } from "lucide-react";
+import { Menu, X, Plus, MessageSquare } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatPanel } from "@/components/ChatPanel";
 import { Wordmark } from "@/components/Wordmark";
 import { CommandPalette } from "@/components/CommandPalette";
 import { UploadDialog } from "@/components/UploadDialog";
-import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
-  DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
-} from "@/components/ui/DropdownMenu";
-import { Avatar } from "@/components/ui/Avatar";
 import { useAuthStore } from "@/stores/auth";
 import { useOrgStore } from "@/stores/org";
 import { useUIStore } from "@/stores/ui";
@@ -71,7 +66,6 @@ export default function AppLayout() {
   const accessToken = useAuthStore((s) => s.accessToken);
   const setUser = useAuthStore((s) => s.setUser);
   const storedUser = useAuthStore((s) => s.user);
-  const logout = useAuthStore((s) => s.logout);
   const { activeOrgId, setActiveOrg } = useOrgStore();
   const { data: orgs, isLoading, isFetching } = useOrgs();
   const { data: me } = useMe();
@@ -82,14 +76,6 @@ export default function AppLayout() {
   const setUploadOpen = useUIStore((s) => s.setUploadOpen);
   const setChatOpen = useUIStore((s) => s.setChatOpen);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const navigate = useNavigate();
-
-  const user = storedUser ?? me;
-
-  const onLogout = () => {
-    logout();
-    navigate("/login");
-  };
 
   useGlobalShortcuts();
 
@@ -165,38 +151,6 @@ export default function AppLayout() {
           >
             <MessageSquare size={16} />
           </button>
-
-          {/* Avatar / user dropdown */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                className="h-8 w-8 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
-                aria-label="User menu"
-              >
-                <Avatar
-                  name={user?.full_name || user?.email}
-                  src={user?.avatar_url}
-                  size="sm"
-                />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-[200px]">
-              <DropdownMenuLabel>
-                <div className="font-medium text-ink-900 truncate">
-                  {user?.full_name || user?.email?.split("@")[0]}
-                </div>
-                <div className="text-[11px] font-normal text-ink-500 truncate">{user?.email}</div>
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => navigate("/settings")}>
-                <Settings size={14} /> Settings
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem destructive onClick={onLogout}>
-                <LogOut size={14} /> Log out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
         </div>
       </header>
 

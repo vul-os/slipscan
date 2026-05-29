@@ -253,6 +253,12 @@ export const api = {
   getForecast: (orgId, { horizon } = {}) => request(`/orgs/${orgId}/forecast${qs({ horizon })}`),
   getAnomalies: (orgId) => request(`/orgs/${orgId}/anomalies`),
   getTaxReadiness: (orgId) => request(`/orgs/${orgId}/tax-readiness`),
+
+  // ── Billing ──────────────────────────────────────────────────────────────
+  getBillingUsage: (orgId) => request(`/orgs/${orgId}/billing/usage`),
+  listExtractionModels: (orgId) => request(`/orgs/${orgId}/billing/models`),
+  setExtractionModel: (orgId, modelId) =>
+    request(`/orgs/${orgId}/billing/model`, { method: "POST", body: { model_id: modelId } }),
 };
 
 // qs builds a query string from defined, non-empty values (drops undefined/null/"").

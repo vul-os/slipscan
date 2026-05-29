@@ -26,6 +26,7 @@ import auditRouter from "./modules/audit/routes";
 import apiTokensRouter from "./modules/apitokens/routes";
 import apiV1Router from "./modules/apitokens/v1routes";
 import xeroRouter from "./modules/xero/routes";
+import billingRouter from "./modules/billing/routes";
 import { handleScheduled } from "./cron/scheduled";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -75,6 +76,7 @@ app.route("/", auditRouter); // /orgs/:orgID/audit
 app.route("/", apiTokensRouter); // /orgs/:orgID/api-tokens*
 app.route("/", apiV1Router); // /v1/orgs/:orgID/*
 app.route("/", xeroRouter); // /orgs/:orgID/integrations/xero/*, /integrations/xero/callback
+app.route("/", billingRouter); // /orgs/:orgID/billing/{usage,models,model}
 
 app.notFound((c) => writeError(c, 404, "not_found", "not found"));
 app.onError((err, c) => {
