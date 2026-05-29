@@ -21,7 +21,6 @@ export default defineConfig(({ mode }) => {
           "**/.claude/worktrees/**",
           "**/dist/**",
           "**/dist-*/**",
-          "**/backend/**",
           "**/worker/**",
           "**/.git/**",
           "**/node_modules/**",
