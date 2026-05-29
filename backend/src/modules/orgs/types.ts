@@ -28,6 +28,7 @@ export interface OrgResponse {
   currency: string;
   role: Role;
   created_at: string;
+  avatar_url?: string | null;
 }
 
 export interface MemberResponse {
@@ -92,6 +93,7 @@ export interface OrgRow {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  avatar_url?: string | null;
 }
 
 export interface MemberRow {

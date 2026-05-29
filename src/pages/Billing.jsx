@@ -1,12 +1,14 @@
 /**
- * Billing page — usage overview + extraction model picker.
- * Honest about current state: single "Free — Early access" plan, no fake tiers.
+ * Billing page — plan picker + usage overview + extraction model picker.
+ * Plan picker at the top shows Free/Team/Business with ZAR prices and
+ * triggers Paystack checkout for paid plans. Usage stats and model picker
+ * are preserved below, unchanged.
  */
 import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import {
   Cpu, Database, DollarSign, FileText,
-  CheckCircle2, AlertCircle, Zap,
+  CheckCircle2, AlertCircle, Zap, Check,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/PageHeader";
@@ -15,7 +17,15 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useOrgStore } from "@/stores/org";
-import { useBillingUsage, useExtractionModels, useSetExtractionModel } from "@/lib/queries";
+import {
+  useBillingUsage,
+  useExtractionModels,
+  useSetExtractionModel,
+  usePlans,
+  useSubscription,
+  useSubscribePlan,
+  useVerifySubscription,
+} from "@/lib/queries";
 import { cn } from "@/lib/cn";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -45,36 +55,169 @@ function fmtZAR(usd) {
   return `R${(Number(usd) * ZAR_USD).toFixed(2)}`;
 }
 
-// ── Plan card ──────────────────────────────────────────────────────────────────
+// ── Subscription status badge ─────────────────────────────────────────────────
 
-function PlanCard() {
+const STATUS_TONE = {
+  active:   "success",
+  past_due: "warning",
+  cancelled: "neutral",
+  paused:    "neutral",
+  inactive:  "neutral",
+};
+
+function StatusBadge({ status }) {
+  if (!status || status === "inactive") return null;
+  const label = status.replace("_", " ");
+  return <Badge tone={STATUS_TONE[status] ?? "neutral"}>{label}</Badge>;
+}
+
+// ── Plan picker ───────────────────────────────────────────────────────────────
+
+function PlanPicker({ orgId }) {
+  const { data: plans = [], isLoading: plansLoading } = usePlans(orgId);
+  const { data: sub, isLoading: subLoading } = useSubscription(orgId);
+  const { mutate: subscribe, isPending: subscribing } = useSubscribePlan(orgId);
+  const [activeRef, setActiveRef] = useState(null);
+
+  const currentPlan = sub?.plan ?? "free";
+  const subStatus   = sub?.subscription_status ?? "inactive";
+  const renewsAt    = sub?.renews_at ?? null;
+
+  const loading = plansLoading || subLoading;
+
+  const handleUpgrade = (plan) => {
+    if (plan.code === "free") {
+      // Downgrade — no Paystack flow.
+      subscribe(
+        { plan_code: "free" },
+        {
+          onSuccess: () => toast.success("Downgraded to Free plan"),
+          onError: (e) => toast.error(e?.message ?? "Could not downgrade"),
+        },
+      );
+      return;
+    }
+
+    subscribe(
+      { plan_code: plan.code },
+      {
+        onSuccess: (data) => {
+          if (data?.authorization_url) {
+            window.location.href = data.authorization_url;
+          }
+        },
+        onError: (e) => toast.error(e?.message ?? "Could not initiate payment"),
+      },
+    );
+  };
+
   return (
-    <Card>
-      <div className="px-5 py-4 flex items-center justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-3">
-          <div className="h-9 w-9 rounded-md bg-accent-muted flex items-center justify-center text-ink-900 shrink-0">
-            <Zap size={16} />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium tracking-tight text-ink-900">
-                Free — Early access
-              </span>
-              <Badge tone="accent">Current plan</Badge>
-            </div>
-            <p className="text-[12px] text-ink-500 mt-0.5">
-              No limits during early access. Costs shown below are passed through from Gemini at cost.
-            </p>
-          </div>
+    <section className="mb-10">
+      <h2 className="text-base font-medium tracking-tight text-ink-900 mb-3">Plan</h2>
+
+      {loading ? (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {[1, 2, 3].map((i) => <Skeleton key={i} className="h-48 rounded-xl" />)}
         </div>
-        <Link
-          to="/#pricing"
-          className="text-[12px] text-ink-500 underline underline-offset-2 decoration-ink-300 hover:text-ink-800 shrink-0"
-        >
-          See roadmap
-        </Link>
-      </div>
-    </Card>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {plans.map((plan) => {
+              const isCurrent = plan.code === currentPlan;
+              const isUpgrade = plan.price_zar > (plans.find((p) => p.code === currentPlan)?.price_zar ?? 0);
+              const isDowngrade = plan.price_zar < (plans.find((p) => p.code === currentPlan)?.price_zar ?? 0);
+
+              return (
+                <div
+                  key={plan.code}
+                  className={cn(
+                    "bg-ink-0 rounded-xl border p-6 flex flex-col transition-colors",
+                    isCurrent
+                      ? "border-ink-900 ring-1 ring-ink-900 ring-offset-1 shadow-sm"
+                      : "border-ink-200 hover:border-ink-300",
+                  )}
+                >
+                  {/* Name */}
+                  <p className="text-[12px] font-medium text-ink-500 uppercase tracking-[0.06em]">
+                    {plan.name}
+                  </p>
+
+                  {/* Price */}
+                  <div className="mt-2 flex items-baseline gap-1">
+                    <span className="text-[32px] font-medium tracking-tight text-ink-900 tnum leading-none">
+                      R{plan.price_zar}
+                    </span>
+                    <span className="text-sm text-ink-400">/ mo</span>
+                  </div>
+
+                  {/* Current plan badge + status */}
+                  <div className="mt-2 flex items-center gap-2 flex-wrap min-h-[22px]">
+                    {isCurrent && <Badge tone="accent">Current plan</Badge>}
+                    {isCurrent && <StatusBadge status={subStatus} />}
+                  </div>
+
+                  {/* Features */}
+                  <ul className="mt-4 space-y-2 flex-1">
+                    {(plan.features ?? []).map((feat) => (
+                      <li key={feat} className="flex items-start gap-2">
+                        <Check size={13} className="text-accent-ring mt-0.5 shrink-0" />
+                        <span className="text-[12px] text-ink-600 leading-snug">{feat}</span>
+                      </li>
+                    ))}
+                  </ul>
+
+                  {/* CTA */}
+                  <div className="mt-5">
+                    {isCurrent ? (
+                      <div className="text-[12px] text-ink-400 text-center py-2">
+                        {subStatus === "active" && renewsAt
+                          ? `Renews ${new Date(renewsAt).toLocaleDateString("en-ZA")}`
+                          : "Your current plan"}
+                      </div>
+                    ) : plan.code === "free" ? (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="w-full"
+                        onClick={() => handleUpgrade(plan)}
+                        disabled={subscribing}
+                        loading={subscribing && activeRef === "free"}
+                      >
+                        Downgrade to Free
+                      </Button>
+                    ) : plan.configured ? (
+                      <Button
+                        variant={isUpgrade ? "accent" : "secondary"}
+                        size="sm"
+                        className="w-full"
+                        onClick={() => {
+                          setActiveRef(plan.code);
+                          handleUpgrade(plan);
+                        }}
+                        disabled={subscribing}
+                        loading={subscribing && activeRef === plan.code}
+                      >
+                        {isDowngrade ? `Downgrade to ${plan.name}` : `Upgrade to ${plan.name}`}
+                      </Button>
+                    ) : (
+                      <div className="text-[11px] text-ink-400 text-center py-2">
+                        Coming soon — billing setup in progress
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {subStatus === "past_due" && (
+            <p className="mt-3 text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+              Your last payment failed. Please update your payment method to avoid service interruption.
+            </p>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -289,6 +432,45 @@ function ModelPicker({ orgId }) {
   );
 }
 
+// ── Paystack callback handler ─────────────────────────────────────────────────
+
+function PaystackCallbackHandler({ orgId }) {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const reference = searchParams.get("reference");
+  const { mutate: verify } = useVerifySubscription();
+  const [verified, setVerified] = useState(false);
+
+  useEffect(() => {
+    if (!reference || verified) return;
+    setVerified(true); // prevent double-fire
+
+    verify(
+      { reference },
+      {
+        onSuccess: () => {
+          toast.success("Payment confirmed. Your plan has been upgraded.");
+          // Remove ?reference= from URL without reload.
+          setSearchParams((prev) => {
+            const next = new URLSearchParams(prev);
+            next.delete("reference");
+            return next;
+          });
+        },
+        onError: (e) => {
+          toast.error(e?.message ?? "Could not verify payment. Contact support if you were charged.");
+          setSearchParams((prev) => {
+            const next = new URLSearchParams(prev);
+            next.delete("reference");
+            return next;
+          });
+        },
+      },
+    );
+  }, [reference, verified, verify, setSearchParams]);
+
+  return null;
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function BillingPage() {
@@ -309,16 +491,17 @@ export default function BillingPage() {
 
   return (
     <div className="page-shell max-w-[820px]">
+      {/* Handle Paystack redirect with ?reference= */}
+      {activeOrgId && <PaystackCallbackHandler orgId={activeOrgId} />}
+
       <PageHeader
         eyebrow="Account"
         title="Billing & usage"
-        description="AI usage this month, storage, estimated cost, and extraction model."
+        description="Manage your plan, view AI usage this month, storage, and estimated cost."
       />
 
-      {/* Plan */}
-      <section className="mb-10">
-        <PlanCard />
-      </section>
+      {/* Plan picker */}
+      {activeOrgId && <PlanPicker orgId={activeOrgId} />}
 
       {/* Usage stat cards */}
       <section className="mb-10">

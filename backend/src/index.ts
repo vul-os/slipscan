@@ -10,7 +10,7 @@ import type { Env } from "./bindings";
 import { ApiError, writeError } from "./lib/errors";
 import authRouter, { avatarRouter } from "./modules/auth/routes";
 import googleAuthRouter from "./modules/auth/google";
-import orgsRouter, { inviteAcceptRouter } from "./modules/orgs/routes";
+import orgsRouter, { inviteAcceptRouter, orgAvatarRouter } from "./modules/orgs/routes";
 import documentsRouter from "./modules/documents/routes";
 import extractRouter from "./modules/extract/routes";
 import classifyRouter from "./modules/classify/routes";
@@ -58,6 +58,7 @@ app.get("/healthz", (c) => c.text("ok"));
 app.route("/auth", authRouter); // /auth/register, /login, /me, ...
 app.route("/auth", googleAuthRouter); // /auth/google, /auth/google/callback
 app.route("/", avatarRouter); // public GET /avatars/:userId/:filename
+app.route("/", orgAvatarRouter); // public GET /orgs-avatars/:orgId/:filename
 app.route("/orgs", orgsRouter); // POST /orgs, /:orgID/members, /:orgID/invitations
 app.route("/invitations", inviteAcceptRouter); // POST /invitations/accept
 app.route("/orgs", extractRouter); // /:orgID/documents/:docID/extract

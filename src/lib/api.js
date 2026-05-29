@@ -111,6 +111,13 @@ export const api = {
   listOrgs: () => request("/orgs"),
   createOrg: (input) =>
     request("/orgs", { method: "POST", body: input }),
+  uploadOrgAvatar: (orgId, file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request(`/orgs/${orgId}/avatar`, { method: "POST", formData: fd });
+  },
+  updateOrgAvatar: (orgId, body) =>
+    request(`/orgs/${orgId}/avatar`, { method: "PATCH", body }),
   listMembers: (orgId) =>
     request(`/orgs/${orgId}/members`),
 
@@ -264,6 +271,14 @@ export const api = {
   listExtractionModels: (orgId) => request(`/orgs/${orgId}/billing/models`),
   setExtractionModel: (orgId, modelId) =>
     request(`/orgs/${orgId}/billing/model`, { method: "POST", body: { model_id: modelId } }),
+
+  // ── Paystack subscription ─────────────────────────────────────────────────
+  getPlans: (orgId) => request(`/orgs/${orgId}/billing/plans`),
+  getSubscription: (orgId) => request(`/orgs/${orgId}/billing/subscription`),
+  subscribePlan: (orgId, body) =>
+    request(`/orgs/${orgId}/billing/subscribe`, { method: "POST", body }),
+  verifySubscription: (body) =>
+    request("/billing/verify", { method: "POST", body }),
 };
 
 // qs builds a query string from defined, non-empty values (drops undefined/null/"").

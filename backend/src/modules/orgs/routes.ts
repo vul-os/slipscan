@@ -21,6 +21,7 @@ import { requireAuth } from "../../middleware/auth";
 import { requireMember, requireAdmin } from "../../middleware/org";
 import { writeError } from "../../lib/errors";
 import { hashToken, newRandomToken } from "../../lib/crypto";
+import { putObject } from "../../lib/r2";
 import {
   createOrg,
   listOrgsForUser,
@@ -32,6 +33,7 @@ import {
   resendInvitation,
   acceptInvitationByTokenHash,
   getUserEmail,
+  updateOrganizationAvatar,
   SlugTakenError,
 } from "./queries";
 import type {
@@ -61,7 +63,7 @@ function isValidEmail(s: string): boolean {
 }
 
 function toOrgResponse(row: OrgRow | OrgWithRoleRow, role: Role): OrgResponse {
-  return {
+  const resp: OrgResponse = {
     id: row.id,
     kind: row.kind,
     name: row.name,
@@ -71,6 +73,8 @@ function toOrgResponse(row: OrgRow | OrgWithRoleRow, role: Role): OrgResponse {
     role,
     created_at: row.created_at,
   };
+  if (row.avatar_url != null) resp.avatar_url = row.avatar_url;
+  return resp;
 }
 
 function toMemberResponse(row: MemberRow): MemberResponse {
@@ -292,6 +296,114 @@ router.delete("/:orgID/invitations/:inviteID", requireAuth, requireAdmin, async 
     return writeError(c, 404, "not_found", "invitation not found or already consumed");
   }
   return c.body(null, 204);
+});
+
+// ---------------------------------------------------------------------------
+// POST /orgs/:orgID/avatar — upload an org avatar image (admin only)
+// PATCH /orgs/:orgID/avatar — set/clear avatar_url by value (admin only)
+// ---------------------------------------------------------------------------
+
+const ORG_AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const ORG_AVATAR_MIME_EXT: Record<string, string> = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+};
+
+router.post("/:orgID/avatar", requireAuth, requireAdmin, async (c) => {
+  const orgId = c.req.param("orgID");
+
+  let formData: FormData;
+  try {
+    formData = await c.req.formData();
+  } catch {
+    return writeError(c, 400, "invalid_upload", "could not parse form (max 2MB)");
+  }
+
+  const fileField = formData.get("file") as unknown;
+  const isFileLike = (v: unknown): v is Blob =>
+    v !== null && typeof v === "object" && typeof (v as Blob).arrayBuffer === "function";
+  if (!fileField || !isFileLike(fileField)) {
+    return writeError(c, 400, "missing_file", `expected a file under field "file"`);
+  }
+  const file = fileField as Blob & { type: string; size: number };
+
+  if (file.size > ORG_AVATAR_MAX_BYTES) {
+    return writeError(c, 400, "too_large", "avatar must be 2MB or smaller");
+  }
+
+  const ext = ORG_AVATAR_MIME_EXT[file.type];
+  if (!ext) {
+    return writeError(c, 415, "unsupported_type", "avatar must be JPG, PNG, or WebP");
+  }
+
+  let data: Uint8Array;
+  try {
+    data = new Uint8Array(await file.arrayBuffer());
+  } catch {
+    return writeError(c, 400, "read_failed", "could not read uploaded file");
+  }
+
+  const key = `orgs/${orgId}/${crypto.randomUUID()}${ext}`;
+  try {
+    await putObject(c.env, key, data, file.type);
+  } catch {
+    return writeError(c, 502, "storage_failed", "could not store avatar");
+  }
+
+  const base = c.env.APP_BASE_URL || new URL(c.req.url).origin;
+  const url = `${base}/${key}`;
+  return c.json({ url }, 201);
+});
+
+router.patch("/:orgID/avatar", requireAuth, requireAdmin, async (c) => {
+  const orgId = c.req.param("orgID");
+
+  let body: { avatar_url?: string | null };
+  try {
+    body = await c.req.json();
+  } catch {
+    return writeError(c, 400, "invalid_body", "request body must be JSON");
+  }
+
+  const avatarUrl = "avatar_url" in body
+    ? (typeof body.avatar_url === "string" ? body.avatar_url.trim() || null : null)
+    : undefined;
+
+  if (avatarUrl === undefined) {
+    return writeError(c, 400, "missing_field", "avatar_url is required");
+  }
+
+  const updated = await updateOrganizationAvatar(c.env, orgId, avatarUrl);
+  if (!updated) {
+    return writeError(c, 404, "not_found", "organization not found");
+  }
+
+  // Determine the caller's role (already set by requireAdmin middleware)
+  const role = c.get("orgRole") as Role;
+  return c.json(toOrgResponse(updated, role), 200);
+});
+
+// ---------------------------------------------------------------------------
+// Public GET /orgs-avatars/:orgId/:filename — streams R2 object.
+// Separate prefix from user avatars to avoid router collision.
+// ---------------------------------------------------------------------------
+export const orgAvatarRouter = new Hono<AppEnv>();
+orgAvatarRouter.get("/orgs-avatars/:orgId/:filename", async (c) => {
+  const orgId = c.req.param("orgId");
+  const filename = c.req.param("filename");
+  if (filename.includes("/") || filename.includes("..")) {
+    return writeError(c, 400, "invalid_path", "bad filename");
+  }
+  const key = `orgs/${orgId}/${filename}`;
+  const obj = await c.env.DOCS.get(key);
+  if (!obj) return writeError(c, 404, "not_found", "avatar not found");
+  return new Response(obj.body, {
+    headers: {
+      "Content-Type": obj.httpMetadata?.contentType || "image/jpeg",
+      "Cache-Control": "public, max-age=86400",
+    },
+  });
 });
 
 // ---------------------------------------------------------------------------

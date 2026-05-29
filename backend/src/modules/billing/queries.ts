@@ -168,6 +168,125 @@ export async function setOrgModelId(env: Env, orgId: string, modelRowId: string)
   );
 }
 
+// ── Paystack / subscription queries ──────────────────────────────────────────
+
+export interface OrgSubscription {
+  plan: string;
+  subscription_status: string;
+  paystack_customer_code: string | null;
+  paystack_subscription_code: string | null;
+  subscription_renews_at: string | null;
+}
+
+export async function getOrgSubscription(env: Env, orgId: string): Promise<OrgSubscription> {
+  const row = await queryOne(
+    env,
+    `SELECT plan, subscription_status, paystack_customer_code,
+            paystack_subscription_code, subscription_renews_at
+       FROM organizations WHERE id = $1`,
+    [orgId],
+  );
+  return {
+    plan:                       (row?.plan as string) ?? "free",
+    subscription_status:        (row?.subscription_status as string) ?? "inactive",
+    paystack_customer_code:     (row?.paystack_customer_code as string | null) ?? null,
+    paystack_subscription_code: (row?.paystack_subscription_code as string | null) ?? null,
+    subscription_renews_at:     row?.subscription_renews_at
+      ? new Date(row.subscription_renews_at as string | Date).toISOString()
+      : null,
+  };
+}
+
+export async function setOrgPlan(
+  env: Env,
+  orgId: string,
+  plan: string,
+  subscriptionStatus: string,
+): Promise<void> {
+  await queryRows(
+    env,
+    `UPDATE organizations
+        SET plan = $2, subscription_status = $3
+      WHERE id = $1`,
+    [orgId, plan, subscriptionStatus],
+  );
+}
+
+export async function setOrgPaystackData(
+  env: Env,
+  orgId: string,
+  opts: {
+    plan?: string;
+    subscription_status?: string;
+    paystack_customer_code?: string | null;
+    paystack_subscription_code?: string | null;
+    subscription_renews_at?: string | null;
+  },
+): Promise<void> {
+  // Build SET clause dynamically for only provided fields.
+  const sets: string[] = [];
+  const params: unknown[] = [orgId];
+  let idx = 2;
+
+  if (opts.plan !== undefined) {
+    sets.push(`plan = $${idx++}`);
+    params.push(opts.plan);
+  }
+  if (opts.subscription_status !== undefined) {
+    sets.push(`subscription_status = $${idx++}`);
+    params.push(opts.subscription_status);
+  }
+  if (opts.paystack_customer_code !== undefined) {
+    sets.push(`paystack_customer_code = $${idx++}`);
+    params.push(opts.paystack_customer_code);
+  }
+  if (opts.paystack_subscription_code !== undefined) {
+    sets.push(`paystack_subscription_code = $${idx++}`);
+    params.push(opts.paystack_subscription_code);
+  }
+  if (opts.subscription_renews_at !== undefined) {
+    sets.push(`subscription_renews_at = $${idx++}`);
+    params.push(opts.subscription_renews_at);
+  }
+
+  if (sets.length === 0) return;
+
+  await queryRows(
+    env,
+    `UPDATE organizations SET ${sets.join(", ")} WHERE id = $1`,
+    params,
+  );
+}
+
+/** Look up org ID by Paystack customer code (for webhook processing). */
+export async function getOrgByCustomerCode(
+  env: Env,
+  customerCode: string,
+): Promise<string | null> {
+  const row = await queryOne(
+    env,
+    `SELECT id FROM organizations WHERE paystack_customer_code = $1 LIMIT 1`,
+    [customerCode],
+  );
+  return (row?.id as string | null) ?? null;
+}
+
+/** Get org email (owner) for Paystack customer creation. */
+export async function getOrgOwnerEmail(env: Env, orgId: string): Promise<string | null> {
+  const row = await queryOne(
+    env,
+    `SELECT u.email
+       FROM users u
+       JOIN memberships m ON m.user_id = u.id
+      WHERE m.organization_id = $1 AND m.role = 'owner'
+      LIMIT 1`,
+    [orgId],
+  );
+  return (row?.email as string | null) ?? null;
+}
+
+// ── Model / plan resolution ───────────────────────────────────────────────────
+
 /**
  * Returns the model_id string (e.g. "gemini-2.5-flash") for the org's selected
  * model, falling back to the is_default=true row if the org has no preference.

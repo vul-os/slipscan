@@ -206,7 +206,7 @@ export default function AppLayout() {
                   className="justify-between"
                 >
                   <span className="flex items-center gap-2 min-w-0">
-                    <Avatar name={o.name} size="xs" />
+                    <Avatar name={o.name} src={o.avatar_url} size="xs" />
                     <span className="truncate">{o.name}</span>
                   </span>
                   {o.id === activeOrg?.id && <Check size={14} className="text-ink-700" />}
