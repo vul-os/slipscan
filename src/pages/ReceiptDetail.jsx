@@ -41,6 +41,60 @@ import {
 } from "@/lib/format";
 import { cn } from "@/lib/cn";
 
+// ── Category prettifier ──────────────────────────────────────────────────────
+
+const CATEGORY_LABELS = {
+  "groceries.produce":    "Produce",
+  "groceries.dairy":      "Dairy",
+  "groceries.meat":       "Meat",
+  "groceries.bakery":     "Bakery",
+  "groceries.frozen":     "Frozen",
+  "groceries.beverages":  "Beverages",
+  "groceries.snacks":     "Snacks",
+  "groceries.household":  "Household",
+  "groceries.personal":   "Personal care",
+  "food.restaurant":      "Restaurant",
+  "food.takeaway":        "Takeaway",
+  "food.coffee":          "Coffee",
+  "fuel.petrol":          "Petrol",
+  "fuel.diesel":          "Diesel",
+  "fuel.electric":        "EV charging",
+  "retail.clothing":      "Clothing",
+  "retail.electronics":   "Electronics",
+  "retail.hardware":      "Hardware",
+  "transport.uber":       "Uber",
+  "transport.taxi":       "Taxi",
+  "transport.parking":    "Parking",
+  "utilities.electricity": "Electricity",
+  "utilities.water":      "Water",
+  "utilities.internet":   "Internet",
+  "medical.pharmacy":     "Pharmacy",
+  "medical.doctor":       "Doctor",
+};
+
+function prettyCategory(cat) {
+  if (!cat) return null;
+  if (CATEGORY_LABELS[cat]) return CATEGORY_LABELS[cat];
+  const [parent, sub] = cat.split(".");
+  return (sub ?? parent).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// ── Receipt type map ─────────────────────────────────────────────────────────
+
+const RECEIPT_TYPE = {
+  groceries:     { label: "Groceries",     icon: "🛒" },
+  fuel:          { label: "Fuel",          icon: "⛽" },
+  food:          { label: "Food",          icon: "🍽️" },
+  retail:        { label: "Retail",        icon: "🛍️" },
+  transport:     { label: "Transport",     icon: "🚕" },
+  utilities:     { label: "Utilities",     icon: "💡" },
+  services:      { label: "Services",      icon: "🛠️" },
+  entertainment: { label: "Entertainment", icon: "🎬" },
+  travel:        { label: "Travel",        icon: "✈️" },
+  medical:       { label: "Medical",       icon: "💊" },
+  other:         { label: "Other",         icon: "📄" },
+};
+
 // ── Page shell ───────────────────────────────────────────────────────────────
 
 export default function ReceiptDetailPage() {
@@ -100,6 +154,13 @@ function DetailView({ doc, orgId, docId }) {
     });
   };
 
+  const ext = doc.raw_extraction ?? doc.extraction ?? {};
+  const receiptTypeKey = (doc.receipt_type ?? ext.receipt_type ?? "").toLowerCase();
+  const receiptTypeMeta = RECEIPT_TYPE[receiptTypeKey] ?? null;
+
+  const validation = doc.validation ?? ext.validation ?? null;
+  const sumMismatch = validation?.sum_matches === false;
+
   return (
     <>
       {/* ── Header ── */}
@@ -124,6 +185,15 @@ function DetailView({ doc, orgId, docId }) {
           </h1>
           <div className="mt-3 flex flex-wrap items-center gap-3 text-sm text-ink-500">
             <StatusPill status={doc.status} />
+            {receiptTypeMeta && (
+              <>
+                <span className="text-ink-300">·</span>
+                <Badge tone="neutral">
+                  <span>{receiptTypeMeta.icon}</span>
+                  {receiptTypeMeta.label}
+                </Badge>
+              </>
+            )}
             <span className="text-ink-300">·</span>
             <span>Uploaded {formatRelative(doc.created_at)}</span>
             {doc.transaction_date && (
@@ -195,11 +265,26 @@ function DetailView({ doc, orgId, docId }) {
 
       {/* ── Extraction error banner ── */}
       {doc.extraction_error && (
-        <div className="mb-6 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-2.5">
+        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-2.5">
           <AlertCircle size={16} className="text-amber-600 mt-0.5 shrink-0" />
           <div className="text-sm">
             <div className="font-medium tracking-tight text-amber-900">Extraction couldn't complete</div>
             <div className="text-amber-700 mt-0.5">{doc.extraction_error}</div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Validation mismatch banner ── */}
+      {sumMismatch && (
+        <div className="mb-6 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 flex items-start gap-2.5">
+          <AlertCircle size={16} className="text-amber-600 mt-0.5 shrink-0" />
+          <div className="text-sm">
+            <div className="font-medium tracking-tight text-amber-900">Totals don't match</div>
+            <div className="text-amber-700 mt-0.5">
+              Items + tax + discounts = {formatMoney(validation.computed_total, doc.currency ?? ext.currency)},
+              receipt says {formatMoney(ext.total ?? doc.amount, doc.currency ?? ext.currency)}.
+              Off by {formatMoney(Math.abs(validation.delta ?? 0), doc.currency ?? ext.currency)}.
+            </div>
           </div>
         </div>
       )}
@@ -210,7 +295,8 @@ function DetailView({ doc, orgId, docId }) {
         <div className="space-y-6 min-w-0">
           <ImagePane doc={doc} />
           <SummaryCard doc={doc} />
-          {doc.raw_extraction?.line_items?.length > 0 && <LineItemsCard doc={doc} />}
+          {ext.discounts?.length > 0 && <DiscountsCard doc={doc} />}
+          {(ext.items?.length > 0 || ext.line_items?.length > 0) && <LineItemsCard doc={doc} />}
           <RawCard doc={doc} />
         </div>
 
@@ -262,17 +348,33 @@ function ImagePane({ doc }) {
 }
 
 function SummaryCard({ doc }) {
-  // Prefer top-level fields; fall back to extraction blob
   const ext = doc.raw_extraction ?? doc.extraction ?? {};
+  const currency = doc.currency ?? ext.currency;
+
+  const subtotal = doc.subtotal ?? ext.subtotal;
+  const discountTotal = doc.discount_total ?? ext.discount_total;
+
   const fields = [
-    { label: "Merchant",       value: doc.merchant ?? ext.merchant ?? <Empty /> },
-    { label: "Date",           value: (doc.transaction_date ?? ext.date) ? formatDateLong(doc.transaction_date ?? ext.date) : <Empty /> },
-    { label: "Total",          value: <span className="font-mono text-ink-900">{formatMoney(doc.amount ?? ext.total, doc.currency ?? ext.currency)}</span> },
-    { label: "Tax",            value: (doc.tax ?? ext.tax) != null ? <span className="font-mono">{formatMoney(doc.tax ?? ext.tax, doc.currency ?? ext.currency)}</span> : <Empty /> },
-    { label: "Currency",       value: doc.currency ?? ext.currency ?? <Empty /> },
-    { label: "Payment method", value: (doc.payment_method ?? ext.payment_method) ? <span className="capitalize">{doc.payment_method ?? ext.payment_method}</span> : <Empty /> },
-    { label: "Confidence",     value: ext.confidence != null ? <ConfidencePill value={ext.confidence} /> : <Empty /> },
-  ];
+    { label: "Merchant",        value: doc.merchant ?? ext.merchant ?? <Empty /> },
+    { label: "Date",            value: (doc.transaction_date ?? ext.date) ? formatDateLong(doc.transaction_date ?? ext.date) : <Empty /> },
+    {
+      label: "Subtotal",
+      value: subtotal != null
+        ? <span className="font-mono text-ink-700">{formatMoney(subtotal, currency)}</span>
+        : null,
+    },
+    {
+      label: "Discounts",
+      value: (discountTotal != null && discountTotal !== 0)
+        ? <span className="font-mono text-emerald-700">{formatMoney(discountTotal, currency)}</span>
+        : null,
+    },
+    { label: "Tax",             value: (doc.tax ?? ext.tax) != null ? <span className="font-mono">{formatMoney(doc.tax ?? ext.tax, currency)}</span> : <Empty /> },
+    { label: "Total",           value: <span className="font-mono text-ink-900">{formatMoney(doc.amount ?? ext.total, currency)}</span> },
+    { label: "Currency",        value: currency ?? <Empty /> },
+    { label: "Payment method",  value: (doc.payment_method ?? ext.payment_method) ? <span className="capitalize">{doc.payment_method ?? ext.payment_method}</span> : <Empty /> },
+    { label: "Confidence",      value: ext.confidence != null ? <ConfidencePill value={ext.confidence} /> : <Empty /> },
+  ].filter((f) => f.value !== null);
 
   return (
     <Card>
@@ -297,9 +399,74 @@ function SummaryCard({ doc }) {
   );
 }
 
+// ── Discounts card ────────────────────────────────────────────────────────────
+
+const DISCOUNT_SOURCE_LABELS = {
+  loyalty:  { label: "Loyalty",  tone: "accent" },
+  promo:    { label: "Promo",    tone: "neutral" },
+  coupon:   { label: "Coupon",   tone: "neutral" },
+  manager:  { label: "Manager",  tone: "warning" },
+  other:    { label: "Other",    tone: "neutral" },
+};
+
+function DiscountsCard({ doc }) {
+  const ext = doc.raw_extraction ?? doc.extraction ?? {};
+  const discounts = ext.discounts ?? [];
+  const discountTotal = doc.discount_total ?? ext.discount_total;
+  const currency = doc.currency ?? ext.currency;
+
+  return (
+    <Card className="overflow-hidden">
+      <div className="px-5 py-4 border-b border-ink-100 flex items-baseline justify-between">
+        <h3 className="text-sm font-medium tracking-tight text-ink-900">Discounts &amp; rewards</h3>
+        <span className="text-[11px] text-ink-500 tnum">{discounts.length}</span>
+      </div>
+      <table className="w-full text-sm tnum">
+        <tbody>
+          {discounts.map((d, i) => {
+            const srcMeta = DISCOUNT_SOURCE_LABELS[d.source] ?? { label: d.source ?? "Other", tone: "neutral" };
+            return (
+              <tr key={i} className="border-t border-ink-100 first:border-0">
+                <td className="px-5 py-2.5 text-ink-900">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="truncate max-w-[200px]">{d.label ?? d.raw_text ?? "—"}</span>
+                    <Badge tone={srcMeta.tone}>{srcMeta.label}</Badge>
+                  </div>
+                </td>
+                <td className="px-5 py-2.5 text-right font-mono text-emerald-700 whitespace-nowrap">
+                  {d.amount != null ? formatMoney(d.amount, currency) : "—"}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+        {discountTotal != null && (
+          <tfoot>
+            <tr className="border-t border-ink-200 bg-ink-50/60">
+              <td className="px-5 py-2.5 text-xs font-medium text-ink-600 uppercase tracking-wide">Total saved</td>
+              <td className="px-5 py-2.5 text-right font-mono text-sm font-medium text-emerald-700">
+                {formatMoney(discountTotal, currency)}
+              </td>
+            </tr>
+          </tfoot>
+        )}
+      </table>
+    </Card>
+  );
+}
+
+// ── Line items card ───────────────────────────────────────────────────────────
+
+const VAT_TAG = {
+  "zero-rated": { label: "0%",  tone: "success" },
+  "standard":   { label: "VAT", tone: "neutral" },
+  "exempt":     { label: "Exempt", tone: "neutral" },
+};
+
 function LineItemsCard({ doc }) {
   const ext = doc.raw_extraction ?? doc.extraction ?? {};
-  const items = ext.line_items ?? [];
+  // Support both new shape (items) and old shape (line_items)
+  const items = ext.items ?? ext.line_items ?? [];
   const currency = doc.currency ?? ext.currency;
 
   return (
@@ -310,19 +477,55 @@ function LineItemsCard({ doc }) {
       </div>
       <table className="w-full text-sm tnum">
         <tbody>
-          {items.map((it, i) => (
-            <tr key={i} className="border-t border-ink-100 first:border-0">
-              <td className="px-5 py-2.5 text-ink-900 truncate max-w-[200px]">{it.description || "—"}</td>
-              <td className="px-2 py-2.5 text-ink-500 text-right whitespace-nowrap">
-                {it.qty != null ? formatNumber(it.qty) : "—"}
-                <span className="text-ink-300 mx-1">×</span>
-                <span className="font-mono">{it.unit_price != null ? formatMoney(it.unit_price, currency) : "—"}</span>
-              </td>
-              <td className="px-5 py-2.5 text-right font-mono text-ink-900">
-                {it.total != null ? formatMoney(it.total, currency) : "—"}
-              </td>
-            </tr>
-          ))}
+          {items.map((it, i) => {
+            // New shape: normalized_name / category / vat_status / confidence
+            // Old shape: description / total
+            const displayName = it.normalized_name ?? it.description ?? it.raw_text ?? "—";
+            const rawText = it.raw_text;
+            const showRaw = rawText && rawText !== displayName;
+            const categoryLabel = prettyCategory(it.category);
+            const vatTag = VAT_TAG[it.vat_status] ?? null;
+            const itemAmount = it.amount ?? it.total;
+
+            return (
+              <tr key={i} className="border-t border-ink-100 first:border-0 group hover:bg-ink-50/50 transition-colors">
+                {/* Name + category + raw text on hover */}
+                <td className="px-5 py-2.5 text-ink-900">
+                  <div className="flex items-start gap-2 flex-wrap">
+                    <span className="truncate max-w-[200px]">{displayName}</span>
+                    {categoryLabel && (
+                      <Badge tone="neutral" className="shrink-0">{categoryLabel}</Badge>
+                    )}
+                  </div>
+                  {showRaw && (
+                    <div className="text-[11px] text-ink-400 mt-0.5 truncate max-w-[260px] hidden group-hover:block">
+                      {rawText}
+                    </div>
+                  )}
+                </td>
+                {/* Qty × unit price */}
+                <td className="px-2 py-2.5 text-ink-500 text-right whitespace-nowrap">
+                  {it.qty != null ? formatNumber(it.qty) : "—"}
+                  <span className="text-ink-300 mx-1">×</span>
+                  <span className="font-mono">{it.unit_price != null ? formatMoney(it.unit_price, currency) : "—"}</span>
+                </td>
+                {/* Amount + VAT tag + confidence */}
+                <td className="px-5 py-2.5 text-right whitespace-nowrap">
+                  <div className="flex items-center justify-end gap-2">
+                    {vatTag && (
+                      <Badge tone={vatTag.tone} className="shrink-0">{vatTag.label}</Badge>
+                    )}
+                    <span className="font-mono text-ink-900">
+                      {itemAmount != null ? formatMoney(itemAmount, currency) : "—"}
+                    </span>
+                    {it.confidence != null && (
+                      <ConfidenceDot value={it.confidence} />
+                    )}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </Card>
@@ -643,6 +846,22 @@ function ConfidencePill({ value }) {
     : level === "low" ? "danger"
     : "neutral";
   return <Badge tone={tone}>{label}</Badge>;
+}
+
+// Tiny confidence dot for per-item indicators
+function ConfidenceDot({ value }) {
+  const level = confidenceLevel(value);
+  const cls =
+    level === "high" ? "bg-emerald-400"
+    : level === "medium" ? "bg-amber-400"
+    : level === "low" ? "bg-red-400"
+    : "bg-ink-300";
+  return (
+    <span
+      className={cn("h-1.5 w-1.5 rounded-full shrink-0", cls)}
+      title={`Confidence: ${formatConfidence(value)}`}
+    />
+  );
 }
 
 // Source badge — one of user / rule / signal / llm

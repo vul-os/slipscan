@@ -100,12 +100,15 @@ export async function getDocument(
   orgId: string,
 ): Promise<DocumentRow | null> {
   const rows = await q(
-    `SELECT id, organization_id, uploaded_by, inbound_email_id, source, kind,
-            storage_url, COALESCE(mime_type,'') AS mime_type,
-            COALESCE(size_bytes,0) AS size_bytes, original_name, status,
-            created_at, updated_at
-     FROM documents
-     WHERE id = $1 AND organization_id = $2`,
+    `SELECT d.id, d.organization_id, d.uploaded_by, d.inbound_email_id, d.source, d.kind,
+            d.storage_url, COALESCE(d.mime_type,'') AS mime_type,
+            COALESCE(d.size_bytes,0) AS size_bytes, d.original_name, d.status,
+            d.error, d.created_at, d.updated_at,
+            e.extracted AS extraction
+     FROM documents d
+     LEFT JOIN document_extractions e
+       ON e.document_id = d.id AND e.is_current = TRUE
+     WHERE d.id = $1 AND d.organization_id = $2`,
     [docId, orgId],
   );
   return rows.length ? (rows[0] as unknown as DocumentRow) : null;

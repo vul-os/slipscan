@@ -18,8 +18,59 @@ export interface DocumentRow {
   size_bytes: number;
   original_name: string | null;
   status: DocumentStatus;
+  error?: string | null;
   created_at: string;
   updated_at: string;
+  /** Joined from document_extractions.extracted (current row). Null while pending. */
+  extraction?: ExtractionPayload | null;
+}
+
+/** Gemini extraction payload (mirrors the JSON stored in document_extractions.extracted). */
+export interface ExtractionPayload {
+  // core fields (all versions)
+  merchant?: string;
+  date?: string;
+  total?: number;
+  subtotal?: number;
+  tax?: number;
+  currency?: string;
+  payment_method?: string;
+  confidence?: number;
+  // v2 slip-only rich fields
+  receipt_type?: string;
+  merchant_normalized?: string;
+  discount_total?: number;
+  receipt_number?: string | null;
+  items?: Array<{
+    raw_text?: string;
+    normalized_name?: string;
+    category?: string;
+    qty?: number;
+    unit_price?: number;
+    amount?: number;
+    vat_status?: "zero-rated" | "standard" | "exempt" | "unknown";
+    confidence?: number;
+  }>;
+  discounts?: Array<{
+    raw_text?: string;
+    label?: string;
+    amount?: number;
+    source?: "loyalty" | "promo" | "coupon" | "manager" | "other";
+  }>;
+  validation?: {
+    sum_matches: boolean;
+    computed_total: number;
+    delta: number;
+  };
+  // legacy v1 fields (invoice/bank_statement)
+  line_items?: Array<{
+    description?: string;
+    qty?: number;
+    unit?: number;
+    unit_price?: number;
+    amount?: number;
+    total?: number;
+  }>;
 }
 
 /** inbound_emails table row (subset used by the ingester). */
@@ -64,4 +115,24 @@ export interface DocumentResponse {
   status: string;
   created_at: string;
   updated_at: string;
+  // Extraction surface. Top-level fields are extracted from the current
+  // extraction's payload for ergonomic FE consumption; raw_extraction
+  // is the full payload (items, discounts, validation, etc.).
+  merchant?: string;
+  amount?: number;
+  currency?: string;
+  transaction_date?: string;
+  tax?: number;
+  payment_method?: string;
+  extraction_error?: string;
+  // v2 rich fields surfaced at the top level for FE ergonomics
+  receipt_type?: string;
+  subtotal?: number;
+  discount_total?: number;
+  validation?: {
+    sum_matches: boolean;
+    computed_total: number;
+    delta: number;
+  };
+  raw_extraction?: ExtractionPayload;
 }

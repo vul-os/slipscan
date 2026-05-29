@@ -10,7 +10,7 @@ import type { DocumentKind } from "./types";
 
 // ---- Prompt version constants (mirrors Go PromptVersion* consts) ----
 export const PROMPT_VERSION_KIND_DETECT = "kind-detect-v1";
-export const PROMPT_VERSION_SLIP        = "slip-v1";
+export const PROMPT_VERSION_SLIP        = "slip-v2";
 export const PROMPT_VERSION_INVOICE     = "invoice-v1";
 export const PROMPT_VERSION_STATEMENT   = "bank-statement-v1";
 
@@ -41,42 +41,107 @@ export const kindDetectSchema = {
   required: ["kind"],
 } as const;
 
-// ---- Slip / receipt ----
+// ---- Slip / receipt (v2 — rich structured extraction) ----
 
-export const slipPrompt = `You are a receipt parser (version: slip-v1).
-Extract the data from the attached image or PDF.
+export const slipPrompt = `You are a receipt parser (version: slip-v2).
+Extract structured data from the attached image or PDF receipt.
 
-Rules:
-- merchant: full name as printed (e.g. "WOOLWORTHS PTY LTD #4021"). Null if absent.
+OUTPUT RULES — read carefully before filling any field:
+- Return STRICT JSON matching the schema. No markdown fences, no commentary.
+- All numbers: decimals only. No currency symbols. No thousand-separators.
+- All amounts positive except discounts (which are negative numbers).
 - date: ISO 8601 YYYY-MM-DD. Null if not visible.
 - currency: 3-letter ISO code (ZAR, USD, EUR…). Null if absent.
-- subtotal: amount before tax. 0 if not printed.
-- tax: VAT/GST amount. 0 if none.
-- total: final amount charged. 0 if not readable.
-- line_items: array of purchased lines. Use [] if no lines visible.
-  Each item: description (string), qty (number), unit (unit price, number), amount (line total, number).
-- confidence: self-rating 0.0 – 1.0. Be honest — admins use this to decide what needs manual review.
-- Numbers are decimals only. No currency symbols. No thousand-separators.`;
+- Use null for any field you cannot read confidently.
+
+RECEIPT TYPE — set receipt_type to the single best match:
+  groceries | fuel | food | retail | transport | utilities | services | entertainment | travel | medical | other
+  Detect from the store header, logo, or the majority of items.
+
+MERCHANT FIELDS:
+- merchant: verbatim name as printed (e.g. "SHOPRITE Usave #219 BELLVILLE").
+- merchant_normalized: clean brand name, no store number/location (e.g. "Shoprite").
+
+ITEMS ARRAY — one entry per purchased product/service line:
+- raw_text: verbatim line text from the receipt (e.g. "POTATO B BUY 7KG").
+- normalized_name: clean human-readable product name (e.g. "Potatoes 7kg bag").
+- category: two-level dot-separated category from this taxonomy:
+    groceries.{produce, dairy, meat, bakery, pantry, beverages, frozen, snacks, household, personal_care, baby, pet, other}
+    fuel.{petrol, diesel, other}
+    food.{restaurant, takeaway, cafe, fast_food, alcohol, other}
+    retail.{clothing, electronics, books, home, beauty, hobby, other}
+    transport.{rideshare, taxi, public, parking, tolls, other}
+    utilities.{electricity, water, internet, mobile, tv, other}
+    services.{health, beauty, repair, professional, financial, other}
+    entertainment.{movies, events, subscriptions, other}
+    travel.{flights, accommodation, car_rental, other}
+    medical.{pharmacy, doctor, hospital, other}
+    other
+  If the sub-category is unclear use the parent + ".other" (e.g. "groceries.other").
+- qty: quantity purchased (number). 1 if not stated.
+- unit_price: price per unit (number). 0 if not stated.
+- amount: line total — MUST be positive (number). 0 if unreadable.
+- vat_status: one of zero-rated | standard | exempt | unknown
+    South Africa zero-rated basics: bread, mealie meal, potatoes, milk, eggs, most vegetables,
+    fruit, rice, lentils, dried beans, cooking oil, pilchards, brown bread flour, samp.
+    standard: 15% VAT — most prepared food, electronics, clothing, fuel, restaurants.
+    exempt: financial services, residential rent, education.
+    unknown: when you genuinely cannot tell.
+- confidence: per-item self-rating 0.0–1.0.
+
+DISCOUNTS ARRAY — any line that reduces the total (loyalty rewards, promotional discounts,
+  coupons, manager overrides, etc.). DO NOT include these in items.
+- raw_text: verbatim line text from the receipt.
+- label: short human-readable label (e.g. "Loyalty reward", "Promotional discount").
+- amount: NEGATIVE number (e.g. -29.99).
+- source: one of loyalty | promo | coupon | manager | other.
+
+PAYMENT METHOD: cash | card | eft | loyalty | other — null if not shown.
+
+CONFIDENCE (top-level): overall self-rating 0.0–1.0. Be honest — admins use this to prioritize manual review.
+
+IMPORTANT: If a line item has a negative amount it MUST go into discounts, not items.`;
 
 export const slipSchema = {
   type: "object",
   properties: {
-    merchant:   { type: "string", nullable: true },
-    date:       { type: "string", nullable: true },
-    currency:   { type: "string", nullable: true },
-    subtotal:   { type: "number", nullable: true },
-    tax:        { type: "number", nullable: true },
-    total:      { type: "number", nullable: true },
-    confidence: { type: "number", nullable: true },
-    line_items: {
+    receipt_type:        { type: "string", nullable: true, enum: ["groceries","fuel","food","retail","transport","utilities","services","entertainment","travel","medical","other"] },
+    merchant:            { type: "string", nullable: true },
+    merchant_normalized: { type: "string", nullable: true },
+    date:                { type: "string", nullable: true },
+    currency:            { type: "string", nullable: true },
+    subtotal:            { type: "number", nullable: true },
+    tax:                 { type: "number", nullable: true },
+    discount_total:      { type: "number", nullable: true },
+    total:               { type: "number", nullable: true },
+    payment_method:      { type: "string", nullable: true, enum: ["cash","card","eft","loyalty","other"] },
+    receipt_number:      { type: "string", nullable: true },
+    confidence:          { type: "number", nullable: true },
+    items: {
       type: "array",
       items: {
         type: "object",
         properties: {
-          description: { type: "string", nullable: true },
-          qty:         { type: "number", nullable: true },
-          unit:        { type: "number", nullable: true },
-          amount:      { type: "number", nullable: true },
+          raw_text:        { type: "string", nullable: true },
+          normalized_name: { type: "string", nullable: true },
+          category:        { type: "string", nullable: true },
+          qty:             { type: "number", nullable: true },
+          unit_price:      { type: "number", nullable: true },
+          amount:          { type: "number", nullable: true },
+          vat_status:      { type: "string", nullable: true, enum: ["zero-rated","standard","exempt","unknown"] },
+          confidence:      { type: "number", nullable: true },
+        },
+      },
+    },
+    discounts: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          raw_text: { type: "string", nullable: true },
+          label:    { type: "string", nullable: true },
+          amount:   { type: "number", nullable: true },
+          source:   { type: "string", nullable: true, enum: ["loyalty","promo","coupon","manager","other"] },
         },
       },
     },
@@ -100,8 +165,32 @@ Rules:
 - confidence: 0.0–1.0 self-rating.
 - Numbers are decimals only. No currency symbols. No thousand-separators.`;
 
-// invoiceSchema reuses slipSchema (same structure — mirrors Go invoiceSchema = slipSchema).
-export const invoiceSchema = slipSchema;
+// invoiceSchema: invoice-v1 uses the old flat line_items shape, not the v2 rich items schema.
+// Kept separate so the invoice prompt + schema stay consistent.
+export const invoiceSchema = {
+  type: "object",
+  properties: {
+    merchant:   { type: "string", nullable: true },
+    date:       { type: "string", nullable: true },
+    currency:   { type: "string", nullable: true },
+    subtotal:   { type: "number", nullable: true },
+    tax:        { type: "number", nullable: true },
+    total:      { type: "number", nullable: true },
+    confidence: { type: "number", nullable: true },
+    line_items: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          description: { type: "string", nullable: true },
+          qty:         { type: "number", nullable: true },
+          unit:        { type: "number", nullable: true },
+          amount:      { type: "number", nullable: true },
+        },
+      },
+    },
+  },
+} as const;
 
 // ---- Bank statement ----
 

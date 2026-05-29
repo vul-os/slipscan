@@ -14,7 +14,7 @@
 import { Gemini } from "../../lib/gemini";
 import { getObject } from "../../lib/r2";
 import type { Env } from "../../bindings";
-import type { DocumentKind, Extracted, GeminiRaw, GeminiKind } from "./types";
+import type { DocumentKind, Extracted, GeminiRaw, GeminiKind, RichItem, DiscountItem, ExtractionValidation } from "./types";
 import { normalizeCurrency } from "./currency";
 import { kindDetectPrompt, kindDetectSchema, promptVersionFor, promptSchemaFor } from "./prompts";
 import {
@@ -41,8 +41,54 @@ function derefStr(v: string | null | undefined): string {
 }
 
 /**
+ * Compute validation block from items, discounts, tax, and total.
+ * items_sum + discounts_sum + tax = computed_total.
+ * sum_matches = abs(total - computed_total) < 0.05 (5 cent tolerance).
+ */
+function computeValidation(
+  items: RichItem[],
+  discounts: DiscountItem[],
+  tax: number,
+  total: number,
+): ExtractionValidation {
+  const itemsSum     = items.reduce((acc, it) => acc + it.amount, 0);
+  const discountsSum = discounts.reduce((acc, d) => acc + d.amount, 0);
+  const computedTotal = Math.round((itemsSum + discountsSum + tax) * 100) / 100;
+  const delta         = Math.round((total - computedTotal) * 100) / 100;
+  return {
+    sum_matches:     Math.abs(delta) < 0.05,
+    computed_total:  computedTotal,
+    delta,
+  };
+}
+
+/**
+ * Defensive coercion: any item with a negative amount that ended up in items[]
+ * gets moved to discounts[].
+ */
+function coerceNegativeItemsToDiscounts(
+  items: RichItem[],
+  discounts: DiscountItem[],
+): { items: RichItem[]; discounts: DiscountItem[] } {
+  const overflowDiscounts: DiscountItem[] = [];
+  const cleanItems = items.filter((it) => {
+    if (it.amount < 0) {
+      overflowDiscounts.push({
+        raw_text: it.raw_text,
+        label:    it.normalized_name || it.raw_text,
+        amount:   it.amount,
+        source:   "other",
+      });
+      return false;
+    }
+    return true;
+  });
+  return { items: cleanItems, discounts: [...discounts, ...overflowDiscounts] };
+}
+
+/**
  * Maps a raw Gemini response to the canonical Extracted struct.
- * Port of Go mapToExtracted.
+ * Port of Go mapToExtracted — extended for slip-v2 rich fields.
  */
 function mapToExtracted(kind: DocumentKind, raw: GeminiRaw, orgCurrency: string): Extracted {
   const e: Extracted = {
@@ -63,7 +109,43 @@ function mapToExtracted(kind: DocumentKind, raw: GeminiRaw, orgCurrency: string)
       amount:      deref(l.amount),
       balance:     deref(l.balance),
     }));
+    return e;
+  }
+
+  // slip or invoice — check for v2 fields (items array indicates slip-v2 response)
+  if (raw.items && raw.items.length > 0) {
+    // v2 rich extraction path
+    const rawItems: RichItem[] = (raw.items ?? []).map((it) => ({
+      raw_text:        derefStr(it.raw_text),
+      normalized_name: derefStr(it.normalized_name),
+      category:        derefStr(it.category) || "other",
+      qty:             deref(it.qty) || 1,
+      unit_price:      deref(it.unit_price),
+      amount:          deref(it.amount),
+      vat_status:      (it.vat_status as RichItem["vat_status"]) ?? "unknown",
+      confidence:      deref(it.confidence),
+    }));
+
+    const rawDiscounts: DiscountItem[] = (raw.discounts ?? []).map((d) => ({
+      raw_text: derefStr(d.raw_text),
+      label:    derefStr(d.label),
+      amount:   deref(d.amount),
+      source:   (d.source as DiscountItem["source"]) ?? "other",
+    }));
+
+    // Defensive: move any negative-amount items to discounts
+    const { items, discounts } = coerceNegativeItemsToDiscounts(rawItems, rawDiscounts);
+
+    e.receipt_type       = raw.receipt_type ?? undefined;
+    e.merchant_normalized = raw.merchant_normalized ?? undefined;
+    e.discount_total     = raw.discount_total ?? discounts.reduce((acc, d) => acc + d.amount, 0);
+    e.payment_method     = raw.payment_method ?? undefined;
+    e.receipt_number     = raw.receipt_number ?? null;
+    e.items              = items;
+    e.discounts          = discounts;
+    e.validation         = computeValidation(items, discounts, e.tax, e.total);
   } else {
+    // v1 legacy path (no items array — old prompt or invoice without rich data)
     e.line_items = (raw.line_items ?? []).map((l) => ({
       description: derefStr(l.description),
       qty:         deref(l.qty),

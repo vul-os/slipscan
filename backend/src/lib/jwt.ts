@@ -72,6 +72,48 @@ export async function issueTokens(
   };
 }
 
+// ── Short-lived file-access tokens ───────────────────────────────────────────
+// Issued by the doc detail endpoint so the FE can drop the URL into <img src>
+// without sending Authorization headers. Scoped to (docId, orgId) and verified
+// against the same JWT_SECRET. Short TTL (15 min) to keep blast radius small.
+
+export interface FileTokenClaims {
+  doc: string;
+  org: string;
+}
+
+export async function signFileToken(
+  secret: string,
+  docId: string,
+  orgId: string,
+  ttlSec = 15 * 60,
+): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  return new SignJWT({ doc: docId, org: orgId, typ: "file" })
+    .setProtectedHeader({ alg: ALG })
+    .setIssuer(ISSUER)
+    .setIssuedAt(now)
+    .setNotBefore(now)
+    .setExpirationTime(now + ttlSec)
+    .setJti(crypto.randomUUID())
+    .sign(key(secret));
+}
+
+export async function verifyFileToken(
+  secret: string,
+  raw: string,
+): Promise<FileTokenClaims> {
+  const { payload } = await jwtVerify(raw, key(secret), {
+    issuer: ISSUER,
+    algorithms: [ALG],
+    clockTolerance: 30,
+  });
+  const p = payload as { doc?: string; org?: string; typ?: string };
+  if (p.typ !== "file") throw new Error("wrong token type");
+  if (!p.doc || !p.org) throw new Error("missing scope");
+  return { doc: p.doc, org: p.org };
+}
+
 export async function parseToken(
   secret: string,
   raw: string,

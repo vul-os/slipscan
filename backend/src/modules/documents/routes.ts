@@ -19,6 +19,7 @@ import { requireMember } from "../../middleware/org";
 import { withOrg, queryRows } from "../../db/client";
 import { putObject, deleteObject } from "../../lib/r2";
 import { writeError } from "../../lib/errors";
+import { signFileToken, verifyFileToken } from "../../lib/jwt";
 import {
   insertUploadDocument,
   listDocuments,
@@ -45,6 +46,23 @@ function toResponse(d: DocumentRow, imageUrl?: string): DocumentResponse {
   };
   if (d.uploaded_by) r.uploaded_by = d.uploaded_by;
   if (imageUrl) r.image_url = imageUrl;
+  if (d.error) r.extraction_error = d.error;
+
+  const ext = d.extraction;
+  if (ext && typeof ext === "object") {
+    r.raw_extraction = ext;
+    if (ext.merchant)                       r.merchant          = ext.merchant;
+    if (ext.currency)                       r.currency          = ext.currency;
+    if (ext.date)                           r.transaction_date  = ext.date;
+    if (typeof ext.total === "number")      r.amount            = ext.total;
+    if (typeof ext.tax === "number")        r.tax               = ext.tax;
+    if (ext.payment_method)                 r.payment_method    = ext.payment_method;
+    // v2 rich fields
+    if (ext.receipt_type)                   r.receipt_type      = ext.receipt_type;
+    if (typeof ext.subtotal === "number")   r.subtotal          = ext.subtotal;
+    if (typeof ext.discount_total === "number") r.discount_total = ext.discount_total;
+    if (ext.validation)                     r.validation        = ext.validation;
+  }
   return r;
 }
 
@@ -197,7 +215,60 @@ router.get(
       return writeError(c, 404, "not_found", "document not found");
     }
 
-    return c.json(toResponse(doc));
+    // Mint a short-lived URL the FE can use directly in <img src>.
+    let imageUrl: string | undefined;
+    try {
+      const token = await signFileToken(c.env.JWT_SECRET, doc.id, orgId);
+      const base = c.env.APP_BASE_URL || new URL(c.req.url).origin;
+      imageUrl = `${base}/orgs/${orgId}/documents/${doc.id}/file?token=${encodeURIComponent(token)}`;
+    } catch (err) {
+      console.error("documents get: file token sign failed:", err);
+    }
+
+    return c.json(toResponse(doc, imageUrl));
+  },
+);
+
+// ---- GET /orgs/:orgID/documents/:docID/file ----
+// Streams the stored R2 object. Auth via short-lived `?token=` JWT so the URL
+// can be dropped into <img src> without sending bearer headers.
+router.get(
+  "/orgs/:orgID/documents/:docID/file",
+  async (c) => {
+    const orgId = c.req.param("orgID");
+    const docId = c.req.param("docID");
+    const token = c.req.query("token");
+    if (!token) return writeError(c, 401, "missing_token", "missing file token");
+
+    try {
+      const claims = await verifyFileToken(c.env.JWT_SECRET, token);
+      if (claims.doc !== docId || claims.org !== orgId) {
+        return writeError(c, 403, "scope_mismatch", "token scope does not match url");
+      }
+    } catch {
+      return writeError(c, 401, "invalid_token", "invalid or expired file token");
+    }
+
+    // Look up the doc to get the R2 key + mime. No member check — possession
+    // of a valid scoped token IS the authorisation.
+    const rows = await queryRows(
+      c.env,
+      `SELECT storage_url, COALESCE(mime_type,'application/octet-stream') AS mime_type
+       FROM documents WHERE id = $1 AND organization_id = $2`,
+      [docId, orgId],
+    );
+    if (!rows.length) return writeError(c, 404, "not_found", "document not found");
+    const { storage_url, mime_type } = rows[0] as { storage_url: string; mime_type: string };
+
+    const obj = await c.env.DOCS.get(storage_url);
+    if (!obj) return writeError(c, 404, "file_missing", "stored object not found");
+
+    return new Response(obj.body, {
+      headers: {
+        "Content-Type": mime_type,
+        "Cache-Control": "private, max-age=900",
+      },
+    });
   },
 );
 
