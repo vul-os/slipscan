@@ -89,6 +89,11 @@ export const useDocument = (orgId, docId) =>
     queryKey: orgId && docId ? qk.document(orgId, docId) : ["document", "none"],
     queryFn: () => api.getDocument(orgId, docId),
     enabled: !!orgId && !!docId,
+    // Poll while extraction is in flight so fields appear without a refresh.
+    refetchInterval: (q) => {
+      const s = q.state.data?.status;
+      return s === "pending" || s === "processing" ? 3000 : false;
+    },
   });
 
 // ── Phase 1: transactions, categories, classification corrections ───────────

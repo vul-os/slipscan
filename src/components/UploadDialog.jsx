@@ -59,15 +59,11 @@ export function UploadDialog({ open, onOpenChange }) {
     upload.mutate({ file: selected }, {
       onSuccess: (doc) => {
         toast.success("Receipt uploaded", {
-          description: doc.merchant
-            ? `Extracted ${doc.merchant}`
-            : doc.extraction_error
-              ? "Saved — extraction will retry"
-              : "Saved",
-          action: { label: "View", onClick: () => navigate(`/receipts/${doc.id}`) },
+          description: "Extracting fields…",
         });
         reset();
         onOpenChange(false);
+        navigate(`/receipts/${doc.id}`);
       },
       onError: (e) => {
         setError(e.message);
