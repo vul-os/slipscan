@@ -26,6 +26,7 @@ import {
   getDocument,
 } from "./queries";
 import { ingestEmail, ErrUnknownRecipient, ALLOWED_UPLOAD_MIMES, normalizeMime, sha256Hex } from "./service";
+import { processDocument } from "./pipeline";
 import type { DocumentRow, DocumentResponse } from "./types";
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -153,6 +154,13 @@ router.post(
       console.error("documents upload: save failed:", err);
       return writeError(c, 500, "save_failed", "could not save document");
     }
+
+    // Kick off extract → classify pipeline in the background so the client
+    // gets its 201 immediately. processDocument never throws — errors are
+    // caught and logged inside it — so this can't break the response.
+    c.executionCtx?.waitUntil(
+      processDocument(c.env, orgId, doc.id),
+    );
 
     return c.json(toResponse(doc), 201);
   },

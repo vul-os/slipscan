@@ -2,8 +2,12 @@
  * Extract cron processor — port of the Go cron batch-claim pattern.
  *
  * processPendingExtractions(env, limit):
- *   Claims documents WHERE status='pending' using FOR UPDATE SKIP LOCKED,
- *   transitions them to 'processing', then runs extractDocument for each one.
+ *   Claims documents WHERE status='queued' using FOR UPDATE SKIP LOCKED,
+ *   then runs the full processDocument pipeline (extract → classify) for each.
+ *
+ * This acts as a safety-net: the upload handler fires processDocument via
+ * waitUntil immediately, so the cron only picks up anything that was missed
+ * (e.g. Worker crashed, waitUntil budget exceeded, email-ingest path).
  *
  * Export this function from cron.ts; the integrator wires it into the
  * Worker's scheduled() handler — do NOT edit worker/src/index.ts.
@@ -18,11 +22,11 @@
  */
 import type { Env } from "../../bindings";
 import { claimPendingDocuments } from "./queries";
-import { extractDocument } from "./service";
+import { processDocument } from "../documents/pipeline";
 
 /**
- * Claim up to `limit` pending documents and run the extraction pipeline on
- * each one. Runs claims + extraction concurrently per claimed batch.
+ * Claim up to `limit` pending documents and run the full pipeline (extract +
+ * classify) on each one. Runs concurrently per claimed batch.
  *
  * @param env   Worker environment bindings.
  * @param limit Maximum number of documents to process in this invocation.
@@ -43,13 +47,9 @@ export async function processPendingExtractions(env: Env, limit = 10): Promise<v
   console.log(`extract cron: processing ${claimed.length} pending document(s)`);
 
   // Run all claimed documents concurrently (each has its own DB transaction).
+  // processDocument never throws — errors are caught and logged inside it.
   const results = await Promise.allSettled(
-    claimed.map((doc) =>
-      extractDocument(env, doc.organization_id, doc.id).catch((e) => {
-        console.error(`extract cron: doc=${doc.id} failed:`, e);
-        throw e;
-      }),
-    ),
+    claimed.map((doc) => processDocument(env, doc.organization_id, doc.id)),
   );
 
   const succeeded = results.filter((r) => r.status === "fulfilled").length;
