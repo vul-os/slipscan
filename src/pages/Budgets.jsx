@@ -13,7 +13,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
   DialogDescription, DialogBody, DialogFooter,
 } from "@/components/ui/Dialog";
-import { useBudgets, useGoals, useCategories, useOrgMutation } from "@/lib/queries";
+import { useBudgets, useGoals, useCategories, useOrgMutation, useOrgs } from "@/lib/queries";
 import { qk } from "@/lib/queries";
 import { api } from "@/lib/api";
 import { useOrgStore } from "@/stores/org";
@@ -40,17 +40,25 @@ function barColor(ratio) {
   return "bg-accent";
 }
 
-// Current ISO year-month string, e.g. "2026-05".
-function thisMonth() {
+// Start of current month as YYYY-MM-DD.
+function startOfCurrentMonth() {
   const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-01`;
 }
 
-// Format a budget period label.
+// Allowed budget period enum values (matches backend VALID_PERIODS).
+const PERIOD_OPTIONS = [
+  { value: "monthly",   label: "Monthly" },
+  { value: "weekly",    label: "Weekly" },
+  { value: "quarterly", label: "Quarterly" },
+  { value: "yearly",    label: "Yearly" },
+];
+
+// Format a budget period label for display.
 function periodLabel(period) {
   if (!period) return "";
-  // period may be "2026-05" (monthly), "2026-Q2" (quarterly), "2026" (annual), or a full date.
-  return period;
+  const match = PERIOD_OPTIONS.find((o) => o.value === period);
+  return match ? match.label : period;
 }
 
 // ── Budget progress sub-component ────────────────────────────────────────────
@@ -67,14 +75,18 @@ function BudgetProgressBar({ orgId, budgetId, budgetedTotal, currency }) {
   if (isLoading) return <Skeleton className="h-4 w-full rounded-full mt-2" />;
   if (isError) return <p className="text-[12px] text-ink-400 mt-2">Progress unavailable</p>;
 
-  // Shape: { actual, budgeted, ratio, items: [{ category_id, category_name, actual, budgeted }] }
-  // or bare { actual, budget } — handle both.
-  const actual = toNum(data?.actual ?? data?.spent ?? 0);
-  const budgeted = toNum(data?.budgeted ?? data?.budget ?? budgetedTotal ?? 0);
+  // Backend returns BudgetOut: { id, name, period, start_date, currency, is_active,
+  //   lines: [{ id, amount, rollover, actual, remaining, category_id? }] }
+  const lines = Array.isArray(data?.lines) ? data.lines : [];
+  const budgeted = lines.length > 0
+    ? lines.reduce((s, l) => s + toNum(l.amount ?? 0), 0)
+    : toNum(budgetedTotal ?? 0);
+  const actual = lines.reduce((s, l) => s + toNum(l.actual ?? 0), 0);
   const ratio = budgeted > 0 ? actual / budgeted : 0;
   const pct = Math.round(clamp(ratio) * 100);
 
-  const items = Array.isArray(data?.items) ? data.items : [];
+  // Use lines for per-category breakdown (lines carry category_id, not category_name — show id short or "Uncategorized")
+  const items = lines;
 
   return (
     <div className="mt-3 space-y-2">
@@ -91,16 +103,19 @@ function BudgetProgressBar({ orgId, budgetId, budgetedTotal, currency }) {
       </div>
 
       {/* Per-category breakdown */}
-      {items.length > 0 && (
+      {items.length > 1 && (
         <div className="mt-3 space-y-1.5">
           {items.map((item) => {
-            const a = toNum(item.actual ?? item.spent ?? 0);
-            const b = toNum(item.budgeted ?? item.budget ?? 0);
+            const a = toNum(item.actual ?? 0);
+            const b = toNum(item.amount ?? 0);
             const r = b > 0 ? a / b : 0;
+            const label = item.category_id
+              ? item.category_id.slice(0, 8) + "…"
+              : "Uncategorized";
             return (
-              <div key={item.category_id ?? item.category_name} className="space-y-0.5">
+              <div key={item.id ?? item.category_id ?? Math.random()} className="space-y-0.5">
                 <div className="flex items-center justify-between text-[11px] text-ink-500 tnum">
-                  <span className="truncate max-w-[60%]">{item.category_name ?? item.category_id ?? "Uncategorized"}</span>
+                  <span className="truncate max-w-[60%]">{label}</span>
                   <span>{formatMoney(a, currency)} / {formatMoney(b, currency)}</span>
                 </div>
                 <div className="h-1.5 w-full rounded-full bg-ink-100 overflow-hidden">
@@ -120,45 +135,70 @@ function BudgetProgressBar({ orgId, budgetId, budgetedTotal, currency }) {
 
 // ── Create Budget Dialog ──────────────────────────────────────────────────────
 
-function CreateBudgetDialog({ open, onClose, orgId, categories }) {
-  const [period, setPeriod] = useState(thisMonth());
-  // lines: { [categoryId]: amount string }
-  const [lines, setLines] = useState({});
+function CreateBudgetDialog({ open, onClose, orgId, categories, defaultCurrency }) {
+  const [name, setName] = useState("");
+  const [period, setPeriod] = useState("monthly");
+  const [startDate, setStartDate] = useState(startOfCurrentMonth);
+  const [currency, setCurrency] = useState(() => defaultCurrency || "ZAR");
+  // lineAmounts: { [categoryId]: amount string }
+  const [lineAmounts, setLineAmounts] = useState({});
   const [expanded, setExpanded] = useState(true);
 
   const createBudget = useOrgMutation(orgId, api.createBudget, [qk.budgets(orgId)]);
 
   const onSubmit = useCallback(async (e) => {
     e.preventDefault();
-    if (!period.trim()) {
-      toast.error("Period is required (e.g. 2026-05)");
+    if (!name.trim()) {
+      toast.error("Budget name is required");
       return;
     }
-    const items = Object.entries(lines)
-      .filter(([, v]) => v !== "" && !Number.isNaN(Number(v)) && Number(v) > 0)
-      .map(([category_id, amount]) => ({ category_id, amount: Number(amount) }));
+    if (!startDate) {
+      toast.error("Start date is required");
+      return;
+    }
+    if (!currency.trim()) {
+      toast.error("Currency is required");
+      return;
+    }
 
-    if (items.length === 0) {
+    const lines = Object.entries(lineAmounts)
+      .filter(([, v]) => v !== "" && !Number.isNaN(Number(v)) && Number(v) > 0)
+      .map(([category_id, amount]) => ({
+        category_id,
+        amount: Number(amount),
+        rollover: false,
+      }));
+
+    if (lines.length === 0) {
       toast.error("Add at least one category with an amount.");
       return;
     }
 
     try {
-      await createBudget.mutateAsync({ period: period.trim(), items });
+      await createBudget.mutateAsync({
+        name: name.trim(),
+        period,
+        start_date: startDate,
+        currency: currency.trim().toUpperCase(),
+        lines,
+      });
       toast.success("Budget created");
-      setLines({});
-      setPeriod(thisMonth());
+      setName("");
+      setPeriod("monthly");
+      setStartDate(startOfCurrentMonth());
+      setCurrency(defaultCurrency || "ZAR");
+      setLineAmounts({});
       onClose();
     } catch (err) {
       toast.error(err?.message ?? "Failed to create budget");
     }
-  }, [period, lines, createBudget, onClose]);
+  }, [name, period, startDate, currency, lineAmounts, createBudget, defaultCurrency, onClose]);
 
-  const setLine = (catId, val) =>
-    setLines((prev) => ({ ...prev, [catId]: val }));
+  const setLineAmount = (catId, val) =>
+    setLineAmounts((prev) => ({ ...prev, [catId]: val }));
 
   // Total of all lines
-  const total = Object.values(lines).reduce((sum, v) => {
+  const total = Object.values(lineAmounts).reduce((sum, v) => {
     const n = Number(v);
     return sum + (Number.isFinite(n) && n > 0 ? n : 0);
   }, 0);
@@ -170,22 +210,63 @@ function CreateBudgetDialog({ open, onClose, orgId, categories }) {
           <DialogHeader>
             <DialogTitle>Create budget</DialogTitle>
             <DialogDescription>
-              Set a period and per-category spending limits.
+              Set a name, period, and per-category spending limits.
             </DialogDescription>
           </DialogHeader>
 
           <DialogBody className="space-y-5">
-            {/* Period */}
+            {/* Name */}
             <div className="space-y-1.5">
-              <Label htmlFor="budget-period">Period</Label>
+              <Label htmlFor="budget-name">Name</Label>
               <Input
-                id="budget-period"
-                placeholder="e.g. 2026-05 or 2026-Q2 or 2026"
-                value={period}
-                onChange={(e) => setPeriod(e.target.value)}
+                id="budget-name"
+                placeholder="e.g. Monthly household"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
                 required
               />
-              <p className="text-[11px] text-ink-400">Use YYYY-MM for monthly, YYYY-QN for quarterly, YYYY for annual.</p>
+            </div>
+
+            {/* Period + Start date row */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label htmlFor="budget-period">Period</Label>
+                <select
+                  id="budget-period"
+                  value={period}
+                  onChange={(e) => setPeriod(e.target.value)}
+                  required
+                  className="w-full rounded-md border border-ink-200 bg-surface px-3 py-2 text-sm text-ink-900 focus:outline-none focus:ring-2 focus:ring-accent"
+                >
+                  {PERIOD_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="budget-start-date">Start date</Label>
+                <Input
+                  id="budget-start-date"
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+
+            {/* Currency */}
+            <div className="space-y-1.5">
+              <Label htmlFor="budget-currency">Currency</Label>
+              <Input
+                id="budget-currency"
+                placeholder="e.g. ZAR"
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value)}
+                required
+                className="uppercase"
+                maxLength={3}
+              />
             </div>
 
             {/* Category lines */}
@@ -215,8 +296,8 @@ function CreateBudgetDialog({ open, onClose, orgId, categories }) {
                           min="0"
                           step="0.01"
                           placeholder="0.00"
-                          value={lines[cat.id] ?? ""}
-                          onChange={(e) => setLine(cat.id, e.target.value)}
+                          value={lineAmounts[cat.id] ?? ""}
+                          onChange={(e) => setLineAmount(cat.id, e.target.value)}
                         />
                       </div>
                     ))
@@ -227,7 +308,7 @@ function CreateBudgetDialog({ open, onClose, orgId, categories }) {
               {total > 0 && (
                 <div className="mt-3 flex items-center justify-between text-sm font-medium text-ink-900 tnum border-t border-ink-100 pt-2">
                   <span className="text-ink-500">Total budget</span>
-                  <span>{formatMoney(total)}</span>
+                  <span>{formatMoney(total, currency || undefined)}</span>
                 </div>
               )}
             </div>
@@ -268,19 +349,20 @@ function BudgetCard({ budget, orgId, onDelete }) {
     }
   }, [budget.id, onDelete]);
 
-  // Derive a total budgeted amount from items if available.
-  const items = Array.isArray(budget.items) ? budget.items : [];
-  const budgetedTotal = items.reduce((s, i) => s + toNum(i.amount ?? i.budgeted ?? 0), 0);
+  // Derive a total budgeted amount from lines if available.
+  const lines = Array.isArray(budget.lines) ? budget.lines : [];
+  const budgetedTotal = lines.reduce((s, l) => s + toNum(l.amount ?? 0), 0);
 
   return (
     <Card>
       <CardHeader>
         <div className="flex items-start justify-between gap-2">
           <div>
-            <CardTitle>{periodLabel(budget.period ?? budget.name ?? "Budget")}</CardTitle>
-            {budgetedTotal > 0 && (
-              <CardSubtitle>{formatMoney(budgetedTotal, budget.currency)} budgeted</CardSubtitle>
-            )}
+            <CardTitle>{budget.name ?? periodLabel(budget.period) ?? "Budget"}</CardTitle>
+            <CardSubtitle>
+              {periodLabel(budget.period)}
+              {budgetedTotal > 0 && ` · ${formatMoney(budgetedTotal, budget.currency)} budgeted`}
+            </CardSubtitle>
           </div>
           <Button
             variant="ghost"
@@ -580,6 +662,13 @@ function GoalCard({ goal, orgId, onDelete }) {
 export default function BudgetsPage() {
   const orgId = useOrgStore((s) => s.activeOrgId);
 
+  const { data: orgsData } = useOrgs();
+  const orgList = Array.isArray(orgsData)
+    ? orgsData
+    : (orgsData?.organizations ?? []);
+  const activeOrg = orgList.find((o) => o.id === orgId);
+  const defaultCurrency = activeOrg?.currency?.toUpperCase() || "ZAR";
+
   const { data: budgets, isLoading: budgetsLoading, isError: budgetsError } = useBudgets(orgId);
   const { data: goals, isLoading: goalsLoading, isError: goalsError } = useGoals(orgId);
   const { data: categories } = useCategories(orgId);
@@ -745,6 +834,7 @@ export default function BudgetsPage() {
         onClose={() => setCreateBudgetOpen(false)}
         orgId={orgId}
         categories={catList}
+        defaultCurrency={defaultCurrency}
       />
       <CreateGoalDialog
         open={createGoalOpen}
