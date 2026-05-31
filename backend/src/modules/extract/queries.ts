@@ -250,9 +250,15 @@ export async function claimPendingDocuments(
   try {
     await client.query("BEGIN");
     const res = await client.query(
+      // Claim freshly-uploaded docs ('pending') AND self-heal any doc wedged in
+      // 'processing' for >5 min — e.g. a prior run whose waitUntil/extraction was
+      // cancelled by the Workers runtime. 5 min comfortably exceeds a full
+      // extract+classify pass (two 60s-capped Gemini calls + classify), so an
+      // actively-processing doc is never double-claimed.
       `SELECT id, organization_id
          FROM documents
         WHERE status = 'pending'
+           OR (status = 'processing' AND updated_at < NOW() - INTERVAL '5 minutes')
         ORDER BY created_at
         LIMIT $1
         FOR UPDATE SKIP LOCKED`,

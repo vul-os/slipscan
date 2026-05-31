@@ -26,7 +26,6 @@ import {
   getDocument,
 } from "./queries";
 import { ingestEmail, ErrUnknownRecipient, ALLOWED_UPLOAD_MIMES, normalizeMime, sha256Hex } from "./service";
-import { processDocument } from "./pipeline";
 import type { DocumentRow, DocumentResponse } from "./types";
 
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // 10 MB
@@ -155,13 +154,14 @@ router.post(
       return writeError(c, 500, "save_failed", "could not save document");
     }
 
-    // Kick off extract → classify pipeline in the background so the client
-    // gets its 201 immediately. processDocument never throws — errors are
-    // caught and logged inside it — so this can't break the response.
-    c.executionCtx?.waitUntil(
-      processDocument(c.env, orgId, doc.id),
-    );
-
+    // Leave the document in 'pending'. The every-minute extract cron claims it
+    // and runs the full extract → classify pipeline. We deliberately do NOT run
+    // the pipeline inline via waitUntil: on the deployed Workers runtime the
+    // waitUntil budget is too short for the Gemini calls, so the task gets
+    // cancelled mid-extraction and the doc is left wedged in 'processing'
+    // (which the cron's 'pending' claim could never recover). The cron path is
+    // the reliable free-tier mechanism; see claimPendingDocuments for the
+    // stale-'processing' reclaim that self-heals any docs wedged by other means.
     return c.json(toResponse(doc), 201);
   },
 );
