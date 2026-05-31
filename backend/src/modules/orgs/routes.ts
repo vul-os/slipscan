@@ -50,6 +50,7 @@ import type {
   InvitationRow,
 } from "./types";
 import type { Role, OrganizationKind } from "../../types/schema";
+import { emitAudit } from "../audit/emit";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -168,6 +169,15 @@ router.post("/", requireAuth, async (c) => {
   try {
     const org = await createOrg(c.env, opts);
     const resp = toOrgResponse(org, "owner");
+    // P4-03: audit org creation
+    emitAudit(c.env, {
+      organization_id: org.id,
+      actor_user_id: userId,
+      entity_type: "organization",
+      entity_id: org.id,
+      action: "organization.created",
+      after: { kind: org.kind, name: org.name, slug: org.slug },
+    }, c.executionCtx);
     return c.json(resp, 201);
   } catch (err) {
     if (err instanceof SlugTakenError) {
@@ -233,6 +243,15 @@ router.post("/:orgID/invitations", requireAuth, requireAdmin, async (c) => {
     const inv = await createInvitation(c.env, orgId, email, role, userId, hash, expiresAt);
     const frontendBase = c.env.FRONTEND_BASE_URL ?? "";
     const acceptURL = `${frontendBase}/invitations/accept?token=${plain}`;
+    // P4-03: audit invitation creation
+    emitAudit(c.env, {
+      organization_id: orgId,
+      actor_user_id: userId,
+      entity_type: "invitation",
+      entity_id: inv.id,
+      action: "member.invited",
+      after: { email, role, expires_at: inv.expires_at },
+    }, c.executionCtx);
     // Email is deferred (NoopSender) — return token+URL in response only.
     return c.json(toInviteResponse(inv, plain, acceptURL), 201);
   } catch (err) {
@@ -295,6 +314,15 @@ router.delete("/:orgID/invitations/:inviteID", requireAuth, requireAdmin, async 
   if (!ok) {
     return writeError(c, 404, "not_found", "invitation not found or already consumed");
   }
+  // P4-03: audit invitation revocation
+  emitAudit(c.env, {
+    organization_id: orgId,
+    actor_user_id: c.get("userId"),
+    entity_type: "invitation",
+    entity_id: inviteId,
+    action: "member.invite_revoked",
+    before: { invite_id: inviteId },
+  }, c.executionCtx);
   return c.body(null, 204);
 });
 
@@ -378,6 +406,16 @@ router.patch("/:orgID/avatar", requireAuth, requireAdmin, async (c) => {
   if (!updated) {
     return writeError(c, 404, "not_found", "organization not found");
   }
+
+  // P4-03: audit avatar update
+  emitAudit(c.env, {
+    organization_id: orgId,
+    actor_user_id: c.get("userId"),
+    entity_type: "organization",
+    entity_id: orgId,
+    action: "organization.avatar_updated",
+    after: { avatar_url: avatarUrl },
+  }, c.executionCtx);
 
   // Determine the caller's role (already set by requireAdmin middleware)
   const role = c.get("orgRole") as Role;
@@ -481,6 +519,16 @@ inviteAcceptRouter.post("/accept", requireAuth, async (c) => {
     return writeError(c, 500, "org_lookup_failed", "could not load organization");
   }
 
+  // P4-03: audit membership added via token accept
+  emitAudit(c.env, {
+    organization_id: inv.organization_id,
+    actor_user_id: userId,
+    entity_type: "membership",
+    entity_id: userId,
+    action: "member.added",
+    after: { user_id: userId, role: inv.role },
+  }, c.executionCtx);
+
   return c.json({
     organization: {
       id: org.id,
@@ -535,6 +583,16 @@ inviteAcceptRouter.post("/:id/accept", requireAuth, async (c) => {
   if (!org) {
     return writeError(c, 500, "org_lookup_failed", "could not load organization");
   }
+
+  // P4-03: audit membership added via ID accept
+  emitAudit(c.env, {
+    organization_id: inv.organization_id,
+    actor_user_id: userId,
+    entity_type: "membership",
+    entity_id: userId,
+    action: "member.added",
+    after: { user_id: userId, role: inv.role },
+  }, c.executionCtx);
 
   return c.json({
     organization: {

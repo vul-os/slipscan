@@ -35,6 +35,7 @@ import {
   verifyTransaction,
   verifyWebhookSignature,
 } from "../../lib/paystack";
+import { emitAudit } from "../audit/emit";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -185,7 +186,19 @@ router.post("/orgs/:orgID/billing/subscribe", requireAuth, requireAdmin, async (
 
   // Free plan downgrade — no Paystack call needed.
   if (planCode === "free") {
+    // Capture before-state
+    const subBefore = await getOrgSubscription(c.env, orgId);
     await setOrgPlan(c.env, orgId, "free", "inactive");
+    // P4-03: audit plan downgrade
+    emitAudit(c.env, {
+      organization_id: orgId,
+      actor_user_id: c.get("userId"),
+      entity_type: "organization",
+      entity_id: orgId,
+      action: "billing.plan_changed",
+      before: { plan: subBefore.plan, subscription_status: subBefore.subscription_status },
+      after: { plan: "free", subscription_status: "inactive" },
+    }, c.executionCtx);
     return c.json({ plan: "free", downgraded: true });
   }
 
@@ -258,6 +271,9 @@ router.post("/billing/verify", requireAuth, async (c) => {
   const planCode = (result.metadata?.planCode as string | undefined) ?? null;
   const validPlan = planCode && ["team", "business"].includes(planCode) ? planCode : null;
 
+  // Capture before-state
+  const subBefore = await getOrgSubscription(c.env, orgId);
+
   await setOrgPaystackData(c.env, orgId, {
     ...(validPlan ? { plan: validPlan } : {}),
     subscription_status: "active",
@@ -269,6 +285,18 @@ router.post("/billing/verify", requireAuth, async (c) => {
       ? { subscription_renews_at: result.subscription.next_payment_date }
       : {}),
   });
+
+  // P4-03: audit subscription activation
+  const userId = c.get("userId");
+  emitAudit(c.env, {
+    organization_id: orgId,
+    actor_user_id: userId,
+    entity_type: "organization",
+    entity_id: orgId,
+    action: "billing.subscription_activated",
+    before: { plan: subBefore.plan, subscription_status: subBefore.subscription_status },
+    after: { plan: validPlan ?? "team", subscription_status: "active" },
+  }, c.executionCtx);
 
   return c.json({
     plan: validPlan ?? "team",
@@ -382,7 +410,22 @@ router.post("/orgs/:orgID/billing/model", requireAuth, requireAdmin, async (c) =
     return writeError(c, 404, "model_not_found", "model not found or not available for extraction");
   }
 
+  // Capture before-state
+  const prevModelId = await getOrgModelId(c.env, orgId);
+  const prevModel = prevModelId ? models.find((m) => m.id === prevModelId) : null;
+
   await setOrgModelId(c.env, orgId, modelRowId);
+
+  // P4-03: audit model selection change
+  emitAudit(c.env, {
+    organization_id: orgId,
+    actor_user_id: c.get("userId"),
+    entity_type: "organization",
+    entity_id: orgId,
+    action: "billing.model_changed",
+    before: prevModelId ? { model_id: prevModelId, display_name: prevModel?.display_name ?? null } : null,
+    after: { model_id: modelRowId, display_name: found.display_name },
+  }, c.executionCtx);
 
   return c.json({ model_id: modelRowId, model_name: found.model_id, display_name: found.display_name });
 });
