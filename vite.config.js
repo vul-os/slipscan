@@ -15,7 +15,11 @@ export default defineConfig(({ mode }) => {
       },
     },
     server: {
-      port: 5173,
+      // Fixed port so slipscan can run alongside other local projects without
+      // collisions. strictPort makes Vite fail loudly instead of silently
+      // grabbing a neighbour's port.
+      port: 5175,
+      strictPort: true,
       watch: {
         ignored: [
           "**/.claude/worktrees/**",

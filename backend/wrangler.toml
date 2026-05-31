@@ -1,10 +1,17 @@
 # slip/scan API — Cloudflare Worker (free tier, no Containers).
 # Runs the TypeScript port of the Go backend.
 name = "slipscan-api"
+account_id = "10f67eca9b3b5e812b16689f979f33f7"
 main = "src/index.ts"
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
+
+# Local `wrangler dev` — fixed port so slipscan runs alongside other local
+# projects without collisions. An explicit port makes wrangler fail loudly when
+# it's already taken, rather than silently picking a neighbour's port.
+[dev]
+port = 8788
 
 # Object storage — R2 binding (no S3 keys needed for put/get).
 [[r2_buckets]]
