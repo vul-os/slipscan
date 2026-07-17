@@ -2,7 +2,7 @@
 
 The desktop app is already self-hosted — your machine is the server. This page covers the next step: running the core **headless** on a box that is always on (NAS, home server, mini-PC), with your devices as clients. Same Rust core, same SQLite books, no new trust model.
 
-Why bother: an always-on box keeps mailbox connections held open, runs scheduled bank syncs, and serves every device in the house from one set of books.
+What the server does **today**: serve the core service surface (books, transactions, documents, ledger, reports, packs, vault metadata) over HTTP to clients you point at it. What it does **not do yet**: `slipscan-server` contains no mailbox connectors and no scheduler — held-open IMAP IDLE / Pub/Sub connections and scheduled bank syncs are the design goal for this mode, not shipped behaviour. Until then, run `slipscan mail-sync` / `slipscan import` on the box from cron for the same effect.
 
 ## slipscan-server
 
@@ -24,18 +24,18 @@ curl http://127.0.0.1:7151/health
 # {"status":"ok","version":"0.1.0"}
 ```
 
-Non-negotiable #3 applies verbatim: localhost by default, no hosted SlipScan service of any kind, and the server only ever *listens* — it makes no outbound calls except the providers **you** configured (mailboxes, bank adapters, your LLM endpoint).
+Non-negotiable #3 applies verbatim: localhost by default, no hosted SlipScan service of any kind, and the server only ever *listens* — today it makes no outbound calls at all (when connectors land in server mode, outbound calls will still go only to providers **you** configured).
 
-**Headless secrets:** a server box may have no desktop keychain. On Linux servers, use Secret Service (`gnome-keyring` works fine headless with a login-unlocked keyring) — the same `SecretStore` abstraction the desktop uses. User-presence prompts (Touch ID-class) don't exist headless; that trade-off is yours to make and is covered in [THREAT-MODEL.md](THREAT-MODEL.md#self-host-mode).
+**Headless secrets:** a server box may have no desktop keychain. On Linux servers, use Secret Service (`gnome-keyring` works fine headless with a login-unlocked keyring) — the same `SecretStore` abstraction the desktop uses. Note secret *material* is never set over HTTP — the server rejects secret-flagged settings writes; set secrets locally on the box via the CLI. Keychain access headless is gated only by the service session being unlocked; the trade-off is covered in [THREAT-MODEL.md](THREAT-MODEL.md#self-host-mode).
 
 ## Recommended layout
 
 ```
 ┌────────────────────── your home box / NAS ──────────────────────┐
 │  slipscan-server (127.0.0.1:7151)                               │
-│    ├── books/*.sqlite  + documents/                             │
-│    ├── mailbox connectors (IDLE / Pub/Sub pull — outbound only) │
-│    └── scheduled bank-adapter syncs                             │
+│    ├── slipscan.sqlite (books) + documents/                     │
+│    └── cron: slipscan mail-sync / slipscan import               │
+│        (in-server connectors + scheduler: planned)              │
 │  reverse proxy (caddy/nginx) — TLS + auth, LAN or VPN only      │
 └─────────────────────────────────────────────────────────────────┘
           ▲                    ▲                    ▲
@@ -61,7 +61,7 @@ The same shape works with nginx or Traefik. Rules of thumb:
 
 - **Don't port-forward SlipScan to the internet.** Your finances do not belong on the public internet, TLS or not.
 - Prefer a VPN/overlay (WireGuard, Tailscale-style) for out-of-home access — your devices join the network; nothing is exposed.
-- If you must expose an HTTPS endpoint (e.g. to enable Microsoft Graph push notifications — see [EMAIL.md](EMAIL.md#outlook--microsoft-365)), scope the proxy route to exactly that path and keep auth on everything else.
+- If you ever must expose an HTTPS endpoint, scope the proxy route to exactly that path and keep auth on everything else. (There is currently no SlipScan route that needs one — Microsoft Graph push, which would, is not implemented; see [EMAIL.md](EMAIL.md#outlook--microsoft-365--connector-implemented-no-app-surface-yet).)
 
 ## Exposing via your own Vulos Relay (optional)
 
@@ -71,9 +71,9 @@ This is strictly optional and strictly yours: SlipScan does not ship with, defau
 
 ## Devices as clients
 
-Point the desktop app at your server (**Settings → Server → Connect**) instead of a local book, and it becomes a client of the same `/api/v1` surface — the IPC/HTTP parity in [API.md](API.md) is what makes this a configuration change rather than a different app. Multi-user households and the Tauri mobile companion are Phase 5 ([ROADMAP.md](../ROADMAP.md)); today the practical setup is one household, devices sharing the server's books over LAN/VPN.
+Today the server's clients are anything that speaks HTTP — `curl`, scripts, your own tooling against the `/api/v1` surface ([API.md](API.md)). The desktop app **cannot yet connect to a remote server**: it always opens its local SQLite book, and there is no "Settings → Server → Connect" option. Desktop-as-client, multi-user households, and the Tauri mobile companion are Phase 5 ([ROADMAP.md](../ROADMAP.md)).
 
-Back up the server the same way as the desktop: copy the books directory ([CONFIGURATION.md](CONFIGURATION.md#data-locations)). Secrets stay in that box's keychain and are re-entered on restore — by design.
+Back up the server the same way as the desktop: copy the database file and documents directory ([CONFIGURATION.md](CONFIGURATION.md#data-locations)). Secrets stay in that box's keychain and are re-entered on restore — by design.
 
 ---
 
