@@ -1,8 +1,0 @@
-# Cloudflare Pages headers.
-# HTML and everything by default: never cache (always revalidate the SPA shell).
-/*
-  Cache-Control: no-cache, no-store, must-revalidate
-
-# Hashed, content-addressed build assets: cache forever.
-/assets/*
-  Cache-Control: public, max-age=31536000, immutable

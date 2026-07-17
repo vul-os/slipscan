@@ -1,9 +1,0 @@
-export { default as Reveal } from "./Reveal";
-export { default as RevealGroup } from "./RevealGroup";
-export { default as Parallax } from "./Parallax";
-export { default as ScrollProgress } from "./ScrollProgress";
-export { default as Marquee } from "./Marquee";
-export { default as MagneticButton } from "./MagneticButton";
-export { default as Counter } from "./Counter";
-export { default as TypeOn } from "./TypeOn";
-export { default as AuroraBg } from "./AuroraBg";
