@@ -144,7 +144,8 @@ img{max-width:100%;display:block}
       <a class="btn btn-ghost" href="./docs.html">Read the docs</a>
       <a class="btn btn-ghost" href="https://github.com/vul-os/slipscan" target="_blank" rel="noopener">View on GitHub</a>
     </div>
-    <div class="hero-visual"><img src="./screenshots/dashboard.png" alt="slip/scan dashboard — balances, budgets, category breakdown" loading="lazy"></div>
+    <div class="hero-visual"><img src="./screenshots/dashboard.png" alt="Design direction — an empty workspace state from the legacy app's visual design; current Tauri app screenshots are in progress" loading="lazy"></div>
+    <p style="font-size:12px;opacity:.7;margin-top:8px">Shown: the legacy design direction, not the shipped Tauri app — current screenshots are in progress.</p>
   </div></section>
 
   <section class="section" id="features"><div class="wrap">
@@ -152,11 +153,11 @@ img{max-width:100%;display:block}
     <p class="lead">Vault22/22seven-class personal finance and Xero-class books — with the architecture inverted.</p>
     <div class="grid">
       <div class="card"><div class="dot"></div><h3>Slip extraction</h3><p>Drop a receipt and get line items, per-line categories, discounts, and VAT (<code>slip-v2</code>). Bring your own LLM/OCR key or run a local model — extraction never touches a SlipScan-hosted endpoint, because there isn't one.</p></div>
-      <div class="card"><div class="dot"></div><h3>Your inbox as a pipeline</h3><p>Connect your own mailbox — generic IMAP with IDLE push, Gmail, Microsoft 365, or Proton via Bridge. Receipts, statements, and bank alerts parse straight into your books. Always your accounts, never a relay.</p></div>
-      <div class="card"><div class="dot"></div><h3>Bank sync, run locally</h3><p>Open-source scraper adapters run bank sessions on your machine (South African banks first). Credentials live in a write-only vault under your OS keychain — software can use them, nobody can view them.</p></div>
-      <div class="card"><div class="dot"></div><h3>Real double-entry books</h3><p>Chart of accounts, balanced journals, VAT rates and returns, reconciliation between scraped, emailed, and captured sources, trial balance, CSV export. Personal or business, one book per SQLite file.</p></div>
-      <div class="card"><div class="dot"></div><h3>Signed community packs</h3><p>Category taxonomies, merchant mappings, and classification rules travel as ed25519-signed, versioned packs over git or p2p — no central registry. Rules move, your data never does.</p></div>
-      <div class="card"><div class="dot"></div><h3>Nudges &amp; anonymous benchmarks</h3><p>A 100% local insight engine: budget drift, subscription creep, duplicate charges, VAT deadlines. Compare yourself to peers via differentially-private benchmark packs — reading is perfectly private, contributing is opt-in and anonymous.</p></div>
+      <div class="card"><div class="dot"></div><h3>Your inbox as a pipeline</h3><p>Connect your own mailbox — generic IMAP polling works today; Gmail, Microsoft 365, and IDLE/Pub/Sub push connectors are built and being wired up. Receipt attachments land straight in your books. Always your accounts, never a relay.</p></div>
+      <div class="card"><div class="dot"></div><h3>Bank sync, run locally</h3><p>An open-source adapter framework runs on your machine — statement CSV parsing with SA-bank presets today, live scraper adapters (South African banks first) on the roadmap. Credentials live in a write-only vault under your OS keychain — software can use them, nobody can view them.</p></div>
+      <div class="card"><div class="dot"></div><h3>Real double-entry books</h3><p>Chart of accounts, balanced journals, VAT rates and summaries, scored bank reconciliation, trial balance, CSV export. Personal or business books in one plain SQLite file.</p></div>
+      <div class="card"><div class="dot"></div><h3>Signed community packs</h3><p>Category taxonomies, merchant mappings, and classification rules travel as ed25519-signed, versioned packs over git or p2p — no central registry. Rules move, your data never does. (Signature-verified install works today; rule-driven auto-categorisation is being wired up.)</p></div>
+      <div class="card"><div class="dot"></div><h3>Nudges &amp; anonymous benchmarks</h3><p>A 100% local insight engine — budget drift, duplicate charges, and subscription detection ship today; more nudges and differentially-private peer benchmarks are designed and on the roadmap. Reading benchmarks will be perfectly private; contributing opt-in and anonymous.</p></div>
     </div>
   </div></section>
 
@@ -169,8 +170,8 @@ img{max-width:100%;display:block}
         <pre>git clone https://github.com/vul-os/slipscan
 cd slipscan
 
-<span class="c"># create a book and import transactions</span>
-cargo run -p slipscan-cli -- init "Personal"
+<span class="c"># create a book and import a statement file</span>
+cargo run -p slipscan-cli -- init --name "Personal" --kind personal
 cargo run -p slipscan-cli -- import statement.csv
 
 <span class="c"># or run the desktop app</span>
@@ -178,8 +179,8 @@ cd apps/desktop &amp;&amp; npm install &amp;&amp; npm run tauri dev</pre>
       </div>
       <ol class="steps">
         <li><span class="num">1</span><div><b>Build</b><span>Rust toolchain + Node for the desktop shell. One workspace, no external services, no Docker, no database server.</span></div></li>
-        <li><span class="num">2</span><div><b>Create a book</b><span>One SQLite file per book, at a path you choose. Personal or business — the kind drives which features surface.</span></div></li>
-        <li><span class="num">3</span><div><b>Feed it</b><span>Drag in slips, point it at a watch folder, connect a mailbox, or configure a bank adapter. Everything reconciles locally.</span></div></li>
+        <li><span class="num">2</span><div><b>Create a book</b><span>Your books in one plain SQLite file, at a path you choose. Personal or business — the kind drives which features surface.</span></div></li>
+        <li><span class="num">3</span><div><b>Feed it</b><span>Import slips in the app, bring in statement files with the CLI, or poll a mailbox with <code>mail-sync</code>. Everything reconciles locally.</span></div></li>
       </ol>
     </div>
   </div></section>
@@ -212,7 +213,7 @@ cd apps/desktop &amp;&amp; npm install &amp;&amp; npm run tauri dev</pre>
     <div class="links">
       <a href="./docs.html">Docs</a>
       <a href="https://github.com/vul-os/slipscan" target="_blank" rel="noopener">GitHub</a>
-      <a href="../LICENSE">License</a>
+      <a href="./LICENSE.txt">License</a>
       <a href="https://vulos.org" target="_blank" rel="noopener">vulos.org</a>
     </div>
   </div></footer>
