@@ -368,6 +368,11 @@ impl CoreService {
             ));
         }
         let currency = normalize_currency_code(&new.currency)?;
+        // A malformed posted_date would not error anywhere downstream — the
+        // transaction silently escapes every date-ranged report, month
+        // bucket, and budget-spend match. Reject it here, like journal
+        // posting does.
+        parse_date(&new.posted_date)?;
         // Bound transaction amounts like journal lines: keeps `abs()` (journal
         // generation, recon scoring) panic-free and SQLite `SUM()` in integer
         // range for realistic row counts. `checked_abs` rejects i64::MIN.
@@ -538,6 +543,11 @@ impl CoreService {
     /// evidence the mapping itself is wrong).
     pub fn transaction_uncategorize(&self, transaction_id: &str) -> CoreResult<Transaction> {
         let before = self.transaction_get(transaction_id)?;
+        // Already uncategorised: a no-op. Recording a None→None "correction"
+        // plus an audit row on every repeat call is pure noise.
+        if before.category_id.is_none() {
+            return Ok(before);
+        }
         let now = now_iso();
         let tx = self.conn().unchecked_transaction()?;
         repo::transaction::set_category(&tx, transaction_id, None, &now)?;
@@ -627,9 +637,21 @@ impl CoreService {
     // -----------------------------------------------------------------------
 
     pub fn budget_upsert(&self, upsert: BudgetUpsert) -> CoreResult<Budget> {
-        if upsert.month.len() != 7 || upsert.month.as_bytes()[4] != b'-' {
+        // Shape *and* range: an impossible month like "2026-13" would be
+        // stored fine (the schema CHECK is digits-only) but can never match
+        // any transaction's substr(posted_date, 1, 7) — a budget that
+        // silently reports zero spend forever.
+        let month_ok = {
+            let b = upsert.month.as_bytes();
+            b.len() == 7
+                && b[4] == b'-'
+                && b[..4].iter().all(u8::is_ascii_digit)
+                && b[5..].iter().all(u8::is_ascii_digit)
+                && ("01"..="12").contains(&&upsert.month[5..])
+        };
+        if !month_ok {
             return Err(CoreError::Validation(format!(
-                "month must be YYYY-MM, got {:?}",
+                "month must be YYYY-MM (MM in 01..=12), got {:?}",
                 upsert.month
             )));
         }
@@ -673,6 +695,12 @@ impl CoreService {
     /// Budget vs. actual for every budgeted category in `month` (`YYYY-MM`).
     pub fn budget_status(&self, book_id: &str, month: &str) -> CoreResult<Vec<BudgetStatus>> {
         repo::budget::status(self.conn(), book_id, month)
+    }
+
+    /// The stored budget rows for a book and month (amount, currency, and
+    /// the rollover flag — which `budget_status` does not carry).
+    pub fn budget_list(&self, book_id: &str, month: &str) -> CoreResult<Vec<Budget>> {
+        repo::budget::list(self.conn(), book_id, month)
     }
 
     // -----------------------------------------------------------------------
@@ -838,7 +866,8 @@ impl CoreService {
     /// * lines on a fixed-currency account must be in that currency
     /// * `posted_date` is a valid date strictly after the book's financial
     ///   lock date
-    /// * a non-manual source may generate at most one journal
+    /// * a non-manual source may have at most one net-live generated journal
+    ///   (a reversed one no longer blocks posting a corrected replacement)
     pub fn journal_post(&self, new: NewJournal) -> CoreResult<PostedJournal> {
         let book = self.book_get(&new.book_id)?;
         let tx = self.conn().unchecked_transaction()?;
@@ -923,18 +952,24 @@ impl CoreService {
                 )));
             }
         }
+        // A non-manual source may have at most one *net-live* generated
+        // journal. Journals whose effect was cancelled by reversal do not
+        // block regeneration — reversing the wrong generated journal and
+        // posting a corrected one is the documented correction path.
         if new.source_type != JournalSourceType::Manual {
             if let Some(source_id) = new.source_id.as_deref() {
-                if let Some(existing) = repo::ledger::find_journal_by_source(
+                for existing in repo::ledger::find_journals_by_source(
                     tx,
                     &book.id,
                     new.source_type.as_str(),
                     source_id,
                 )? {
-                    return Err(CoreError::DuplicateJournal {
-                        source_type: new.source_type.to_string(),
-                        source_id: existing,
-                    });
+                    if !repo::ledger::is_net_reversed(tx, &existing)? {
+                        return Err(CoreError::DuplicateJournal {
+                            source_type: new.source_type.to_string(),
+                            source_id: existing,
+                        });
+                    }
                 }
             }
         }
@@ -1372,7 +1407,11 @@ impl CoreService {
     /// (customer refund) reduces output VAT rather than inflating input VAT.
     ///
     /// Accounts come from `coa_map` (account / category) with seed-code
-    /// fallbacks. One journal per transaction, enforced.
+    /// fallbacks; the counter fallback follows the category's kind (income /
+    /// expense) before cash direction, so refunds classify correctly even
+    /// without an explicit mapping. A VAT rate is rejected when the counter
+    /// account is not income/expense (transfers carry no supply/purchase).
+    /// One net-live journal per transaction, enforced.
     pub fn journal_generate_for_transaction(
         &self,
         transaction_id: &str,
@@ -1394,10 +1433,25 @@ impl CoreService {
             &txn.account_id,
             COA_CODE_BANK,
         )?;
-        let counter_fallback = if is_outflow {
-            fallback_expense_code(book.kind)
-        } else {
-            fallback_income_code(book.kind)
+        // The seed-code fallback follows the *category's* kind when there is
+        // one — a customer refund (outflow on an income category) must land
+        // on the income fallback, not the expense one, or the VAT side flips
+        // (see the VAT-side rule below). Cash direction only decides for
+        // transfer categories and uncategorised transactions.
+        let category_kind = match txn.category_id.as_deref() {
+            Some(category_id) => repo::category::get(self.conn(), category_id)?.map(|c| c.kind),
+            None => None,
+        };
+        let counter_fallback = match category_kind {
+            Some(CategoryKind::Income) => fallback_income_code(book.kind),
+            Some(CategoryKind::Expense) => fallback_expense_code(book.kind),
+            Some(CategoryKind::Transfer) | None => {
+                if is_outflow {
+                    fallback_expense_code(book.kind)
+                } else {
+                    fallback_income_code(book.kind)
+                }
+            }
         };
         let counter = match txn.category_id.as_deref() {
             Some(category_id) => self.mapped_or_fallback_coa(
@@ -1454,19 +1508,31 @@ impl CoreService {
                 }
             }
             Some(rate) => {
+                // A VAT split only makes sense against a P&L counter: an
+                // asset/liability/equity counter (a transfer between own
+                // accounts, a loan repayment) is neither a supply nor a
+                // purchase, and booking output/input VAT for it would put
+                // phantom amounts in the VAT201 boxes.
+                if !matches!(counter.kind, CoaKind::Expense | CoaKind::Income) {
+                    return Err(CoreError::Validation(format!(
+                        "cannot apply VAT rate {} to this transaction: its \
+                         counter account {} ({}) is {}, not an income or \
+                         expense account — transfer-like movements carry no \
+                         VAT supply or purchase",
+                        rate.code,
+                        counter.code,
+                        counter.name,
+                        counter.kind.as_str(),
+                    )));
+                }
                 let (net, vat_minor) = split_inclusive(gross, rate.rate_bps);
                 // Input side (purchases) vs output side (supplies) follows
                 // the counter account's kind: expense accounts are always
                 // the purchase side even when the cash flows *in* (purchase
                 // refund / supplier credit note), and income accounts are
                 // always the supply side even when cash flows *out*
-                // (customer refund). Other kinds fall back to cash
-                // direction.
-                let input_side = match counter.kind {
-                    CoaKind::Expense => true,
-                    CoaKind::Income => false,
-                    _ => is_outflow,
-                };
+                // (customer refund).
+                let input_side = counter.kind == CoaKind::Expense;
                 let (base_role, vat_role, vat_control_code) = if input_side {
                     (VatRole::InputBase, VatRole::InputVat, COA_CODE_VAT_INPUT)
                 } else {
@@ -1937,6 +2003,17 @@ impl CoreService {
                 id: match_id.to_string(),
             })?;
         if before.state == ReconState::Confirmed && state != ReconState::Confirmed {
+            return Err(CoreError::InvalidStatusTransition {
+                from: before.state.to_string(),
+                to: state.to_string(),
+            });
+        }
+        // A rejected pair is remembered so it is never re-suggested; both
+        // sides become matchable against other counterparts. Confirming the
+        // stale rejected match later could put a transaction/document into
+        // two active confirmed matches at once (recon_confirm never re-checks
+        // the active-match sets — only recon_suggest does).
+        if before.state == ReconState::Rejected && state == ReconState::Confirmed {
             return Err(CoreError::InvalidStatusTransition {
                 from: before.state.to_string(),
                 to: state.to_string(),
@@ -4689,5 +4766,357 @@ mod tests {
         assert_eq!(rows[0].total_minor, 1_000);
         assert_eq!(rows[1].month, "2026-07");
         assert_eq!(rows[1].total_minor, 2_000);
+    }
+
+    // -- round-3 regressions ------------------------------------------------
+
+    #[test]
+    fn recon_suggests_journal_reinstated_by_double_reversal() {
+        // Regression: excluding every journal that has ever been reversed
+        // hid J after J → reverse (R) → reverse R (R2), even though J's
+        // ledger effect is net-live again — the bank movement could never be
+        // reconciled against its journal.
+        let svc = svc();
+        let book = make_book(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let account = make_account(&svc, &book);
+
+        let mut journal = manual(
+            &book,
+            "2026-07-01",
+            vec![
+                jl(by_code(&coa, "6000"), 12_345, 0),
+                jl(by_code(&coa, "1000"), 0, 12_345),
+            ],
+        );
+        journal.narrative = Some("Pick n Pay".into());
+        let posted = svc.journal_post(journal).unwrap();
+        let reversal = svc.journal_reverse(&posted.journal.id, None, None).unwrap();
+        // Undo the mistaken reversal — the only undo path under
+        // reversal-not-edit.
+        svc.journal_reverse(&reversal.journal.id, None, None)
+            .unwrap();
+
+        let mut new = make_txn(&svc, &book, &account);
+        new.amount_minor = -12_345;
+        new.posted_date = "2026-07-02".into();
+        let txn = svc.transaction_create(new).unwrap();
+
+        let matches = svc.recon_suggest(&book.id).unwrap();
+        assert_eq!(
+            matches.len(),
+            1,
+            "a net-live (doubly reversed) journal must be matchable again"
+        );
+        assert_eq!(matches[0].transaction_id, txn.id);
+        assert_eq!(
+            matches[0].journal_id.as_deref(),
+            Some(posted.journal.id.as_str()),
+            "the original journal (not a reversal) is the candidate"
+        );
+    }
+
+    #[test]
+    fn regenerate_journal_after_reversing_the_generated_one() {
+        // Regression: the source-dedupe guard counted reversed (net-dead)
+        // journals, so reverse → regenerate — the documented correction
+        // path — failed with DuplicateJournal forever.
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let account = make_account(&svc, &book);
+        let cat = make_category(&svc, &book, "Supplies");
+        svc.coa_map_set(
+            &book.id,
+            CoaMapEntity::Category,
+            &cat.id,
+            &by_code(&coa, "6450").id,
+        )
+        .unwrap();
+
+        let mut new = make_txn(&svc, &book, &account);
+        new.category_id = Some(cat.id.clone());
+        let txn = svc.transaction_create(new).unwrap();
+
+        let wrong = svc.journal_generate_for_transaction(&txn.id, None).unwrap();
+        svc.journal_reverse(&wrong.journal.id, None, None).unwrap();
+
+        // Correct the classification and regenerate.
+        let corrected = svc
+            .journal_generate_for_transaction(&txn.id, None)
+            .expect("a reversed generated journal must not block regeneration");
+        assert_ne!(corrected.journal.id, wrong.journal.id);
+        assert_eq!(
+            corrected.journal.source_id.as_deref(),
+            Some(txn.id.as_str())
+        );
+
+        // The regenerated journal is net-live, so a third generation is
+        // still a duplicate.
+        match svc.journal_generate_for_transaction(&txn.id, None) {
+            Err(CoreError::DuplicateJournal { source_id, .. }) => {
+                assert_eq!(source_id, corrected.journal.id)
+            }
+            other => panic!("expected DuplicateJournal, got {other:?}"),
+        }
+
+        // And the ledger nets to exactly one live journal's effect: the
+        // bank column carries one 12_345 credit overall.
+        let tb = svc.report_trial_balance(&book.id).unwrap();
+        let bank_row = tb.iter().find(|r| r.code == "1000").unwrap();
+        assert_eq!(bank_row.credit_minor - bank_row.debit_minor, 12_345);
+    }
+
+    #[test]
+    fn reinstated_generated_journal_blocks_regeneration() {
+        // J → reverse (R) → reverse R: J is net-live again, so the source
+        // slot is occupied and regeneration must be rejected.
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let account = make_account(&svc, &book);
+        let txn = svc
+            .transaction_create(make_txn(&svc, &book, &account))
+            .unwrap();
+        let generated = svc.journal_generate_for_transaction(&txn.id, None).unwrap();
+        let reversal = svc
+            .journal_reverse(&generated.journal.id, None, None)
+            .unwrap();
+        svc.journal_reverse(&reversal.journal.id, None, None)
+            .unwrap();
+        assert!(matches!(
+            svc.journal_generate_for_transaction(&txn.id, None),
+            Err(CoreError::DuplicateJournal { .. })
+        ));
+    }
+
+    #[test]
+    fn transaction_create_rejects_malformed_posted_date() {
+        // Regression: a malformed date was stored silently and the money
+        // vanished from every date-ranged report and budget month bucket.
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        for bad in ["01/07/2026", "2026-7-1", "2026-02-30", "yesterday", ""] {
+            let mut new = make_txn(&svc, &book, &account);
+            new.posted_date = bad.into();
+            assert!(
+                matches!(svc.transaction_create(new), Err(CoreError::Validation(_))),
+                "posted_date {bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn customer_refund_on_unmapped_income_category_reduces_output_vat() {
+        // Regression: the counter fallback was picked by cash direction
+        // alone, so a customer refund (outflow) on an *unmapped* income
+        // category landed on the expense fallback and inflated the VAT201
+        // input box instead of reducing output VAT.
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let rates = svc.vat_rate_list(&book.id).unwrap();
+        let std = rate(&rates, "STD");
+        let account = make_account(&svc, &book);
+        let sales_cat = svc
+            .category_create(NewCategory {
+                book_id: book.id.clone(),
+                parent_id: None,
+                name: "Sales".into(),
+                kind: CategoryKind::Income,
+                icon: None,
+                color: None,
+            })
+            .unwrap();
+        // Deliberately NO coa_map entry for the category.
+
+        let mut refund = make_txn(&svc, &book, &account);
+        refund.amount_minor = -11_500;
+        refund.category_id = Some(sales_cat.id.clone());
+        let refund = svc.transaction_create(refund).unwrap();
+        let posted = svc
+            .journal_generate_for_transaction(&refund.id, Some(&std.id))
+            .unwrap();
+
+        // Debit income fallback (output base), debit VAT *output* control,
+        // credit bank — an output-VAT reduction, never an input claim.
+        assert_eq!(posted.lines.len(), 3);
+        let base = &posted.lines[0];
+        assert_eq!(base.coa_id, by_code(&coa, "4200").id); // income fallback
+        assert_eq!(base.debit_minor, 10_000);
+        assert_eq!(base.vat_role, Some(VatRole::OutputBase));
+        let vat = &posted.lines[1];
+        assert_eq!(vat.coa_id, by_code(&coa, "2100").id); // VAT Output Control
+        assert_eq!(vat.debit_minor, 1_500);
+        assert_eq!(vat.vat_role, Some(VatRole::OutputVat));
+
+        let vat201 = svc
+            .report_vat201(&book.id, "2026-07-01", "2026-07-31")
+            .unwrap();
+        assert_eq!(vat201.input_vat_minor, 0, "input box must not be inflated");
+        assert_eq!(vat201.output_vat_minor, -1_500);
+        assert_eq!(vat201.standard_rated_supplies_minor, -10_000);
+    }
+
+    #[test]
+    fn vat_rate_rejected_on_transfer_like_counter_account() {
+        // A category mapped to an asset account (transfer between own
+        // accounts) with a VAT rate would book phantom supplies into the
+        // VAT201 — reject instead.
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let rates = svc.vat_rate_list(&book.id).unwrap();
+        let std = rate(&rates, "STD");
+        let account = make_account(&svc, &book);
+        let cat = make_category(&svc, &book, "Transfers");
+        svc.coa_map_set(
+            &book.id,
+            CoaMapEntity::Category,
+            &cat.id,
+            &by_code(&coa, "1100").id, // Accounts Receivable / asset
+        )
+        .unwrap();
+
+        let mut new = make_txn(&svc, &book, &account);
+        new.amount_minor = 11_500;
+        new.category_id = Some(cat.id.clone());
+        let txn = svc.transaction_create(new).unwrap();
+        assert!(matches!(
+            svc.journal_generate_for_transaction(&txn.id, Some(&std.id)),
+            Err(CoreError::Validation(_))
+        ));
+        // Without a VAT rate the transfer journal is fine.
+        svc.journal_generate_for_transaction(&txn.id, None).unwrap();
+        let vat201 = svc
+            .report_vat201(&book.id, "2026-07-01", "2026-07-31")
+            .unwrap();
+        assert_eq!(vat201.standard_rated_supplies_minor, 0);
+        assert_eq!(vat201.output_vat_minor, 0);
+    }
+
+    #[test]
+    fn transaction_uncategorize_already_uncategorized_is_a_noop() {
+        // Regression: every repeat call appended a None→None correction row
+        // plus an audit entry.
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let txn = svc
+            .transaction_create(make_txn(&svc, &book, &account))
+            .unwrap();
+        assert!(txn.category_id.is_none());
+
+        let corrections_count = |svc: &CoreService| -> i64 {
+            svc.conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM classification_corrections",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let audit_before = svc.audit_list(Some(&book.id), 100).unwrap().len();
+        assert_eq!(corrections_count(&svc), 0);
+
+        let after = svc.transaction_uncategorize(&txn.id).unwrap();
+        assert_eq!(after.category_id, None);
+        assert_eq!(corrections_count(&svc), 0, "no None→None correction row");
+        assert_eq!(
+            svc.audit_list(Some(&book.id), 100).unwrap().len(),
+            audit_before,
+            "no audit noise for a no-op"
+        );
+    }
+
+    #[test]
+    fn recon_rejected_match_cannot_be_confirmed() {
+        // Rejecting frees both sides to match other counterparts; confirming
+        // the stale rejected match later could create two active confirmed
+        // matches for the same transaction/document.
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let doc = svc
+            .document_import(NewDocument {
+                book_id: book.id.clone(),
+                source: DocumentSource::Upload,
+                kind: DocumentKind::Slip,
+                file_path: "/tmp/slip.jpg".into(),
+                mime_type: Some("image/jpeg".into()),
+                size_bytes: Some(1),
+                original_name: Some("slip.jpg".into()),
+                sha256: Some("s1".into()),
+            })
+            .unwrap();
+        let mut new = make_txn(&svc, &book, &account);
+        new.document_id = Some(doc.id.clone());
+        svc.transaction_create(new).unwrap();
+
+        let matches = svc.recon_suggest(&book.id).unwrap();
+        assert_eq!(matches.len(), 1);
+        let rejected = svc.recon_reject(&matches[0].id).unwrap();
+        assert_eq!(rejected.state, ReconState::Rejected);
+        assert!(matches!(
+            svc.recon_confirm(&rejected.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+    }
+
+    #[test]
+    fn budget_upsert_rejects_impossible_month_numbers() {
+        // Regression: "2026-13" / "2026-00" passed the shape check, got
+        // stored, and could never match any transaction month.
+        let svc = svc();
+        let book = make_book(&svc);
+        let cat = make_category(&svc, &book, "Groceries");
+        for bad in ["2026-13", "2026-00", "2026-99", "20a6-01", "2026-1a"] {
+            assert!(
+                matches!(
+                    svc.budget_upsert(BudgetUpsert {
+                        book_id: book.id.clone(),
+                        category_id: cat.id.clone(),
+                        month: bad.into(),
+                        amount_minor: 100_000,
+                        currency: "ZAR".into(),
+                        rollover: false,
+                    }),
+                    Err(CoreError::Validation(_))
+                ),
+                "month {bad:?} must be rejected"
+            );
+        }
+        for good in ["2026-01", "2026-12"] {
+            svc.budget_upsert(BudgetUpsert {
+                book_id: book.id.clone(),
+                category_id: cat.id.clone(),
+                month: good.into(),
+                amount_minor: 100_000,
+                currency: "ZAR".into(),
+                rollover: false,
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn budget_list_returns_stored_rollover_flag() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let cat = make_category(&svc, &book, "Groceries");
+        svc.budget_upsert(BudgetUpsert {
+            book_id: book.id.clone(),
+            category_id: cat.id.clone(),
+            month: "2026-07".into(),
+            amount_minor: 100_000,
+            currency: "ZAR".into(),
+            rollover: true,
+        })
+        .unwrap();
+        let budgets = svc.budget_list(&book.id, "2026-07").unwrap();
+        assert_eq!(budgets.len(), 1);
+        assert!(budgets[0].rollover);
+        assert!(!budgets[0].created_at.is_empty());
     }
 }

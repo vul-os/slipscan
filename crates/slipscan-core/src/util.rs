@@ -23,9 +23,13 @@ pub fn normalize_merchant(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut last_space = true;
     for ch in raw.chars() {
-        let ch = ch.to_ascii_lowercase();
         if ch.is_alphanumeric() {
-            out.push(ch);
+            // Unicode-aware lowercasing: "CAFÉ" and "café" must normalize
+            // identically or merchant→category mappings and recon merchant
+            // scores silently miss for any non-ASCII merchant name.
+            for lower in ch.to_lowercase() {
+                out.push(lower);
+            }
             last_space = false;
         } else if !last_space {
             out.push(' ');
@@ -154,6 +158,19 @@ mod tests {
     fn normalize_merchant_strips_noise() {
         assert_eq!(normalize_merchant("  PICK n PAY *123 "), "pick n pay 123");
         assert_eq!(normalize_merchant("WOOLWORTHS"), "woolworths");
+    }
+
+    #[test]
+    fn normalize_merchant_folds_unicode_case() {
+        // Regression: per-char to_ascii_lowercase left "CAFÉ" ≠ "café", so
+        // learned merchant mappings and recon scores missed for non-ASCII
+        // merchants.
+        assert_eq!(normalize_merchant("CAFÉ"), normalize_merchant("café"));
+        assert_eq!(normalize_merchant("ÉÉ"), "éé");
+        assert_eq!(merchant_similarity("CAFÉ", "café"), 1.0);
+        assert_eq!(merchant_similarity("ÉÉ", "éé"), 1.0);
+        // Multi-char lowercase expansions must not panic (İ → i̇).
+        let _ = normalize_merchant("İSTANBUL MARKET");
     }
 
     #[test]

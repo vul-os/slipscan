@@ -196,21 +196,41 @@ pub fn insert_line(conn: &Connection, line: &JournalLine) -> CoreResult<()> {
     Ok(())
 }
 
-/// Journal id previously generated from a given source, if any.
-pub fn find_journal_by_source(
+/// Ids of every journal previously generated from a given source, oldest
+/// first. More than one row can exist once a generated journal has been
+/// reversed and regenerated; at most one of them is net-live (enforced in
+/// the service layer's posting path).
+pub fn find_journals_by_source(
     conn: &Connection,
     book_id: &str,
     source_type: &str,
     source_id: &str,
-) -> CoreResult<Option<String>> {
-    Ok(conn
-        .query_row(
-            "SELECT id FROM journals
-             WHERE book_id = ?1 AND source_type = ?2 AND source_id = ?3",
-            params![book_id, source_type, source_id],
-            |row| row.get(0),
-        )
-        .optional()?)
+) -> CoreResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM journals
+         WHERE book_id = ?1 AND source_type = ?2 AND source_id = ?3
+         ORDER BY created_at, id",
+    )?;
+    let ids = stmt
+        .query_map(params![book_id, source_type, source_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ids)
+}
+
+/// Whether `journal_id`'s ledger effect is currently cancelled by reversal.
+///
+/// Walks the reversal chain sitting on top of the journal (linear by
+/// construction — a journal can be reversed at most once) and returns parity:
+/// J reversed → cancelled; that reversal itself reversed (the only undo path
+/// under reversal-not-edit) → J is net-live again.
+pub fn is_net_reversed(conn: &Connection, journal_id: &str) -> CoreResult<bool> {
+    let mut cancelled = false;
+    let mut current = journal_id.to_string();
+    while let Some(reversal) = find_reversal(conn, &current)? {
+        cancelled = !cancelled;
+        current = reversal;
+    }
+    Ok(cancelled)
 }
 
 pub fn get_coa_by_code(
