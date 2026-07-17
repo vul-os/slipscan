@@ -30,6 +30,30 @@ pub fn encode(bytes: &[u8]) -> String {
     out
 }
 
+/// URL-safe base64 without padding (RFC 4648 §5) — Gmail `raw` payloads,
+/// PKCE challenges, Pub/Sub message data.
+pub fn encode_url_nopad(bytes: &[u8]) -> String {
+    encode(bytes)
+        .replace('+', "-")
+        .replace('/', "_")
+        .trim_end_matches('=')
+        .to_string()
+}
+
+/// Decode either alphabet (standard or URL-safe), padded or not.
+pub fn decode_any(s: &str) -> Result<Vec<u8>, String> {
+    let normalized: String = s
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            other => other,
+        })
+        .collect();
+    decode(&normalized)
+}
+
 pub fn decode(s: &str) -> Result<Vec<u8>, String> {
     let mut vals = Vec::with_capacity(s.len());
     for c in s.bytes() {
@@ -77,5 +101,15 @@ mod tests {
             let encoded = super::encode(&bytes);
             assert_eq!(super::decode(&encoded).unwrap(), bytes);
         }
+    }
+
+    #[test]
+    fn url_safe_round_trips_and_uses_no_padding() {
+        let bytes = [0xfbu8, 0xff, 0xfe, 0x01];
+        let encoded = super::encode_url_nopad(&bytes);
+        assert!(!encoded.contains(['+', '/', '=']));
+        assert_eq!(super::decode_any(&encoded).unwrap(), bytes);
+        // Standard alphabet with padding also decodes via decode_any.
+        assert_eq!(super::decode_any(&super::encode(&bytes)).unwrap(), bytes);
     }
 }

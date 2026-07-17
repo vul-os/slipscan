@@ -67,8 +67,9 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 /// The result of importing one file.
 #[derive(Debug)]
 pub enum FileImport {
-    /// A new document row was created.
-    Imported(Document),
+    /// A new document row was created (boxed: much larger than the
+    /// duplicate arm).
+    Imported(Box<Document>),
     /// The same content (by SHA-256) already exists in this book.
     Duplicate { existing_id: String },
 }
@@ -102,7 +103,7 @@ pub fn import_document_file(
         sha256: Some(sha256_hex(&bytes)),
     };
     match svc.document_import(new) {
-        Ok(doc) => Ok(FileImport::Imported(doc)),
+        Ok(doc) => Ok(FileImport::Imported(Box::new(doc))),
         Err(CoreError::DuplicateDocument { existing_id }) => {
             Ok(FileImport::Duplicate { existing_id })
         }
@@ -181,8 +182,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("notes.docx");
         std::fs::write(&path, b"hi").unwrap();
-        let err =
-            import_document_file(&svc, &book_id, &path, DocumentSource::Upload).unwrap_err();
+        let err = import_document_file(&svc, &book_id, &path, DocumentSource::Upload).unwrap_err();
         assert!(matches!(err, IngestError::UnsupportedFile(_)));
     }
 }

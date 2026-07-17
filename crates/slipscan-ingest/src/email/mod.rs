@@ -1,11 +1,18 @@
 //! Email inbound: the user's own mailbox as a document source.
 //!
-//! One [`MailboxConnector`] trait, provider implementations behind it (generic
-//! IMAP lives in [`imap`]). Connectors normalise everything into
-//! [`InboundMessage`]s; [`import_message_documents`] then feeds attachments
-//! and receipt-like HTML bodies into the core document pipeline.
+//! One [`MailboxConnector`] trait, provider implementations behind it:
+//! generic IMAP ([`imap`], covers Proton Bridge on `127.0.0.1`), Gmail
+//! ([`gmail`]), Microsoft Graph ([`graph`]); [`oauth`] holds the shared BYO
+//! OAuth machinery (loopback and device-code flows, refresh). Connectors
+//! normalise everything into [`InboundMessage`]s; [`import_message_documents`]
+//! then feeds attachments and receipt-like HTML bodies into the core
+//! document pipeline, and [`sync_mailbox`] drives one full
+//! fetch → import → ack round.
 
+pub mod gmail;
+pub mod graph;
 pub mod imap;
+pub mod oauth;
 mod parse;
 
 pub use parse::{looks_like_receipt, parse_inbound};
@@ -47,17 +54,97 @@ pub struct InboundMessage {
     pub receipt_html: Option<String>,
 }
 
-/// A mailbox (IMAP or similar) the user connected.
-#[async_trait]
-pub trait MailboxConnector: Send {
-    /// Stable connector id, e.g. `"imap"`.
+/// What a push wait produced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailboxEvent {
+    /// The provider announced new mail — run a sync now.
+    NewMail,
+    /// Nothing happened within the timeout — re-issue the wait (or poll).
+    Timeout,
+    /// This connector has no push channel; callers must poll on a timer
+    /// (e.g. Microsoft Graph outside self-host server mode).
+    Unsupported,
+}
+
+/// A mailbox (IMAP, Gmail, Graph) the user connected — the normalized inbox.
+///
+/// The model is *list new since cursor, fetch, ack*: [`list_new`] returns
+/// connector-scoped message ids the cursor has not passed yet,
+/// [`fetch_message`] materialises one message (headers, body, attachments),
+/// and [`mark_processed`] advances the durable cursor so restarts resume
+/// where they left off.
+///
+/// `?Send`: connectors may hold a [`crate::state::CursorStore`] borrowing the
+/// single-threaded core service, so sync runs on the owning thread.
+///
+/// [`list_new`]: MailboxConnector::list_new
+/// [`fetch_message`]: MailboxConnector::fetch_message
+/// [`mark_processed`]: MailboxConnector::mark_processed
+#[async_trait(?Send)]
+pub trait MailboxConnector {
+    /// Stable connector id, e.g. `"imap"`, `"gmail"`, `"graph"`.
     fn name(&self) -> &str;
 
-    /// Fetch messages not yet seen by SlipScan, oldest first.
-    async fn fetch_unseen(&mut self) -> IngestResult<Vec<InboundMessage>>;
+    /// Ids of messages not yet seen by SlipScan, oldest first.
+    async fn list_new(&mut self) -> IngestResult<Vec<String>>;
+
+    /// Fetch one message by the id [`Self::list_new`] returned. `None` when
+    /// the message vanished between listing and fetching.
+    async fn fetch_message(&mut self, message_id: &str) -> IngestResult<Option<InboundMessage>>;
 
     /// Mark a message as processed so it is not fetched again.
     async fn mark_processed(&mut self, message_id: &str) -> IngestResult<()>;
+
+    /// List and fetch in one call. A single unparseable message is skipped
+    /// (the cursor only advances when the caller acks), so one broken mail
+    /// can never wedge a folder.
+    async fn fetch_unseen(&mut self) -> IngestResult<Vec<InboundMessage>> {
+        let ids = self.list_new().await?;
+        let mut messages = Vec::with_capacity(ids.len());
+        for id in ids {
+            match self.fetch_message(&id).await {
+                Ok(Some(msg)) => messages.push(msg),
+                Ok(None) => continue,
+                Err(IngestError::Parse(_)) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(messages)
+    }
+
+    /// Block until the provider announces new mail, the timeout passes, or
+    /// push is unsupported. Push is always an *outbound* connection (IMAP
+    /// IDLE, Pub/Sub pull) — nothing ever connects to the user's machine.
+    async fn wait_for_new(&mut self, _timeout: std::time::Duration) -> IngestResult<MailboxEvent> {
+        Ok(MailboxEvent::Unsupported)
+    }
+}
+
+/// Per-mailbox filter, applied before anything is imported (see
+/// docs/EMAIL.md). Empty allowlist = allow all senders.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailboxFilter {
+    /// Sender addresses or domains, e.g. `["fnb.co.za", "till@shop.example"]`.
+    pub sender_allowlist: Vec<String>,
+}
+
+impl MailboxFilter {
+    pub fn allows(&self, from: &str) -> bool {
+        if self.sender_allowlist.is_empty() {
+            return true;
+        }
+        let from = from.to_ascii_lowercase();
+        self.sender_allowlist.iter().any(|entry| {
+            let entry = entry.to_ascii_lowercase();
+            from == entry || from.ends_with(&format!("@{entry}")) || {
+                // Domain entries also match subdomains: "fnb.co.za" allows
+                // "alerts@secure.fnb.co.za".
+                from.rsplit('@')
+                    .next()
+                    .is_some_and(|dom| dom == entry || dom.ends_with(&format!(".{entry}")))
+            }
+        })
+    }
 }
 
 /// What one email contributed to the document store.
@@ -82,7 +169,11 @@ pub fn import_message_documents(
 
     for attachment in &message.attachments {
         let safe_name = sanitize_filename(&attachment.filename);
-        let ext = safe_name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        let ext = safe_name
+            .rsplit('.')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
         let stored = storage_dir.join(format!("{}-{safe_name}", new_id()));
         import_bytes(
             svc,
@@ -152,6 +243,41 @@ fn import_bytes(
         }
         Err(e) => Err(IngestError::Core(e)),
     }
+}
+
+/// What one sync round contributed.
+#[derive(Debug, Default)]
+pub struct MailboxSyncOutcome {
+    pub messages_seen: usize,
+    pub messages_filtered: usize,
+    pub documents: Vec<Document>,
+    pub duplicates: usize,
+}
+
+/// One full sync round: fetch unseen mail, run the per-mailbox filter,
+/// import documents, ack each message. A message is only acked once its
+/// documents are safely in the store — a crash mid-round refetches, and
+/// content-hash dedup makes the refetch harmless.
+pub async fn sync_mailbox(
+    connector: &mut dyn MailboxConnector,
+    svc: &CoreService,
+    book_id: &str,
+    storage_dir: &Path,
+    filter: &MailboxFilter,
+) -> IngestResult<MailboxSyncOutcome> {
+    let mut outcome = MailboxSyncOutcome::default();
+    for message in connector.fetch_unseen().await? {
+        outcome.messages_seen += 1;
+        if filter.allows(&message.from) {
+            let imported = import_message_documents(svc, book_id, storage_dir, &message)?;
+            outcome.documents.extend(imported.documents);
+            outcome.duplicates += imported.duplicates;
+        } else {
+            outcome.messages_filtered += 1;
+        }
+        connector.mark_processed(&message.id).await?;
+    }
+    Ok(outcome)
 }
 
 /// Keep only the basename and drop path separators / control characters.
@@ -233,6 +359,92 @@ mod tests {
     }
 
     #[test]
+    fn sender_allowlist_matches_addresses_domains_and_subdomains() {
+        let open = MailboxFilter::default();
+        assert!(open.allows("anyone@anywhere.example"));
+
+        let filter = MailboxFilter {
+            sender_allowlist: vec!["fnb.co.za".into(), "till@shop.example".into()],
+        };
+        assert!(filter.allows("alerts@fnb.co.za"));
+        assert!(filter.allows("alerts@secure.FNB.co.za"));
+        assert!(filter.allows("till@shop.example"));
+        assert!(!filter.allows("other@shop.example"));
+        assert!(!filter.allows("alerts@notfnb.co.za.evil.example"));
+    }
+
+    /// Scripted connector for the sync-loop test.
+    struct FakeConnector {
+        queue: Vec<InboundMessage>,
+        acked: Vec<String>,
+    }
+
+    #[async_trait(?Send)]
+    impl MailboxConnector for FakeConnector {
+        fn name(&self) -> &str {
+            "fake"
+        }
+
+        async fn list_new(&mut self) -> IngestResult<Vec<String>> {
+            Ok(self.queue.iter().map(|m| m.id.clone()).collect())
+        }
+
+        async fn fetch_message(&mut self, id: &str) -> IngestResult<Option<InboundMessage>> {
+            Ok(self.queue.iter().find(|m| m.id == id).cloned())
+        }
+
+        async fn mark_processed(&mut self, id: &str) -> IngestResult<()> {
+            self.acked.push(id.to_string());
+            self.queue.retain(|m| m.id != id);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_mailbox_imports_filters_and_acks() {
+        let (svc, book_id) = svc_with_book();
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut allowed = message_with(
+            vec![Attachment {
+                filename: "slip.pdf".into(),
+                mime_type: "application/pdf".into(),
+                bytes: b"%PDF-1.4 sync".to_vec(),
+            }],
+            None,
+        );
+        allowed.id = "1".into();
+        let mut blocked = message_with(
+            vec![Attachment {
+                filename: "spam.pdf".into(),
+                mime_type: "application/pdf".into(),
+                bytes: b"%PDF-1.4 spam".to_vec(),
+            }],
+            None,
+        );
+        blocked.id = "2".into();
+        blocked.from = "noise@untrusted.example".into();
+
+        let mut conn = FakeConnector {
+            queue: vec![allowed, blocked],
+            acked: vec![],
+        };
+        let filter = MailboxFilter {
+            sender_allowlist: vec!["shop.example".into()],
+        };
+        let outcome = sync_mailbox(&mut conn, &svc, &book_id, dir.path(), &filter)
+            .await
+            .unwrap();
+        assert_eq!(outcome.messages_seen, 2);
+        assert_eq!(outcome.messages_filtered, 1);
+        assert_eq!(outcome.documents.len(), 1);
+        // Filtered mail is still acked (we never want to refetch it), but
+        // its content is never imported.
+        assert_eq!(conn.acked, vec!["1", "2"]);
+        assert!(conn.queue.is_empty());
+    }
+
+    #[test]
     fn imports_attachments_and_receipt_body_as_documents() {
         let (svc, book_id) = svc_with_book();
         let dir = tempfile::tempdir().unwrap();
@@ -250,7 +462,10 @@ mod tests {
         assert_eq!(outcome.duplicates, 0);
         for doc in &outcome.documents {
             assert_eq!(doc.source, DocumentSource::Email);
-            assert!(std::path::Path::new(&doc.file_path).exists(), "file written");
+            assert!(
+                std::path::Path::new(&doc.file_path).exists(),
+                "file written"
+            );
         }
 
         // Re-ingesting the same message only yields duplicates.

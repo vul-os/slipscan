@@ -11,6 +11,7 @@ description = "SlipScan ingestion: mailbox (IMAP) connectors, file import/watch,
 slipscan-core = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
@@ -20,13 +21,17 @@ tokio = { workspace = true }
 async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
 csv = "1.4"
 futures = "0.3"
+getrandom = "0.3"
 mail-parser = "0.11"
 notify = "8"
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+] }
 tokio-rustls = "0.26"
 webpki-roots = "1"
+zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-serde_json = { workspace = true }
 tempfile = "3"
 
 [lints]
