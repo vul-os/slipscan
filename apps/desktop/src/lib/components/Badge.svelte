@@ -15,7 +15,7 @@
     warning: "border-warning/25 bg-warning/10 text-warning",
     danger: "border-danger/25 bg-danger/10 text-danger",
     accent:
-      "border-accent-ring/40 bg-accent/15 text-[#5c7500] dark:text-accent",
+      "border-accent-ring/40 bg-accent/15 text-accent-text dark:text-accent",
   };
 
   const dots: Record<string, string> = {

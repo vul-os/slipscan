@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { api } from "../lib/api/client";
   import { theme, type ThemeMode } from "../lib/theme.svelte";
   import type { Book, Settings, VaultCredentialMeta } from "../lib/api/types";
@@ -19,34 +20,76 @@
   // -- credential vault (write-only: secrets go in, only metadata comes out)
   let credentials = $state<VaultCredentialMeta[]>([]);
   let vaultError = $state<string | null>(null);
+  /** A failed vault *read* — kept apart from the generic empty state: for
+   * security-critical data, "could not read the vault" must never look like
+   * "you have no credentials". */
+  let vaultLoadError = $state<string | null>(null);
   let showAddForm = $state(false);
   let addName = $state("");
   let addLabel = $state("");
   let addSecret = $state("");
   let addBusy = $state(false);
+  let addNameInput = $state<HTMLInputElement | null>(null);
   /** Name of the entry currently being rotated, if any. */
   let rotating = $state<string | null>(null);
   let rotateSecret = $state("");
   let rotateBusy = $state(false);
+  let rotateSecretInput = $state<HTMLInputElement | null>(null);
   /** Entry name awaiting a second click to confirm revocation. */
   let revokeArmed = $state<string | null>(null);
+  let revokeTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function disarmRevoke(name?: string) {
+    if (name === undefined || revokeArmed === name) {
+      revokeArmed = null;
+      clearTimeout(revokeTimer);
+    }
+  }
+
+  async function loadVault() {
+    vaultLoadError = null;
+    try {
+      credentials = await api.vaultList();
+    } catch (err) {
+      credentials = [];
+      vaultLoadError = String(err);
+    }
+  }
 
   async function load() {
     loadError = null;
     try {
-      const [settings, books, vault] = await Promise.all([
+      const [settings, books] = await Promise.all([
         api.settingsGet(),
         api.bookList(),
-        api.vaultList().catch(() => [] as VaultCredentialMeta[]),
       ]);
       s = settings;
       book = books[0] ?? null;
-      credentials = vault;
     } catch (err) {
       loadError = String(err);
+      return;
     }
+    await loadVault();
   }
   load();
+
+  function closeAddForm() {
+    showAddForm = false;
+    addName = "";
+    addLabel = "";
+    addSecret = "";
+  }
+
+  async function toggleAddForm() {
+    vaultError = null;
+    if (showAddForm) {
+      closeAddForm();
+      return;
+    }
+    showAddForm = true;
+    await tick();
+    addNameInput?.focus();
+  }
 
   async function save() {
     if (!s) return;
@@ -72,7 +115,7 @@
         label: addLabel.trim() || undefined,
         secret: addSecret,
       });
-      credentials = await api.vaultList();
+      await loadVault();
       addName = "";
       addLabel = "";
       showAddForm = false;
@@ -89,7 +132,7 @@
     rotateBusy = true;
     try {
       await api.vaultReplace({ name, secret: rotateSecret });
-      credentials = await api.vaultList();
+      await loadVault();
       rotating = null;
     } catch (err) {
       vaultError = String(err);
@@ -99,17 +142,31 @@
     }
   }
 
-  /** Two-step revoke: first click arms, second click destroys. */
+  async function toggleRotate(name: string) {
+    rotating = rotating === name ? null : name;
+    rotateSecret = "";
+    vaultError = null;
+    if (rotating) {
+      await tick();
+      rotateSecretInput?.focus();
+    }
+  }
+
+  /** Two-step revoke: first click arms, second click destroys. The armed
+   * state disarms on mouse-out, focus loss, Escape, or a short timeout —
+   * keyboard users must never be left with a permanently armed button. */
   async function revokeCredential(name: string) {
     if (revokeArmed !== name) {
+      disarmRevoke();
       revokeArmed = name;
+      revokeTimer = setTimeout(() => disarmRevoke(name), 5000);
       return;
     }
-    revokeArmed = null;
+    disarmRevoke();
     vaultError = null;
     try {
       await api.vaultRevoke({ name });
-      credentials = await api.vaultList();
+      await loadVault();
     } catch (err) {
       vaultError = String(err);
     }
@@ -363,13 +420,7 @@
           <Icon name="key" size={15} class="text-t3" />
           Credential vault
         </h2>
-        <button
-          class="btn h-7"
-          onclick={() => {
-            showAddForm = !showAddForm;
-            vaultError = null;
-          }}
-        >
+        <button class="btn h-7" onclick={toggleAddForm}>
           <Icon name="plus" size={13} />
           Add credential
         </button>
@@ -389,11 +440,17 @@
       {/if}
 
       {#if showAddForm}
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
+             the keydown handler only closes the form on Escape (a11y win);
+             all interaction happens on the inputs/buttons inside. -->
         <form
           class="mb-4 grid gap-3 rounded-lg border border-line bg-sunken/40 p-3 sm:grid-cols-2"
           onsubmit={(e) => {
             e.preventDefault();
             addCredential();
+          }}
+          onkeydown={(e) => {
+            if (e.key === "Escape") closeAddForm();
           }}
         >
           <label class="block">
@@ -401,6 +458,7 @@
             <input
               class="input font-mono"
               placeholder="imap.password.fastmail"
+              bind:this={addNameInput}
               bind:value={addName}
               required
             />
@@ -436,21 +494,24 @@
             >
               {addBusy ? "Storing…" : "Store in vault"}
             </button>
-            <button
-              class="btn btn-ghost h-7"
-              type="button"
-              onclick={() => {
-                showAddForm = false;
-                addSecret = "";
-              }}
-            >
+            <button class="btn btn-ghost h-7" type="button" onclick={closeAddForm}>
               Cancel
             </button>
           </div>
         </form>
       {/if}
 
-      {#if credentials.length === 0}
+      {#if vaultLoadError}
+        <EmptyState
+          icon="alert-circle"
+          title="Could not read the vault"
+          body="The credential list is unavailable — this does not mean the vault is empty. {vaultLoadError}"
+        >
+          {#snippet actions()}
+            <button class="btn" onclick={loadVault}>Retry</button>
+          {/snippet}
+        </EmptyState>
+      {:else if credentials.length === 0}
         <EmptyState
           icon="key"
           title="No credentials stored"
@@ -480,22 +541,17 @@
                   </span>
                 </span>
                 <div class="flex shrink-0 items-center gap-1.5">
-                  <button
-                    class="btn h-7"
-                    onclick={() => {
-                      rotating = rotating === c.name ? null : c.name;
-                      rotateSecret = "";
-                      vaultError = null;
-                    }}
-                  >
+                  <button class="btn h-7" onclick={() => toggleRotate(c.name)}>
                     <Icon name="refresh" size={13} />
                     Replace
                   </button>
                   <button
                     class="btn btn-danger h-7"
                     onclick={() => revokeCredential(c.name)}
-                    onmouseleave={() => {
-                      if (revokeArmed === c.name) revokeArmed = null;
+                    onmouseleave={() => disarmRevoke(c.name)}
+                    onblur={() => disarmRevoke(c.name)}
+                    onkeydown={(e) => {
+                      if (e.key === "Escape") disarmRevoke(c.name);
                     }}
                   >
                     <Icon name="trash" size={13} />
@@ -504,11 +560,19 @@
                 </div>
               </div>
               {#if rotating === c.name}
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
+                     Escape-to-close only; interaction lives on the input/button. -->
                 <form
                   class="mt-2 flex items-center gap-2 pl-11"
                   onsubmit={(e) => {
                     e.preventDefault();
                     replaceCredential(c.name);
+                  }}
+                  onkeydown={(e) => {
+                    if (e.key === "Escape") {
+                      rotating = null;
+                      rotateSecret = "";
+                    }
                   }}
                 >
                   <input
@@ -516,6 +580,7 @@
                     type="password"
                     autocomplete="off"
                     placeholder="new secret — the old one is destroyed"
+                    bind:this={rotateSecretInput}
                     bind:value={rotateSecret}
                     required
                   />

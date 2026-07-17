@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
+  import { routeCache } from "../lib/loadCache";
   import { fmtMoney, fmtPct } from "../lib/format";
   import type { ReconSuggestion } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -14,27 +15,53 @@
   let bookId = $state("");
   let error = $state<string | null>(null);
 
-  async function load() {
-    loading = true;
+  interface Snapshot {
+    bookId: string;
+    suggestions: ReconSuggestion[];
+  }
+
+  function cacheSnapshot() {
+    routeCache.set<Snapshot>("reconcile", {
+      bookId,
+      suggestions: $state.snapshot(suggestions) as ReconSuggestion[],
+    });
+  }
+
+  async function load(background = false) {
+    if (!background) loading = true;
     error = null;
     try {
       const [book] = await api.bookList();
       if (!book) throw new Error("no book configured");
       bookId = book.id;
       suggestions = await api.reconSuggest({ book_id: book.id });
+      cacheSnapshot();
     } catch (err) {
-      error = String(err);
+      if (!background) error = String(err);
     } finally {
       loading = false;
     }
   }
-  load();
+  // Seed from the session cache so a tab switch renders instantly, then
+  // refresh in the background (stale-while-revalidate).
+  {
+    const cached = routeCache.get<Snapshot>("reconcile");
+    if (cached) {
+      bookId = cached.bookId;
+      suggestions = cached.suggestions;
+      loading = false;
+      load(true);
+    } else {
+      load();
+    }
+  }
 
   async function run() {
     running = true;
     error = null;
     try {
       suggestions = await api.reconSuggest({ book_id: bookId });
+      cacheSnapshot();
     } catch (err) {
       error = String(err);
     } finally {
@@ -49,6 +76,7 @@
       suggestions = suggestions
         .map((x) => (x.id === s.id ? updated : x))
         .filter((x) => x.status !== "rejected");
+      cacheSnapshot();
     } catch (err) {
       error = String(err);
     }
@@ -83,7 +111,7 @@
   >
     <Icon name="alert-circle" size={13} />
     {error}
-    <button class="btn btn-ghost ml-auto h-6 px-1.5 text-[11.5px]" onclick={load}>
+    <button class="btn btn-ghost ml-auto h-6 px-1.5 text-[11.5px]" onclick={() => load()}>
       Retry
     </button>
   </p>

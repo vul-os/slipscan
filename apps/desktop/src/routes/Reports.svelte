@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
-  import { fmtMoney, fmtMonth, fmtPct, monthEnd } from "../lib/format";
+  import { fmtMoney, fmtMonth, fmtPct, localMonth, monthEnd } from "../lib/format";
+  import { swrLoad } from "../lib/loadCache";
   import { csvMoney, downloadCsv, toCsv } from "../lib/csv";
   import type { Book, SpendingReport, VatSummary } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -8,7 +9,7 @@
   import Skeleton from "../lib/components/Skeleton.svelte";
   import Icon from "../lib/components/Icon.svelte";
 
-  const month = new Date().toISOString().slice(0, 7);
+  const month = localMonth();
 
   async function load() {
     const [book] = await api.bookList();
@@ -25,7 +26,10 @@
     return { book, spending, incomeExpense, vat };
   }
 
-  const data = load();
+  type Data = Awaited<ReturnType<typeof load>>;
+  const reload = (fresh = false) =>
+    swrLoad<Data>("reports", load, (v) => (data = v), { fresh });
+  let data = $state(reload());
 
   const shortMonth = (m: string) =>
     new Date(`${m}-01T12:00:00Z`).toLocaleString("en-ZA", { month: "short" });
@@ -143,7 +147,15 @@
   {#snippet actions()}
     <button
       class="btn"
-      onclick={async () => exportTransactions((await data).book)}
+      onclick={async () => {
+        // When the initial load failed, `await data` re-throws its
+        // rejection — surface it instead of silently doing nothing.
+        try {
+          await exportTransactions((await data).book);
+        } catch (err) {
+          exportError = String(err);
+        }
+      }}
     >
       <Icon name="download" size={14} />
       Export CSV
@@ -333,6 +345,10 @@
       icon="alert-circle"
       title="Could not load reports"
       body={String(err)}
-    />
+    >
+      {#snippet actions()}
+        <button class="btn" onclick={() => (data = reload(true))}>Retry</button>
+      {/snippet}
+    </EmptyState>
   </div>
 {/await}

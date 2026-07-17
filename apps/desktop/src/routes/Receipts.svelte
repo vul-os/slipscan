@@ -1,5 +1,6 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
+  import { routeCache } from "../lib/loadCache";
   import { fmtDate, fmtMoney, fmtPct } from "../lib/format";
   import { csvMoney, downloadCsv, toCsv } from "../lib/csv";
   import type { Document, DocumentStatus } from "../lib/api/types";
@@ -18,21 +19,42 @@
   let search = $state("");
   let bookId = $state("");
 
-  async function load() {
-    loading = true;
+  interface Snapshot {
+    bookId: string;
+    docs: Document[];
+  }
+
+  async function load(background = false) {
+    if (!background) loading = true;
     loadError = null;
     try {
       const [book] = await api.bookList();
       if (!book) throw new Error("no book configured");
       bookId = book.id;
       docs = await api.documentList({ book_id: book.id });
+      routeCache.set<Snapshot>("receipts", {
+        bookId,
+        docs: $state.snapshot(docs) as Document[],
+      });
     } catch (err) {
-      loadError = String(err);
+      if (!background) loadError = String(err);
     } finally {
       loading = false;
     }
   }
-  load();
+  // Seed from the session cache so a tab switch renders instantly, then
+  // refresh in the background (stale-while-revalidate).
+  {
+    const cached = routeCache.get<Snapshot>("receipts");
+    if (cached) {
+      bookId = cached.bookId;
+      docs = cached.docs;
+      loading = false;
+      load(true);
+    } else {
+      load();
+    }
+  }
 
   function exportDocs() {
     const csv = toCsv(
@@ -111,11 +133,40 @@
     return btoa(bin);
   }
 
+  /** Formats extraction can work with. The file input's `accept` attribute
+   * is advisory only (any file can be picked via "All Files"), so this is
+   * the real gate — without it a .zip or .exe becomes a permanently
+   * "pending" document. */
+  const ACCEPTED_EXTENSIONS = [
+    ".pdf", ".heic", ".heif", ".png", ".jpg", ".jpeg", ".webp", ".gif",
+    ".bmp", ".tif", ".tiff", ".avif",
+  ];
+  const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
+
+  function unsupportedReason(file: File): string | null {
+    const typeOk =
+      file.type.startsWith("image/") ||
+      file.type === "application/pdf" ||
+      ACCEPTED_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext));
+    if (!typeOk) {
+      return `"${file.name}" is not a supported receipt format — use a photo (JPG, PNG, HEIC, …) or a PDF.`;
+    }
+    if (file.size > MAX_IMPORT_BYTES) {
+      return `"${file.name}" is ${Math.round(file.size / 1024 / 1024)} MB — receipts are capped at ${MAX_IMPORT_BYTES / 1024 / 1024} MB.`;
+    }
+    return null;
+  }
+
   async function onFilePicked(e: Event) {
     const input = e.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     input.value = "";
     if (!file) return;
+    const reason = unsupportedReason(file);
+    if (reason) {
+      importError = reason;
+      return;
+    }
     importing = true;
     importError = null;
     try {
@@ -133,12 +184,19 @@
     }
   }
 
+  let detailError = $state<string | null>(null);
+
   async function toggleDetail(d: Document) {
     if (selected?.id === d.id) {
       selected = null;
       return;
     }
-    selected = await api.documentGet({ document_id: d.id });
+    detailError = null;
+    try {
+      selected = await api.documentGet({ document_id: d.id });
+    } catch (err) {
+      detailError = String(err);
+    }
   }
 </script>
 
@@ -173,6 +231,15 @@
   >
     <Icon name="alert-circle" size={13} />
     {importError}
+  </p>
+{/if}
+
+{#if detailError}
+  <p
+    class="mb-3 flex items-center gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+  >
+    <Icon name="alert-circle" size={13} />
+    Could not open the receipt detail: {detailError}
   </p>
 {/if}
 
@@ -214,14 +281,14 @@
   {:else if loadError}
     <EmptyState icon="alert-circle" title="Could not load receipts" body={loadError}>
       {#snippet actions()}
-        <button class="btn" onclick={load}>Retry</button>
+        <button class="btn" onclick={() => load()}>Retry</button>
       {/snippet}
     </EmptyState>
   {:else if docs.length === 0}
     <EmptyState
       icon="receipt"
       title="No receipts yet"
-      body="Drag a photo or PDF anywhere in this window, forward slips to your watched mailbox, or import from a folder. Files never leave your machine."
+      body="Import a photo or PDF of a slip, or forward slips to your watched mailbox. Files never leave your machine."
       hint="Everything is processed locally or by the LLM provider you configure"
     >
       {#snippet actions()}
@@ -261,11 +328,21 @@
       <tbody>
         {#each filtered as d (d.id)}
           <tr
-            class="cursor-pointer transition-colors hover:bg-sunken/50 {selected?.id ===
+            class="cursor-pointer transition-colors hover:bg-sunken/50 focus-visible:bg-sunken/50 focus-visible:outline-1 focus-visible:outline-accent-ring {selected?.id ===
             d.id
               ? 'bg-sunken/60'
               : ''}"
+            role="button"
+            tabindex="0"
+            aria-expanded={selected?.id === d.id}
+            aria-label="Toggle details for {d.merchant ?? d.file_name}"
             onclick={() => toggleDetail(d)}
+            onkeydown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                toggleDetail(d);
+              }
+            }}
           >
             <td class="td max-w-0">
               <span class="flex items-center gap-2.5">

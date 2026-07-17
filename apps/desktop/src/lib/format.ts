@@ -133,6 +133,20 @@ export function fmtRelative(iso: string, now = new Date()): string {
   return fmtDate(iso);
 }
 
+/**
+ * The current month in the user's *local* time zone as `YYYY-MM`.
+ * (`toISOString().slice(0, 7)` is UTC: in SAST it reports the previous
+ * month between 00:00 and 02:00 local on the 1st.)
+ */
+export function localMonth(now = new Date()): string {
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+}
+
+/** Today's date in the user's *local* time zone as `YYYY-MM-DD`. */
+export function localDate(now = new Date()): string {
+  return `${localMonth(now)}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
 /** Last day of a `YYYY-MM` month as `YYYY-MM-DD` (leap-year aware). */
 export function monthEnd(month: string): string {
   const [y, m] = month.split("-").map(Number) as [number, number];
