@@ -5,8 +5,8 @@ description = "slip/scan — self-hosted personal finance and accounting"
 edition = "2021"
 license = "MIT"
 
-# Keep this crate out of the repo-root workspace for now; the integration
-# step wires slipscan-core in later.
+# Kept out of the repo-root workspace (root members are crates/* only);
+# slipscan-core is wired in as a plain path dependency.
 [workspace]
 
 [lib]
@@ -20,3 +20,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+slipscan-core = { path = "../../../crates/slipscan-core" }
+base64 = "0.22"
+sha2 = "0.10"

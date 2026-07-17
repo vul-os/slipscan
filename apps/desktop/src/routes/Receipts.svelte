@@ -65,14 +65,56 @@
     failed: "danger",
   };
 
-  async function importReceipt() {
-    // Shell placeholder: real flow opens the OS file picker via Tauri.
-    await api.documentImport({
-      book_id: bookId,
-      file_name: `scan-${Date.now().toString(36)}.pdf`,
-      mime_type: "application/pdf",
-    });
-    docs = await api.documentList({ book_id: bookId });
+  let fileInput = $state<HTMLInputElement | null>(null);
+  let importError = $state<string | null>(null);
+  let importing = $state(false);
+
+  /** Expanded row (detail view via document_get). */
+  let selected = $state<Document | null>(null);
+
+  function importReceipt() {
+    importError = null;
+    fileInput?.click();
+  }
+
+  function toBase64(buf: ArrayBuffer): string {
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(bin);
+  }
+
+  async function onFilePicked(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    importing = true;
+    importError = null;
+    try {
+      await api.documentImport({
+        book_id: bookId,
+        file_name: file.name,
+        mime_type: file.type || "application/octet-stream",
+        bytes_base64: toBase64(await file.arrayBuffer()),
+      });
+      docs = await api.documentList({ book_id: bookId });
+    } catch (err) {
+      importError = String(err);
+    } finally {
+      importing = false;
+    }
+  }
+
+  async function toggleDetail(d: Document) {
+    if (selected?.id === d.id) {
+      selected = null;
+      return;
+    }
+    selected = await api.documentGet({ document_id: d.id });
   }
 </script>
 
@@ -86,12 +128,29 @@
       <Icon name="download" size={14} />
       Export
     </button>
-    <button class="btn btn-primary" onclick={importReceipt}>
+    <button class="btn btn-primary" onclick={importReceipt} disabled={importing}>
       <Icon name="upload" size={14} />
-      Import receipt
+      {importing ? "Importing…" : "Import receipt"}
     </button>
   {/snippet}
 </PageHeader>
+
+<input
+  type="file"
+  accept="image/*,.pdf,.heic"
+  class="hidden"
+  bind:this={fileInput}
+  onchange={onFilePicked}
+/>
+
+{#if importError}
+  <p
+    class="mb-3 flex items-center gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+  >
+    <Icon name="alert-circle" size={13} />
+    {importError}
+  </p>
+{/if}
 
 <div class="mb-3 flex flex-wrap items-center gap-2">
   <div class="relative w-64">
@@ -171,7 +230,13 @@
       </thead>
       <tbody>
         {#each filtered as d (d.id)}
-          <tr class="transition-colors hover:bg-sunken/50">
+          <tr
+            class="cursor-pointer transition-colors hover:bg-sunken/50 {selected?.id ===
+            d.id
+              ? 'bg-sunken/60'
+              : ''}"
+            onclick={() => toggleDetail(d)}
+          >
             <td class="td max-w-0">
               <span class="flex items-center gap-2.5">
                 <span
@@ -202,6 +267,60 @@
               {d.extraction ? fmtPct(d.extraction.confidence) : "—"}
             </td>
           </tr>
+          {#if selected?.id === d.id}
+            <tr>
+              <td colspan="5" class="td bg-sunken/30">
+                {#if selected.extraction}
+                  {@const ex = selected.extraction}
+                  <div class="px-2 py-1.5">
+                    <div class="mb-2 flex items-baseline justify-between">
+                      <span class="text-[12.5px] font-semibold">
+                        {ex.merchant || selected.file_name}
+                        <span class="ml-2 text-[11px] font-normal text-t3">
+                          {fmtDate(ex.issued_at)} · {fmtPct(ex.confidence)} confidence
+                        </span>
+                      </span>
+                      <span class="num">{fmtMoney(-ex.total_minor)}</span>
+                    </div>
+                    {#if ex.line_items.length > 0}
+                      <ul class="divide-y divide-line/60">
+                        {#each ex.line_items as li, i (i)}
+                          <li
+                            class="flex items-center gap-3 py-1 text-[12px]"
+                          >
+                            <span class="min-w-0 flex-1 truncate text-t2"
+                              >{li.description}</span
+                            >
+                            <span class="num w-14 text-right text-t3"
+                              >×{li.quantity}</span
+                            >
+                            <span class="num w-24 text-right"
+                              >{fmtMoney(-li.total_minor)}</span
+                            >
+                          </li>
+                        {/each}
+                      </ul>
+                    {/if}
+                    <div
+                      class="mt-2 flex items-center gap-4 text-[11px] text-t3"
+                    >
+                      <span>VAT {fmtMoney(ex.vat_minor)}</span>
+                      {#if ex.discount_minor > 0}
+                        <span>Discounts −{fmtMoney(ex.discount_minor)}</span>
+                      {/if}
+                      <span class="num">{ex.currency}</span>
+                    </div>
+                  </div>
+                {:else}
+                  <p class="px-2 py-2 text-[12px] text-t3">
+                    No extraction yet — this document is {selected.status}.
+                    Configure an LLM provider in Settings to extract line
+                    items, or review it manually.
+                  </p>
+                {/if}
+              </td>
+            </tr>
+          {/if}
         {/each}
       </tbody>
     </table>
