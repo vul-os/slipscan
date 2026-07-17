@@ -4,7 +4,6 @@ import {
   Target, TrendingUp, BookOpen, BarChart3, ShieldCheck,
   Landmark, GitCompareArrows, Briefcase, Brain, CreditCard,
 } from "lucide-react";
-import { Wordmark } from "@/components/Wordmark";
 import { useOrgStore } from "@/stores/org";
 import { useUIStore } from "@/stores/ui";
 import { useOrgs } from "@/lib/queries";
@@ -47,12 +46,8 @@ export function Sidebar({ onNavigate } = {}) {
 
   return (
     <aside className="flex flex-col w-[252px] shrink-0 border-r border-ink-100 bg-ink-50/40 sticky top-[52px] h-[calc(100vh-52px)] overflow-y-auto">
-      {/* Wordmark header */}
-      <div className="px-4 py-4">
-        <Wordmark size="sm" />
-      </div>
-
-      <div className="px-3 mb-3">
+      {/* Brand now lives in the top bar, aligned on the same row as the account toggle */}
+      <div className="px-3 mt-4 mb-3">
         <button
           onClick={() => setPaletteOpen(true)}
           className="w-full flex items-center gap-2 px-2 h-8 rounded border border-ink-200 bg-ink-0 text-[12px] text-ink-500 hover:text-ink-900 hover:border-ink-300 transition-colors"
