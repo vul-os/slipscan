@@ -1,13 +1,41 @@
 //! slipscan — command-line interface.
 //!
-//! Skeleton: `init`, `import`, `serve`, `list`. Binaries may use anyhow.
+//! Subcommands: `init`, `import`, `extract`, `mail-sync`, `recon`, `report`,
+//! `pack`, `vault`, `serve`, `list`. Every command has human-readable output
+//! by default and `--json` for machines. Binaries may use anyhow.
+//!
+//! Privacy posture:
+//! * `serve` binds 127.0.0.1 unless the user passes `--lan` (explicit opt-in)
+//! * API tokens are generated/accepted here but only their SHA-256 is stored
+//! * `vault` subcommands read secret material from a no-echo prompt or stdin
+//!   and never print it — output is metadata only
 
-use anyhow::Context;
+mod extractor;
+
+use anyhow::{anyhow, bail, Context};
 use clap::{Parser, Subcommand, ValueEnum};
-use slipscan_core::domain::{BookKind, NewBook};
+use slipscan_core::domain::{Book, BookKind, DocumentSource, NewBook, TransactionFilter};
+use slipscan_core::secrets::SecretString;
 use slipscan_core::CoreService;
+use slipscan_ingest::email::imap::{connect_tls, ImapConfig, ImapConnector};
+use slipscan_ingest::email::import_message_documents;
+use slipscan_ingest::import::{import_document_file, FileImport};
+use slipscan_ingest::{IngestError, MailboxConnector, SettingsCursorStore};
+use slipscan_server::vault::VaultHandle;
+use slipscan_server::{ops, AuthToken, ServerConfig};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// Settings key holding the IMAP mailbox config JSON ([`ImapConfig`] —
+/// contains no secret material, only the vault credential name).
+const MAIL_CONFIG_SETTING: &str = "mail.imap.config";
+
+/// Settings key naming the configured extraction provider.
+const EXTRACT_PROVIDER_SETTING: &str = "extract.provider";
+
+/// Env var accepted by `serve` for a user-chosen API token (never argv, so
+/// it stays out of shell history and `ps`).
+const TOKEN_ENV: &str = "SLIPSCAN_API_TOKEN";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -19,6 +47,14 @@ struct Cli {
     /// Path to the SlipScan SQLite database file.
     #[arg(long, global = true, default_value = "slipscan.sqlite")]
     db: PathBuf,
+
+    /// Machine-readable JSON output instead of human text.
+    #[arg(long, global = true)]
+    json: bool,
+
+    /// Book to operate on (id or exact name). Optional when only one exists.
+    #[arg(long, global = true)]
+    book: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -47,6 +83,18 @@ enum ListTarget {
     Documents,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ReportKind {
+    /// Trial balance.
+    Tb,
+    /// Profit & loss.
+    Pl,
+    /// Balance sheet.
+    Bs,
+    /// VAT summary.
+    Vat,
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Create the database (and optionally a first book).
@@ -57,17 +105,66 @@ enum Command {
         /// Kind of the first book.
         #[arg(long, value_enum, default_value_t = CliBookKind::Personal)]
         kind: CliBookKind,
+        /// Seed a default chart of accounts into the new book.
+        #[arg(long)]
+        seed_coa: bool,
     },
-    /// Import a document or statement file (placeholder).
+    /// Import document/statement files (pdf, images, html, csv, ofx).
     Import {
-        /// File to import.
-        path: PathBuf,
+        /// Files to import.
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
     },
-    /// Run the headless server (binds 127.0.0.1 unless overridden).
+    /// Run extraction on pending slips via the configured provider.
+    Extract {
+        /// Maximum documents to process this run.
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+    },
+    /// Poll the configured IMAP mailbox and import receipt documents.
+    MailSync {
+        /// Where to store fetched attachments (default: <db dir>/slipscan-documents).
+        #[arg(long)]
+        storage_dir: Option<PathBuf>,
+    },
+    /// Reconciliation: suggest and confirm matches.
+    Recon {
+        #[command(subcommand)]
+        action: ReconAction,
+    },
+    /// Reports: trial balance, profit & loss, balance sheet, VAT.
+    Report {
+        #[arg(value_enum)]
+        kind: ReportKind,
+        /// CSV output (trial balance only).
+        #[arg(long)]
+        csv: bool,
+    },
+    /// Signed classification/category packs.
+    Pack {
+        #[command(subcommand)]
+        action: PackAction,
+    },
+    /// Credential vault: set/replace/revoke/list. Secrets are read from a
+    /// no-echo prompt (or stdin when piped) and are never displayed.
+    Vault {
+        #[command(subcommand)]
+        action: VaultAction,
+    },
+    /// Run the headless server (binds 127.0.0.1 unless --lan).
     Serve {
         /// Listen address, e.g. 127.0.0.1:7151.
         #[arg(long)]
         listen: Option<SocketAddr>,
+        /// Explicitly opt in to a non-loopback bind (LAN exposure).
+        #[arg(long)]
+        lan: bool,
+        /// Serve without bearer-token auth (loopback binds only).
+        #[arg(long)]
+        no_auth: bool,
+        /// Generate a fresh API token, invalidating the old one.
+        #[arg(long)]
+        reset_token: bool,
     },
     /// List entities.
     List {
@@ -76,51 +173,753 @@ enum Command {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum ReconAction {
+    /// Compute and list suggested matches.
+    Suggest,
+    /// Confirm a suggested match by id.
+    Confirm { match_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum PackAction {
+    /// Verify a signed pack and install it into a book.
+    Install {
+        /// Path to the pack manifest JSON (the exact signed bytes).
+        manifest: PathBuf,
+        /// Detached ed25519 signature: hex, or @file (hex or raw 64 bytes).
+        #[arg(long)]
+        signature: String,
+        /// Publisher verifying key: hex, or @file (hex or raw 32 bytes).
+        #[arg(long)]
+        public_key: String,
+    },
+    /// Verify a pack's signature without installing it.
+    Verify {
+        manifest: PathBuf,
+        #[arg(long)]
+        signature: String,
+        #[arg(long)]
+        public_key: String,
+    },
+    /// List installed packs.
+    List,
+}
+
+#[derive(Debug, Subcommand)]
+enum VaultAction {
+    /// Store a new credential (prompts for the secret; never echoes).
+    Set {
+        /// Credential name, e.g. imap.fastmail
+        name: String,
+    },
+    /// Rotate an existing credential (prompts for the new secret).
+    Replace { name: String },
+    /// Destroy a credential.
+    Revoke { name: String },
+    /// List credential metadata (never material).
+    List,
+}
+
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    match cli.command {
-        Command::Init { name, kind } => {
-            let service = CoreService::open(&cli.db)
-                .with_context(|| format!("opening database at {}", cli.db.display()))?;
-            if let Some(name) = name {
-                let book = service.book_create(NewBook {
-                    name,
-                    kind: kind.into(),
-                    currency: None,
-                    country: None,
-                })?;
-                println!("Created book {} ({})", book.name, book.id);
+    run(Cli::parse())
+}
+
+fn open_service(db: &Path) -> anyhow::Result<CoreService> {
+    CoreService::open(db).with_context(|| format!("opening database at {}", db.display()))
+}
+
+/// Resolve `--book` (id or exact name); with no flag, a sole book wins.
+fn resolve_book(svc: &CoreService, selector: Option<&str>) -> anyhow::Result<Book> {
+    let mut books = svc.book_list()?;
+    match selector {
+        Some(sel) => books
+            .into_iter()
+            .find(|b| b.id == sel || b.name == sel)
+            .ok_or_else(|| anyhow!("no book with id or name {sel:?}; see `slipscan list books`")),
+        None => match books.len() {
+            0 => bail!("no books yet; create one with `slipscan init --name <name>`"),
+            1 => Ok(books.remove(0)),
+            n => bail!("{n} books exist; pick one with --book <id-or-name>"),
+        },
+    }
+}
+
+fn emit<T: serde::Serialize>(
+    json_mode: bool,
+    value: &T,
+    human: impl FnOnce(),
+) -> anyhow::Result<()> {
+    if json_mode {
+        println!("{}", serde_json::to_string_pretty(value)?);
+    } else {
+        human();
+    }
+    Ok(())
+}
+
+/// Minor units → "1234.56" (sign-safe).
+fn fmt_minor(minor: i64) -> String {
+    let sign = if minor < 0 { "-" } else { "" };
+    let abs = minor.unsigned_abs();
+    format!("{sign}{}.{:02}", abs / 100, abs % 100)
+}
+
+/// `--signature`/`--public-key` argument: hex, or `@file` (hex text or raw
+/// bytes of exactly `expected_len`).
+fn read_bytes_arg(arg: &str, expected_len: usize, what: &str) -> anyhow::Result<Vec<u8>> {
+    let text = match arg.strip_prefix('@') {
+        Some(path) => {
+            let raw = std::fs::read(path).with_context(|| format!("reading {what} {path}"))?;
+            if raw.len() == expected_len {
+                return Ok(raw);
             }
-            println!("Database ready at {}", cli.db.display());
+            String::from_utf8(raw).with_context(|| format!("{what} file is not hex text"))?
         }
-        Command::Import { path } => {
-            println!(
-                "Import of {} is not implemented yet (lands with slipscan-ingest).",
-                path.display()
-            );
-        }
-        Command::Serve { listen } => {
-            let runtime = tokio::runtime::Runtime::new().context("starting async runtime")?;
-            let addr = listen.unwrap_or(slipscan_server::DEFAULT_ADDR);
-            println!("Serving on http://{addr}");
-            runtime.block_on(slipscan_server::serve(Some(addr)))?;
-        }
-        Command::List { what } => {
-            let service = CoreService::open(&cli.db)
-                .with_context(|| format!("opening database at {}", cli.db.display()))?;
-            match what {
-                ListTarget::Books => {
-                    for book in service.book_list()? {
-                        println!("{}\t{}\t{}", book.id, book.kind, book.name);
+        None => arg.to_string(),
+    };
+    let bytes = slipscan_server::hex_decode(text.trim())
+        .ok_or_else(|| anyhow!("{what} is not valid hex"))?;
+    if bytes.len() != expected_len {
+        bail!("{what} must be {expected_len} bytes, got {}", bytes.len());
+    }
+    Ok(bytes)
+}
+
+/// Read secret material without ever echoing or logging it: a no-echo
+/// prompt on a TTY, the first stdin line when piped. Never argv.
+fn read_secret(prompt: &str) -> anyhow::Result<SecretString> {
+    use std::io::{BufRead, IsTerminal};
+    if std::io::stdin().is_terminal() {
+        let secret = rpassword::prompt_password(prompt).context("reading secret")?;
+        Ok(SecretString::new(secret))
+    } else {
+        let mut line = String::new();
+        std::io::stdin()
+            .lock()
+            .read_line(&mut line)
+            .context("reading secret from stdin")?;
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        Ok(SecretString::new(trimmed))
+    }
+}
+
+fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Runtime::new().context("starting async runtime")
+}
+
+/// API keys for BYO-key providers come from the credential vault — the
+/// [`slipscan_extract::KeySource`] contract. Holds only the db path; a fresh
+/// vault handle is opened per key use so the material's scope is one call.
+struct VaultKeySource {
+    db: PathBuf,
+}
+
+impl slipscan_extract::KeySource for VaultKeySource {
+    fn use_key(
+        &self,
+        name: &str,
+        consume: &mut dyn FnMut(&SecretString),
+    ) -> Result<(), slipscan_extract::ExtractError> {
+        let vault = VaultHandle::open(&self.db).map_err(slipscan_extract::keys::vault_error)?;
+        vault
+            .use_with(name, |secret| {
+                consume(secret);
+                Ok(())
+            })
+            .map_err(slipscan_extract::keys::vault_error)
+    }
+}
+
+/// Instantiate a configured extraction provider by name with its default
+/// config. Every provider only talks to the endpoint the user chose by
+/// configuring it (BYO key / local model) — never anywhere else.
+fn build_provider(
+    db: &Path,
+    name: &str,
+) -> anyhow::Result<Box<dyn slipscan_extract::ExtractionProvider>> {
+    use slipscan_extract as ext;
+    use std::sync::Arc;
+
+    let transport: Arc<dyn ext::Transport> = Arc::new(ext::ReqwestTransport::new());
+    let keys: ext::SharedKeySource = Arc::new(VaultKeySource {
+        db: db.to_path_buf(),
+    });
+    Ok(match name {
+        "anthropic" => Box::new(ext::AnthropicProvider::new(
+            Default::default(),
+            transport,
+            keys,
+        )),
+        "gemini" => Box::new(ext::GeminiProvider::new(
+            Default::default(),
+            transport,
+            keys,
+        )),
+        "openai" => Box::new(ext::OpenAiCompatProvider::new(
+            Default::default(),
+            transport,
+            keys,
+        )),
+        "ollama" => Box::new(ext::OllamaProvider::new(Default::default(), transport)),
+        "heuristic" => Box::new(ext::HeuristicProvider),
+        other => bail!(
+            "unknown extraction provider {other:?}; expected anthropic, gemini, openai, \
+             ollama or heuristic"
+        ),
+    })
+}
+
+fn default_storage_dir(db: &Path) -> PathBuf {
+    db.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .join("slipscan-documents")
+}
+
+fn run(cli: Cli) -> anyhow::Result<()> {
+    match cli.command {
+        Command::Init {
+            ref name,
+            kind,
+            seed_coa,
+        } => {
+            let svc = open_service(&cli.db)?;
+            if seed_coa && name.is_none() {
+                bail!("--seed-coa needs --name (a book to seed)");
+            }
+            let book = match name {
+                Some(name) => {
+                    let book = svc.book_create(NewBook {
+                        name: name.clone(),
+                        kind: kind.into(),
+                        currency: None,
+                        country: None,
+                    })?;
+                    if seed_coa {
+                        svc.coa_seed(&book.id)?;
+                    }
+                    Some(book)
+                }
+                None => None,
+            };
+            let out = serde_json::json!({
+                "db": cli.db.display().to_string(),
+                "book": book,
+                "coa_seeded": seed_coa,
+            });
+            emit(cli.json, &out, || {
+                if let Some(book) = &book {
+                    println!("Created book {} ({})", book.name, book.id);
+                    if seed_coa {
+                        println!("Seeded default chart of accounts.");
                     }
                 }
-                ListTarget::Accounts | ListTarget::Transactions | ListTarget::Documents => {
-                    println!("Listing requires a --book flag; coming with the full CLI.");
+                println!("Database ready at {}", cli.db.display());
+            })
+        }
+
+        Command::Import { ref paths } => {
+            let svc = open_service(&cli.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            let mut results = Vec::new();
+            for path in paths {
+                let (status, id) =
+                    match import_document_file(&svc, &book.id, path, DocumentSource::Upload) {
+                        Ok(FileImport::Imported(doc)) => ("imported", Some(doc.id.clone())),
+                        Ok(FileImport::Duplicate { existing_id }) => {
+                            ("duplicate", Some(existing_id))
+                        }
+                        Err(IngestError::UnsupportedFile(_)) => ("unsupported", None),
+                        Err(e) => return Err(e).context(format!("importing {}", path.display())),
+                    };
+                results.push(serde_json::json!({
+                    "path": path.display().to_string(),
+                    "status": status,
+                    "document_id": id,
+                }));
+            }
+            emit(cli.json, &results, || {
+                for r in &results {
+                    println!(
+                        "{}\t{}\t{}",
+                        r["status"].as_str().unwrap_or(""),
+                        r["document_id"].as_str().unwrap_or("-"),
+                        r["path"].as_str().unwrap_or("")
+                    );
+                }
+            })
+        }
+
+        Command::Extract { limit } => {
+            let svc = open_service(&cli.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            let Some(provider_name) = svc.settings_get(EXTRACT_PROVIDER_SETTING)? else {
+                bail!(
+                    "no extraction provider configured; set the {EXTRACT_PROVIDER_SETTING:?} \
+                     setting once a provider adapter is available (BYO key or local model — \
+                     SlipScan never talks to anything you did not configure)"
+                );
+            };
+            let provider = build_provider(&cli.db, &provider_name)?;
+            let outcome = runtime()?.block_on(extractor::run_extraction(
+                &svc,
+                provider.as_ref(),
+                &book.id,
+                limit,
+            ))?;
+            emit(cli.json, &outcome, || {
+                println!(
+                    "Extracted {}, failed {}, skipped {} (unsupported type).",
+                    outcome.extracted.len(),
+                    outcome.failed.len(),
+                    outcome.skipped.len()
+                );
+                for f in &outcome.failed {
+                    println!("failed\t{}\t{}", f.document_id, f.error);
+                }
+            })
+        }
+
+        Command::MailSync { ref storage_dir } => {
+            let svc = open_service(&cli.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            let raw = svc.settings_get(MAIL_CONFIG_SETTING)?.ok_or_else(|| {
+                anyhow!(
+                    "no mailbox configured; store an IMAP config JSON under settings key \
+                     {MAIL_CONFIG_SETTING:?} with fields host, port, folder, username, \
+                     password_secret_ref (the name of a vault credential)"
+                )
+            })?;
+            let config: ImapConfig =
+                serde_json::from_str(&raw).context("parsing the stored IMAP config")?;
+            let vault = VaultHandle::open(&cli.db)?;
+            let password = vault
+                .use_with(&config.password_secret_ref, |secret| {
+                    Ok(SecretString::new(secret.expose_secret()))
+                })
+                .with_context(|| {
+                    format!(
+                        "loading vault credential {0:?} (store it with `slipscan vault set {0}`)",
+                        config.password_secret_ref
+                    )
+                })?;
+            drop(vault);
+            let dir = storage_dir
+                .clone()
+                .unwrap_or_else(|| default_storage_dir(&cli.db));
+
+            let rt = runtime()?;
+            let (fetched, imported, duplicates) = rt.block_on(async {
+                let transport = connect_tls(&config, &password).await?;
+                let cursors = SettingsCursorStore::new(&svc);
+                let mut connector = ImapConnector::new(config.clone(), transport, cursors);
+                let messages = connector.fetch_unseen().await?;
+                let mut imported = 0usize;
+                let mut duplicates = 0usize;
+                for message in &messages {
+                    let outcome = import_message_documents(&svc, &book.id, &dir, message)?;
+                    imported += outcome.documents.len();
+                    duplicates += outcome.duplicates;
+                    connector.mark_processed(&message.id).await?;
+                }
+                anyhow::Ok((messages.len(), imported, duplicates))
+            })?;
+            drop(password);
+
+            let out = serde_json::json!({
+                "messages": fetched,
+                "documents_imported": imported,
+                "duplicates": duplicates,
+                "storage_dir": dir.display().to_string(),
+            });
+            emit(cli.json, &out, || {
+                println!(
+                    "Fetched {fetched} message(s): {imported} document(s) imported, \
+                     {duplicates} duplicate(s)."
+                );
+            })
+        }
+
+        Command::Recon { ref action } => {
+            let svc = open_service(&cli.db)?;
+            match action {
+                ReconAction::Suggest => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let matches = svc.recon_suggest(&book.id)?;
+                    emit(cli.json, &matches, || {
+                        if matches.is_empty() {
+                            println!("No suggested matches.");
+                        }
+                        for m in &matches {
+                            println!(
+                                "{}\ttxn {}\tdoc {}\tconfidence {:.2}",
+                                m.id,
+                                m.transaction_id,
+                                m.document_id.as_deref().unwrap_or("-"),
+                                m.confidence
+                            );
+                        }
+                    })
+                }
+                ReconAction::Confirm { match_id } => {
+                    let confirmed = svc.recon_confirm(match_id)?;
+                    emit(cli.json, &confirmed, || {
+                        println!("Confirmed match {}", confirmed.id);
+                    })
+                }
+            }
+        }
+
+        Command::Report { kind, csv } => {
+            let svc = open_service(&cli.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            if csv && !matches!(kind, ReportKind::Tb) {
+                bail!("--csv is currently only supported for the trial balance (tb)");
+            }
+            match kind {
+                ReportKind::Tb => {
+                    let rows = svc.report_trial_balance(&book.id)?;
+                    if csv {
+                        print!("{}", slipscan_core::csv::trial_balance_csv(&rows));
+                        return Ok(());
+                    }
+                    emit(cli.json, &rows, || {
+                        println!("Trial balance — {}", book.name);
+                        for r in &rows {
+                            println!(
+                                "{}\t{}\t{}\t{}\t{}",
+                                r.code,
+                                r.name,
+                                r.currency,
+                                fmt_minor(r.debit_minor),
+                                fmt_minor(r.credit_minor)
+                            );
+                        }
+                        // Totals per currency — sums never mix currencies.
+                        let mut totals: std::collections::BTreeMap<&str, (i64, i64)> =
+                            std::collections::BTreeMap::new();
+                        for r in &rows {
+                            let entry = totals.entry(r.currency.as_str()).or_insert((0, 0));
+                            entry.0 += r.debit_minor;
+                            entry.1 += r.credit_minor;
+                        }
+                        for (currency, (d, c)) in totals {
+                            println!("TOTAL\t\t{currency}\t{}\t{}", fmt_minor(d), fmt_minor(c));
+                        }
+                    })
+                }
+                ReportKind::Pl => {
+                    let pl = ops::report_profit_loss(&svc, &book.id)?;
+                    emit(cli.json, &pl, || {
+                        println!("Profit & loss — {}", book.name);
+                        for r in &pl.income {
+                            println!(
+                                "income\t{}\t{}\t{}",
+                                r.code,
+                                r.name,
+                                fmt_minor(r.amount_minor)
+                            );
+                        }
+                        for r in &pl.expenses {
+                            println!(
+                                "expense\t{}\t{}\t{}",
+                                r.code,
+                                r.name,
+                                fmt_minor(r.amount_minor)
+                            );
+                        }
+                        println!("Income total\t{}", fmt_minor(pl.income_total_minor));
+                        println!("Expense total\t{}", fmt_minor(pl.expense_total_minor));
+                        println!("Net profit\t{}", fmt_minor(pl.net_profit_minor));
+                    })
+                }
+                ReportKind::Bs => {
+                    let bs = ops::report_balance_sheet(&svc, &book.id)?;
+                    emit(cli.json, &bs, || {
+                        println!("Balance sheet — {}", book.name);
+                        for (section, rows) in [
+                            ("asset", &bs.assets),
+                            ("liability", &bs.liabilities),
+                            ("equity", &bs.equity),
+                        ] {
+                            for r in rows {
+                                println!(
+                                    "{section}\t{}\t{}\t{}",
+                                    r.code,
+                                    r.name,
+                                    fmt_minor(r.amount_minor)
+                                );
+                            }
+                        }
+                        println!("Assets\t{}", fmt_minor(bs.assets_total_minor));
+                        println!("Liabilities\t{}", fmt_minor(bs.liabilities_total_minor));
+                        println!("Equity\t{}", fmt_minor(bs.equity_total_minor));
+                        println!(
+                            "Retained earnings\t{}",
+                            fmt_minor(bs.retained_earnings_minor)
+                        );
+                        println!("Balanced\t{}", bs.balanced);
+                    })
+                }
+                ReportKind::Vat => {
+                    let vat = ops::report_vat(&svc, &book.id)?;
+                    emit(cli.json, &vat, || {
+                        println!("VAT summary — {}", book.name);
+                        for r in &vat.rates {
+                            println!("rate\t{}\t{}\t{} bps", r.code, r.name, r.rate_bps);
+                        }
+                        for a in &vat.accounts {
+                            println!(
+                                "account\t{}\t{}\t{}\t{}",
+                                a.code,
+                                a.name,
+                                fmt_minor(a.debit_minor),
+                                fmt_minor(a.credit_minor)
+                            );
+                        }
+                        println!("Net VAT position\t{}", fmt_minor(vat.net_minor));
+                    })
+                }
+            }
+        }
+
+        Command::Pack { ref action } => {
+            let svc = open_service(&cli.db)?;
+            match action {
+                PackAction::Install {
+                    manifest,
+                    signature,
+                    public_key,
+                } => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let bytes = std::fs::read(manifest)
+                        .with_context(|| format!("reading {}", manifest.display()))?;
+                    let sig = read_bytes_arg(signature, 64, "signature")?;
+                    let key = read_bytes_arg(public_key, 32, "public key")?;
+                    let result = ops::pack_install(&svc, &book.id, &bytes, &sig, &key)?;
+                    emit(cli.json, &result, || {
+                        println!(
+                            "Installed {} {} into {}: {} categories created, {} reused, {} rules",
+                            result.name,
+                            result.version,
+                            book.name,
+                            result.categories_created,
+                            result.categories_existing,
+                            result.rules
+                        );
+                    })
+                }
+                PackAction::Verify {
+                    manifest,
+                    signature,
+                    public_key,
+                } => {
+                    let bytes = std::fs::read(manifest)
+                        .with_context(|| format!("reading {}", manifest.display()))?;
+                    let sig = read_bytes_arg(signature, 64, "signature")?;
+                    let key = read_bytes_arg(public_key, 32, "public key")?;
+                    let verified = slipscan_packs::verify_pack(&bytes, &sig, &key)
+                        .context("pack verification failed")?;
+                    let out = serde_json::json!({
+                        "valid": true,
+                        "id": verified.id,
+                        "name": verified.name,
+                        "version": verified.version,
+                        "author": verified.author,
+                        "categories": verified.categories.len(),
+                        "rules": verified.rules.len(),
+                    });
+                    emit(cli.json, &out, || {
+                        println!(
+                            "OK: {} {} ({} categories, {} rules) — signature valid",
+                            verified.name,
+                            verified.version,
+                            verified.categories.len(),
+                            verified.rules.len()
+                        );
+                    })
+                }
+                PackAction::List => {
+                    let installed = ops::pack_list(&svc)?;
+                    emit(cli.json, &installed, || {
+                        if installed.is_empty() {
+                            println!("No packs installed.");
+                        }
+                        for entry in &installed {
+                            println!(
+                                "{}\t{}\t{}\tbook {}\tinstalled {}",
+                                entry.manifest.id,
+                                entry.manifest.name,
+                                entry.manifest.version,
+                                entry.book_id,
+                                entry.installed_at
+                            );
+                        }
+                    })
+                }
+            }
+        }
+
+        Command::Vault { ref action } => {
+            let vault = VaultHandle::open(&cli.db)
+                .with_context(|| format!("opening vault in {}", cli.db.display()))?;
+            match action {
+                VaultAction::Set { name } => {
+                    let secret = read_secret(&format!("Secret for {name} (not echoed): "))?;
+                    let meta = vault.set(name, secret)?;
+                    emit(cli.json, &meta, || {
+                        println!(
+                            "Stored {} (v{}, fingerprint {})",
+                            meta.name, meta.version, meta.fingerprint
+                        );
+                    })
+                }
+                VaultAction::Replace { name } => {
+                    let secret = read_secret(&format!("New secret for {name} (not echoed): "))?;
+                    let meta = vault.replace(name, secret)?;
+                    emit(cli.json, &meta, || {
+                        println!(
+                            "Rotated {} (v{}, fingerprint {})",
+                            meta.name, meta.version, meta.fingerprint
+                        );
+                    })
+                }
+                VaultAction::Revoke { name } => {
+                    vault.revoke(name)?;
+                    emit(cli.json, &serde_json::json!({ "revoked": name }), || {
+                        println!("Revoked {name}");
+                    })
+                }
+                VaultAction::List => {
+                    let entries = vault.list()?;
+                    emit(cli.json, &entries, || {
+                        if entries.is_empty() {
+                            println!("Vault is empty.");
+                        }
+                        for e in &entries {
+                            println!(
+                                "{}\tv{}\tfp {}\tcreated {}\trotated {}\tlast used {}",
+                                e.name,
+                                e.version,
+                                e.fingerprint,
+                                e.created_at,
+                                e.rotated_at.as_deref().unwrap_or("-"),
+                                e.last_used_at.as_deref().unwrap_or("-"),
+                            );
+                        }
+                    })
+                }
+            }
+        }
+
+        Command::Serve {
+            listen,
+            lan,
+            no_auth,
+            reset_token,
+        } => {
+            let svc = open_service(&cli.db)?;
+            let addr = listen.unwrap_or(slipscan_server::DEFAULT_ADDR);
+            // Mantra #3: non-loopback binds are an explicit user opt-in.
+            if !addr.ip().is_loopback() && !lan {
+                bail!(
+                    "{addr} is not loopback; pass --lan to explicitly opt in to LAN exposure \
+                     (and terminate TLS in front of SlipScan)"
+                );
+            }
+            if no_auth && !addr.ip().is_loopback() {
+                bail!("--no-auth is only allowed on loopback binds");
+            }
+            let require_auth = !no_auth;
+            if require_auth {
+                if let Ok(token) = std::env::var(TOKEN_ENV) {
+                    slipscan_server::set_auth_token(&svc, &token)?;
+                    eprintln!("Using API token from {TOKEN_ENV} (only its SHA-256 is stored).");
+                } else if reset_token {
+                    print_token(&slipscan_server::rotate_auth_token(&svc)?);
+                } else {
+                    match slipscan_server::ensure_auth_token(&svc)? {
+                        AuthToken::Generated(token) => print_token(&token),
+                        AuthToken::Existing => eprintln!(
+                            "Using the existing API token (pass --reset-token to rotate it)."
+                        ),
+                    }
+                }
+            } else {
+                eprintln!("Warning: serving without authentication on {addr} (loopback only).");
+            }
+            eprintln!("Serving on http://{addr}");
+            let vault = VaultHandle::open(&cli.db)?;
+            runtime()?.block_on(slipscan_server::serve(
+                svc,
+                Some(vault),
+                ServerConfig { addr, require_auth },
+            ))?;
+            Ok(())
+        }
+
+        Command::List { what } => {
+            let svc = open_service(&cli.db)?;
+            match what {
+                ListTarget::Books => {
+                    let books = svc.book_list()?;
+                    emit(cli.json, &books, || {
+                        for b in &books {
+                            println!("{}\t{}\t{}", b.id, b.kind, b.name);
+                        }
+                    })
+                }
+                ListTarget::Accounts => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let accounts = svc.account_list(&book.id)?;
+                    emit(cli.json, &accounts, || {
+                        for a in &accounts {
+                            println!("{}\t{}\t{}\t{}", a.id, a.kind, a.name, a.currency);
+                        }
+                    })
+                }
+                ListTarget::Transactions => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let txns = svc.transaction_list(&book.id, &TransactionFilter::default())?;
+                    emit(cli.json, &txns, || {
+                        for t in &txns {
+                            println!(
+                                "{}\t{}\t{}\t{}\t{}",
+                                t.id,
+                                t.posted_date,
+                                fmt_minor(t.amount_minor),
+                                t.currency,
+                                t.merchant.as_deref().unwrap_or("-")
+                            );
+                        }
+                    })
+                }
+                ListTarget::Documents => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let docs = svc.document_list(&book.id, None)?;
+                    emit(cli.json, &docs, || {
+                        for d in &docs {
+                            println!(
+                                "{}\t{}\t{}\t{}",
+                                d.id,
+                                d.status,
+                                d.kind,
+                                d.original_name.as_deref().unwrap_or(&d.file_path)
+                            );
+                        }
+                    })
                 }
             }
         }
     }
-    Ok(())
+}
+
+/// The one and only time a generated token is visible. The token goes to
+/// stdout (so it can be captured); explanation goes to stderr.
+fn print_token(token: &str) {
+    eprintln!("Generated API token — shown once, only its SHA-256 is stored:");
+    println!("{token}");
 }
 
 #[cfg(test)]
@@ -134,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_init_and_serve() {
+    fn parses_init_with_seed_coa() {
         let cli = Cli::try_parse_from([
             "slipscan",
             "--db",
@@ -142,21 +941,198 @@ mod tests {
             "init",
             "--name",
             "Personal",
+            "--seed-coa",
         ])
         .unwrap();
         assert_eq!(cli.db, PathBuf::from("/tmp/x.sqlite"));
         match cli.command {
-            Command::Init { name, .. } => assert_eq!(name.as_deref(), Some("Personal")),
-            other => panic!("unexpected {other:?}"),
-        }
-
-        let cli = Cli::try_parse_from(["slipscan", "serve", "--listen", "127.0.0.1:9000"]).unwrap();
-        match cli.command {
-            Command::Serve { listen } => {
-                assert_eq!(listen, Some("127.0.0.1:9000".parse().unwrap()));
+            Command::Init { name, seed_coa, .. } => {
+                assert_eq!(name.as_deref(), Some("Personal"));
+                assert!(seed_coa);
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_import_with_book_and_multiple_paths() {
+        let cli =
+            Cli::try_parse_from(["slipscan", "--book", "Biz", "import", "a.pdf", "b.jpg"]).unwrap();
+        assert_eq!(cli.book.as_deref(), Some("Biz"));
+        match cli.command {
+            Command::Import { paths } => assert_eq!(paths.len(), 2),
+            other => panic!("unexpected {other:?}"),
+        }
+        // No paths at all is a parse error.
+        assert!(Cli::try_parse_from(["slipscan", "import"]).is_err());
+    }
+
+    #[test]
+    fn parses_extract_and_mail_sync() {
+        let cli = Cli::try_parse_from(["slipscan", "extract", "--limit", "5"]).unwrap();
+        assert!(matches!(cli.command, Command::Extract { limit: 5 }));
+
+        let cli =
+            Cli::try_parse_from(["slipscan", "mail-sync", "--storage-dir", "/tmp/docs"]).unwrap();
+        match cli.command {
+            Command::MailSync { storage_dir } => {
+                assert_eq!(storage_dir, Some(PathBuf::from("/tmp/docs")));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_recon_actions() {
+        let cli = Cli::try_parse_from(["slipscan", "recon", "suggest"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Recon {
+                action: ReconAction::Suggest
+            }
+        ));
+        let cli = Cli::try_parse_from(["slipscan", "recon", "confirm", "m-1"]).unwrap();
+        match cli.command {
+            Command::Recon {
+                action: ReconAction::Confirm { match_id },
+            } => assert_eq!(match_id, "m-1"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_report_kinds_and_csv() {
+        for (arg, expected) in [
+            ("tb", ReportKind::Tb),
+            ("pl", ReportKind::Pl),
+            ("bs", ReportKind::Bs),
+            ("vat", ReportKind::Vat),
+        ] {
+            let cli = Cli::try_parse_from(["slipscan", "report", arg]).unwrap();
+            match cli.command {
+                Command::Report { kind, csv } => {
+                    assert!(matches!(
+                        (kind, expected),
+                        (ReportKind::Tb, ReportKind::Tb)
+                            | (ReportKind::Pl, ReportKind::Pl)
+                            | (ReportKind::Bs, ReportKind::Bs)
+                            | (ReportKind::Vat, ReportKind::Vat)
+                    ));
+                    assert!(!csv);
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        let cli = Cli::try_parse_from(["slipscan", "report", "tb", "--csv"]).unwrap();
+        assert!(matches!(cli.command, Command::Report { csv: true, .. }));
+    }
+
+    #[test]
+    fn parses_pack_actions() {
+        let cli = Cli::try_parse_from([
+            "slipscan",
+            "pack",
+            "install",
+            "pack.json",
+            "--signature",
+            "@pack.sig",
+            "--public-key",
+            "aabb",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Pack {
+                action:
+                    PackAction::Install {
+                        manifest,
+                        signature,
+                        public_key,
+                    },
+            } => {
+                assert_eq!(manifest, PathBuf::from("pack.json"));
+                assert_eq!(signature, "@pack.sig");
+                assert_eq!(public_key, "aabb");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["slipscan", "pack", "list"]).is_ok());
+        // Signature and key are mandatory for verify.
+        assert!(Cli::try_parse_from(["slipscan", "pack", "verify", "pack.json"]).is_err());
+    }
+
+    #[test]
+    fn vault_commands_never_take_the_secret_as_an_argument() {
+        let cli = Cli::try_parse_from(["slipscan", "vault", "set", "imap.main"]).unwrap();
+        match cli.command {
+            Command::Vault {
+                action: VaultAction::Set { name },
+            } => assert_eq!(name, "imap.main"),
+            other => panic!("unexpected {other:?}"),
+        }
+        // A trailing secret positional must be rejected — secrets come from
+        // the prompt/stdin only, never argv.
+        assert!(Cli::try_parse_from(["slipscan", "vault", "set", "name", "s3cret"]).is_err());
+        assert!(Cli::try_parse_from(["slipscan", "vault", "replace", "name", "s3cret"]).is_err());
+        assert!(Cli::try_parse_from(["slipscan", "vault", "list"]).is_ok());
+        assert!(Cli::try_parse_from(["slipscan", "vault", "revoke", "name"]).is_ok());
+    }
+
+    #[test]
+    fn parses_serve_flags() {
+        let cli = Cli::try_parse_from([
+            "slipscan",
+            "serve",
+            "--listen",
+            "0.0.0.0:9000",
+            "--lan",
+            "--reset-token",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Serve {
+                listen,
+                lan,
+                no_auth,
+                reset_token,
+            } => {
+                assert_eq!(listen, Some("0.0.0.0:9000".parse().unwrap()));
+                assert!(lan);
+                assert!(!no_auth);
+                assert!(reset_token);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serve_refuses_non_loopback_without_lan_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli::try_parse_from([
+            "slipscan",
+            "--db",
+            dir.path().join("x.sqlite").to_str().unwrap(),
+            "serve",
+            "--listen",
+            "0.0.0.0:9000",
+        ])
+        .unwrap();
+        let err = run(cli).unwrap_err().to_string();
+        assert!(err.contains("--lan"), "{err}");
+
+        // --no-auth on a LAN bind is refused even with --lan.
+        let cli = Cli::try_parse_from([
+            "slipscan",
+            "--db",
+            dir.path().join("x.sqlite").to_str().unwrap(),
+            "serve",
+            "--listen",
+            "0.0.0.0:9000",
+            "--lan",
+            "--no-auth",
+        ])
+        .unwrap();
+        let err = run(cli).unwrap_err().to_string();
+        assert!(err.contains("--no-auth"), "{err}");
     }
 
     #[test]
@@ -168,5 +1144,69 @@ mod tests {
                 what: ListTarget::Books
             }
         ));
+    }
+
+    #[test]
+    fn resolve_book_by_id_name_and_solo_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = CoreService::open(dir.path().join("t.sqlite")).unwrap();
+        assert!(resolve_book(&svc, None).is_err()); // no books yet
+
+        let personal = svc
+            .book_create(NewBook {
+                name: "Personal".into(),
+                kind: BookKind::Personal,
+                currency: None,
+                country: None,
+            })
+            .unwrap();
+        assert_eq!(resolve_book(&svc, None).unwrap().id, personal.id);
+        assert_eq!(
+            resolve_book(&svc, Some("Personal")).unwrap().id,
+            personal.id
+        );
+        assert_eq!(
+            resolve_book(&svc, Some(&personal.id)).unwrap().id,
+            personal.id
+        );
+
+        svc.book_create(NewBook {
+            name: "Biz".into(),
+            kind: BookKind::Business,
+            currency: None,
+            country: None,
+        })
+        .unwrap();
+        assert!(resolve_book(&svc, None).is_err()); // ambiguous now
+        assert!(resolve_book(&svc, Some("nope")).is_err());
+        assert_eq!(resolve_book(&svc, Some("Biz")).unwrap().name, "Biz");
+    }
+
+    #[test]
+    fn fmt_minor_is_sign_safe() {
+        assert_eq!(fmt_minor(123_456), "1234.56");
+        assert_eq!(fmt_minor(-45), "-0.45");
+        assert_eq!(fmt_minor(0), "0.00");
+        assert_eq!(fmt_minor(-123_405), "-1234.05");
+    }
+
+    #[test]
+    fn read_bytes_arg_accepts_hex_and_rejects_bad_lengths() {
+        assert_eq!(read_bytes_arg("aabb", 2, "sig").unwrap(), vec![0xaa, 0xbb]);
+        assert!(read_bytes_arg("aabb", 3, "sig").is_err());
+        assert!(read_bytes_arg("zz", 1, "sig").is_err());
+
+        // @file with raw bytes of the exact length.
+        let dir = tempfile::tempdir().unwrap();
+        let raw = dir.path().join("sig.bin");
+        std::fs::write(&raw, [1u8; 64]).unwrap();
+        let arg = format!("@{}", raw.display());
+        assert_eq!(read_bytes_arg(&arg, 64, "sig").unwrap(), vec![1u8; 64]);
+
+        // @file with hex text.
+        let hex = dir.path().join("sig.hex");
+        std::fs::write(&hex, "0102\n").unwrap();
+        let arg = format!("@{}", hex.display());
+        assert_eq!(read_bytes_arg(&arg, 2, "sig").unwrap(), vec![1, 2]);
     }
 }

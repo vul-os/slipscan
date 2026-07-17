@@ -14,9 +14,21 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 slipscan-core = { workspace = true }
+slipscan-extract = { workspace = true }
+slipscan-ingest = { workspace = true }
+slipscan-packs = { workspace = true }
 slipscan-server = { workspace = true }
 tokio = { workspace = true }
+
+# CLI-specific (versions local to this crate; not shared workspace-wide).
+rpassword = "7"
+
+[dev-dependencies]
+async-trait = { workspace = true }
+tempfile = "3"
 
 [lints]
 workspace = true
