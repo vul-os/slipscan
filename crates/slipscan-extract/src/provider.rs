@@ -13,6 +13,7 @@ pub const MIME_PNG: &str = "image/png";
 pub const MIME_GIF: &str = "image/gif";
 pub const MIME_WEBP: &str = "image/webp";
 pub const MIME_PDF: &str = "application/pdf";
+pub const MIME_TEXT: &str = "text/plain";
 
 /// Input to an extraction run: raw image bytes or a PDF.
 #[derive(Debug, Clone)]
@@ -139,18 +140,14 @@ mod tests {
     #[test]
     fn fake_provider_extracts() {
         let provider: Box<dyn ExtractionProvider> = Box::new(FakeProvider);
-        let result = futures_block_on(provider.extract(ExtractionRequest::new(
-            MIME_JPEG,
-            vec![1, 2, 3],
-        )))
-        .unwrap();
+        let result =
+            futures_block_on(provider.extract(ExtractionRequest::new(MIME_JPEG, vec![1, 2, 3])))
+                .unwrap();
         assert_eq!(result.totals.total_minor, 100);
 
-        let err = futures_block_on(provider.extract(ExtractionRequest::new(
-            "application/zip",
-            vec![],
-        )))
-        .unwrap_err();
+        let err =
+            futures_block_on(provider.extract(ExtractionRequest::new("application/zip", vec![])))
+                .unwrap_err();
         assert!(matches!(err, ExtractError::Unsupported { .. }));
     }
 

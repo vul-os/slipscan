@@ -18,7 +18,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 slipscan-core = { workspace = true }
 thiserror = { workspace = true }
+time = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
+
+# Extraction-specific (versions local to this crate; not shared workspace-wide).
+regex = "1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
