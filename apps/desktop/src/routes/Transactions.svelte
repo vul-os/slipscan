@@ -2,6 +2,7 @@
   import { api } from "../lib/api/client";
   import { router } from "../lib/router.svelte";
   import { globalSearch } from "../lib/search.svelte";
+  import { routeCache } from "../lib/loadCache";
   import { fmtDate, fmtMoney } from "../lib/format";
   import type { Account, Book, Category, Transaction } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -26,8 +27,15 @@
   let loading = $state(true);
   let loadError = $state<string | null>(null);
 
-  async function load() {
-    loading = true;
+  interface Snapshot {
+    book: Book;
+    accounts: Account[];
+    categories: Category[];
+    transactions: Transaction[];
+  }
+
+  async function load(background = false) {
+    if (!background) loading = true;
     loadError = null;
     try {
       const [b] = await api.bookList();
@@ -38,13 +46,33 @@
         api.categoryList({ book_id: b.id }),
         api.transactionList({ book_id: b.id }),
       ]);
+      routeCache.set<Snapshot>("transactions", {
+        book: b,
+        accounts: $state.snapshot(accounts) as Account[],
+        categories: $state.snapshot(categories) as Category[],
+        transactions: $state.snapshot(transactions) as Transaction[],
+      });
     } catch (err) {
-      loadError = String(err);
+      if (!background) loadError = String(err);
     } finally {
       loading = false;
     }
   }
-  load();
+  // Seed from the session cache so a tab switch renders instantly, then
+  // refresh in the background (stale-while-revalidate).
+  {
+    const cached = routeCache.get<Snapshot>("transactions");
+    if (cached) {
+      book = cached.book;
+      accounts = cached.accounts;
+      categories = cached.categories;
+      transactions = cached.transactions;
+      loading = false;
+      load(true);
+    } else {
+      load();
+    }
+  }
 
   const filtered = $derived(
     transactions.filter((t) => {
@@ -88,6 +116,13 @@
         category_id: next,
       });
       transactions = transactions.map((t) => (t.id === tx.id ? updated : t));
+      const cached = routeCache.get<Snapshot>("transactions");
+      if (cached) {
+        routeCache.set<Snapshot>("transactions", {
+          ...cached,
+          transactions: $state.snapshot(transactions) as Transaction[],
+        });
+      }
     } catch (err) {
       categorizeError = String(err);
     }
@@ -160,7 +195,7 @@
   {:else if loadError}
     <EmptyState icon="alert-circle" title="Could not load transactions" body={loadError}>
       {#snippet actions()}
-        <button class="btn" onclick={load}>Retry</button>
+        <button class="btn" onclick={() => load()}>Retry</button>
       {/snippet}
     </EmptyState>
   {:else if transactions.length === 0}
@@ -213,7 +248,9 @@
                 >
               {/if}
             </td>
-            <td class="td truncate text-t2">{accountName(tx.account_id)}</td>
+            <td class="td max-w-0 text-t2">
+              <span class="block truncate">{accountName(tx.account_id)}</span>
+            </td>
             <td class="td">
               <select
                 class="input h-7 w-full px-1.5 text-[12px] {tx.category_id

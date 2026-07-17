@@ -28,6 +28,10 @@
   --color-accent-fg: #0a0a0a;
   --color-accent-muted: #e8ffa3;
   --color-accent-ring: #9fcc00;
+  /* Readable accent-family text on light surfaces (the lime itself fails
+   * contrast on white); pairs with `dark:text-accent`. Keep in step with
+   * --color-accent when retheming. */
+  --color-accent-text: #5c7500;
 
   --color-success: #16a34a;
   --color-warning: #d97706;

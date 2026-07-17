@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
-  import { fmtDate, fmtMoney, parseMoneyInput } from "../lib/format";
+  import { fmtDate, fmtMoney, localDate, parseMoneyInput } from "../lib/format";
+  import { swrLoad } from "../lib/loadCache";
   import type { LedgerAccountType } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
@@ -33,7 +34,10 @@
     return { accounts, journal, trial };
   }
 
-  let data = $state(load());
+  type Data = Awaited<ReturnType<typeof load>>;
+  const reload = (fresh = false) =>
+    swrLoad<Data>("ledger", load, (v) => (data = v), { fresh });
+  let data = $state(reload());
 
   // -- manual journal entry -------------------------------------------------
   interface FormLine {
@@ -48,7 +52,7 @@
   });
 
   let showForm = $state(false);
-  let entryDate = $state(new Date().toISOString().slice(0, 10));
+  let entryDate = $state(localDate());
   let memo = $state("");
   let lines = $state<FormLine[]>([blankLine(), blankLine()]);
   let posting = $state(false);
@@ -96,7 +100,7 @@
       memo = "";
       lines = [blankLine(), blankLine()];
       showForm = false;
-      data = load();
+      data = reload(true);
     } catch (err) {
       postError = String(err);
     } finally {
@@ -405,6 +409,10 @@
       icon="alert-circle"
       title="Could not load ledger"
       body={String(err)}
-    />
+    >
+      {#snippet actions()}
+        <button class="btn" onclick={() => (data = reload(true))}>Retry</button>
+      {/snippet}
+    </EmptyState>
   </div>
 {/await}

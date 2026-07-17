@@ -1,6 +1,13 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
-  import { fmtMoney, fmtMonth, parseMoneyInput, shiftMonth } from "../lib/format";
+  import {
+    fmtMoney,
+    fmtMonth,
+    localMonth,
+    parseMoneyInput,
+    shiftMonth,
+  } from "../lib/format";
+  import { swrLoad } from "../lib/loadCache";
   import type { Book, Category } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
@@ -9,7 +16,7 @@
   import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
 
-  const thisMonth = new Date().toISOString().slice(0, 7);
+  const thisMonth = localMonth();
   let month = $state(thisMonth);
 
   let book = $state<Book | null>(null);
@@ -23,11 +30,14 @@
     return api.budgetList({ book_id: b.id, month });
   }
 
-  let data = $state(load());
+  type Data = Awaited<ReturnType<typeof load>>;
+  const reload = (fresh = false) =>
+    swrLoad<Data>(`budgets:${month}`, load, (v) => (data = v), { fresh });
+  let data = $state(reload());
 
   function goMonth(n: number) {
     month = shiftMonth(month, n);
-    data = load();
+    data = reload();
   }
 
   // -- new / updated budget -------------------------------------------------
@@ -60,7 +70,7 @@
       formAmount = "";
       formRollover = false;
       showForm = false;
-      data = load();
+      data = reload(true);
     } catch (err) {
       formError = String(err);
     } finally {
@@ -80,7 +90,7 @@
 <PageHeader
   eyebrow={fmtMonth(month)}
   title="Budgets"
-  subtitle="Monthly limits per category. Rollover carries what's left into next month."
+  subtitle="Monthly limits per category, tracked as transactions come in. (Rollover of unspent amounts is stored per budget but not yet applied to next month's numbers.)"
 >
   {#snippet actions()}
     <div class="flex items-center gap-0.5 rounded-lg border border-line p-0.5">
@@ -108,7 +118,7 @@
         class="btn h-8"
         onclick={() => {
           month = thisMonth;
-          data = load();
+          data = reload();
         }}
       >
         Today
@@ -162,7 +172,7 @@
       </label>
       <label class="flex h-9 items-center gap-2 text-[12px] text-t2">
         <input type="checkbox" bind:checked={formRollover} />
-        Roll over what's left
+        Roll over what's left (not applied yet)
       </label>
       <button class="btn btn-primary" type="submit" disabled={formBusy}>
         {formBusy ? "Saving…" : "Save budget"}
@@ -263,6 +273,10 @@
       icon="alert-circle"
       title="Could not load budgets"
       body={String(err)}
-    />
+    >
+      {#snippet actions()}
+        <button class="btn" onclick={() => (data = reload(true))}>Retry</button>
+      {/snippet}
+    </EmptyState>
   </div>
 {/await}

@@ -6,8 +6,10 @@
     fmtMonth,
     fmtPct,
     greeting,
+    localMonth,
     monthEnd,
   } from "../lib/format";
+  import { swrLoad } from "../lib/loadCache";
   import { computeNudges, type NudgeSeverity } from "../lib/nudges";
   import { router } from "../lib/router.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -18,7 +20,7 @@
   import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
 
-  const month = new Date().toISOString().slice(0, 7);
+  const month = localMonth();
 
   async function load() {
     const [book] = await api.bookList();
@@ -50,7 +52,10 @@
     };
   }
 
-  const data = load();
+  type Data = Awaited<ReturnType<typeof load>>;
+  const reload = (fresh = false) =>
+    swrLoad<Data>("dashboard", load, (v) => (data = v), { fresh });
+  let data = $state(reload());
 
   const nudgeTone: Record<NudgeSeverity, "danger" | "warning" | "accent"> = {
     danger: "danger",
@@ -248,6 +253,10 @@
       icon="alert-circle"
       title="Could not load dashboard"
       body={String(err)}
-    />
+    >
+      {#snippet actions()}
+        <button class="btn" onclick={() => (data = reload(true))}>Retry</button>
+      {/snippet}
+    </EmptyState>
   </div>
 {/await}

@@ -216,6 +216,14 @@ pub async fn budget_list(
     let status = service
         .budget_status(&query.book_id, &query.month)
         .map_err(err)?;
+    // budget_status carries spend vs budget; the stored rows carry the
+    // rollover flag and created_at — join them by category.
+    let stored: HashMap<String, core::Budget> = service
+        .budget_list(&query.book_id, &query.month)
+        .map_err(err)?
+        .into_iter()
+        .map(|b| (b.category_id.clone(), b))
+        .collect();
     Ok(status
         .into_iter()
         .map(|s| BudgetWithSpendDto {
@@ -228,12 +236,15 @@ pub async fn budget_list(
                 // the stable identity the list UI needs.
                 id: format!("{}:{}", s.category_id, s.month),
                 book_id: query.book_id.clone(),
+                rollover: stored.get(&s.category_id).is_some_and(|b| b.rollover),
+                created_at: stored
+                    .get(&s.category_id)
+                    .map(|b| b.created_at.clone())
+                    .unwrap_or_default(),
                 category_id: s.category_id,
                 month: s.month,
                 amount_minor: s.budget_minor,
                 currency: s.currency,
-                rollover: false,
-                created_at: String::new(),
             },
             spent_minor: s.spent_minor,
         })
