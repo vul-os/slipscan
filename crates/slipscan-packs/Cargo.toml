@@ -1,0 +1,25 @@
+[package]
+name = "slipscan-packs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "SlipScan community packs: signed classification/category pack format, verification, install, and the local classification engine"
+
+[dependencies]
+ed25519-dalek = { workspace = true }
+regex = "1"
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+slipscan-core = { workspace = true }
+thiserror = { workspace = true }
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
