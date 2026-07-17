@@ -8,9 +8,9 @@
 import { Hono } from "hono";
 import type { Env } from "./bindings";
 import { ApiError, writeError } from "./lib/errors";
-import authRouter from "./modules/auth/routes";
+import authRouter, { avatarRouter } from "./modules/auth/routes";
 import googleAuthRouter from "./modules/auth/google";
-import orgsRouter, { inviteAcceptRouter } from "./modules/orgs/routes";
+import orgsRouter, { inviteAcceptRouter, orgAvatarRouter } from "./modules/orgs/routes";
 import documentsRouter from "./modules/documents/routes";
 import extractRouter from "./modules/extract/routes";
 import classifyRouter from "./modules/classify/routes";
@@ -26,6 +26,7 @@ import auditRouter from "./modules/audit/routes";
 import apiTokensRouter from "./modules/apitokens/routes";
 import apiV1Router from "./modules/apitokens/v1routes";
 import xeroRouter from "./modules/xero/routes";
+import billingRouter from "./modules/billing/routes";
 import { handleScheduled } from "./cron/scheduled";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -56,6 +57,8 @@ app.get("/healthz", (c) => c.text("ok"));
 // Wave 1 feature modules.
 app.route("/auth", authRouter); // /auth/register, /login, /me, ...
 app.route("/auth", googleAuthRouter); // /auth/google, /auth/google/callback
+app.route("/", avatarRouter); // public GET /avatars/:userId/:filename
+app.route("/", orgAvatarRouter); // public GET /orgs-avatars/:orgId/:filename
 app.route("/orgs", orgsRouter); // POST /orgs, /:orgID/members, /:orgID/invitations
 app.route("/invitations", inviteAcceptRouter); // POST /invitations/accept
 app.route("/orgs", extractRouter); // /:orgID/documents/:docID/extract
@@ -75,6 +78,7 @@ app.route("/", auditRouter); // /orgs/:orgID/audit
 app.route("/", apiTokensRouter); // /orgs/:orgID/api-tokens*
 app.route("/", apiV1Router); // /v1/orgs/:orgID/*
 app.route("/", xeroRouter); // /orgs/:orgID/integrations/xero/*, /integrations/xero/callback
+app.route("/", billingRouter); // /orgs/:orgID/billing/{usage,models,model}
 
 app.notFound((c) => writeError(c, 404, "not_found", "not found"));
 app.onError((err, c) => {

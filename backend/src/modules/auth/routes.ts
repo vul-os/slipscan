@@ -24,6 +24,7 @@ import { writeError } from "../../lib/errors";
 import { issueTokens, parseToken } from "../../lib/jwt";
 import { hashPassword, verifyPassword } from "../../lib/password";
 import { requireAuth } from "../../middleware/auth";
+import { putObject } from "../../lib/r2";
 import {
   parseDurationSec,
   normalizeEmail,
@@ -439,6 +440,90 @@ r.get("/me", requireAuth, async (c) => {
   }
 
   return c.json(userToResponse(user), 200);
+});
+
+// ---- POST /auth/me/avatar ----
+// User uploads an image (JPG/PNG/WebP, ≤2MB). It lands in R2 under
+// avatars/<userId>/<uuid>.<ext> and the persistent public URL is returned.
+// The caller is expected to PATCH /auth/me with the returned URL to actually
+// persist it as avatar_url on the user row.
+
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+const AVATAR_MIME_EXT: Record<string, string> = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+};
+
+r.post("/me/avatar", requireAuth, async (c) => {
+  const userId = c.get("userId");
+  if (!userId) return writeError(c, 401, "unauthorized", "missing identity");
+
+  let formData: FormData;
+  try {
+    formData = await c.req.formData();
+  } catch {
+    return writeError(c, 400, "invalid_upload", "could not parse form (max 2MB)");
+  }
+
+  const fileField = formData.get("file") as unknown;
+  const isFileLike = (v: unknown): v is Blob =>
+    v !== null && typeof v === "object" && typeof (v as Blob).arrayBuffer === "function";
+  if (!fileField || !isFileLike(fileField)) {
+    return writeError(c, 400, "missing_file", `expected a file under field "file"`);
+  }
+  const file = fileField as Blob & { type: string; size: number };
+
+  if (file.size > AVATAR_MAX_BYTES) {
+    return writeError(c, 400, "too_large", "avatar must be 2MB or smaller");
+  }
+
+  const ext = AVATAR_MIME_EXT[file.type];
+  if (!ext) {
+    return writeError(c, 415, "unsupported_type", "avatar must be JPG, PNG, or WebP");
+  }
+
+  let data: Uint8Array;
+  try {
+    data = new Uint8Array(await file.arrayBuffer());
+  } catch {
+    return writeError(c, 400, "read_failed", "could not read uploaded file");
+  }
+
+  const key = `avatars/${userId}/${crypto.randomUUID()}${ext}`;
+  try {
+    await putObject(c.env, key, data, file.type);
+  } catch {
+    return writeError(c, 502, "storage_failed", "could not store avatar");
+  }
+
+  const base = c.env.APP_BASE_URL || new URL(c.req.url).origin;
+  const url = `${base}/${key}`;
+  return c.json({ url }, 201);
+});
+
+// ---- GET /avatars/:userId/:filename ----
+// Public — anyone with the URL can fetch. Avatars are non-sensitive by design
+// (they're displayed to org members & potentially in shared receipt previews).
+// Mounted outside the auth router via index.ts; declared here for proximity.
+
+export const avatarRouter = new Hono<AppEnv>();
+avatarRouter.get("/avatars/:userId/:filename", async (c) => {
+  const userId = c.req.param("userId");
+  const filename = c.req.param("filename");
+  // Defensive: don't allow path traversal in the filename param.
+  if (filename.includes("/") || filename.includes("..")) {
+    return writeError(c, 400, "invalid_path", "bad filename");
+  }
+  const key = `avatars/${userId}/${filename}`;
+  const obj = await c.env.DOCS.get(key);
+  if (!obj) return writeError(c, 404, "not_found", "avatar not found");
+  return new Response(obj.body, {
+    headers: {
+      "Content-Type": obj.httpMetadata?.contentType || "image/jpeg",
+      "Cache-Control": "public, max-age=86400",
+    },
+  });
 });
 
 export default r;

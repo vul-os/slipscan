@@ -1,17 +1,9 @@
-import { NavLink, useNavigate } from "react-router-dom";
-import { toast } from "sonner";
+import { NavLink } from "react-router-dom";
 import {
-  LayoutDashboard, Receipt, Users, Settings, Plus, ChevronsUpDown,
-  Check, Search, Target, TrendingUp, BookOpen, BarChart3, ShieldCheck,
-  Landmark, GitCompareArrows, Briefcase, Brain,
+  LayoutDashboard, Receipt, Users, Settings, Plus, Search,
+  Target, TrendingUp, BookOpen, BarChart3, ShieldCheck,
+  Landmark, GitCompareArrows, Briefcase, Brain, CreditCard,
 } from "lucide-react";
-import { Wordmark } from "@/components/Wordmark";
-import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
-  DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator,
-} from "@/components/ui/DropdownMenu";
-import { Avatar } from "@/components/ui/Avatar";
-import { Badge } from "@/components/ui/Badge";
 import { useOrgStore } from "@/stores/org";
 import { useUIStore } from "@/stores/ui";
 import { useOrgs } from "@/lib/queries";
@@ -36,11 +28,11 @@ const nav = [
   { to: "/audit",     label: "Audit",     icon: ShieldCheck,     shortcut: "g u" },
   { to: "/members",   label: "Members",   icon: Users,           shortcut: "g m" },
   { to: "/settings",  label: "Settings",  icon: Settings,        shortcut: "g s" },
+  { to: "/billing",   label: "Billing",   icon: CreditCard,      shortcut: "g x" },
 ];
 
 export function Sidebar({ onNavigate } = {}) {
-  const navigate = useNavigate();
-  const { activeOrgId, setActiveOrg } = useOrgStore();
+  const { activeOrgId } = useOrgStore();
   const setPaletteOpen = useUIStore((s) => s.setPaletteOpen);
   const setUploadOpen = useUIStore((s) => s.setUploadOpen);
   const { data: orgs } = useOrgs();
@@ -54,57 +46,8 @@ export function Sidebar({ onNavigate } = {}) {
 
   return (
     <aside className="flex flex-col w-[252px] shrink-0 border-r border-ink-100 bg-ink-50/40 sticky top-[52px] h-[calc(100vh-52px)] overflow-y-auto">
-      <div className="px-4 py-4">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button className="w-full inline-flex items-center gap-2.5 px-2 py-1.5 -mx-1 rounded hover:bg-ink-100 transition-colors group">
-              <Wordmark size="sm" />
-              <ChevronsUpDown size={14} className="ml-auto text-ink-400 group-hover:text-ink-700" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-[240px]">
-            <DropdownMenuLabel>Organizations</DropdownMenuLabel>
-            {orgs?.organizations.map((o) => (
-              <DropdownMenuItem
-                key={o.id}
-                onClick={() => {
-                  if (o.id === active?.id) return;
-                  setActiveOrg(o.id);
-                  toast.success(`Switched to ${o.name}`, {
-                    description: "Receipts and members for this workspace are now loading.",
-                  });
-                }}
-                className="justify-between"
-              >
-                <span className="flex items-center gap-2 min-w-0">
-                  <Avatar name={o.name} size="xs" />
-                  <span className="truncate">{o.name}</span>
-                </span>
-                {o.id === active?.id && <Check size={14} className="text-ink-700" />}
-              </DropdownMenuItem>
-            ))}
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => { navigate("/onboarding"); onNavigate?.(); }}>
-              <Plus size={14} /> New organization
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-
-      <div className="px-3 mb-2">
-        {active && (
-          <div className="w-full flex items-center gap-2 px-2 py-1.5 rounded">
-            <Avatar name={active.name} size="sm" />
-            <span className="flex-1 min-w-0 text-left">
-              <span className="block text-sm font-medium text-ink-900 truncate tracking-tight">{active.name}</span>
-              <span className="block text-[11px] text-ink-500 truncate">/{active.slug}</span>
-            </span>
-            {active.role === "admin" && <Badge tone="accent">Admin</Badge>}
-          </div>
-        )}
-      </div>
-
-      <div className="px-3 mb-3">
+      {/* Brand now lives in the top bar, aligned on the same row as the account toggle */}
+      <div className="px-3 mt-4 mb-3">
         <button
           onClick={() => setPaletteOpen(true)}
           className="w-full flex items-center gap-2 px-2 h-8 rounded border border-ink-200 bg-ink-0 text-[12px] text-ink-500 hover:text-ink-900 hover:border-ink-300 transition-colors"
@@ -156,7 +99,6 @@ export function Sidebar({ onNavigate } = {}) {
           <kbd className="hidden sm:inline ml-1 font-mono text-[10px] text-accent-fg/60">U</kbd>
         </button>
       </div>
-
     </aside>
   );
 }

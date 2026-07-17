@@ -87,6 +87,7 @@ import type {
   CreateJournalRequest,
 } from "./types";
 import type { JournalLineInput } from "./queries";
+import { emitAudit } from "../audit/emit";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isUUID(s: string): boolean {
@@ -267,6 +268,7 @@ router.post("/orgs/:orgID/accounts", requireMember, async (c) => {
   if (body.tax_rate_id && !isUUID(body.tax_rate_id))
     return writeError(c, 400, "invalid_tax_rate_id", "invalid tax_rate_id");
 
+  const userId = c.get("userId");
   try {
     const account = await createAccount(c.env, orgId, {
       parentId: body.parent_id ?? null,
@@ -278,6 +280,15 @@ router.post("/orgs/:orgID/accounts", requireMember, async (c) => {
       taxRateId: body.tax_rate_id ?? null,
       description: body.description,
     });
+    // P4-03: audit account creation
+    emitAudit(c.env, {
+      organization_id: orgId,
+      actor_user_id: userId,
+      entity_type: "account",
+      entity_id: account.id,
+      action: "account.created",
+      after: { name: account.name, type: account.type, currency: account.currency },
+    }, c.executionCtx);
     return c.json(toAccountResponse(account), 201);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -298,6 +309,15 @@ router.patch("/orgs/:orgID/accounts/:accountID", requireMember, async (c) => {
     return writeError(c, 400, "invalid_body", "request body must be valid JSON");
   }
 
+  // Capture before-state
+  let accountBefore: { name?: string; code?: string; is_archived?: boolean } | null = null;
+  try {
+    const ab = await getAccount(c.env, orgId, accountId);
+    accountBefore = { name: ab.name, code: ab.code ?? undefined, is_archived: ab.is_archived };
+  } catch {
+    // Non-fatal
+  }
+
   try {
     const account = await updateAccount(c.env, orgId, accountId, {
       code: body.code,
@@ -306,6 +326,16 @@ router.patch("/orgs/:orgID/accounts/:accountID", requireMember, async (c) => {
       description: body.description,
       isArchived: body.is_archived,
     });
+    // P4-03: audit account update
+    emitAudit(c.env, {
+      organization_id: orgId,
+      actor_user_id: c.get("userId"),
+      entity_type: "account",
+      entity_id: accountId,
+      action: "account.updated",
+      before: accountBefore,
+      after: { name: account.name, code: account.code ?? null, is_archived: account.is_archived },
+    }, c.executionCtx);
     return c.json(toAccountResponse(account));
   } catch (err) {
     if (err instanceof NotFoundError) return writeError(c, 404, "not_found", "account not found");
@@ -322,8 +352,26 @@ router.delete("/orgs/:orgID/accounts/:accountID", requireMember, async (c) => {
   const accountId = c.req.param("accountID");
   if (!isUUID(accountId)) return writeError(c, 400, "invalid_account_id", "invalid account id");
 
+  // Capture before-state
+  let acctBeforeDelete: { name?: string; type?: string } | null = null;
+  try {
+    const ab = await getAccount(c.env, orgId, accountId);
+    acctBeforeDelete = { name: ab.name, type: ab.type };
+  } catch {
+    // Non-fatal
+  }
+
   try {
     await deleteAccount(c.env, orgId, accountId);
+    // P4-03: audit account deletion
+    emitAudit(c.env, {
+      organization_id: orgId,
+      actor_user_id: c.get("userId"),
+      entity_type: "account",
+      entity_id: accountId,
+      action: "account.deleted",
+      before: acctBeforeDelete,
+    }, c.executionCtx);
     return c.body(null, 204);
   } catch (err) {
     if (err instanceof NotFoundError) return writeError(c, 404, "not_found", "account not found");
@@ -407,6 +455,15 @@ router.post("/orgs/:orgID/transactions/:txID/post", requireMember, async (c) => 
 
   try {
     await postTransaction(c.env, orgId, userId ?? null, txId);
+    // P4-03: audit transaction posting
+    emitAudit(c.env, {
+      organization_id: orgId,
+      actor_user_id: userId,
+      entity_type: "transaction",
+      entity_id: txId,
+      action: "transaction.posted",
+      after: { posted: true },
+    }, c.executionCtx);
     return c.json({ posted: true });
   } catch (err) {
     if (err instanceof NotFoundError) return writeError(c, 404, "not_found", "transaction not found");
@@ -486,6 +543,24 @@ router.post("/orgs/:orgID/journals", requireMember, async (c) => {
       description: l.description,
     }));
 
+    // P4-03: audit manual journal creation
+    emitAudit(c.env, {
+      organization_id: orgId,
+      actor_user_id: userId,
+      entity_type: "journal",
+      entity_id: journal.id,
+      action: "journal.created",
+      after: {
+        posted_date: journal.posted_date,
+        narrative: journal.narrative,
+        reference: journal.reference,
+        lines: lineRows.map((l) => ({
+          account_id: l.account_id,
+          debit: l.debit,
+          credit: l.credit,
+        })),
+      },
+    }, c.executionCtx);
     return c.json(toJournalResponse(journal, lineRows), 201);
   } catch (err) {
     if (err instanceof UnbalancedError)
@@ -523,8 +598,30 @@ router.delete("/orgs/:orgID/journals/:journalID", requireMember, async (c) => {
 
   const userId = c.get("userId");
 
+  // Capture before-state
+  let journalBefore: { posted_date?: string; narrative?: string; reference?: string } | null = null;
+  try {
+    const { journal: jBefore } = await getManualJournal(c.env, orgId, journalId);
+    journalBefore = {
+      posted_date: typeof jBefore.posted_date === "string" ? jBefore.posted_date.slice(0, 10) : jBefore.posted_date,
+      narrative: jBefore.narrative ?? undefined,
+      reference: jBefore.reference ?? undefined,
+    };
+  } catch {
+    // Non-fatal: proceed if before-state fetch fails
+  }
+
   try {
     await deleteManualJournal(c.env, orgId, userId ?? null, journalId);
+    // P4-03: audit journal deletion
+    emitAudit(c.env, {
+      organization_id: orgId,
+      actor_user_id: userId,
+      entity_type: "journal",
+      entity_id: journalId,
+      action: "journal.deleted",
+      before: journalBefore,
+    }, c.executionCtx);
     return c.body(null, 204);
   } catch (err) {
     if (err instanceof NotFoundError) return writeError(c, 404, "not_found", "journal not found");

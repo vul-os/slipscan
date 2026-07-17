@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Navigate, Outlet, useNavigate } from "react-router-dom";
-import { Menu, X, Plus, MessageSquare, Settings, LogOut } from "lucide-react";
+import { toast } from "sonner";
+import { Menu, X, Plus, MessageSquare, Check, Settings, LogOut } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
 import { ChatPanel } from "@/components/ChatPanel";
 import { Wordmark } from "@/components/Wordmark";
@@ -83,12 +84,20 @@ export default function AppLayout() {
   const setChatOpen = useUIStore((s) => s.setChatOpen);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const navigate = useNavigate();
-
   const user = storedUser ?? me;
+  const activeOrg = orgs?.organizations.find((o) => o.id === activeOrgId) ?? orgs?.organizations?.[0];
 
   const onLogout = () => {
     logout();
     navigate("/login");
+  };
+
+  const onSwitchOrg = (id, name) => {
+    if (id === activeOrg?.id) return;
+    setActiveOrg(id);
+    toast.success(`Switched to ${name}`, {
+      description: "Receipts and members for this workspace are now loading.",
+    });
   };
 
   useGlobalShortcuts();
@@ -142,12 +151,69 @@ export default function AppLayout() {
     return <Navigate to="/onboarding" replace />;
   }
 
+  // Profile / org dropdown — shared by the desktop and mobile top bars so the
+  // account toggle lives in the same header as the logo on every breakpoint.
+  const userMenu = () => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          className="h-8 w-8 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900 ml-1"
+          aria-label="Profile and organizations"
+        >
+          <Avatar
+            name={user?.full_name || user?.email}
+            src={user?.avatar_url}
+            size="sm"
+          />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="min-w-[260px]">
+        <DropdownMenuLabel>
+          <div className="font-medium text-ink-900 truncate">
+            {user?.full_name || user?.email?.split("@")[0]}
+          </div>
+          <div className="text-[11px] font-normal text-ink-500 truncate">{user?.email}</div>
+        </DropdownMenuLabel>
+        <DropdownMenuSeparator />
+
+        <DropdownMenuLabel>Organizations</DropdownMenuLabel>
+        {orgs?.organizations.map((o) => (
+          <DropdownMenuItem
+            key={o.id}
+            onClick={() => onSwitchOrg(o.id, o.name)}
+            className="justify-between"
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              <Avatar name={o.name} src={o.avatar_url} size="xs" />
+              <span className="truncate">{o.name}</span>
+            </span>
+            {o.id === activeOrg?.id && <Check size={14} className="text-ink-700" />}
+          </DropdownMenuItem>
+        ))}
+        <DropdownMenuItem onClick={() => navigate("/onboarding")}>
+          <Plus size={14} /> New organization
+        </DropdownMenuItem>
+
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => navigate("/settings")}>
+          <Settings size={14} /> Settings
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem destructive onClick={onLogout}>
+          <LogOut size={14} /> Log out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
   return (
     <div className="min-h-screen flex flex-col bg-ink-0">
       {/* ── Desktop top bar ────────────────────────────────────────────────── */}
       <header className="hidden lg:flex fixed top-0 inset-x-0 z-30 h-[52px] items-center gap-2 px-4 border-b border-ink-100 bg-ink-0/95 backdrop-blur">
-        {/* Left spacer — aligns with sidebar width */}
-        <div className="w-[252px] shrink-0" />
+        {/* Brand — sits in the top bar so the logo and the account toggle share one row */}
+        <div className="w-[252px] shrink-0 flex items-center pl-1">
+          <Wordmark size="sm" />
+        </div>
 
         {/* Right-hand actions */}
         <div className="ml-auto flex items-center gap-1.5">
@@ -166,37 +232,8 @@ export default function AppLayout() {
             <MessageSquare size={16} />
           </button>
 
-          {/* Avatar / user dropdown */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button
-                className="h-8 w-8 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink-900"
-                aria-label="User menu"
-              >
-                <Avatar
-                  name={user?.full_name || user?.email}
-                  src={user?.avatar_url}
-                  size="sm"
-                />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-[200px]">
-              <DropdownMenuLabel>
-                <div className="font-medium text-ink-900 truncate">
-                  {user?.full_name || user?.email?.split("@")[0]}
-                </div>
-                <div className="text-[11px] font-normal text-ink-500 truncate">{user?.email}</div>
-              </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => navigate("/settings")}>
-                <Settings size={14} /> Settings
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem destructive onClick={onLogout}>
-                <LogOut size={14} /> Log out
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* Profile / org dropdown */}
+          {userMenu()}
         </div>
       </header>
 
@@ -235,6 +272,8 @@ export default function AppLayout() {
           >
             <Plus size={14} /> Upload
           </button>
+          {/* Profile / org dropdown — right side of the mobile header */}
+          {userMenu()}
         </div>
       </div>
 

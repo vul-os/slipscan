@@ -27,6 +27,7 @@ const WorkspacePage = lazy(() => import("@/pages/Workspace"));
 const InsightsPage = lazy(() => import("@/pages/Insights"));
 const AuthCallbackPage = lazy(() => import("@/pages/AuthCallback"));
 const NotFoundPage = lazy(() => import("@/pages/NotFound"));
+const BillingPage = lazy(() => import("@/pages/Billing"));
 const BrandPreviewPage = lazy(() => import("@/pages/BrandPreview"));
 
 // Docs — public, outside AppLayout
@@ -87,6 +88,7 @@ export function AppRoutes() {
           <Route path="/audit"               element={<AuditPage />} />
           <Route path="/members"             element={<MembersPage />} />
           <Route path="/settings"            element={<SettingsPage />} />
+          <Route path="/billing"             element={<BillingPage />} />
         </Route>
 
         {/* Public docs site — outside AppLayout, no auth required */}

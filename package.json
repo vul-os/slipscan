@@ -11,8 +11,8 @@
     "build:main": "vite build --mode main",
     "lint": "eslint .",
     "preview": "vite preview",
-    "deploy:dev": "npm run build:dev && wrangler pages deploy dist-dev --project-name slipscan-staging",
-    "deploy:main": "npm run build:main && wrangler pages deploy dist-main --project-name slipscan-main",
+    "deploy:dev": "npm run build:dev && wrangler pages deploy dist-dev --project-name slipscan-staging --branch=main",
+    "deploy:main": "npm run build:main && wrangler pages deploy dist-main --project-name slipscan-main --branch=main",
     "test": "vitest run"
   },
   "dependencies": {
