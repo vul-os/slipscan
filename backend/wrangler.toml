@@ -1,10 +1,17 @@
 # slip/scan API — Cloudflare Worker (free tier, no Containers).
 # Runs the TypeScript port of the Go backend.
 name = "slipscan-api"
+account_id = "10f67eca9b3b5e812b16689f979f33f7"
 main = "src/index.ts"
 compatibility_date = "2026-05-01"
 compatibility_flags = ["nodejs_compat"]
 workers_dev = true
+
+# Local `wrangler dev` — fixed port so slipscan runs alongside other local
+# projects without collisions. An explicit port makes wrangler fail loudly when
+# it's already taken, rather than silently picking a neighbour's port.
+[dev]
+port = 8788
 
 # Object storage — R2 binding (no S3 keys needed for put/get).
 [[r2_buckets]]
@@ -17,7 +24,8 @@ binding = "RATE_LIMIT"
 id = "bc7fd97a3f644405837c40ddb0caf092"
 
 # Non-secret config. Secrets (DATABASE_URL, JWT_SECRET, GEMINI_API_KEY,
-# INBOUND_INGEST_SECRET, AWS_*, STITCH_*, XERO_*) are set with `wrangler secret put`.
+# INBOUND_INGEST_SECRET, AWS_*, STITCH_*, XERO_*, PAYSTACK_SECRET_KEY) are set with
+# `wrangler secret put`.
 [vars]
 RX_DOMAIN = "mail.slipscan.app"
 EXCHANGE_RATE_BASE = "USD"
@@ -28,6 +36,12 @@ GOOGLE_REDIRECT_URL = "https://slipscan-api.slipscanco.workers.dev/auth/google/c
 FRONTEND_BASE_URL = "https://slipscan-staging.pages.dev"
 APP_BASE_URL = "https://slipscan-api.slipscanco.workers.dev"
 CORS_ALLOWED_ORIGINS = "*"
+# Paystack — public key is safe to expose here.
+# Secret key set via: wrangler secret put PAYSTACK_SECRET_KEY
+# Plan codes: create plans in Paystack dashboard, then paste codes here.
+PAYSTACK_PUBLIC_KEY = ""
+PAYSTACK_TEAM_PLAN_CODE = ""
+PAYSTACK_BUSINESS_PLAN_CODE = ""
 
 # Free tier = 5 cron triggers per ACCOUNT (shared with prod slipscan-api-main,
 # which uses all 3). Dev/staging runs only the minute tick (core extraction +
@@ -67,6 +81,11 @@ GOOGLE_REDIRECT_URL = "https://api.slipscan.com/auth/google/callback"
 FRONTEND_BASE_URL = "https://slipscan.com"
 APP_BASE_URL = "https://api.slipscan.com"
 CORS_ALLOWED_ORIGINS = "https://slipscan.com"
+# Paystack — production plan codes (create in Paystack dashboard).
+# Secret key set via: wrangler secret put PAYSTACK_SECRET_KEY --env main
+PAYSTACK_PUBLIC_KEY = ""
+PAYSTACK_TEAM_PLAN_CODE = ""
+PAYSTACK_BUSINESS_PLAN_CODE = ""
 
 [env.main.triggers]
 crons = ["* * * * *", "0 * * * *", "0 */4 * * *"]

@@ -23,6 +23,7 @@ import {
 } from "./queries";
 import type { IssueRequest, TokenMetaResponse } from "./types";
 import { VALID_KINDS } from "./types";
+import { emitAudit } from "../audit/emit";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -92,6 +93,16 @@ router.post(
       console.error("apitokens issue:", err);
       return writeError(c, 500, "issue_failed", "could not issue token");
     }
+
+    // P4-03: audit token issuance (never log the plaintext)
+    emitAudit(c.env, {
+      organization_id: orgId,
+      actor_user_id: userId,
+      entity_type: "api_token",
+      entity_id: created.id,
+      action: "api_token.created",
+      after: { name: req.name.trim(), kind: req.kind, scopes: req.scopes, prefix: prefixOf(plaintext) },
+    }, c.executionCtx);
 
     return c.json(
       {
@@ -171,6 +182,16 @@ router.delete(
     if (!found) {
       return writeError(c, 404, "not_found", "token not found or already revoked");
     }
+
+    // P4-03: audit token revocation
+    emitAudit(c.env, {
+      organization_id: orgId,
+      actor_user_id: userId,
+      entity_type: "api_token",
+      entity_id: tokenId,
+      action: "api_token.revoked",
+      before: { token_id: tokenId },
+    }, c.executionCtx);
 
     return c.json({ status: "revoked" });
   },

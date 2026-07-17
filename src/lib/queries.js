@@ -7,6 +7,10 @@ import { api } from "./api";
 export const qk = {
   me:                            ["me"],
   orgs:                          ["orgs"],
+  billingUsage:   (orgId)      => ["billing-usage", orgId],
+  billingPlans:   (orgId)      => ["billing-plans", orgId],
+  subscription:   (orgId)      => ["subscription", orgId],
+  extractionModels:(orgId)     => ["extraction-models", orgId],
   pendingInvitations:            ["pending-invitations"],
   members:    (orgId)         => ["members", orgId],
   invitations:(orgId)         => ["invitations", orgId],
@@ -46,6 +50,29 @@ export const useUpdateProfile = () => {
     mutationFn: (body) => api.updateProfile(body),
     onSuccess: (data) => {
       if (data) qc.setQueryData(qk.me, data);
+    },
+  });
+};
+
+export const useUploadAvatar = () =>
+  useMutation({ mutationFn: (file) => api.uploadAvatar(file) });
+
+export const useUploadOrgAvatar = (orgId) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file) => api.uploadOrgAvatar(orgId, file),
+    onSuccess: () => {
+      if (orgId) qc.invalidateQueries({ queryKey: qk.orgs });
+    },
+  });
+};
+
+export const useUpdateOrgAvatar = (orgId) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body) => api.updateOrgAvatar(orgId, body),
+    onSuccess: () => {
+      if (orgId) qc.invalidateQueries({ queryKey: qk.orgs });
     },
   });
 };
@@ -312,3 +339,77 @@ export const useAnomalies = (orgId) =>
   enabledQuery(orgId, qk.anomalies(orgId), async () => arr(await api.getAnomalies(orgId), "anomalies"));
 export const useTaxReadiness = (orgId) =>
   enabledQuery(orgId, qk.taxReadiness(orgId), () => api.getTaxReadiness(orgId));
+
+// ── Billing ─────────────────────────────────────────────────────────────────
+
+export const useBillingUsage = (orgId) =>
+  useQuery({
+    queryKey: orgId ? qk.billingUsage(orgId) : ["none"],
+    queryFn: () => api.getBillingUsage(orgId),
+    enabled: !!orgId,
+    refetchInterval: 60_000, // refresh every 60 s
+  });
+
+export const useExtractionModels = (orgId) =>
+  useQuery({
+    queryKey: orgId ? qk.extractionModels(orgId) : ["none"],
+    queryFn: () => api.listExtractionModels(orgId),
+    enabled: !!orgId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+export const useSetExtractionModel = (orgId) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (modelId) => api.setExtractionModel(orgId, modelId),
+    onSuccess: () => {
+      if (orgId) qc.invalidateQueries({ queryKey: qk.extractionModels(orgId) });
+    },
+  });
+};
+
+// ── Paystack subscription hooks ──────────────────────────────────────────────
+
+export const usePlans = (orgId) =>
+  useQuery({
+    queryKey: orgId ? qk.billingPlans(orgId) : ["none"],
+    queryFn: async () => {
+      const res = await api.getPlans(orgId);
+      return Array.isArray(res) ? res : res?.plans ?? [];
+    },
+    enabled: !!orgId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+export const useSubscription = (orgId) =>
+  useQuery({
+    queryKey: orgId ? qk.subscription(orgId) : ["none"],
+    queryFn: () => api.getSubscription(orgId),
+    enabled: !!orgId,
+    staleTime: 60_000,
+  });
+
+export const useSubscribePlan = (orgId) => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body) => api.subscribePlan(orgId, body),
+    onSuccess: () => {
+      if (orgId) {
+        qc.invalidateQueries({ queryKey: qk.subscription(orgId) });
+        qc.invalidateQueries({ queryKey: qk.billingUsage(orgId) });
+      }
+    },
+  });
+};
+
+export const useVerifySubscription = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body) => api.verifySubscription(body),
+    onSuccess: (_data, _vars) => {
+      // Invalidate subscription for all orgs (we may not know orgId here).
+      qc.invalidateQueries({ queryKey: ["subscription"] });
+      qc.invalidateQueries({ queryKey: ["billing-usage"] });
+    },
+  });
+};

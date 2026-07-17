@@ -3,7 +3,7 @@
 
 import { useAuthStore } from "@/stores/auth";
 
-const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8081";
+const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8788";
 
 export class ApiError extends Error {
   constructor(message, status, code) {
@@ -102,10 +102,22 @@ export const api = {
 
   me: () => request("/auth/me"),
   updateProfile: (body) => request("/auth/me", { method: "PATCH", body }),
+  uploadAvatar: (file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request("/auth/me/avatar", { method: "POST", formData: fd });
+  },
 
   listOrgs: () => request("/orgs"),
   createOrg: (input) =>
     request("/orgs", { method: "POST", body: input }),
+  uploadOrgAvatar: (orgId, file) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return request(`/orgs/${orgId}/avatar`, { method: "POST", formData: fd });
+  },
+  updateOrgAvatar: (orgId, body) =>
+    request(`/orgs/${orgId}/avatar`, { method: "PATCH", body }),
   listMembers: (orgId) =>
     request(`/orgs/${orgId}/members`),
 
@@ -253,6 +265,20 @@ export const api = {
   getForecast: (orgId, { horizon } = {}) => request(`/orgs/${orgId}/forecast${qs({ horizon })}`),
   getAnomalies: (orgId) => request(`/orgs/${orgId}/anomalies`),
   getTaxReadiness: (orgId) => request(`/orgs/${orgId}/tax-readiness`),
+
+  // ── Billing ──────────────────────────────────────────────────────────────
+  getBillingUsage: (orgId) => request(`/orgs/${orgId}/billing/usage`),
+  listExtractionModels: (orgId) => request(`/orgs/${orgId}/billing/models`),
+  setExtractionModel: (orgId, modelId) =>
+    request(`/orgs/${orgId}/billing/model`, { method: "POST", body: { model_id: modelId } }),
+
+  // ── Paystack subscription ─────────────────────────────────────────────────
+  getPlans: (orgId) => request(`/orgs/${orgId}/billing/plans`),
+  getSubscription: (orgId) => request(`/orgs/${orgId}/billing/subscription`),
+  subscribePlan: (orgId, body) =>
+    request(`/orgs/${orgId}/billing/subscribe`, { method: "POST", body }),
+  verifySubscription: (body) =>
+    request("/billing/verify", { method: "POST", body }),
 };
 
 // qs builds a query string from defined, non-empty values (drops undefined/null/"").

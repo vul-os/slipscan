@@ -20,6 +20,7 @@ import { classifyDocument } from "./service";
 import { applyCorrection, applyToExisting, getTransactionMerchantNorm } from "./corrections";
 import { NotFoundError } from "./corrections";
 import { listTransactions, listCategories } from "./queries";
+import { emitAudit } from "../audit/emit";
 import type {
   TransactionResponse,
   TransactionListItem,
@@ -200,6 +201,27 @@ router.patch("/orgs/:orgID/transactions/:txID/classification", requireMember, as
     ...(validAccountId !== undefined ? { account_id: validAccountId } : {}),
   };
 
+  // Capture before-state: current category on the transaction
+  let beforeState: { category_id?: string | null; classification_source?: string | null } | null = null;
+  try {
+    const { queryRows } = await import("../../db/client");
+    const rows = await queryRows(c.env,
+      `SELECT t.current_classification_id, cl.category_id, cl.source
+         FROM transactions t
+         LEFT JOIN classifications cl ON cl.id = t.current_classification_id
+        WHERE t.id = $1 AND t.organization_id = $2`,
+      [txId, orgId],
+    );
+    if (rows.length > 0) {
+      beforeState = {
+        category_id: (rows[0].category_id as string | null) ?? null,
+        classification_source: (rows[0].source as string | null) ?? null,
+      };
+    }
+  } catch {
+    // Non-fatal: proceed even if before-state fetch fails
+  }
+
   let result: Awaited<ReturnType<typeof applyCorrection>>;
   try {
     result = await applyCorrection(c.env, orgId, txId, userId, input);
@@ -210,6 +232,17 @@ router.patch("/orgs/:orgID/transactions/:txID/classification", requireMember, as
     console.error("classify: patch classification error:", e);
     return writeError(c, 500, "internal_error", "failed to apply correction");
   }
+
+  // P4-03: audit classification correction
+  emitAudit(c.env, {
+    organization_id: orgId,
+    actor_user_id: userId,
+    entity_type: "transaction",
+    entity_id: txId,
+    action: "classification.corrected",
+    before: beforeState,
+    after: { category_id: categoryId, account_id: validAccountId ?? null },
+  }, c.executionCtx);
 
   const resp: Record<string, unknown> = {
     correction_id: result.correction_id,

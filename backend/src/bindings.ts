@@ -47,6 +47,12 @@ export interface Env {
   XERO_REDIRECT_URL?: string;
   EXCHANGE_RATE_API_KEY?: string;
 
+  // Paystack billing — set via `wrangler secret put` (secret key) or [vars] (plan codes)
+  PAYSTACK_SECRET_KEY?: string;       // sk_test_… or sk_live_… — secret
+  PAYSTACK_PUBLIC_KEY?: string;       // pk_test_… or pk_live_… — safe to expose
+  PAYSTACK_TEAM_PLAN_CODE?: string;   // PLN_xxxxxxxx (create in Paystack dashboard)
+  PAYSTACK_BUSINESS_PLAN_CODE?: string; // PLN_xxxxxxxx (create in Paystack dashboard)
+
   // ---- Non-secret vars (wrangler.toml [vars]) ----
   RX_DOMAIN?: string;
   APP_BASE_URL?: string;

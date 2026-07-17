@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Check, Plus, ArrowUpRight, Copy, CopyCheck, ExternalLink,
-  Mail, Building2, User, Zap, AlertTriangle,
+  Mail, Building2, User, Zap, AlertTriangle, Upload,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/PageHeader";
@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/Button";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { useAuthStore } from "@/stores/auth";
 import { useOrgStore } from "@/stores/org";
-import { useOrgs, useXeroStatus, useUpdateProfile } from "@/lib/queries";
+import { useOrgs, useXeroStatus, useUpdateProfile, useUploadAvatar, useUploadOrgAvatar, useUpdateOrgAvatar } from "@/lib/queries";
 import { api } from "@/lib/api";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/cn";
@@ -44,6 +44,120 @@ function OrgInfoCard({ org }) {
         <Field label="Currency" value={(org.currency || "—").toUpperCase()} />
         <Field label="Kind" value={org.kind === "business" ? "Business" : "Personal"} />
         <Field label="Role" value={org.role === "admin" ? "Admin" : "Member"} className="col-span-2 sm:col-span-1" />
+      </div>
+    </Card>
+  );
+}
+
+// ── Org avatar card (admins only) ─────────────────────────────────────────────
+
+function OrgAvatarCard({ org }) {
+  const [avatarUrl, setAvatarUrl] = useState(org?.avatar_url ?? "");
+  const [dirty, setDirty] = useState(false);
+  const fileRef = useRef(null);
+  const { mutate: uploadOrgAvatar, isPending: isUploading } = useUploadOrgAvatar(org?.id);
+  const { mutate: updateOrgAvatar, isPending: isSaving } = useUpdateOrgAvatar(org?.id);
+
+  // Sync local state when org changes (e.g. after save/switch)
+  const orgAvatarRef = useRef(org?.avatar_url);
+  if (org?.avatar_url !== orgAvatarRef.current) {
+    orgAvatarRef.current = org?.avatar_url;
+    setAvatarUrl(org?.avatar_url ?? "");
+    setDirty(false);
+  }
+
+  const onSave = () => {
+    updateOrgAvatar(
+      { avatar_url: avatarUrl || null },
+      {
+        onSuccess: () => {
+          setDirty(false);
+          toast.success("Workspace avatar saved");
+        },
+        onError: (e) => toast.error(e?.message || "Could not save avatar"),
+      },
+    );
+  };
+
+  const onPickFile = (file) => {
+    if (!file) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      toast.error("Use a JPG, PNG, or WebP image");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Image must be 2 MB or smaller");
+      return;
+    }
+    uploadOrgAvatar(file, {
+      onSuccess: (data) => {
+        const url = data?.url;
+        if (!url) return toast.error("Upload succeeded but no URL returned");
+        setAvatarUrl(url);
+        setDirty(true);
+        toast.success("Image uploaded — click Save to apply");
+      },
+      onError: (e) => toast.error(e?.message || "Upload failed"),
+    });
+  };
+
+  return (
+    <Card>
+      <div className="flex items-center gap-4 px-5 py-4 border-b border-ink-100">
+        <Avatar name={org?.name} src={avatarUrl || org?.avatar_url} size="lg" />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium tracking-tight text-ink-900">{org?.name}</div>
+          <div className="text-[13px] text-ink-500 font-mono">/{org?.slug}</div>
+        </div>
+        <Badge tone="accent">
+          <Building2 size={11} /> Admin
+        </Badge>
+      </div>
+
+      <div className="px-5 py-4 space-y-4">
+        <div>
+          <label className="block text-[11px] uppercase tracking-[0.07em] text-ink-400 mb-1" htmlFor="org-avatar">
+            Workspace avatar
+          </label>
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            className="hidden"
+            onChange={(e) => onPickFile(e.target.files?.[0])}
+          />
+          <div className="flex gap-2">
+            <input
+              id="org-avatar"
+              type="url"
+              value={avatarUrl}
+              placeholder="https://… or upload an image →"
+              onChange={(e) => { setAvatarUrl(e.target.value); setDirty(true); }}
+              className="flex-1 rounded-md border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 placeholder:text-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-900/20"
+            />
+            <Button
+              variant="secondary"
+              size="md"
+              loading={isUploading}
+              onClick={() => fileRef.current?.click()}
+              type="button"
+            >
+              <Upload size={14} /> Upload
+            </Button>
+          </div>
+          <p className="mt-1 text-[11px] text-ink-400">
+            Paste a URL or upload a JPG/PNG/WebP (≤ 2 MB) — stored on our R2 bucket.
+            {!avatarUrl && " Leave blank to fall back to a default avatar."}
+          </p>
+        </div>
+
+        {dirty && (
+          <div className="flex justify-end">
+            <Button size="sm" loading={isSaving} onClick={onSave}>
+              Save avatar
+            </Button>
+          </div>
+        )}
       </div>
     </Card>
   );
@@ -216,9 +330,11 @@ function XeroCard({ org }) {
 function UserCard({ user }) {
   const setUser = useAuthStore((s) => s.setUser);
   const { mutate: updateProfile, isPending } = useUpdateProfile();
+  const { mutate: uploadAvatar, isPending: isUploading } = useUploadAvatar();
   const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url ?? "");
   const [fullName, setFullName] = useState(user?.full_name ?? "");
   const [dirty, setDirty] = useState(false);
+  const fileRef = useRef(null);
 
   const onSave = () => {
     updateProfile(
@@ -232,6 +348,28 @@ function UserCard({ user }) {
         onError: (e) => toast.error(e?.message || "Could not save profile"),
       },
     );
+  };
+
+  const onPickFile = (file) => {
+    if (!file) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      toast.error("Use a JPG, PNG, or WebP image");
+      return;
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Image must be 2 MB or smaller");
+      return;
+    }
+    uploadAvatar(file, {
+      onSuccess: (data) => {
+        const url = data?.url;
+        if (!url) return toast.error("Upload succeeded but no URL returned");
+        setAvatarUrl(url);
+        setDirty(true);
+        toast.success("Image uploaded — click Save to apply");
+      },
+      onError: (e) => toast.error(e?.message || "Upload failed"),
+    });
   };
 
   return (
@@ -273,20 +411,37 @@ function UserCard({ user }) {
 
         <div>
           <label className="block text-[11px] uppercase tracking-[0.07em] text-ink-400 mb-1" htmlFor="profile-avatar">
-            Avatar URL
+            Avatar
           </label>
           <input
-            id="profile-avatar"
-            type="url"
-            value={avatarUrl}
-            placeholder="https://… (leave blank to use initials)"
-            onChange={(e) => { setAvatarUrl(e.target.value); setDirty(true); }}
-            className="w-full rounded-md border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 placeholder:text-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-900/20"
+            ref={fileRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            className="hidden"
+            onChange={(e) => onPickFile(e.target.files?.[0])}
           />
+          <div className="flex gap-2">
+            <input
+              id="profile-avatar"
+              type="url"
+              value={avatarUrl}
+              placeholder="https://… or upload an image →"
+              onChange={(e) => { setAvatarUrl(e.target.value); setDirty(true); }}
+              className="flex-1 rounded-md border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900 placeholder:text-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-900/20"
+            />
+            <Button
+              variant="secondary"
+              size="md"
+              loading={isUploading}
+              onClick={() => fileRef.current?.click()}
+              type="button"
+            >
+              <Upload size={14} /> Upload
+            </Button>
+          </div>
           <p className="mt-1 text-[11px] text-ink-400">
-            {user?.avatar_url && !avatarUrl
-              ? "Clearing will remove your current avatar."
-              : "Google profile photo is used automatically when you sign in with Google."}
+            Paste a URL or upload a JPG/PNG/WebP (≤ 2 MB) — stored on our R2 bucket.
+            {!avatarUrl && " Leave blank to fall back to a default avatar."}
           </p>
         </div>
 
@@ -342,7 +497,7 @@ function WorkspaceSection({ list, activeOrgId, isLoading, onSwitch }) {
                       isActive ? "cursor-default bg-ink-50/50" : "hover:bg-ink-50",
                     )}
                   >
-                    <Avatar name={o.name} size="md" />
+                    <Avatar name={o.name} src={o.avatar_url} size="md" />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium tracking-tight text-ink-900 truncate">
                         {o.name}
@@ -407,6 +562,14 @@ export default function SettingsPage() {
         <section className="mb-10">
           <h2 className="text-base font-medium tracking-tight text-ink-900 mb-3">Active workspace</h2>
           <OrgInfoCard org={activeOrg} />
+        </section>
+      )}
+
+      {/* Org avatar — admins only */}
+      {activeOrg && (activeOrg.role === "owner" || activeOrg.role === "admin") && (
+        <section className="mb-10">
+          <h2 className="text-base font-medium tracking-tight text-ink-900 mb-3">Workspace avatar</h2>
+          <OrgAvatarCard org={activeOrg} />
         </section>
       )}
 

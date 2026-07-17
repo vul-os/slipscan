@@ -45,6 +45,7 @@ import {
 } from "./stitch";
 import { syncConnection } from "./syncer";
 import type { Connection } from "./types";
+import { emitAudit } from "../audit/emit";
 
 const router = new Hono<AppEnv>();
 
@@ -143,6 +144,20 @@ router.get("/integrations/bankfeed/callback", async (c) => {
       );
       await updateConnectionStatus(c.env, conn.id, "connected", "", "");
 
+      // P4-03: audit bank-feed connection
+      emitAudit(c.env, {
+        organization_id: orgId,
+        actor_user_id: userId || null,
+        entity_type: "bankfeed_connection",
+        entity_id: conn.id,
+        action: "integration.connected",
+        after: {
+          provider: "stitch",
+          institution_name: la.institutionName,
+          mask: la.mask,
+        },
+      }, c.executionCtx);
+
       // Background initial sync — fire-and-forget (no await: matches Go goroutine).
       c.executionCtx?.waitUntil(
         syncConnection(c.env, { ...conn, accessTokenEncrypted: accessToken })
@@ -224,6 +239,20 @@ router.delete(
       console.error("bankfeed: disconnect:", e);
       return writeError(c, 500, "disconnect_failed", String(e instanceof Error ? e.message : e));
     }
+
+    // P4-03: audit bankfeed disconnection
+    emitAudit(c.env, {
+      organization_id: orgId,
+      actor_user_id: c.get("userId"),
+      entity_type: "bankfeed_connection",
+      entity_id: connId,
+      action: "integration.disconnected",
+      before: {
+        provider: conn.provider,
+        institution_name: conn.institutionName,
+        status: conn.status,
+      },
+    }, c.executionCtx);
 
     return c.json({ disconnected: true }, 200);
   },

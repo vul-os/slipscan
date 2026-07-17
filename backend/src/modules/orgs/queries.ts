@@ -119,7 +119,7 @@ export async function createOrg(env: Env, opts: CreateOrgOptions): Promise<OrgRo
         `INSERT INTO organizations (kind, name, slug, rx_local_part, country, created_by)
          VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id, kind, name, slug, rx_local_part, currency,
-                   created_by, created_at, updated_at`,
+                   created_by, created_at, updated_at, avatar_url`,
         [kind, name, slug, rx, country, opts.ownerUserId],
       );
       if (!rows.length) throw new Error("org insert returned no rows");
@@ -200,7 +200,7 @@ export async function listOrgsForUser(env: Env, userId: string): Promise<OrgWith
   const rows = await queryRows(
     env,
     `SELECT o.id, o.kind, o.name, o.slug, o.rx_local_part, o.currency,
-            o.created_by, o.created_at, o.updated_at,
+            o.created_by, o.created_at, o.updated_at, o.avatar_url,
             m.role, m.joined_at
      FROM organizations o
      JOIN memberships m ON m.organization_id = o.id
@@ -216,10 +216,28 @@ export async function getOrgById(env: Env, orgId: string): Promise<OrgRow | null
   const row = await queryOne(
     env,
     `SELECT id, kind, name, slug, rx_local_part, currency,
-            created_by, created_at, updated_at
+            created_by, created_at, updated_at, avatar_url
      FROM organizations
      WHERE id = $1`,
     [orgId],
+  );
+  return row as unknown as OrgRow | null;
+}
+
+/** Update the avatar_url for an organization. */
+export async function updateOrganizationAvatar(
+  env: Env,
+  orgId: string,
+  avatarUrl: string | null,
+): Promise<OrgRow | null> {
+  const row = await queryOne(
+    env,
+    `UPDATE organizations
+     SET avatar_url = $2, updated_at = NOW()
+     WHERE id = $1
+     RETURNING id, kind, name, slug, rx_local_part, currency,
+               created_by, created_at, updated_at, avatar_url`,
+    [orgId, avatarUrl],
   );
   return row as unknown as OrgRow | null;
 }

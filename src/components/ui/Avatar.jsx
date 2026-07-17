@@ -4,9 +4,11 @@ import { initials } from "@/lib/format";
 
 // Initials avatar. Hue is derived from the name so the same person gets
 // the same color across the app — small detail that aids recognition.
-// Pass `src` to show an image; falls back to initials if src is absent or fails.
+// Pass `src` to show an image; falls back to pravatar.cc (deterministic per
+// name), then to initials if that also fails.
 export function Avatar({ name, src, size = "md", className }) {
-  const [imgError, setImgError] = useState(false);
+  // Step 0 = configured src, step 1 = pravatar fallback, step 2 = initials
+  const [step, setStep] = useState(0);
 
   const dim =
     size === "xs" ? "h-5 w-5 text-[9px]"
@@ -14,7 +16,14 @@ export function Avatar({ name, src, size = "md", className }) {
     : size === "lg" ? "h-10 w-10 text-sm"
     : "h-8 w-8 text-[11px]";
 
-  const showImage = src && !imgError;
+  const pravatarUrl = `https://i.pravatar.cc/300?u=${encodeURIComponent(name || "user")}`;
+
+  const imgSrc =
+    step === 0 && src ? src
+    : step <= 1    ? pravatarUrl
+    : null;
+
+  const showImage = imgSrc !== null;
 
   if (showImage) {
     return (
@@ -23,10 +32,10 @@ export function Avatar({ name, src, size = "md", className }) {
         aria-hidden="true"
       >
         <img
-          src={src}
+          src={imgSrc}
           alt={name || ""}
           className="w-full h-full object-cover"
-          onError={() => setImgError(true)}
+          onError={() => setStep((s) => s + 1)}
         />
       </span>
     );

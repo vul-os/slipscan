@@ -101,4 +101,73 @@ router.get(
   },
 );
 
+// GET /orgs/:orgID/audit/export
+// Export audit log as CSV or JSON (admin-gated).
+router.get(
+  "/orgs/:orgID/audit/export",
+  requireAuth,
+  requireAdmin,
+  async (c) => {
+    const orgId = c.req.param("orgID");
+    const format = (c.req.query("format") ?? "json").toLowerCase();
+
+    const f: ListFilter = {};
+    const sinceParam = c.req.query("since");
+    if (sinceParam) {
+      if (!RFC3339_RE.test(sinceParam)) {
+        return writeError(c, 400, "invalid_since", "since must be RFC3339");
+      }
+      f.since = sinceParam;
+    }
+    const untilParam = c.req.query("until");
+    if (untilParam) {
+      if (!RFC3339_RE.test(untilParam)) {
+        return writeError(c, 400, "invalid_until", "until must be RFC3339");
+      }
+      f.until = untilParam;
+    }
+    f.limit = 1000; // Max per export call; paginate for larger ranges
+    f.offset = parseQueryInt(c.req.query("offset"), 0);
+
+    let entries;
+    try {
+      entries = await withOrg(c.env, orgId, c.get("userId"), async (q) => {
+        return listAuditLog(q, orgId, f);
+      });
+    } catch (err) {
+      console.error("audit export:", err);
+      return writeError(c, 500, "export_failed", "could not export audit entries");
+    }
+
+    if (format === "csv") {
+      const csvRows: string[] = [
+        "id,organization_id,actor_user_id,entity_type,entity_id,action,created_at",
+      ];
+      for (const e of entries ?? []) {
+        const row = [
+          e.id,
+          e.organization_id ?? "",
+          e.actor_user_id ?? "",
+          e.entity_type,
+          e.entity_id ?? "",
+          e.action,
+          e.created_at,
+        ]
+          .map((v) => `"${String(v).replace(/"/g, '""')}"`)
+          .join(",");
+        csvRows.push(row);
+      }
+      return new Response(csvRows.join("\n"), {
+        headers: {
+          "Content-Type": "text/csv",
+          "Content-Disposition": `attachment; filename="audit-${orgId}.csv"`,
+        },
+      });
+    }
+
+    // Default: JSON
+    return c.json({ audit_log: entries ?? [], count: (entries ?? []).length });
+  },
+);
+
 export default router;

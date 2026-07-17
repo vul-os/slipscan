@@ -33,6 +33,7 @@ import {
   listMappings,
   recordSyncError,
 } from "./queries";
+import { emitAudit } from "../audit/emit";
 
 // ── Nonce generator ───────────────────────────────────────────────────────────
 
@@ -204,7 +205,21 @@ r.get("/orgs/:orgID/integrations/xero/connect", requireAdmin, async (c) => {
 
 r.delete("/orgs/:orgID/integrations/xero/connect", requireAdmin, async (c) => {
   const orgId = c.req.param("orgID");
+  // Capture before-state: check if currently connected
+  const statusBefore = await getXeroStatus(c.env, orgId);
   await disconnectXero(c.env, orgId);
+  // P4-03: audit Xero disconnect
+  emitAudit(c.env, {
+    organization_id: orgId,
+    actor_user_id: c.get("userId"),
+    entity_type: "integration",
+    entity_id: orgId,
+    action: "integration.disconnected",
+    before: {
+      provider: "xero",
+      account_email: statusBefore?.accountEmail ?? null,
+    },
+  }, c.executionCtx);
   return c.json({ disconnected: true });
 });
 
@@ -226,7 +241,16 @@ r.get("/integrations/xero/callback", async (c) => {
   const userId = c.get("userId") ?? "";
 
   try {
-    const { tenantId } = await exchangeCode(c.env, state, code, userId);
+    const { tenantId, orgId: connectedOrgId } = await exchangeCode(c.env, state, code, userId);
+    // P4-03: audit Xero connect (orgId comes from the state lookup inside exchangeCode)
+    emitAudit(c.env, {
+      organization_id: connectedOrgId,
+      actor_user_id: userId || null,
+      entity_type: "integration",
+      entity_id: connectedOrgId,
+      action: "integration.connected",
+      after: { provider: "xero", account_email: tenantId },
+    }, c.executionCtx);
     return c.json({
       connected:     true,
       provider:      PROVIDER_NAME,

@@ -154,6 +154,14 @@ router.post(
       return writeError(c, 500, "save_failed", "could not save document");
     }
 
+    // Leave the document in 'pending'. The every-minute extract cron claims it
+    // and runs the full extract → classify pipeline. We deliberately do NOT run
+    // the pipeline inline via waitUntil: on the deployed Workers runtime the
+    // waitUntil budget is too short for the Gemini calls, so the task gets
+    // cancelled mid-extraction and the doc is left wedged in 'processing'
+    // (which the cron's 'pending' claim could never recover). The cron path is
+    // the reliable free-tier mechanism; see claimPendingDocuments for the
+    // stale-'processing' reclaim that self-heals any docs wedged by other means.
     return c.json(toResponse(doc), 201);
   },
 );
