@@ -40,15 +40,15 @@ cargo test --workspace
 cargo run -p slipscan-cli -- --help
 ```
 
-The CLI covers headless use: `init` (create a book), `import` (files), `serve` (self-host server), `list`, `export`.
+The CLI covers headless use: `init` (create a book), `import` (files → documents), `extract` (run slip extraction), `mail-sync` (poll an IMAP folder), `recon`, `report` (with `--csv` on the trial balance), `pack`, `vault`, `serve` (self-host server), and `list`. (There is no separate `export` subcommand; CSV export lives on `report … --csv` and in the desktop Reports screen.)
 
 ---
 
 ## 1. Create your first book
 
-A **book** is one ledgerable context — "Personal" or "My Business". Each book is one SQLite file at a path you can see, back up, and move.
+A **book** is one ledgerable context — "Personal" or "My Business". Books live in a plain SQLite database file at a path you can see, back up, and move ([CONFIGURATION.md](CONFIGURATION.md#data-locations)).
 
-In the desktop app: **New book → name it → pick a kind** (personal or business). The kind decides which features surface — a personal book leads with budgets and spending; a business book adds the chart of accounts, journals, VAT, and reconciliation.
+The desktop app seeds a **Personal (ZA)** book automatically on first run — chart of accounts, VAT rates, and a starter category set included. (There is no in-app "New book" flow yet; additional or business books are created from the CLI.) The kind decides which features matter — a personal book leads with budgets and spending; a business book adds the chart of accounts, journals, VAT, and reconciliation.
 
 From the CLI:
 
@@ -60,14 +60,13 @@ Data locations are documented in [CONFIGURATION.md](CONFIGURATION.md#data-locati
 
 ## 2. Import a bank statement (CSV)
 
-The fastest way to get real data in:
+Honest status first: statement files are currently imported as **documents**, not yet as transactions.
 
-1. Download a statement CSV from your bank's internet banking.
-2. Drag it onto the SlipScan window (or **Import → Choose file**).
-3. Map the columns (date, amount, description) once — SlipScan remembers the mapping per bank.
-4. Transactions land in the account you pick, deduplicated by provider transaction id or content hash. Re-importing an overlapping export is safe.
+1. Download a statement CSV (or OFX) from your bank's internet banking.
+2. Import it: `slipscan import statement.csv` — it is stored as a bank-statement document, content-hash deduplicated.
+3. The statement→transactions step — column mapping (with per-SA-bank presets already implemented in `crates/slipscan-ingest`), landing rows in an account, deduplication by provider id / content hash — exists in the ingest crate but is **not wired to the CLI or desktop yet**. There is no OFX parser yet at all. Both are tracked in [ROADMAP.md](../ROADMAP.md).
 
-OFX imports work the same way. For automatic pulls straight from your bank, see [BANK-ADAPTERS.md](BANK-ADAPTERS.md).
+For the design of automatic pulls straight from your bank, see [BANK-ADAPTERS.md](BANK-ADAPTERS.md).
 
 ## 3. Drop a receipt
 
@@ -77,30 +76,21 @@ Drag a photo or PDF of a till slip onto the app. It becomes a **document** and m
 pending → extracted → reviewed
 ```
 
-Extraction (line items, categories, discounts, VAT) runs through the LLM/OCR provider you configure in the next step. Review the result, fix anything, and confirm — corrections train the local classifier, and matched receipts attach to their bank transactions in [reconciliation](../README.md#features).
+Extraction (line items, categories, discounts, VAT) runs through the LLM/OCR provider you configure in the next step — today it is triggered from the CLI (`slipscan extract`); the desktop shows the results. Review the result, fix anything, and confirm — corrections train the local classifier, and matched receipts attach to their bank transactions in [reconciliation](../README.md#features).
 
-You can also point SlipScan at a watch folder — anything saved there is imported automatically. See [CONFIGURATION.md](CONFIGURATION.md).
+(A watch-folder mode — anything saved there imported automatically — is implemented as a library in `slipscan-ingest` but not yet wired to any surface.)
 
 ## 4. Connect a mailbox
 
-Receipts and bank alerts mostly arrive by email. Connect your own mailbox and SlipScan ingests them as they arrive — no mail relay, no middleman.
+Receipts and bank alerts mostly arrive by email. Connect your own mailbox and SlipScan ingests them — no mail relay, no middleman.
 
-**Settings → Mailboxes → Add**, then pick your provider:
+What works today is **generic IMAP polling via the CLI**: configure host/port/username/folder, put the app password in the [credential vault](THREAT-MODEL.md) (write-only, never displayed again), and run `slipscan mail-sync` — attachments in unseen mail become documents. Any IMAP host works, including a [lilmail](https://github.com/vul-os)-managed mailbox or a local Proton Bridge.
 
-- **Any IMAP host** — server, username, app password. Works everywhere, including a [lilmail](https://github.com/vul-os)-managed mailbox.
-- **Gmail** — your own Google OAuth client, real-time push via a Pub/Sub *pull* subscription.
-- **Outlook / Microsoft 365** — your own app registration, device-code sign-in.
-- **Proton Mail** — via the local Proton Bridge.
-
-Set a folder/label and a sender allowlist per mailbox so only receipt-like mail is processed. The password or refresh token goes into the [credential vault](THREAT-MODEL.md) — write-only, never displayed again.
-
-Full provider walkthroughs: [EMAIL.md](EMAIL.md).
+The dedicated Gmail (OAuth + Pub/Sub pull push) and Outlook/Microsoft 365 (device-code + delta) connectors are implemented in `crates/slipscan-ingest` but have no CLI/desktop surface yet, and no push loop runs anywhere yet — see the status note in [EMAIL.md](EMAIL.md) for exactly where each provider stands.
 
 ## 5. Set an LLM provider
 
-Receipt extraction and the "Ask" view need a model. You bring your own — SlipScan never routes through a hosted SlipScan endpoint.
-
-**Settings → Extraction → Provider:**
+Receipt extraction needs a model. You bring your own — SlipScan never routes through a hosted SlipScan endpoint.
 
 | Option | What you need |
 |---|---|
@@ -108,7 +98,7 @@ Receipt extraction and the "Ask" view need a model. You bring your own — SlipS
 | Local via Ollama | Ollama running on `127.0.0.1:11434` with a vision-capable model. Zero egress. |
 | [llmux](https://github.com/vul-os) | Point SlipScan at your own llmux gateway URL — one config for all your models, still your infrastructure. |
 
-Pick a provider, paste the key (or URL), done. The key is vaulted; the UI shows only a fingerprint and last-used time.
+Configuration is CLI-driven today: set the `extract.provider` setting, vault the key, and run `slipscan extract` ([CONFIGURATION.md](CONFIGURATION.md#the-settings-model)). The desktop Settings screen shows extraction preferences and lets you vault keys, but does not yet drive extraction itself. The key is vaulted; the UI shows only a fingerprint and last-used time.
 
 ---
 

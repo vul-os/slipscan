@@ -1,6 +1,12 @@
 # API
 
-SlipScan has **one service surface, two transports**. Every operation is a function on the core service layer (`crates/slipscan-core`); the Tauri desktop app calls it over IPC and `slipscan-server` exposes the same operations over HTTP. Same names, same serde-JSON payloads, same behaviour — [ARCHITECTURE.md](ARCHITECTURE.md#ipc--api-surface) makes this parity a contract.
+SlipScan has **one service surface, two transports**. Every operation is a function on the core service layer (`crates/slipscan-core`); the Tauri desktop app calls it over IPC and `slipscan-server` exposes the same operations over HTTP. Full same-name/same-payload parity is the contract in [ARCHITECTURE.md](ARCHITECTURE.md#ipc--api-surface) — **and it is not met yet**:
+
+- The **HTTP server is the canonical, near-complete surface** — the operation tables below describe it.
+- The **desktop IPC currently exposes a UI-shaped subset** (25 commands) with display-oriented DTOs. Missing from IPC today: `book_create`/`book_get`, all account CRUD, `transaction_create`/`transaction_get`, `category_create`, `budget_status`, the document status-machine ops (`document_transition`, `document_record_extraction`, `document_current_extraction`), `journal_get`, `coa_seed`, `vat_rate_list`, `report_profit_loss`, `report_balance_sheet`, `audit_list`, and `pack_install`/`pack_list`.
+- Two names currently diverge where both surfaces exist: desktop `report_vat_summary` vs server `report_vat`, and desktop `ledger_account_list` vs server `coa_list`. The desktop also has `journal_list`, `settings_get`/`settings_set` (whole-settings blob), and `vault_set`/`vault_replace`, which the server does not expose (vault writes are deliberately local-only — see below).
+
+Closing this gap (one name, one payload, both transports) is tracked in [ROADMAP.md](../ROADMAP.md).
 
 ## Transports
 
@@ -11,7 +17,7 @@ SlipScan has **one service surface, two transports**. Every operation is a funct
 
 TypeScript mirrors of every payload are hand-maintained in `apps/desktop/src/lib/api/types.ts`; Rust and TS sides are updated in the same change, always.
 
-Because the server binds loopback by default, there is no auth layer in the server itself — access control is the machine boundary, or your reverse proxy when you opt into more ([SELFHOST.md](SELFHOST.md)).
+The server binds loopback by default; an optional hashed bearer token (managed by the `serve` command, never readable via the settings API) gates everything under `/api/v1` when configured. TLS is your reverse proxy's job when you opt into LAN exposure ([SELFHOST.md](SELFHOST.md)).
 
 ## Conventions
 
@@ -27,7 +33,7 @@ The surface, grouped by domain module. This is the same list you'll find as `pub
 
 | Operation | Purpose |
 |---|---|
-| `book_create` / `book_list` / `book_get` | Manage books (one SQLite file each; kind = personal \| business) |
+| `book_create` / `book_list` / `book_get` | Manage books (kind = personal \| business); a database file can hold several books |
 | `account_create` / `account_get` / `account_list` / `account_update` / `account_delete` | Bank / cash / card / asset / liability accounts |
 
 ### Transactions & classification
@@ -75,14 +81,16 @@ The surface, grouped by domain module. This is the same list you'll find as `pub
 |---|---|
 | `report_spending` | Spending breakdowns by category/period |
 | `report_trial_balance` | Trial balance for business books |
+| `report_profit_loss` / `report_balance_sheet` / `report_vat` | Income statement, balance sheet, VAT201 summary (base-currency) |
 
 ### Settings, packs, audit
 
 | Operation | Purpose |
 |---|---|
-| `settings_get` / `settings_set` | Key/value settings; secret values store a keychain entry **name**, the material goes to the vault ([CONFIGURATION.md](CONFIGURATION.md#the-settings-model)) |
-| `pack_install` | Verify (ed25519) and install a classification pack ([PACKS.md](PACKS.md)) |
+| `settings_get` / `settings_set` | Key/value settings; secret-flagged values are **rejected over HTTP** — secret material is set locally (CLI / desktop) only ([CONFIGURATION.md](CONFIGURATION.md#the-settings-model)) |
+| `pack_install` / `pack_list` | Verify (ed25519) and install a classification pack ([PACKS.md](PACKS.md)) |
 | `audit_list` | Read the append-only audit log |
+| `vault_list` / `vault_revoke` | Vault **metadata** and revocation; `vault_set`/`vault_replace` are deliberately not HTTP routes |
 
 ### Health (HTTP only)
 
@@ -90,7 +98,7 @@ The surface, grouped by domain module. This is the same list you'll find as `pub
 
 ## What is deliberately absent
 
-- **No vault-read operation.** `vault.set` / `replace` / `revoke` exist; nothing returns secret material over IPC or HTTP, to anyone, ever. The UI gets metadata only. This is structural, not policy — see [THREAT-MODEL.md](THREAT-MODEL.md).
+- **No vault-read operation.** Vault writes (`vault_set` / `vault_replace`) exist over desktop IPC only; over HTTP only `vault_list` (metadata) and `vault_revoke` exist. Nothing returns secret material over IPC or HTTP, to anyone, ever. This is structural, not policy — see [THREAT-MODEL.md](THREAT-MODEL.md).
 - **No cloud concepts.** No orgs, no billing, no auth-as-a-service. Those died with the legacy stack ([CHANGELOG.md](../CHANGELOG.md)).
 - **No push from the server.** Clients poll or subscribe locally; the server only answers.
 

@@ -8,11 +8,11 @@ Easier for the vendor. A finance aggregator is a honeypot: one service holding b
 
 ## How does this compare to 22seven / Vault22? To Xero?
 
-Same feature targets, inverted architecture. Vault22/22seven-class personal finance (accounts, categorisation, budgets, nudges, peer comparison) and Xero-class small-business accounting (double-entry ledger, VAT, reconciliation) — with no server-side aggregation, no credential custody, and no subscription. Peer comparison, their most "requires-a-cloud" feature, works here through [anonymous, differentially-private benchmark packs](BENCHMARKS.md). Feature-by-feature parity matrices are tracked in [ROADMAP.md](../ROADMAP.md); gaps are issues, not surprises.
+Same feature targets, inverted architecture. Vault22/22seven-class personal finance (accounts, categorisation, budgets, nudges, peer comparison) and Xero-class small-business accounting (double-entry ledger, VAT, reconciliation) — with no server-side aggregation, no credential custody, and no subscription. Peer comparison, their most "requires-a-cloud" feature, is *designed* to work here through [anonymous, differentially-private benchmark packs](BENCHMARKS.md) — the comparison math exists in the packs crate, but no UI surfaces it yet and contribution is not implemented. Feature-by-feature parity matrices are planned for [ROADMAP.md](../ROADMAP.md) (Phase 4.5 — they do not exist yet); gaps are issues, not surprises.
 
 ## Where exactly is my data?
 
-One SQLite file per book plus a documents folder, at a visible path on your disk ([CONFIGURATION.md](CONFIGURATION.md#data-locations)). Open it with any SQLite tool. Back it up by copying it. Leave SlipScan by taking it. There is no other copy anywhere, because there is nowhere else.
+One SQLite database file (holding your books) plus a documents folder, at a visible path on your disk ([CONFIGURATION.md](CONFIGURATION.md#data-locations)). Open it with any SQLite tool. Back it up by copying it. Leave SlipScan by taking it. There is no other copy anywhere, because there is nowhere else.
 
 ## What phones home?
 
@@ -20,11 +20,11 @@ Nothing. No telemetry, no analytics, no update pings, no crash reports, no defau
 
 ## Can I use my Proton Mail account?
 
-Yes, via the official [Proton Bridge](https://proton.me/mail/bridge): it decrypts locally and exposes IMAP on `127.0.0.1`, and SlipScan connects to it like any IMAP server — IDLE push included. Requires a paid Proton plan (Bridge is a Proton requirement). Setup: [EMAIL.md](EMAIL.md#proton-mail).
+Yes, via the official [Proton Bridge](https://proton.me/mail/bridge): it decrypts locally and exposes IMAP on `127.0.0.1`, and SlipScan connects to it like any IMAP server (today via `slipscan mail-sync` polling; IDLE push once a push loop ships). Requires a paid Proton plan (Bridge is a Proton requirement). Setup: [EMAIL.md](EMAIL.md#proton-mail).
 
 ## Can I trust the bank adapters with my banking login?
 
-Don't trust — read. Every adapter is open-source, deliberately small, and dependency-light; the review checklist ([BANK-ADAPTERS.md](BANK-ADAPTERS.md#auditing-an-adapter)) demands that its every URL is your bank's own domain and that credentials only ever appear inside a vault closure. Credentials live in your OS keychain, are write-only (no code path can display them), and every use is audit-logged. Compare that with any aggregator, where the scraper runs on servers you cannot inspect, with credentials they custody.
+Don't trust — read. (Note: no live scraper adapter ships yet — today the only adapter is CSV statement parsing; this answer describes the framework's rules for when they do.) Every adapter is open-source, deliberately small, and dependency-light; the review checklist ([BANK-ADAPTERS.md](BANK-ADAPTERS.md#auditing-an-adapter)) demands that its every URL is your bank's own domain and that credentials only ever appear inside a vault closure. Credentials live in your OS keychain, are write-only (no code path can display them), and every use is audit-logged. Compare that with any aggregator, where the scraper runs on servers you cannot inspect, with credentials they custody.
 
 ## Do I need an LLM? Does that mean my receipts go to an AI company?
 

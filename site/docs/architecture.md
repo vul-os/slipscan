@@ -12,7 +12,7 @@ crates/
   slipscan-ingest/         # email inbound (IMAP), file import/watch, bank-scraper framework
   slipscan-packs/          # signed classification/category packs: format, ed25519 verify, import/export
   slipscan-server/         # axum headless server (self-host mode), thin wrapper over core services
-  slipscan-cli/            # clap CLI: init, import, serve, list, export
+  slipscan-cli/            # clap CLI: init, import, extract, mail-sync, recon, report, pack, vault, serve, list
 apps/
   desktop/                 # Tauri 2 + Svelte 5 + TypeScript + Vite + Tailwind v4
     src/                   # Svelte frontend
@@ -25,7 +25,7 @@ docs/                      # this file, guides
 
 | Concern | Choice | Notes |
 |---|---|---|
-| Storage | `rusqlite` (bundled) | one SQLite file per book, user-visible path, WAL |
+| Storage | `rusqlite` (bundled) | SQLite at a user-visible path, WAL. Design target: one file per book; current implementation: one database file that can hold several books |
 | Migrations | embedded numbered SQL via `include_str!`, tiny runner in core | no external migration tool |
 | IDs | UUID v7 strings (`uuid` crate) | sortable, no coordination |
 | Time | `time` crate, ISO-8601 UTC in DB | render local in UI |
@@ -40,7 +40,7 @@ docs/                      # this file, guides
 
 ## Core domain (slipscan-core modules)
 
-- `book` — a ledgerable context (personal / business); one SQLite file each; `kind` drives which features surface
+- `book` — a ledgerable context (personal / business); `kind` drives which features surface (one-file-per-book is the design target; today books share one database file)
 - `account` — bank / cash / card / asset / liability accounts (personal-finance view)
 - `transaction` — bank-level transactions; source = scraper | email | import | manual; dedupe by (account, provider_txn_id | hash)
 - `category` — hierarchical; merchant→category mappings; classification via rules from packs + local corrections (learning loop stays local)
@@ -58,6 +58,7 @@ Legacy SQL schemas (reference only, cloud concepts like orgs/billing/auth must N
 
 - Tauri commands and axum routes expose the **same core services**, same names: `book_list`, `transaction_list`, `transaction_categorize`, `document_import`, `document_get`, `budget_upsert`, `journal_post`, `recon_suggest`, `recon_confirm`, `report_spending`, `settings_get/set`, `pack_install`, …
 - All payloads serde JSON. TypeScript mirrors are hand-maintained in `apps/desktop/src/lib/api/types.ts` — update both sides in the same change.
+- This parity is the contract; the current implementation does not fully meet it yet (the desktop IPC exposes a subset, with two divergent names). The honest gap list lives in [API.md](API.md) and closing it is on the roadmap.
 
 ## Design system
 
@@ -89,7 +90,7 @@ Inbound email is a first-class ingestion source. One `MailboxConnector` trait, m
 Secrets get their own subsystem with **write-only semantics**. Design goals: a copied disk/file yields nothing; software can use secrets; humans can set, replace, and revoke — **never view**.
 
 - **Envelope encryption.** Each secret is encrypted with XChaCha20-Poly1305 under a per-machine data-encryption key (DEK). The DEK is wrapped by a key-encryption key (KEK) that lives **only in the OS keychain** (macOS Keychain / Windows Credential Manager / Secret Service), never on disk. Copying the vault + SQLite files off the machine is useless without that user's unlocked OS session.
-- **User presence.** Where the platform supports it (Touch ID / Windows Hello), unwrapping the KEK for bank-scraper credentials requires user presence; at minimum it requires the OS session to be unlocked.
+- **User presence** *(design goal, not yet implemented)*. Where the platform supports it (Touch ID / Windows Hello), unwrapping the KEK for bank-scraper credentials should require user presence; the implemented guarantee today is that use requires the OS session to be unlocked.
 - **Write-only API.** `vault.set(name, secret)`, `vault.replace(name, secret)`, `vault.revoke(name)`, and internal `vault.use_with(name, |secret| ...)` which hands the secret to the consuming adapter (scraper, IMAP, LLM client) inside a closure. There is **no** `get`-for-display, no export, no IPC command that returns secret material. The UI shows only metadata: label, created/rotated timestamps, last-used, and a short non-reversible fingerprint.
 - **Memory hygiene.** Secrets are `zeroize`d on drop, held for the shortest possible scope, excluded from `Debug`/`Display`/logs/error messages by construction (newtype wrappers with redacted impls).
 - **Auditability.** Every vault access (use, set, replace, revoke — never the material) is recorded in the append-only audit log.
@@ -108,7 +109,7 @@ Target: the full Vault22/22seven experience — nudges, spending insights, peer 
   - Coarse cohort buckets only (region, rough income band, household size) — chosen so every cohort clears a k-anonymity floor; submissions carrying no identifiers, no account, no stable pseudonym.
   - Anonymous transport (relay/onion-style submission, randomized timing); aggregators are community-run and can be anyone — the DP noise means even a malicious aggregator learns nothing about an individual.
   - Default is **off**. Turning it on shows exactly what would be sent, in plain language.
-- Parity North Star: feature-parity matrices vs Xero and Vault22/22seven are tracked in [ROADMAP.md](../ROADMAP.md); gaps are issues, not surprises.
+- Parity North Star: feature-parity matrices vs Xero and Vault22/22seven will be maintained in [ROADMAP.md](../ROADMAP.md) (Phase 4.5 — not yet written); gaps are issues, not surprises.
 
 ## Non-negotiables (the mantra)
 

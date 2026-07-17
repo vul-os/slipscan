@@ -1,56 +1,48 @@
 # Screenshots
 
-A visual tour of SlipScan. Electric-lime accent on ink neutrals, Inter for UI, Geist Mono for anything with digits. Dark theme is first-class.
-
-> These captures show the current design direction. Automated regeneration via `scripts/screenshots.mjs` (Playwright against a seeded demo book, per the VulOS screenshotter standard) lands with the new Tauri UI — until then, the gallery is updated by hand.
-
----
-
-## Dashboard
-
-![Dashboard](screenshots/dashboard.png)
-
-The home view: balances across accounts, spend vs budget for the month, category breakdown, and recent activity — all computed locally from your book.
+> **Honest status — read before scrolling.** The images below are **archived captures of the legacy cloud app**, kept only as a record of the visual design direction (electric-lime accent on ink neutrals, Inter for UI, Geist Mono for digits, dark-first). They show cloud-era concepts that **do not exist in this codebase and are not coming back** — workspaces, members, a signed-in user, upload-to-cloud, and an "Ask" chat view (never built in the Rust/Tauri app; not on the roadmap). The shipped desktop app's actual screens are Dashboard, Transactions, Receipts, Budgets, Ledger, Reconcile, Reports, and Settings.
+>
+> Current-app captures, regenerated automatically (Playwright against a seeded demo book, per the VulOS screenshotter standard), will replace this gallery; until then nothing on this page should be read as the product.
 
 ---
 
-## Receipts
+## Dashboard (legacy design)
 
-![Receipts](screenshots/receipts.png)
+![Dashboard — legacy cloud app](screenshots/dashboard.png)
 
-Every captured slip — dropped, watched, or ingested from your mailbox — with its extraction status at a glance (`pending → extracted → reviewed`).
-
----
-
-## Receipt detail
-
-![Receipt detail](screenshots/receipt-detail.png)
-
-One slip, fully extracted: line items, per-line categories, discounts, and VAT, side-by-side with the original image. Corrections here stay local and train your classifier.
+The legacy home view (shown here in its empty "workspace" state). In the shipped app the Dashboard displays account balances, spend vs budget for the month, category breakdown, locally-computed nudges, and recent activity — all from your local book.
 
 ---
 
-## Reconcile
+## Receipts (legacy design)
 
-![Reconcile](screenshots/reconcile.png)
+![Receipts — legacy cloud app](screenshots/receipts.png)
 
-Suggested matches between bank transactions, receipts, and journal lines. Confirm with one click; every confirmation is auditable.
-
----
-
-## Ledger
-
-![Ledger](screenshots/ledger.png)
-
-The accounting side: chart of accounts, balanced journals, VAT — Xero-class books that never leave your machine.
+The shipped Receipts screen lists every captured slip with its extraction status (`pending → extracted → reviewed`), searchable and filterable, with local import only — the legacy "Upload receipt" cloud flow is gone.
 
 ---
 
-## Ask
+## Receipt detail (legacy design)
 
-![Ask](screenshots/ask.png)
+![Receipt detail — legacy cloud app](screenshots/receipt-detail.png)
 
-Ask questions about your own data in plain language, answered by the LLM provider *you* configured — BYO key or fully local via Ollama/llmux.
+In the shipped app, an expanded slip shows extracted line items, VAT, discounts, and confidence. Corrections stay local and train your classifier.
+
+---
+
+## Reconcile (legacy design)
+
+![Reconcile — legacy cloud app](screenshots/reconcile.png)
+
+The shipped Reconcile screen scores matches between bank transactions and receipts; confirm or reject with one click, every decision audited.
+
+---
+
+## Ledger (legacy design)
+
+![Ledger — legacy cloud app](screenshots/ledger.png)
+
+The shipped Ledger screen: chart of accounts, balanced manual journals, trial balance — books that never leave your machine.
 
 ---
 
