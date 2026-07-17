@@ -2,7 +2,7 @@
 
 The destination: a fully self-hosted, decentralized personal-finance system — Rust core, Tauri desktop app, open-source bank scrapers, email ingestion, and community-shared classification packs. No central server, ever.
 
-Legacy phase contracts for the old stack live in [docs/legacy/roadmap](docs/legacy/roadmap).
+Phase contracts for the old (removed) cloud stack live only in git history, alongside the legacy code itself ([CHANGELOG.md](CHANGELOG.md)).
 
 ## Phase 0 — Consolidation ✅
 

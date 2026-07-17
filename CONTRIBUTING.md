@@ -19,9 +19,12 @@ Thanks for helping build self-hosted, decentralized personal finance. All contri
 ## Workflow
 
 1. Fork, branch from `main`.
-2. Make your change with tests where practical (`npm test` for the legacy stack; `cargo test` once the Rust core lands).
-3. Open a PR describing what and why.
+2. Make your change with tests where practical. Before opening a PR:
+   - Rust workspace: `cargo test --workspace`, `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets`
+   - Desktop app: `cd apps/desktop && npm install && npm run check`
+3. Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing anything structural — it is the binding contract.
+4. Open a PR describing what and why.
 
-## Legacy stack
+## What about the old cloud stack?
 
-The React/Vite + Cloudflare Workers code in this repo is the working legacy implementation being ported to Rust + Tauri. Bug fixes there are welcome; new features should target the new architecture unless discussed first.
+There is none in this tree. The legacy implementation (React on Cloudflare Workers with a Supabase backend) was removed and lives only in git history ([CHANGELOG.md](CHANGELOG.md)); all contributions target the Rust core + Tauri desktop app.

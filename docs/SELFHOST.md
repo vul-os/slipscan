@@ -15,8 +15,9 @@ cargo build --release -p slipscan-cli
 # run — binds 127.0.0.1:7151, and only that, by default
 slipscan serve
 
-# LAN bind is an explicit opt-in, never a default
-slipscan serve --listen 0.0.0.0:7151
+# LAN bind is an explicit opt-in, never a default: a non-loopback --listen
+# is refused unless you also pass --lan
+slipscan serve --listen 0.0.0.0:7151 --lan
 ```
 
 ```sh

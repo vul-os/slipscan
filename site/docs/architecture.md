@@ -44,7 +44,7 @@ docs/                      # this file, guides
 - `account` — bank / cash / card / asset / liability accounts (personal-finance view)
 - `transaction` — bank-level transactions; source = scraper | email | import | manual; dedupe by (account, provider_txn_id | hash)
 - `category` — hierarchical; merchant→category mappings; classification via rules from packs + local corrections (learning loop stays local)
-- `budget` — per-category monthly budgets, rollover
+- `budget` — per-category monthly budgets; a rollover flag is stored per budget (rollover *behaviour* — carrying unspent amounts into the next month — is not yet implemented)
 - `document` — receipts/slips/statements; extraction status machine (pending → extracted → reviewed); slip-v2 result (line items, categories, discounts, VAT) lives in slipscan-extract types, stored by core
 - `ledger` — double-entry: chart of accounts, journals, journal lines (balanced enforced), VAT rates & returns
 - `recon` — matching documents/transactions/journal lines; suggestions + confirmed matches

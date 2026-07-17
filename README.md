@@ -23,14 +23,14 @@
 <p align="center">
   <img src="assets/screens/dashboard.png" alt="SlipScan dashboard — design direction" width="820">
   <br>
-  <sub><em>Design direction — the UI the desktop app is being built toward. Shots of the shipped app replace these as screens are finished.</em></sub>
+  <sub><em>Design direction — an archived capture of the legacy cloud app, kept as the visual target (<a href="docs/SCREENSHOTS.md">honest notes</a>). Shots of the shipped desktop app replace these as screens are finished.</em></sub>
 </p>
 
 <table align="center">
   <tr>
     <td align="center" width="33%"><strong>You are the server</strong><br><sub>No SaaS backend, no aggregator in the middle. Everything runs on your machine or a box you control.</sub></td>
     <td align="center" width="33%"><strong>Write-only secrets</strong><br><sub>Bank &amp; mailbox credentials live in your OS keychain. Set, rotate, revoke, use — never view.</sub></td>
-    <td align="center" width="33%"><strong>Share smarts, not data</strong><br><sub>The community shares signed classification packs and noise-protected statistics. Never your transactions.</sub></td>
+    <td align="center" width="33%"><strong>Share smarts, not data</strong><br><sub>Community knowledge travels as signed classification packs — with noise-protected benchmark statistics designed on the same principle (<a href="docs/BENCHMARKS.md">not yet built</a>). Never your transactions.</sub></td>
   </tr>
 </table>
 
@@ -38,7 +38,7 @@
 
 SlipScan gives you what Vault22 / 22seven does for personal finance and what Xero does for small-business accounting — bank transactions, receipts, budgets, categorised spending, double-entry ledger, reconciliation, VAT — with one fundamental difference: **there is no central server**. A Rust core over a plain SQLite file, wrapped in a Tauri desktop app. It is a standalone product: no account, no cloud, no telemetry, and it never depends on any hosted service.
 
-Your data lives on your machine, your bank and mailbox credentials stay in your OS keychain, and the only thing the community shares is knowledge — signed classification packs and differentially-private benchmark statistics — never data.
+Your data lives on your machine, your bank and mailbox credentials stay in your OS keychain, and the only thing the community shares is knowledge — signed classification packs today, with differentially-private benchmark statistics designed but [not yet implemented](docs/BENCHMARKS.md) — never data.
 
 ## Features
 
@@ -52,7 +52,7 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
       <ul>
         <li>Accounts across banks — bank, cash, card, asset, liability</li>
         <li>Transaction categorisation with local corrections and merchant mappings — the learning loop never leaves your machine; community pack <em>rules</em> install today but are not yet consulted during categorisation (<a href="docs/PACKS.md">status</a>)</li>
-        <li>Per-category monthly budgets with rollover; spending breakdowns and income/expense reports</li>
+        <li>Per-category monthly budgets, spending breakdowns and income/expense reports (a rollover flag is stored per budget, but rollover is not yet applied to the numbers)</li>
         <li>Receipt/slip capture with LLM/OCR extraction (line items, discounts, VAT) — bring your own key or run a local model</li>
         <li>Local nudge engine and anonymous peer benchmarks — designed, in progress (<a href="docs/BENCHMARKS.md">how it stays private</a>)</li>
       </ul>
@@ -126,7 +126,7 @@ flowchart LR
         subgraph sources["sources"]
             bank["Bank scrapers<br/>(open-source, your session)"]
             mail["Email inbound<br/>(your IMAP / Gmail / Graph / Proton)"]
-            files["Slips &amp; files<br/>(drag-drop, watch, import)"]
+            files["Slips &amp; files<br/>(import today; drag-drop &amp; watch planned)"]
         end
         core["Rust core<br/>(slipscan-core services:<br/>categorise, budget, ledger, recon)"]
         db[("SQLite<br/>your books, one file")]

@@ -48,9 +48,9 @@ sequenceDiagram
 
 ## Generic IMAP (any host)
 
-Works with any IMAP server: your own mail server, Fastmail, a [lilmail](https://github.com/vul-os)-managed mailbox, your ISP. This is the one provider you can use end-to-end today, via the CLI:
+Works with any IMAP server: your own mail server, Fastmail, a [lilmail](https://github.com/vul-os)-managed mailbox, your ISP. This is the one provider with a working end-to-end path today — syncing runs via the CLI, though the one-time configuration step currently needs the server API (the CLI has no settings command yet):
 
-1. Configure host, port (993/TLS), username, and folder (`slipscan mail-sync` reads its config from settings; see [CONFIGURATION.md](CONFIGURATION.md)).
+1. Configure host, port (993/TLS), username, and folder: `slipscan mail-sync` reads the `mail.imap.config` setting, which today is written through the server API's `settings_set` (see [CONFIGURATION.md](CONFIGURATION.md#the-settings-model)).
 2. Use an **app password** if your provider supports them; it goes into the [credential vault](THREAT-MODEL.md) and is never displayed again.
 3. Run `slipscan mail-sync` (e.g. from cron/launchd) — each run fetches unseen messages and imports their attachments as documents.
 
