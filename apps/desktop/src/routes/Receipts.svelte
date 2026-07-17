@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
   import { fmtDate, fmtMoney, fmtPct } from "../lib/format";
+  import { csvMoney, downloadCsv, toCsv } from "../lib/csv";
   import type { Document, DocumentStatus } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
@@ -12,19 +13,42 @@
 
   let docs = $state<Document[]>([]);
   let loading = $state(true);
+  let loadError = $state<string | null>(null);
   let filter = $state<Filter>("all");
   let search = $state("");
   let bookId = $state("");
 
   async function load() {
     loading = true;
-    const [book] = await api.bookList();
-    if (!book) return;
-    bookId = book.id;
-    docs = await api.documentList({ book_id: book.id });
-    loading = false;
+    loadError = null;
+    try {
+      const [book] = await api.bookList();
+      if (!book) throw new Error("no book configured");
+      bookId = book.id;
+      docs = await api.documentList({ book_id: book.id });
+    } catch (err) {
+      loadError = String(err);
+    } finally {
+      loading = false;
+    }
   }
   load();
+
+  function exportDocs() {
+    const csv = toCsv(
+      ["file", "merchant", "date", "total", "currency", "status", "confidence"],
+      docs.map((d) => [
+        d.file_name,
+        d.merchant,
+        d.issued_at ? d.issued_at.slice(0, 10) : "",
+        d.total_minor != null ? csvMoney(d.total_minor, d.currency) : "",
+        d.currency,
+        d.status,
+        d.extraction ? d.extraction.confidence.toFixed(2) : "",
+      ]),
+    );
+    downloadCsv("receipts.csv", csv);
+  }
 
   const filters: Array<{ id: Filter; label: string }> = [
     { id: "all", label: "All" },
@@ -124,7 +148,7 @@
   subtitle="Drop in slips and let extraction do the typing. Review anything below full confidence."
 >
   {#snippet actions()}
-    <button class="btn">
+    <button class="btn" onclick={exportDocs} disabled={docs.length === 0}>
       <Icon name="download" size={14} />
       Export
     </button>
@@ -187,6 +211,12 @@
 <div class="card overflow-hidden">
   {#if loading}
     <Skeleton rows={8} />
+  {:else if loadError}
+    <EmptyState icon="alert-circle" title="Could not load receipts" body={loadError}>
+      {#snippet actions()}
+        <button class="btn" onclick={load}>Retry</button>
+      {/snippet}
+    </EmptyState>
   {:else if docs.length === 0}
     <EmptyState
       icon="receipt"
@@ -258,7 +288,7 @@
               {d.issued_at ? fmtDate(d.issued_at) : "—"}
             </td>
             <td class="td num text-right">
-              {d.total_minor != null ? fmtMoney(-d.total_minor) : "—"}
+              {d.total_minor != null ? fmtMoney(d.total_minor, d.currency) : "—"}
             </td>
             <td class="td">
               <Badge tone={statusTone[d.status]} label={d.status} />
@@ -280,7 +310,7 @@
                           {fmtDate(ex.issued_at)} · {fmtPct(ex.confidence)} confidence
                         </span>
                       </span>
-                      <span class="num">{fmtMoney(-ex.total_minor)}</span>
+                      <span class="num">{fmtMoney(ex.total_minor, ex.currency)}</span>
                     </div>
                     {#if ex.line_items.length > 0}
                       <ul class="divide-y divide-line/60">
@@ -295,7 +325,7 @@
                               >×{li.quantity}</span
                             >
                             <span class="num w-24 text-right"
-                              >{fmtMoney(-li.total_minor)}</span
+                              >{fmtMoney(li.total_minor, ex.currency)}</span
                             >
                           </li>
                         {/each}
@@ -304,9 +334,9 @@
                     <div
                       class="mt-2 flex items-center gap-4 text-[11px] text-t3"
                     >
-                      <span>VAT {fmtMoney(ex.vat_minor)}</span>
+                      <span>VAT {fmtMoney(ex.vat_minor, ex.currency)}</span>
                       {#if ex.discount_minor > 0}
-                        <span>Discounts −{fmtMoney(ex.discount_minor)}</span>
+                        <span>Discounts −{fmtMoney(ex.discount_minor, ex.currency)}</span>
                       {/if}
                       <span class="num">{ex.currency}</span>
                     </div>
@@ -314,8 +344,8 @@
                 {:else}
                   <p class="px-2 py-2 text-[12px] text-t3">
                     No extraction yet — this document is {selected.status}.
-                    Configure an LLM provider in Settings to extract line
-                    items, or review it manually.
+                    Run extraction from the CLI (slipscan extract) with your
+                    configured LLM provider, or review it manually.
                   </p>
                 {/if}
               </td>

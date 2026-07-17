@@ -18,11 +18,13 @@
   ];
 
   let bookId = $state("");
+  let bookCurrency = $state("ZAR");
 
   async function load() {
     const [book] = await api.bookList();
     if (!book) throw new Error("no book configured");
     bookId = book.id;
+    bookCurrency = book.currency;
     const [accounts, journal, trial] = await Promise.all([
       api.ledgerAccountList({ book_id: book.id }),
       api.journalList({ book_id: book.id }),
@@ -59,12 +61,20 @@
   }
 
   const lineMinor = (raw: string): number =>
-    Math.max(0, parseMoneyInput(raw) ?? 0);
+    Math.max(0, parseMoneyInput(raw, bookCurrency) ?? 0);
   const debitTotal = $derived(
     lines.reduce((s, l) => s + lineMinor(l.debit), 0),
   );
   const creditTotal = $derived(
     lines.reduce((s, l) => s + lineMinor(l.credit), 0),
+  );
+  /** Lines carrying an amount but no account: they would be dropped on
+   * submit, so they block posting instead of silently disappearing. */
+  const orphanLines = $derived(
+    lines.some(
+      (l) =>
+        !l.ledger_account_id && (lineMinor(l.debit) > 0 || lineMinor(l.credit) > 0),
+    ),
   );
 
   async function postJournal() {
@@ -116,10 +126,6 @@
   subtitle="Chart of accounts, balanced journal entries, and the trial balance behind every report."
 >
   {#snippet actions()}
-    <button class="btn">
-      <Icon name="plus" size={14} />
-      Add account
-    </button>
     <button class="btn btn-primary" onclick={openForm}>
       <Icon name="plus" size={14} />
       New journal entry
@@ -152,12 +158,8 @@
         <EmptyState
           icon="ledger"
           title="No chart of accounts yet"
-          body="Start from the standard SA template, or add accounts one by one with your own codes."
-        >
-          {#snippet actions()}
-            <button class="btn btn-primary">Use standard template</button>
-          {/snippet}
-        </EmptyState>
+          body="The standard SA chart of accounts is seeded when a book is created. If this book has none, seed it from the CLI: slipscan init."
+        />
       </div>
     {:else}
       <div class="space-y-5">
@@ -178,12 +180,6 @@
                         label="VAT {a.vat_rate_bp / 100}%"
                       />
                     {/if}
-                    <button
-                      class="btn btn-ghost h-6 px-1.5 text-[11.5px] text-t3 opacity-0 transition-opacity group-hover:opacity-100"
-                    >
-                      View ledger
-                      <Icon name="arrow-right" size={12} />
-                    </button>
                   </div>
                 {/each}
               </div>
@@ -271,10 +267,12 @@
             Add line
           </button>
           <span class="ml-auto text-[12px] text-t3">
-            Debit <span class="num">{fmtMoney(debitTotal)}</span> · Credit
-            <span class="num">{fmtMoney(creditTotal)}</span>
+            Debit <span class="num">{fmtMoney(debitTotal, bookCurrency)}</span> · Credit
+            <span class="num">{fmtMoney(creditTotal, bookCurrency)}</span>
           </span>
-          {#if debitTotal === creditTotal && debitTotal > 0}
+          {#if orphanLines}
+            <Badge tone="warning" label="line needs an account" />
+          {:else if debitTotal === creditTotal && debitTotal > 0}
             <Badge tone="success" label="balanced" />
           {:else}
             <Badge tone="warning" label="unbalanced" />
@@ -282,7 +280,10 @@
           <button
             class="btn btn-primary h-7"
             type="submit"
-            disabled={posting || debitTotal !== creditTotal || debitTotal === 0}
+            disabled={posting ||
+              orphanLines ||
+              debitTotal !== creditTotal ||
+              debitTotal === 0}
           >
             {posting ? "Posting…" : "Post entry"}
           </button>
@@ -321,7 +322,7 @@
               <span class="num text-t3">{fmtDate(e.entry_date)}</span>
               <span class="flex-1 text-[13px] font-medium">{e.memo}</span>
               <Badge tone="success" label="balanced" />
-              <span class="num text-t2">{fmtMoney(debit)}</span>
+              <span class="num text-t2">{fmtMoney(debit, bookCurrency)}</span>
             </header>
             <table class="w-full text-[12.5px]">
               <tbody>
@@ -331,10 +332,10 @@
                       >{l.ledger_account_name}</td
                     >
                     <td class="td num w-32 border-t-0 text-right">
-                      {l.debit_minor ? fmtMoney(l.debit_minor) : ""}
+                      {l.debit_minor ? fmtMoney(l.debit_minor, bookCurrency) : ""}
                     </td>
                     <td class="td num w-32 border-t-0 text-right text-t2">
-                      {l.credit_minor ? fmtMoney(l.credit_minor) : ""}
+                      {l.credit_minor ? fmtMoney(l.credit_minor, bookCurrency) : ""}
                     </td>
                   </tr>
                 {/each}
@@ -369,10 +370,10 @@
               <td class="td num text-t3">{r.code}</td>
               <td class="td font-medium">{r.name}</td>
               <td class="td num text-right"
-                >{r.debit_minor ? fmtMoney(r.debit_minor) : ""}</td
+                >{r.debit_minor ? fmtMoney(r.debit_minor, bookCurrency) : ""}</td
               >
               <td class="td num text-right"
-                >{r.credit_minor ? fmtMoney(r.credit_minor) : ""}</td
+                >{r.credit_minor ? fmtMoney(r.credit_minor, bookCurrency) : ""}</td
               >
             </tr>
           {/each}
@@ -388,10 +389,10 @@
               </span>
             </td>
             <td class="td num text-right"
-              >{fmtMoney(d.trial.total_debit_minor)}</td
+              >{fmtMoney(d.trial.total_debit_minor, d.trial.currency)}</td
             >
             <td class="td num text-right"
-              >{fmtMoney(d.trial.total_credit_minor)}</td
+              >{fmtMoney(d.trial.total_credit_minor, d.trial.currency)}</td
             >
           </tr>
         </tbody>

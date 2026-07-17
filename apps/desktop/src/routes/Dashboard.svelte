@@ -1,6 +1,13 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
-  import { fmtDate, fmtMoney, fmtMonth, fmtPct, greeting } from "../lib/format";
+  import {
+    fmtDate,
+    fmtMoney,
+    fmtMonth,
+    fmtPct,
+    greeting,
+    monthEnd,
+  } from "../lib/format";
   import { computeNudges, type NudgeSeverity } from "../lib/nudges";
   import { router } from "../lib/router.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -26,7 +33,7 @@
         api.reportSpending({
           book_id: book.id,
           from: `${month}-01`,
-          to: `${month}-31`,
+          to: monthEnd(month),
         }),
       ]);
     // Nudges are computed right here, on-device, from the stats above.
@@ -89,18 +96,18 @@
   <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
     <StatCard
       label="Net balance"
-      value={fmtMoney(netMinor)}
+      value={fmtMoney(netMinor, d.book.currency)}
       sub="{d.accounts.length} accounts"
       tone="accent"
     />
     <StatCard
       label="Spent · {fmtMonth(month)}"
-      value={fmtMoney(-d.spending.total_spent_minor)}
+      value={fmtMoney(d.spending.total_spent_minor, d.spending.currency)}
       sub="across {d.spending.by_category.length} categories"
     />
     <StatCard
       label="Budget remaining"
-      value={fmtMoney(budgetLeft)}
+      value={fmtMoney(budgetLeft, d.book.currency)}
       sub="{d.budgets.length} category budgets"
     />
     <StatCard
@@ -171,7 +178,7 @@
                   >{row.category_name}</span
                 >
                 <span class="num text-t1"
-                  >{fmtMoney(row.amount_minor)}
+                  >{fmtMoney(row.amount_minor, d.spending.currency)}
                   <span class="text-t3">· {fmtPct(row.share)}</span></span
                 >
               </div>
@@ -228,7 +235,7 @@
                   {fmtDate(tx.posted_at)} · {catName(tx.category_id)}
                 </span>
               </span>
-              <Money amount={tx.amount_minor} signed colored />
+              <Money amount={tx.amount_minor} currency={tx.currency} signed colored />
             </li>
           {/each}
         </ul>

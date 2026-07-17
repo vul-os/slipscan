@@ -1,32 +1,48 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
+  import { router } from "../lib/router.svelte";
+  import { globalSearch } from "../lib/search.svelte";
   import { fmtDate, fmtMoney } from "../lib/format";
-  import type { Account, Category, Transaction } from "../lib/api/types";
+  import type { Account, Book, Category, Transaction } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
   import Money from "../lib/components/Money.svelte";
   import Icon from "../lib/components/Icon.svelte";
 
-  let search = $state("");
+  let search = $state(globalSearch.query);
   let accountFilter = $state("");
   let categoryFilter = $state("");
 
+  // Pick up queries typed into the sidebar search box.
+  $effect(() => {
+    search = globalSearch.query;
+  });
+
+  let book = $state<Book | null>(null);
   let accounts = $state<Account[]>([]);
   let categories = $state<Category[]>([]);
   let transactions = $state<Transaction[]>([]);
   let loading = $state(true);
+  let loadError = $state<string | null>(null);
 
   async function load() {
     loading = true;
-    const [book] = await api.bookList();
-    if (!book) return;
-    [accounts, categories, transactions] = await Promise.all([
-      api.accountList({ book_id: book.id }),
-      api.categoryList({ book_id: book.id }),
-      api.transactionList({ book_id: book.id }),
-    ]);
-    loading = false;
+    loadError = null;
+    try {
+      const [b] = await api.bookList();
+      if (!b) throw new Error("no book configured");
+      book = b;
+      [accounts, categories, transactions] = await Promise.all([
+        api.accountList({ book_id: b.id }),
+        api.categoryList({ book_id: b.id }),
+        api.transactionList({ book_id: b.id }),
+      ]);
+    } catch (err) {
+      loadError = String(err);
+    } finally {
+      loading = false;
+    }
   }
   load();
 
@@ -62,12 +78,14 @@
   let categorizeError = $state<string | null>(null);
 
   async function categorize(tx: Transaction, categoryId: string) {
-    if (!categoryId || categoryId === tx.category_id) return;
+    // An empty value clears the category (back to Uncategorised).
+    const next = categoryId || null;
+    if (next === tx.category_id) return;
     categorizeError = null;
     try {
       const updated = await api.transactionCategorize({
         transaction_id: tx.id,
-        category_id: categoryId,
+        category_id: next,
       });
       transactions = transactions.map((t) => (t.id === tx.id ? updated : t));
     } catch (err) {
@@ -92,19 +110,8 @@
 <PageHeader
   eyebrow="Money in · money out"
   title="Transactions"
-  subtitle="Every bank-level transaction across your accounts. Categorise, filter, and trace back to slips."
->
-  {#snippet actions()}
-    <button class="btn">
-      <Icon name="download" size={14} />
-      Import CSV
-    </button>
-    <button class="btn btn-primary">
-      <Icon name="plus" size={14} />
-      Add transaction
-    </button>
-  {/snippet}
-</PageHeader>
+  subtitle="Every bank-level transaction across your accounts. Categorise, filter, and trace back to slips. Statement import lands via the CLI (slipscan import) for now."
+/>
 
 <div class="mb-3 flex flex-wrap items-center gap-2">
   <div class="relative w-64">
@@ -134,7 +141,7 @@
   </select>
   <span class="ml-auto text-[12px] text-t3">
     {filtered.length} of {transactions.length} · outflow
-    <span class="num">{fmtMoney(outflow)}</span>
+    <span class="num">{fmtMoney(outflow, book?.currency ?? "ZAR")}</span>
   </span>
 </div>
 
@@ -150,15 +157,22 @@
 <div class="card overflow-hidden">
   {#if loading}
     <Skeleton rows={10} />
+  {:else if loadError}
+    <EmptyState icon="alert-circle" title="Could not load transactions" body={loadError}>
+      {#snippet actions()}
+        <button class="btn" onclick={load}>Retry</button>
+      {/snippet}
+    </EmptyState>
   {:else if transactions.length === 0}
     <EmptyState
       icon="transactions"
       title="No transactions yet"
-      body="Point SlipScan at a bank export, connect a scraper session, or add entries by hand. Nothing leaves this machine."
+      body="Import a slip in Receipts, or bring in a bank statement with the CLI: slipscan import <file>. Nothing leaves this machine."
     >
       {#snippet actions()}
-        <button class="btn">Import CSV</button>
-        <button class="btn btn-primary">Add transaction</button>
+        <button class="btn btn-primary" onclick={() => router.go("receipts")}>
+          Import a receipt
+        </button>
       {/snippet}
     </EmptyState>
   {:else if filtered.length === 0}
@@ -209,7 +223,7 @@
                 value={tx.category_id ?? ""}
                 onchange={(e) => categorize(tx, e.currentTarget.value)}
               >
-                <option value="" disabled>Categorise…</option>
+                <option value="">Uncategorised</option>
                 {#each categories as c (c.id)}
                   <option value={c.id}>{c.icon ?? ""} {c.name}</option>
                 {/each}
@@ -217,7 +231,7 @@
             </td>
             <td class="td text-[11px] text-t3">{sourceLabel[tx.source]}</td>
             <td class="td text-right">
-              <Money amount={tx.amount_minor} signed colored />
+              <Money amount={tx.amount_minor} currency={tx.currency} signed colored />
             </td>
           </tr>
         {/each}

@@ -3,6 +3,8 @@
   import { router, type RouteId } from "../router.svelte";
   import { theme, type ThemeMode } from "../theme.svelte";
   import { api, isTauri } from "../api/client";
+  import { apiStatus } from "../api/status.svelte";
+  import { globalSearch } from "../search.svelte";
   import type { Book, Health } from "../api/types";
   import type { IconName } from "../icons";
   import Icon from "./Icon.svelte";
@@ -33,9 +35,17 @@
 
   let book = $state<Book | null>(null);
   let health = $state<Health | null>(null);
+  let searchText = $state("");
 
   api.bookList().then((books) => (book = books[0] ?? null));
   api.health().then((h) => (health = h));
+
+  function submitSearch() {
+    globalSearch.query = searchText;
+    router.go("transactions");
+  }
+
+  const mockData = $derived(!isTauri || apiStatus.usedMockFallback);
 </script>
 
 <aside
@@ -67,7 +77,6 @@
         {book ? `${book.kind} · ${book.currency}` : ""}
       </span>
     </span>
-    <Icon name="chevron-down" size={13} class="shrink-0 text-t3" />
   </div>
 
   <!-- search -->
@@ -80,10 +89,11 @@
     <input
       id="global-search"
       class="input pr-12 pl-8"
-      placeholder="Search…"
+      placeholder="Search transactions…"
       type="text"
+      bind:value={searchText}
       onkeydown={(e) => {
-        if (e.key === "Enter") router.go("transactions");
+        if (e.key === "Enter") submitSearch();
         if (e.key === "Escape") e.currentTarget.blur();
       }}
     />
@@ -156,12 +166,16 @@
       </div>
       <span
         class="flex items-center gap-1.5 text-[10.5px] text-t3"
-        title={isTauri ? "Running under Tauri" : "Browser dev — mock data"}
+        title={!isTauri
+          ? "Browser dev — mock data"
+          : apiStatus.usedMockFallback
+            ? "Some commands are not wired into the backend yet — parts of this UI show mock data"
+            : "Running under Tauri"}
       >
         <span
           class="size-1.5 rounded-full {health ? 'bg-success' : 'bg-t3'}"
         ></span>
-        {health ? `v${health.version}` : "…"}{isTauri ? "" : " · mock"}
+        {health ? `v${health.version}` : "…"}{mockData ? " · mock" : ""}
       </span>
     </div>
   </div>

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
-  import { fmtMoney, fmtMonth, parseMoneyInput } from "../lib/format";
+  import { fmtMoney, fmtMonth, parseMoneyInput, shiftMonth } from "../lib/format";
   import type { Book, Category } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
@@ -9,7 +9,8 @@
   import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
 
-  const month = new Date().toISOString().slice(0, 7);
+  const thisMonth = new Date().toISOString().slice(0, 7);
+  let month = $state(thisMonth);
 
   let book = $state<Book | null>(null);
   let categories = $state<Category[]>([]);
@@ -24,6 +25,11 @@
 
   let data = $state(load());
 
+  function goMonth(n: number) {
+    month = shiftMonth(month, n);
+    data = load();
+  }
+
   // -- new / updated budget -------------------------------------------------
   let showForm = $state(false);
   let formCategoryId = $state("");
@@ -34,7 +40,7 @@
 
   async function saveBudget() {
     if (!book) return;
-    const amount = parseMoneyInput(formAmount);
+    const amount = parseMoneyInput(formAmount, book.currency);
     if (!formCategoryId || amount === null || amount <= 0) {
       formError = "Pick a category and a positive amount.";
       return;
@@ -77,10 +83,37 @@
   subtitle="Monthly limits per category. Rollover carries what's left into next month."
 >
   {#snippet actions()}
-    <button class="btn">
-      <Icon name="calendar" size={14} />
-      {fmtMonth(month)}
-    </button>
+    <div class="flex items-center gap-0.5 rounded-lg border border-line p-0.5">
+      <button
+        class="btn btn-ghost h-7 px-2"
+        aria-label="Previous month"
+        onclick={() => goMonth(-1)}
+      >
+        <Icon name="chevron-left" size={13} />
+      </button>
+      <span class="flex items-center gap-1.5 px-1.5 text-[12.5px] font-medium">
+        <Icon name="calendar" size={13} class="text-t3" />
+        {fmtMonth(month)}
+      </span>
+      <button
+        class="btn btn-ghost h-7 px-2"
+        aria-label="Next month"
+        onclick={() => goMonth(1)}
+      >
+        <Icon name="chevron-right" size={13} />
+      </button>
+    </div>
+    {#if month !== thisMonth}
+      <button
+        class="btn h-8"
+        onclick={() => {
+          month = thisMonth;
+          data = load();
+        }}
+      >
+        Today
+      </button>
+    {/if}
     <button class="btn btn-primary" onclick={() => (showForm = !showForm)}>
       <Icon name="plus" size={14} />
       New budget
@@ -166,16 +199,17 @@
   {:else}
     {@const total = budgets.reduce((s, b) => s + b.amount_minor, 0)}
     {@const spent = budgets.reduce((s, b) => s + b.spent_minor, 0)}
+    {@const cur = budgets[0]?.currency ?? book?.currency ?? "ZAR"}
     <div class="mb-4 grid grid-cols-3 gap-3">
-      <StatCard label="Budgeted" value={fmtMoney(total)} />
+      <StatCard label="Budgeted" value={fmtMoney(total, cur)} />
       <StatCard
         label="Spent so far"
-        value={fmtMoney(-spent)}
+        value={fmtMoney(spent, cur)}
         tone={spent > total ? "danger" : "neutral"}
       />
       <StatCard
         label="Remaining"
-        value={fmtMoney(Math.max(0, total - spent))}
+        value={fmtMoney(Math.max(0, total - spent), cur)}
         tone="accent"
       />
     </div>
@@ -192,8 +226,8 @@
               {/if}
             </span>
             <span class="num text-t2">
-              {fmtMoney(b.spent_minor)}
-              <span class="text-t3">of {fmtMoney(b.amount_minor)}</span>
+              {fmtMoney(b.spent_minor, b.currency)}
+              <span class="text-t3">of {fmtMoney(b.amount_minor, b.currency)}</span>
             </span>
           </div>
           <div class="flex items-center gap-3">
@@ -215,8 +249,8 @@
                 : 'text-t2'}"
             >
               {remaining < 0
-                ? `${fmtMoney(remaining)} over`
-                : `${fmtMoney(remaining)} left`}
+                ? `${fmtMoney(-remaining, b.currency)} over`
+                : `${fmtMoney(remaining, b.currency)} left`}
             </span>
           </div>
         </div>

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
-  import { fmtMoney, fmtMonth, fmtPct } from "../lib/format";
+  import { fmtMoney, fmtMonth, fmtPct, monthEnd } from "../lib/format";
+  import { csvMoney, downloadCsv, toCsv } from "../lib/csv";
+  import type { Book, SpendingReport, VatSummary } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
@@ -15,7 +17,7 @@
       api.reportSpending({
         book_id: book.id,
         from: `${month}-01`,
-        to: `${month}-31`,
+        to: monthEnd(month),
       }),
       api.reportIncomeExpense({ book_id: book.id }),
       api.reportVatSummary({ book_id: book.id, period: month }),
@@ -27,6 +29,110 @@
 
   const shortMonth = (m: string) =>
     new Date(`${m}-01T12:00:00Z`).toLocaleString("en-ZA", { month: "short" });
+
+  // -- CSV exports: computed locally, downloaded as Blob object-URLs ---------
+
+  let exportError = $state<string | null>(null);
+
+  async function exportTransactions(book: Book) {
+    exportError = null;
+    try {
+      const [accounts, categories, rows] = await Promise.all([
+        api.accountList({ book_id: book.id }),
+        api.categoryList({ book_id: book.id }),
+        api.transactionList({ book_id: book.id }),
+      ]);
+      const accountName = (id: string) =>
+        accounts.find((a) => a.id === id)?.name ?? "";
+      const categoryName = (id: string | null) =>
+        categories.find((c) => c.id === id)?.name ?? "";
+      const csv = toCsv(
+        ["date", "description", "merchant", "account", "category", "amount", "currency"],
+        rows.map((t) => [
+          t.posted_at.slice(0, 10),
+          t.description,
+          t.merchant,
+          accountName(t.account_id),
+          categoryName(t.category_id),
+          csvMoney(t.amount_minor, t.currency),
+          t.currency,
+        ]),
+      );
+      downloadCsv(`transactions-${book.slug}.csv`, csv);
+    } catch (err) {
+      exportError = String(err);
+    }
+  }
+
+  async function exportTrialBalance(book: Book) {
+    exportError = null;
+    try {
+      const tb = await api.reportTrialBalance({ book_id: book.id });
+      const csv = toCsv(
+        ["code", "account", "type", "debit", "credit", "currency"],
+        [
+          ...tb.rows.map((r) => [
+            r.code,
+            r.name,
+            r.type,
+            csvMoney(r.debit_minor, tb.currency),
+            csvMoney(r.credit_minor, tb.currency),
+            tb.currency,
+          ]),
+          [
+            "",
+            "Totals",
+            "",
+            csvMoney(tb.total_debit_minor, tb.currency),
+            csvMoney(tb.total_credit_minor, tb.currency),
+            tb.currency,
+          ],
+        ],
+      );
+      downloadCsv(`trial-balance-${book.slug}.csv`, csv);
+    } catch (err) {
+      exportError = String(err);
+    }
+  }
+
+  function exportSpending(book: Book, spending: SpendingReport) {
+    exportError = null;
+    const csv = toCsv(
+      ["category", "amount", "share", "currency"],
+      [
+        ...spending.by_category.map((r) => [
+          r.category_name,
+          csvMoney(r.amount_minor, spending.currency),
+          r.share.toFixed(4),
+          spending.currency,
+        ]),
+        [
+          "Total",
+          csvMoney(spending.total_spent_minor, spending.currency),
+          "",
+          spending.currency,
+        ],
+      ],
+    );
+    downloadCsv(`spending-${book.slug}-${month}.csv`, csv);
+  }
+
+  function exportVat(book: Book, vat: VatSummary) {
+    exportError = null;
+    const csv = toCsv(
+      ["item", "amount", "currency"],
+      [
+        ["Output VAT (sales)", csvMoney(vat.output_vat_minor, vat.currency), vat.currency],
+        ["Input VAT (purchases)", csvMoney(vat.input_vat_minor, vat.currency), vat.currency],
+        [
+          "Net VAT payable (refundable if negative)",
+          csvMoney(vat.net_vat_minor, vat.currency),
+          vat.currency,
+        ],
+      ],
+    );
+    downloadCsv(`vat-summary-${book.slug}-${vat.period}.csv`, csv);
+  }
 </script>
 
 <PageHeader
@@ -35,12 +141,24 @@
   subtitle="Spending, income vs expense, VAT and trial balance — computed locally, exportable as CSV."
 >
   {#snippet actions()}
-    <button class="btn">
+    <button
+      class="btn"
+      onclick={async () => exportTransactions((await data).book)}
+    >
       <Icon name="download" size={14} />
       Export CSV
     </button>
   {/snippet}
 </PageHeader>
+
+{#if exportError}
+  <p
+    class="mb-3 flex items-center gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+  >
+    <Icon name="alert-circle" size={13} />
+    {exportError}
+  </p>
+{/if}
 
 {#await data}
   <div class="card"><Skeleton rows={8} /></div>
@@ -80,12 +198,12 @@
                 <div
                   class="w-3.5 rounded-t-[3px] bg-ink-900 dark:bg-ink-200"
                   style="height: {Math.max(2, (m.income_minor / max) * 100)}%"
-                  title="Income {fmtMoney(m.income_minor)}"
+                  title="Income {fmtMoney(m.income_minor, d.incomeExpense.currency)}"
                 ></div>
                 <div
                   class="w-3.5 rounded-t-[3px] bg-accent-ring dark:bg-accent"
                   style="height: {Math.max(2, (m.expense_minor / max) * 100)}%"
-                  title="Expense {fmtMoney(m.expense_minor)}"
+                  title="Expense {fmtMoney(m.expense_minor, d.incomeExpense.currency)}"
                 ></div>
               </div>
               <span class="text-[10.5px] text-t3">{shortMonth(m.month)}</span>
@@ -101,7 +219,8 @@
         <h2 class="text-[13px] font-semibold">
           Spending · {fmtMonth(month)}
         </h2>
-        <span class="num text-t2">{fmtMoney(-d.spending.total_spent_minor)}</span
+        <span class="num text-t2"
+          >{fmtMoney(d.spending.total_spent_minor, d.spending.currency)}</span
         >
       </header>
       {#if d.spending.by_category.length === 0}
@@ -123,7 +242,9 @@
                   style="width: {Math.max(2, row.share * 100)}%"
                 ></div>
               </div>
-              <span class="num w-24 text-right">{fmtMoney(row.amount_minor)}</span>
+              <span class="num w-24 text-right"
+                >{fmtMoney(row.amount_minor, d.spending.currency)}</span
+              >
               <span class="num w-10 text-right text-t3">{fmtPct(row.share)}</span>
             </li>
           {/each}
@@ -135,23 +256,28 @@
     <section class="card p-4">
       <header class="mb-3 flex items-baseline justify-between">
         <h2 class="text-[13px] font-semibold">VAT summary · {fmtMonth(month)}</h2>
-        <button class="btn btn-ghost h-6 px-1.5 text-[11.5px] text-t3">
+        <button
+          class="btn btn-ghost h-6 px-1.5 text-[11.5px] text-t3"
+          onclick={() => exportVat(d.book, d.vat)}
+        >
           <Icon name="download" size={12} />
-          VAT201 export
+          VAT export
         </button>
       </header>
       <dl class="divide-y divide-line text-[12.5px]">
         <div class="flex items-center justify-between py-2">
           <dt class="text-t2">Output VAT (sales)</dt>
-          <dd class="num">{fmtMoney(d.vat.output_vat_minor)}</dd>
+          <dd class="num">{fmtMoney(d.vat.output_vat_minor, d.vat.currency)}</dd>
         </div>
         <div class="flex items-center justify-between py-2">
           <dt class="text-t2">Input VAT (purchases)</dt>
-          <dd class="num">{fmtMoney(d.vat.input_vat_minor)}</dd>
+          <dd class="num">{fmtMoney(d.vat.input_vat_minor, d.vat.currency)}</dd>
         </div>
         <div class="flex items-center justify-between py-2 font-semibold">
           <dt>Net {d.vat.net_vat_minor <= 0 ? "refundable" : "payable"}</dt>
-          <dd class="num">{fmtMoney(Math.abs(d.vat.net_vat_minor))}</dd>
+          <dd class="num">
+            {fmtMoney(Math.abs(d.vat.net_vat_minor), d.vat.currency)}
+          </dd>
         </div>
       </dl>
     </section>
@@ -161,9 +287,21 @@
       <h2 class="mb-3 text-[13px] font-semibold">Exports</h2>
       <ul class="space-y-2">
         {#each [
-          { label: "Transactions (CSV)", desc: "All accounts, current book" },
-          { label: "Trial balance (CSV)", desc: "As of today" },
-          { label: "Spending by category (CSV)", desc: fmtMonth(month) },
+          {
+            label: "Transactions (CSV)",
+            desc: "All accounts, current book",
+            run: () => exportTransactions(d.book),
+          },
+          {
+            label: "Trial balance (CSV)",
+            desc: "As of today",
+            run: () => exportTrialBalance(d.book),
+          },
+          {
+            label: "Spending by category (CSV)",
+            desc: fmtMonth(month),
+            run: () => exportSpending(d.book, d.spending),
+          },
         ] as exp (exp.label)}
           <li
             class="flex items-center justify-between rounded-lg border border-line px-3 py-2.5"
@@ -172,7 +310,7 @@
               <span class="block text-[12.5px] font-medium">{exp.label}</span>
               <span class="block text-[11px] text-t3">{exp.desc}</span>
             </span>
-            <button class="btn h-7">
+            <button class="btn h-7" onclick={exp.run}>
               <Icon name="download" size={13} />
               Export
             </button>
@@ -182,6 +320,10 @@
       <p class="mt-3 flex items-center gap-1.5 text-[11px] text-t3">
         <Icon name="shield" size={12} />
         Reports are computed on this machine. Nothing is uploaded, ever.
+      </p>
+      <p class="mt-1.5 text-[11px] text-t3">
+        Totals are in the book's base currency ({d.book.currency}); activity
+        recorded in other currencies is not converted and is left out of them.
       </p>
     </section>
   </div>

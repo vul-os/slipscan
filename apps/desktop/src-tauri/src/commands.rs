@@ -36,11 +36,16 @@ fn book_by_id(service: &CoreService, book_id: &str) -> Result<core::Book, String
     service.book_get(book_id).map_err(err)
 }
 
+/// (id → name) lookup over the category tree.
+type CategoryNames = HashMap<String, String>;
+/// (id → kind) lookup over the category tree.
+type CategoryKinds = HashMap<String, String>;
+
 /// Flat (id → name) and (id → kind) lookups over the category tree.
 fn category_maps(
     service: &CoreService,
     book_id: &str,
-) -> Result<(HashMap<String, String>, HashMap<String, String>), String> {
+) -> Result<(CategoryNames, CategoryKinds), String> {
     fn walk(
         nodes: &[CategoryNode],
         names: &mut HashMap<String, String>,
@@ -169,13 +174,15 @@ pub async fn transaction_categorize(
     query: CategorizeQuery,
 ) -> Result<TransactionDto, String> {
     let service = state.service()?;
-    let category_id = query
-        .category_id
-        .as_deref()
-        .ok_or_else(|| "clearing a category is not supported yet".to_string())?;
-    let txn = service
-        .transaction_categorize(&query.transaction_id, category_id)
-        .map_err(err)?;
+    let txn = match query.category_id.as_deref() {
+        Some(category_id) => service
+            .transaction_categorize(&query.transaction_id, category_id)
+            .map_err(err)?,
+        // `category_id: null` clears the category (back to Uncategorised).
+        None => service
+            .transaction_uncategorize(&query.transaction_id)
+            .map_err(err)?,
+    };
     Ok(dto::transaction_dto(&txn))
 }
 
