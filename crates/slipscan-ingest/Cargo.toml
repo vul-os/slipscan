@@ -1,0 +1,33 @@
+[package]
+name = "slipscan-ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "SlipScan ingestion: mailbox (IMAP) connectors, file import/watch, statement import, bank-scraper framework"
+
+[dependencies]
+slipscan-core = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+
+# Ingestion-specific (versions local to this crate; not shared workspace-wide).
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+csv = "1.4"
+futures = "0.3"
+mail-parser = "0.11"
+notify = "8"
+tokio-rustls = "0.26"
+webpki-roots = "1"
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = "3"
+
+[lints]
+workspace = true

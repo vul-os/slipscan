@@ -1,0 +1,26 @@
+[package]
+name = "slipscan-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "SlipScan headless server (self-host mode): axum wrapper over core services"
+
+[dependencies]
+axum = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+slipscan-core = { workspace = true }
+slipscan-packs = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+ed25519-dalek = { workspace = true }
+tower = { workspace = true }
+
+[lints]
+workspace = true

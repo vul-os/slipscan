@@ -1,0 +1,27 @@
+[package]
+name = "slipscan-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "SlipScan document extraction: slip-v2 schema and provider trait (BYO key)"
+
+[dependencies]
+async-trait = { workspace = true }
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+slipscan-core = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+[lints]
+workspace = true

@@ -1,23 +1,35 @@
-node_modules
+# Rust
+/target/
+**/target/
+**/*.rs.bk
 
-dist
-dist-dev
-dist-main
+# Node
+node_modules/
+dist/
+dist-dev/
+dist-main/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
 
-# Wrangler / Cloudflare local state
-.wrangler
+# Tauri
+apps/desktop/src-tauri/gen/schemas/
 
-# Real env files (contain secrets). .env.example is the committed template.
+# Local databases / secrets — never commit user data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
 .env
-.env.local
-.env.dev
-.env.main
-
-# Build artifacts
-backend/bin
+.env.*
+!.env.example
+.dev.vars
 
 # Agent worktrees
 .claude/worktrees/
 
-# Wrangler local dev secrets
-.dev.vars
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
