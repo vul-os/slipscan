@@ -68,9 +68,9 @@ Honest status first: statement files are currently imported as **documents**, no
 
 For the design of automatic pulls straight from your bank, see [BANK-ADAPTERS.md](BANK-ADAPTERS.md).
 
-## 3. Drop a receipt
+## 3. Import a receipt
 
-Drag a photo or PDF of a till slip onto the app. It becomes a **document** and moves through an extraction pipeline:
+Import a photo or PDF of a till slip with the app's **Import receipt** button (or `slipscan import`). Drag-and-drop is not wired yet — like watch-folders, it is tracked in [ROADMAP.md](../ROADMAP.md). The file becomes a **document** and moves through an extraction pipeline:
 
 ```
 pending → extracted → reviewed
@@ -98,7 +98,7 @@ Receipt extraction needs a model. You bring your own — SlipScan never routes t
 | Local via Ollama | Ollama running on `127.0.0.1:11434` with a vision-capable model. Zero egress. |
 | [llmux](https://github.com/vul-os) | Point SlipScan at your own llmux gateway URL — one config for all your models, still your infrastructure. |
 
-Configuration is CLI-driven today: set the `extract.provider` setting, vault the key, and run `slipscan extract` ([CONFIGURATION.md](CONFIGURATION.md#the-settings-model)). The desktop Settings screen shows extraction preferences and lets you vault keys, but does not yet drive extraction itself. The key is vaulted; the UI shows only a fingerprint and last-used time.
+Configuration is headless today, and honestly clunky: the CLI has no settings command yet, so the `extract.provider` setting is written through the server API (`slipscan serve`, then `POST /api/v1/settings_set` — [CONFIGURATION.md](CONFIGURATION.md#the-settings-model)); the key goes in with `slipscan vault set`, and `slipscan extract` runs the extraction. The desktop Settings screen shows extraction preferences and lets you vault keys, but does not yet drive extraction itself. The key is vaulted; the UI shows only a fingerprint and last-used time.
 
 ---
 

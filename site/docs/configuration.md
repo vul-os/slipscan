@@ -6,7 +6,11 @@ SlipScan's configuration model is deliberately small: **settings live in SQLite,
 
 ## The settings model
 
-Settings are key/value rows in each book's `settings` table, read and written through `settings_get` / `settings_set` (same operation names in the desktop app, the CLI, and the [server API](API.md)).
+Settings are key/value rows in the `settings` table, read and written through `settings_get` / `settings_set`. Honest status of the writers today:
+
+- The **[server API](API.md)** exposes generic key/value `settings_get` / `settings_set` routes — currently the only surface that can write arbitrary keys like `extract.provider` or `mail.imap.config` (`slipscan serve`, then `POST /api/v1/settings_set` with `{"key": …, "value": …, "secret": false}`).
+- The **desktop app** has IPC commands of the same names, but they carry only the Settings screen's own UI/provider blob — they cannot write arbitrary keys yet.
+- The **CLI** reads settings internally (`slipscan extract`, `slipscan mail-sync`) but has **no settings command yet**; a `slipscan settings get/set` is on the roadmap.
 
 Two kinds of values:
 
@@ -53,7 +57,7 @@ Deep-dive (envelope encryption, KEK in the OS keychain): [THREAT-MODEL.md](THREA
 
 ### LLM / OCR extraction
 
-Configured via the `extract.provider` setting and driven by `slipscan extract` (the desktop Settings screen's extraction section stores UI preferences but does not yet drive extraction — the CLI is the working path). One active provider per book:
+Configured via the `extract.provider` setting (written through the server API's `settings_set` today — see [the settings model](#the-settings-model) above) and driven by `slipscan extract` (the desktop Settings screen's extraction section stores UI preferences but does not yet drive extraction — the CLI is the working extraction path). One active provider per book:
 
 | Provider | Config | Secret |
 |---|---|---|
@@ -65,7 +69,7 @@ Extraction requests go only to the endpoint you configured. Offline with a local
 
 ### Mailboxes
 
-Per mailbox: connection details and a folder to watch (the `mail.imap.config` setting, read by `slipscan mail-sync`). Credentials go to the vault. Status per provider and setup: [EMAIL.md](EMAIL.md).
+Per mailbox: connection details and a folder to watch (the `mail.imap.config` setting, read by `slipscan mail-sync` and written through the server API's `settings_set` today). Credentials go to the vault. Status per provider and setup: [EMAIL.md](EMAIL.md).
 
 ### Bank adapters
 
@@ -73,7 +77,7 @@ Design: per adapter, a bank id, account mapping, and sync schedule, with credent
 
 ### File watch
 
-Planned: point SlipScan at one or more folders (e.g. a scanner's output directory) and have new files imported through the same document pipeline as drag-and-drop. The watcher is implemented as a library in `slipscan-ingest` but no surface wires it yet — there is currently no watch-folder setting that does anything.
+Planned: point SlipScan at one or more folders (e.g. a scanner's output directory) and have new files imported through the same document pipeline as manual import. The watcher is implemented as a library in `slipscan-ingest` but no surface wires it yet — there is currently no watch-folder setting that does anything.
 
 ## Server settings (self-host)
 

@@ -4,7 +4,7 @@ SlipScan has **one service surface, two transports**. Every operation is a funct
 
 - The **HTTP server is the canonical, near-complete surface** — the operation tables below describe it.
 - The **desktop IPC currently exposes a UI-shaped subset** (25 commands) with display-oriented DTOs. Missing from IPC today: `book_create`/`book_get`, all account CRUD, `transaction_create`/`transaction_get`, `category_create`, `budget_status`, the document status-machine ops (`document_transition`, `document_record_extraction`, `document_current_extraction`), `journal_get`, `coa_seed`, `vat_rate_list`, `report_profit_loss`, `report_balance_sheet`, `audit_list`, and `pack_install`/`pack_list`.
-- Two names currently diverge where both surfaces exist: desktop `report_vat_summary` vs server `report_vat`, and desktop `ledger_account_list` vs server `coa_list`. The desktop also has `journal_list`, `settings_get`/`settings_set` (whole-settings blob), and `vault_set`/`vault_replace`, which the server does not expose (vault writes are deliberately local-only — see below).
+- Three names currently diverge where both surfaces exist: desktop `report_vat_summary` vs server `report_vat`, desktop `ledger_account_list` vs server `coa_list`, and desktop `category_list` vs server `category_tree`. `settings_get`/`settings_set` share names across both, but the payloads diverge: the desktop carries a whole-settings UI blob, the server generic key/value pairs. The desktop additionally has `journal_list`, `budget_list`, `report_income_expense`, and `vault_set`/`vault_replace`, none of which are HTTP routes (vault writes are deliberately local-only — see below).
 
 Closing this gap (one name, one payload, both transports) is tracked in [ROADMAP.md](../ROADMAP.md).
 
@@ -27,7 +27,7 @@ The server binds loopback by default; an optional hashed bearer token (managed b
 
 ## Operations
 
-The surface, grouped by domain module. This is the same list you'll find as `pub fn`s on the core service.
+The surface, grouped by domain module. It mirrors the `pub fn`s on the core service, with a handful of route names that differ from the core fn they call: `report_profit_loss` → core `report_income_statement`, and `report_vat` → core `report_vat201`.
 
 ### Books & accounts
 
@@ -58,7 +58,7 @@ The surface, grouped by domain module. This is the same list you'll find as `pub
 | `document_import` | Ingest a file; enters the `pending → extracted → reviewed` state machine |
 | `document_get` / `document_list` | Fetch with extraction status |
 | `document_transition` | Move through the status machine (e.g. mark reviewed) |
-| `document_record_extraction` / `document_current_extraction` | Store / read the slip-v2 result (line items, categories, discounts, VAT) |
+| `document_record_extraction` / `document_current_extraction` | Store / read the slip-v2 result (line items, categories, discounts, VAT) — core service fns only today, not HTTP routes (`slipscan extract` writes results locally) |
 
 ### Ledger (double-entry)
 
