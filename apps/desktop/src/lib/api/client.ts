@@ -8,6 +8,7 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { mockApi } from "./mock";
+import { apiStatus } from "./status.svelte";
 import type {
   Account,
   Book,
@@ -38,9 +39,6 @@ import type {
 export const isTauri: boolean =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-/** True once any call has fallen back to mock data while under Tauri. */
-export let usedMockFallback = false;
-
 /** True only for "this command is not registered at all" errors — real
  * domain errors (validation, not-found, unbalanced journal) must surface. */
 function isCommandMissing(command: string, err: unknown): boolean {
@@ -57,8 +55,9 @@ async function call<T>(
     return await invoke<T>(command, args);
   } catch (err) {
     if (!isCommandMissing(command, err)) throw err;
-    // Command not wired into src-tauri yet: keep the shell usable.
-    usedMockFallback = true;
+    // Command not wired into src-tauri yet: keep the shell usable, but flag
+    // it — the sidebar shows a "mock" badge so fake data is never silent.
+    apiStatus.usedMockFallback = true;
     console.warn(`[api] ${command} unavailable, using mock data:`, err);
     return mock();
   }

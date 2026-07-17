@@ -676,8 +676,10 @@ export const mockApi = {
     const inRange = transactions.filter(
       (t) =>
         t.amount_minor < 0 &&
-        t.posted_at >= q.from &&
-        t.posted_at <= q.to &&
+        // Compare on the date part: a `YYYY-MM-DD` range bound must include
+        // the whole last day, and `...T00:00:00Z` > `YYYY-MM-DD` otherwise.
+        t.posted_at.slice(0, 10) >= q.from &&
+        t.posted_at.slice(0, 10) <= q.to &&
         categories.find((c) => c.id === t.category_id)?.kind !== "transfer",
     );
     const total = inRange.reduce((s, t) => s + -t.amount_minor, 0);

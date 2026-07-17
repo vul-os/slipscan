@@ -133,6 +133,13 @@ export function fmtRelative(iso: string, now = new Date()): string {
   return fmtDate(iso);
 }
 
+/** Last day of a `YYYY-MM` month as `YYYY-MM-DD` (leap-year aware). */
+export function monthEnd(month: string): string {
+  const [y, m] = month.split("-").map(Number) as [number, number];
+  const lastDay = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  return `${month}-${String(lastDay).padStart(2, "0")}`;
+}
+
 /** Shift a `YYYY-MM` month by n months. */
 export function shiftMonth(month: string, n: number): string {
   const [y, m] = month.split("-").map(Number) as [number, number];

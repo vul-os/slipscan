@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, isTauri } from "../lib/api/client";
+  import { api } from "../lib/api/client";
   import { theme, type ThemeMode } from "../lib/theme.svelte";
   import type { Book, Settings, VaultCredentialMeta } from "../lib/api/types";
   import { fmtDate, fmtRelative } from "../lib/format";
@@ -13,6 +13,8 @@
   let book = $state<Book | null>(null);
   let saving = $state(false);
   let savedAt = $state<number | null>(null);
+  let loadError = $state<string | null>(null);
+  let saveError = $state<string | null>(null);
 
   // -- credential vault (write-only: secrets go in, only metadata comes out)
   let credentials = $state<VaultCredentialMeta[]>([]);
@@ -26,26 +28,39 @@
   let rotating = $state<string | null>(null);
   let rotateSecret = $state("");
   let rotateBusy = $state(false);
+  /** Entry name awaiting a second click to confirm revocation. */
+  let revokeArmed = $state<string | null>(null);
 
   async function load() {
-    const [settings, books, vault] = await Promise.all([
-      api.settingsGet(),
-      api.bookList(),
-      api.vaultList().catch(() => [] as VaultCredentialMeta[]),
-    ]);
-    s = settings;
-    book = books[0] ?? null;
-    credentials = vault;
+    loadError = null;
+    try {
+      const [settings, books, vault] = await Promise.all([
+        api.settingsGet(),
+        api.bookList(),
+        api.vaultList().catch(() => [] as VaultCredentialMeta[]),
+      ]);
+      s = settings;
+      book = books[0] ?? null;
+      credentials = vault;
+    } catch (err) {
+      loadError = String(err);
+    }
   }
   load();
 
   async function save() {
     if (!s) return;
     saving = true;
-    s = await api.settingsSet({ settings: $state.snapshot(s) as Settings });
-    saving = false;
-    savedAt = Date.now();
-    setTimeout(() => (savedAt = null), 2500);
+    saveError = null;
+    try {
+      s = await api.settingsSet({ settings: $state.snapshot(s) as Settings });
+      savedAt = Date.now();
+      setTimeout(() => (savedAt = null), 2500);
+    } catch (err) {
+      saveError = String(err);
+    } finally {
+      saving = false;
+    }
   }
 
   async function addCredential() {
@@ -84,7 +99,13 @@
     }
   }
 
+  /** Two-step revoke: first click arms, second click destroys. */
   async function revokeCredential(name: string) {
+    if (revokeArmed !== name) {
+      revokeArmed = name;
+      return;
+    }
+    revokeArmed = null;
     vaultError = null;
     try {
       await api.vaultRevoke({ name });
@@ -119,7 +140,24 @@
   {/snippet}
 </PageHeader>
 
-{#if !s}
+{#if saveError}
+  <p
+    class="mb-3 flex items-center gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+  >
+    <Icon name="alert-circle" size={13} />
+    Could not save settings: {saveError}
+  </p>
+{/if}
+
+{#if loadError}
+  <div class="card">
+    <EmptyState icon="alert-circle" title="Could not load settings" body={loadError}>
+      {#snippet actions()}
+        <button class="btn" onclick={load}>Retry</button>
+      {/snippet}
+    </EmptyState>
+  </div>
+{:else if !s}
   <div class="card"><Skeleton rows={8} /></div>
 {:else}
   <div class="space-y-4">
@@ -141,7 +179,12 @@
               ? 'bg-ink-900 text-ink-50 dark:bg-ink-100 dark:text-ink-900'
               : 'text-t2 hover:bg-sunken'}"
             aria-pressed={theme.mode === t.mode}
-            onclick={() => theme.set(t.mode)}
+            onclick={() => {
+              theme.set(t.mode);
+              // Keep the persisted setting in step with the live theme so
+              // "Save changes" never silently reverts the choice.
+              if (s) s.theme = t.mode;
+            }}
           >
             {t.label}
           </button>
@@ -212,12 +255,13 @@
       </div>
       <p class="mt-3 flex items-center gap-1.5 text-[11px] text-t3">
         <Icon name="key" size={12} />
-        API key is stored in the OS keychain{s.llm.keychain_entry
-          ? ` as “${s.llm.keychain_entry}”`
-          : ""} — never in SQLite or config files.
-        <button class="btn btn-ghost h-6 px-1.5 text-[11px]" disabled={!isTauri}>
-          Set key…
-        </button>
+        Store the API key in the Credential vault below (e.g. as
+        <span class="font-mono">llm.api_key</span>) — it is envelope-encrypted
+        and write-only, never in SQLite or config files.
+      </p>
+      <p class="mt-1.5 text-[11px] text-t3">
+        Extraction currently runs via the CLI (slipscan extract); in-app
+        extraction is on the roadmap.
       </p>
     </section>
 
@@ -260,9 +304,56 @@
       </div>
       <p class="mt-3 flex items-center gap-1.5 text-[11px] text-t3">
         <Icon name="mail" size={12} />
-        Slips mailed to this inbox are pulled on your schedule. Password lives
-        in the OS keychain.
+        Mail polling currently runs via the CLI (slipscan mail-sync); the
+        password lives in the OS keychain, never here.
       </p>
+    </section>
+
+    <!-- bank connections (scraper adapters) -->
+    <section class="card p-4">
+      <h2 class="mb-1 text-[13px] font-semibold">Bank connections</h2>
+      <p class="mb-3 text-[12px] text-t3">
+        Scraper adapters run bank sessions on this machine. Credentials live in
+        the vault; only status metadata is shown here.
+      </p>
+      {#if s.scrapers.length === 0}
+        <EmptyState
+          icon="bank"
+          title="No bank connections"
+          body="Statement CSV import works today (via the CLI); live scraper adapters are on the roadmap."
+        />
+      {:else}
+        <ul class="divide-y divide-line">
+          {#each s.scrapers as sc (sc.id)}
+            <li class="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+              <span
+                class="flex size-8 shrink-0 items-center justify-center rounded-md bg-sunken text-t3"
+              >
+                <Icon name="bank" size={15} />
+              </span>
+              <span class="min-w-0 flex-1 leading-tight">
+                <span class="block text-[12.5px] font-medium">
+                  {sc.institution}
+                </span>
+                <span class="block truncate font-mono text-[10.5px] text-t3">
+                  {sc.adapter}
+                  {#if sc.last_sync}· last sync {fmtRelative(sc.last_sync)}{/if}
+                </span>
+              </span>
+              <Badge
+                tone={sc.status === "connected"
+                  ? "success"
+                  : sc.status === "needs_attention"
+                    ? "warning"
+                    : "neutral"}
+                label={sc.status === "needs_attention"
+                  ? "needs re-auth"
+                  : sc.status}
+              />
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </section>
 
     <!-- credential vault -->
@@ -403,9 +494,12 @@
                   <button
                     class="btn btn-danger h-7"
                     onclick={() => revokeCredential(c.name)}
+                    onmouseleave={() => {
+                      if (revokeArmed === c.name) revokeArmed = null;
+                    }}
                   >
                     <Icon name="trash" size={13} />
-                    Revoke
+                    {revokeArmed === c.name ? "Really revoke?" : "Revoke"}
                   </button>
                 </div>
               </div>
@@ -444,16 +538,12 @@
     <section class="card p-4">
       <div class="mb-3 flex items-center justify-between">
         <h2 class="text-[13px] font-semibold">Classification packs</h2>
-        <button class="btn h-7">
-          <Icon name="package" size={13} />
-          Install pack…
-        </button>
       </div>
       {#if s.packs.length === 0}
         <EmptyState
           icon="package"
           title="No packs installed"
-          body="Packs share category taxonomies and classification rules — never data. Each pack is ed25519-signed and verified on install."
+          body="Packs share category taxonomies and classification rules — never data. Each pack is ed25519-signed and verified on install. Install from the CLI: slipscan pack install."
         />
       {:else}
         <ul class="divide-y divide-line">

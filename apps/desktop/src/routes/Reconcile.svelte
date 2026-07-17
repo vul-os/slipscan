@@ -12,28 +12,46 @@
   let loading = $state(true);
   let running = $state(false);
   let bookId = $state("");
+  let error = $state<string | null>(null);
 
   async function load() {
     loading = true;
-    const [book] = await api.bookList();
-    if (!book) return;
-    bookId = book.id;
-    suggestions = await api.reconSuggest({ book_id: book.id });
-    loading = false;
+    error = null;
+    try {
+      const [book] = await api.bookList();
+      if (!book) throw new Error("no book configured");
+      bookId = book.id;
+      suggestions = await api.reconSuggest({ book_id: book.id });
+    } catch (err) {
+      error = String(err);
+    } finally {
+      loading = false;
+    }
   }
   load();
 
   async function run() {
     running = true;
-    suggestions = await api.reconSuggest({ book_id: bookId });
-    running = false;
+    error = null;
+    try {
+      suggestions = await api.reconSuggest({ book_id: bookId });
+    } catch (err) {
+      error = String(err);
+    } finally {
+      running = false;
+    }
   }
 
   async function decide(s: ReconSuggestion, accept: boolean) {
-    const updated = await api.reconConfirm({ suggestion_id: s.id, accept });
-    suggestions = suggestions
-      .map((x) => (x.id === s.id ? updated : x))
-      .filter((x) => x.status !== "rejected");
+    error = null;
+    try {
+      const updated = await api.reconConfirm({ suggestion_id: s.id, accept });
+      suggestions = suggestions
+        .map((x) => (x.id === s.id ? updated : x))
+        .filter((x) => x.status !== "rejected");
+    } catch (err) {
+      error = String(err);
+    }
   }
 
   const confirmed = $derived(suggestions.filter((s) => s.status === "confirmed"));
@@ -59,9 +77,21 @@
   {/snippet}
 </PageHeader>
 
+{#if error}
+  <p
+    class="mb-3 flex items-center gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+  >
+    <Icon name="alert-circle" size={13} />
+    {error}
+    <button class="btn btn-ghost ml-auto h-6 px-1.5 text-[11.5px]" onclick={load}>
+      Retry
+    </button>
+  </p>
+{/if}
+
 {#if loading}
   <div class="card"><Skeleton rows={6} /></div>
-{:else if suggestions.length === 0}
+{:else if suggestions.length === 0 && !error}
   <div class="card">
     <EmptyState
       icon="check-circle"
@@ -92,14 +122,14 @@
                   >{s.transaction_description}</span
                 >
                 <span class="num shrink-0 text-t2"
-                  >{fmtMoney(s.transaction_amount_minor)}</span
+                  >{fmtMoney(s.transaction_amount_minor, s.currency)}</span
                 >
               </span>
               <span class="mt-1 flex items-center gap-2 text-[12.5px] text-t2">
                 <Icon name="receipt" size={13} class="shrink-0 text-t3" />
                 <span class="truncate">{s.document_merchant}</span>
                 <span class="num shrink-0"
-                  >{fmtMoney(-s.document_total_minor)}</span
+                  >{fmtMoney(-s.document_total_minor, s.currency)}</span
                 >
               </span>
             </div>
@@ -151,7 +181,7 @@
             <span class="truncate text-t2">{s.document_merchant}</span>
             <span class="ml-auto flex shrink-0 items-center gap-3">
               <Badge tone="success" label={fmtPct(s.score)} />
-              <span class="num">{fmtMoney(s.transaction_amount_minor)}</span>
+              <span class="num">{fmtMoney(s.transaction_amount_minor, s.currency)}</span>
             </span>
           </div>
         {/each}
