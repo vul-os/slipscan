@@ -15,8 +15,12 @@ use serde_json::json;
 use slipscan_core::domain::*;
 use slipscan_core::CoreError;
 
-use crate::ops::{self, InstalledPackEntry, OpsError, PackInstallResult, VatReport};
-use crate::{ct_eq, hex_decode, token_hash, AppState};
+use slipscan_core::secrets::VaultSecretMeta;
+
+use crate::ops::{
+    self, BalanceSheet, InstalledPackEntry, OpsError, PackInstallResult, ProfitAndLoss, VatReport,
+};
+use crate::{ct_eq, hex_decode, token_hash, AppState, AUTH_TOKEN_SETTING};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -54,19 +58,37 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "forbidden",
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn vault_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "vault_unavailable",
+            message: "no vault is attached to this server instance".into(),
+        }
+    }
 }
 
 impl From<CoreError> for ApiError {
     fn from(err: CoreError) -> Self {
         let (status, code) = match &err {
             CoreError::NotFound { .. } => (StatusCode::NOT_FOUND, "not_found"),
-            CoreError::DuplicateTransaction { .. } | CoreError::DuplicateDocument { .. } => {
-                (StatusCode::CONFLICT, "conflict")
-            }
+            CoreError::DuplicateTransaction { .. }
+            | CoreError::DuplicateDocument { .. }
+            | CoreError::DuplicateJournal { .. } => (StatusCode::CONFLICT, "conflict"),
             CoreError::Validation(_)
             | CoreError::InvalidEnum { .. }
             | CoreError::InvalidStatusTransition { .. }
-            | CoreError::UnbalancedJournal { .. } => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
+            | CoreError::UnbalancedJournal { .. } => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "validation")
+            }
             CoreError::Json(_) => (StatusCode::BAD_REQUEST, "invalid_json"),
             CoreError::Sqlite(_) | CoreError::Migration { .. } | CoreError::Secret(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal")
@@ -229,12 +251,29 @@ struct PackInstallReq {
     public_key_hex: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct VaultNameReq {
+    name: String,
+}
+
 #[derive(Debug, Serialize)]
 struct OkResp {
     ok: bool,
 }
 
 const OK: OkResp = OkResp { ok: true };
+
+/// Keys the generic settings routes must never serve: the auth-token hash is
+/// managed by the serve command (and would enable offline brute-forcing of a
+/// user-chosen token if it leaked).
+fn reject_reserved_settings_key(key: &str) -> Result<(), ApiError> {
+    if key == AUTH_TOKEN_SETTING {
+        return Err(ApiError::forbidden(
+            "the API token is managed by the serve command, not the settings API",
+        ));
+    }
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // Handlers
@@ -313,17 +352,19 @@ async fn transaction_list(
     State(s): State<AppState>,
     Json(req): Json<TransactionListReq>,
 ) -> ApiResult<Vec<Transaction>> {
-    Ok(Json(s.service()?.transaction_list(&req.book_id, &req.filter)?))
+    Ok(Json(
+        s.service()?.transaction_list(&req.book_id, &req.filter)?,
+    ))
 }
 
 async fn transaction_categorize(
     State(s): State<AppState>,
     Json(req): Json<CategorizeReq>,
 ) -> ApiResult<Transaction> {
-    Ok(Json(
-        s.service()?
-            .transaction_categorize(&req.transaction_id, &req.category_id)?,
-    ))
+    Ok(Json(s.service()?.transaction_categorize(
+        &req.transaction_id,
+        &req.category_id,
+    )?))
 }
 
 async fn category_create(
@@ -474,11 +515,33 @@ async fn report_trial_balance(
 }
 
 async fn report_vat(State(s): State<AppState>, Json(req): Json<BookIdReq>) -> ApiResult<VatReport> {
-    Ok(Json(ops::report_vat(&s.service()?, &req.book_id)?))
+    Ok(Json(ops::report_vat(&*s.service()?, &req.book_id)?))
 }
 
-async fn settings_set(State(s): State<AppState>, Json(req): Json<SettingsSetReq>) -> ApiResult<OkResp> {
-    s.service()?.settings_set(&req.key, &req.value, req.secret)?;
+async fn report_profit_loss(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<ProfitAndLoss> {
+    Ok(Json(ops::report_profit_loss(&*s.service()?, &req.book_id)?))
+}
+
+async fn report_balance_sheet(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<BalanceSheet> {
+    Ok(Json(ops::report_balance_sheet(
+        &*s.service()?,
+        &req.book_id,
+    )?))
+}
+
+async fn settings_set(
+    State(s): State<AppState>,
+    Json(req): Json<SettingsSetReq>,
+) -> ApiResult<OkResp> {
+    reject_reserved_settings_key(&req.key)?;
+    s.service()?
+        .settings_set(&req.key, &req.value, req.secret)?;
     Ok(Json(OK))
 }
 
@@ -486,8 +549,27 @@ async fn settings_get(
     State(s): State<AppState>,
     Json(req): Json<SettingsGetReq>,
 ) -> ApiResult<SettingsGetResp> {
+    reject_reserved_settings_key(&req.key)?;
     let value = s.service()?.settings_get(&req.key)?;
-    Ok(Json(SettingsGetResp { key: req.key, value }))
+    Ok(Json(SettingsGetResp {
+        key: req.key,
+        value,
+    }))
+}
+
+/// Vault over HTTP is metadata-only: list and revoke. Setting or replacing
+/// material happens locally (CLI prompt / desktop IPC), never over the wire,
+/// and no route ever returns secret material.
+async fn vault_list(State(s): State<AppState>) -> ApiResult<Vec<VaultSecretMeta>> {
+    Ok(Json(s.vault()?.list()?))
+}
+
+async fn vault_revoke(
+    State(s): State<AppState>,
+    Json(req): Json<VaultNameReq>,
+) -> ApiResult<OkResp> {
+    s.vault()?.revoke(&req.name)?;
+    Ok(Json(OK))
 }
 
 async fn pack_install(
@@ -499,7 +581,7 @@ async fn pack_install(
     let public_key = hex_decode(&req.public_key_hex)
         .ok_or_else(|| ApiError::unprocessable("public_key_hex is not valid hex"))?;
     Ok(Json(ops::pack_install(
-        &s.service()?,
+        &*s.service()?,
         &req.book_id,
         req.manifest.as_bytes(),
         &signature,
@@ -508,14 +590,16 @@ async fn pack_install(
 }
 
 async fn pack_list(State(s): State<AppState>) -> ApiResult<Vec<InstalledPackEntry>> {
-    Ok(Json(ops::pack_list(&s.service()?)?))
+    Ok(Json(ops::pack_list(&*s.service()?)?))
 }
 
 async fn audit_list(
     State(s): State<AppState>,
     Json(req): Json<AuditListReq>,
 ) -> ApiResult<Vec<AuditEntry>> {
-    Ok(Json(s.service()?.audit_list(req.book_id.as_deref(), req.limit)?))
+    Ok(Json(
+        s.service()?.audit_list(req.book_id.as_deref(), req.limit)?,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -566,8 +650,14 @@ pub fn app(state: AppState) -> Router {
         .route("/document_get", post(document_get))
         .route("/document_list", post(document_list))
         .route("/document_transition", post(document_transition))
-        .route("/document_record_extraction", post(document_record_extraction))
-        .route("/document_current_extraction", post(document_current_extraction))
+        .route(
+            "/document_record_extraction",
+            post(document_record_extraction),
+        )
+        .route(
+            "/document_current_extraction",
+            post(document_current_extraction),
+        )
         .route("/journal_post", post(journal_post))
         .route("/journal_get", post(journal_get))
         .route("/coa_list", post(coa_list))
@@ -578,15 +668,339 @@ pub fn app(state: AppState) -> Router {
         .route("/report_spending", post(report_spending))
         .route("/report_trial_balance", post(report_trial_balance))
         .route("/report_vat", post(report_vat))
+        .route("/report_profit_loss", post(report_profit_loss))
+        .route("/report_balance_sheet", post(report_balance_sheet))
         .route("/settings_set", post(settings_set))
         .route("/settings_get", post(settings_get))
         .route("/pack_install", post(pack_install))
         .route("/pack_list", post(pack_list))
         .route("/audit_list", post(audit_list))
-        .layer(middleware::from_fn_with_state(state.clone(), require_bearer));
+        .route("/vault_list", post(vault_list))
+        .route("/vault_revoke", post(vault_revoke))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_bearer,
+        ));
 
     Router::new()
         .route("/health", get(health))
         .nest("/api/v1", api)
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vault::VaultHandle;
+    use axum::body::Body;
+    use axum::http::Request;
+    use serde_json::{json, Value};
+    use slipscan_core::secrets::MemorySecretStore;
+    use slipscan_core::{CoreService, Db};
+    use tower::ServiceExt;
+
+    fn svc() -> CoreService {
+        CoreService::new(
+            Db::open_in_memory().unwrap(),
+            Box::new(MemorySecretStore::new()),
+        )
+    }
+
+    fn open_app() -> Router {
+        app(AppState::new(svc(), None))
+    }
+
+    fn post_req(path: &str, body: Value, token: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        builder.body(Body::from(body.to_string())).unwrap()
+    }
+
+    async fn call(app: &Router, req: Request<Body>) -> (StatusCode, Value) {
+        let response = app.clone().oneshot(req).await.unwrap();
+        let status = response.status();
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none(),
+            "no CORS headers, ever (mantra: nothing is exposed by default)"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn health_is_public_and_unversioned_routes_404() {
+        let app = open_app();
+        let (status, body) = call(
+            &app,
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+
+        let (status, _) = call(&app, post_req("/api/v1/nope", json!({}), None)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn book_create_list_get_round_trip() {
+        let app = open_app();
+        let (status, created) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Personal", "kind": "personal", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        let id = created["id"].as_str().unwrap().to_string();
+
+        let (status, listed) = call(&app, post_req("/api/v1/book_list", json!({}), None)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+
+        let (status, fetched) =
+            call(&app, post_req("/api/v1/book_get", json!({"id": id}), None)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(fetched["name"], "Personal");
+
+        let (status, missing) = call(
+            &app,
+            post_req("/api/v1/book_get", json!({"id": "nope"}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(missing["error"]["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn validation_errors_map_to_422() {
+        let app = open_app();
+        let (status, body) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "  ", "kind": "personal"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["error"]["code"], "validation");
+    }
+
+    #[tokio::test]
+    async fn bearer_auth_gates_api_but_not_health() {
+        let token = "correct-horse-battery";
+        let app = app(AppState::new(svc(), Some(token_hash(token))));
+
+        // No token / wrong token: 401 with no data leakage.
+        let (status, body) = call(&app, post_req("/api/v1/book_list", json!({}), None)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "unauthorized");
+        let (status, _) = call(
+            &app,
+            post_req("/api/v1/book_list", json!({}), Some("wrong")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        // Right token passes; /health stays public.
+        let (status, _) = call(&app, post_req("/api/v1/book_list", json!({}), Some(token))).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = call(
+            &app,
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn vault_routes_expose_metadata_never_material() {
+        use slipscan_core::secrets::SecretString;
+        let handle = VaultHandle::new(
+            Db::open_in_memory().unwrap(),
+            Box::new(MemorySecretStore::new()),
+        );
+        handle
+            .set("imap.fastmail", SecretString::new("super-secret-imap-pass"))
+            .unwrap();
+        let app = app(AppState::new(svc(), None).with_vault(handle));
+
+        let (status, body) = call(&app, post_req("/api/v1/vault_list", json!({}), None)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body[0]["name"], "imap.fastmail");
+        assert_eq!(body[0]["fingerprint"].as_str().unwrap().len(), 8);
+        assert!(!body.to_string().contains("super-secret-imap-pass"));
+
+        // The auth-token hash is not readable or writable over the wire.
+        let (status, body) = call(
+            &app,
+            post_req(
+                "/api/v1/settings_get",
+                json!({"key": crate::AUTH_TOKEN_SETTING}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "forbidden");
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/settings_set",
+                json!({"key": crate::AUTH_TOKEN_SETTING, "value": "x"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        // Revoke over HTTP works (no material involved) and 404s once gone.
+        let (status, body) = call(
+            &app,
+            post_req(
+                "/api/v1/vault_revoke",
+                json!({"name": "imap.fastmail"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let (status, body) = call(&app, post_req("/api/v1/vault_list", json!({}), None)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.as_array().unwrap().len(), 0);
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/vault_revoke",
+                json!({"name": "imap.fastmail"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn secret_settings_are_write_only_over_http() {
+        let app = open_app();
+        // Store a secret via the settings API…
+        let (status, body) = call(
+            &app,
+            post_req(
+                "/api/v1/settings_set",
+                json!({"key": "llm.api_key", "value": "sk-super-secret", "secret": true}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        // …and it must never be readable back: no GET-for-display, ever
+        // (ARCHITECTURE.md credential vault: write-only semantics).
+        let (status, body) = call(
+            &app,
+            post_req("/api/v1/settings_get", json!({"key": "llm.api_key"}), None),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK, "secret readable back: {body}");
+        assert!(
+            !body.to_string().contains("sk-super-secret"),
+            "secret material leaked in response: {body}"
+        );
+
+        // Plain settings still round-trip.
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/settings_set",
+                json!({"key": "ui.theme", "value": "dark"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = call(
+            &app,
+            post_req("/api/v1/settings_get", json!({"key": "ui.theme"}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["value"], "dark");
+    }
+
+    #[tokio::test]
+    async fn vault_routes_answer_503_without_a_vault() {
+        let app = open_app();
+        let (status, body) = call(&app, post_req("/api/v1/vault_list", json!({}), None)).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "vault_unavailable");
+    }
+
+    #[tokio::test]
+    async fn derived_report_routes_respond() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Biz", "kind": "business"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap();
+        let (status, _) = call(
+            &app,
+            post_req("/api/v1/coa_seed", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        for route in [
+            "/api/v1/report_profit_loss",
+            "/api/v1/report_balance_sheet",
+            "/api/v1/report_vat",
+            "/api/v1/report_trial_balance",
+        ] {
+            let (status, body) =
+                call(&app, post_req(route, json!({"book_id": book_id}), None)).await;
+            assert_eq!(status, StatusCode::OK, "{route}: {body}");
+        }
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/report_profit_loss",
+                json!({"book_id": "nope"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
 }

@@ -21,6 +21,7 @@ use slipscan_core::{CoreError, CoreService};
 
 pub mod ops;
 mod routes;
+pub mod vault;
 
 pub use routes::app;
 
@@ -48,6 +49,9 @@ pub enum ServerError {
 
     #[error("stored auth token hash is malformed; re-initialize it")]
     MalformedTokenHash,
+
+    #[error("token must be at least 16 characters")]
+    TokenTooShort,
 }
 
 /// How to run the server.
@@ -69,11 +73,13 @@ impl Default for ServerConfig {
 }
 
 /// Shared router state: one core service behind a mutex (SQLite connections
-/// are `Send` but not `Sync`), plus the optional expected token hash.
+/// are `Send` but not `Sync`), the optional expected token hash, and the
+/// optional credential-vault handle (its own connection to the same file).
 #[derive(Clone)]
 pub struct AppState {
     service: Arc<Mutex<CoreService>>,
     auth: Option<[u8; 32]>,
+    vault: Option<Arc<Mutex<vault::VaultHandle>>>,
 }
 
 impl AppState {
@@ -83,13 +89,28 @@ impl AppState {
         Self {
             service: Arc::new(Mutex::new(service)),
             auth,
+            vault: None,
         }
+    }
+
+    /// Attach a vault handle so the metadata-only vault routes work.
+    pub fn with_vault(mut self, handle: vault::VaultHandle) -> Self {
+        self.vault = Some(Arc::new(Mutex::new(handle)));
+        self
     }
 
     pub(crate) fn service(&self) -> Result<MutexGuard<'_, CoreService>, routes::ApiError> {
         self.service
             .lock()
             .map_err(|_| routes::ApiError::internal("service state poisoned"))
+    }
+
+    pub(crate) fn vault(&self) -> Result<MutexGuard<'_, vault::VaultHandle>, routes::ApiError> {
+        self.vault
+            .as_ref()
+            .ok_or_else(routes::ApiError::vault_unavailable)?
+            .lock()
+            .map_err(|_| routes::ApiError::internal("vault state poisoned"))
     }
 
     pub(crate) fn auth_hash(&self) -> Option<&[u8; 32]> {
@@ -114,6 +135,24 @@ pub fn ensure_auth_token(service: &CoreService) -> Result<AuthToken, ServerError
     if service.settings_get(AUTH_TOKEN_SETTING)?.is_some() {
         return Ok(AuthToken::Existing);
     }
+    Ok(AuthToken::Generated(rotate_auth_token(service)?))
+}
+
+/// Store the hash of a user-chosen token (e.g. from an environment
+/// variable), replacing any previous one. Only the SHA-256 is persisted.
+pub fn set_auth_token(service: &CoreService, token: &str) -> Result<(), ServerError> {
+    if token.len() < 16 {
+        return Err(ServerError::TokenTooShort);
+    }
+    let hash = hex_encode(&token_hash(token));
+    service.settings_set(AUTH_TOKEN_SETTING, &hash, false)?;
+    Ok(())
+}
+
+/// Generate a fresh random token, overwrite the stored hash, and return the
+/// token — the caller must show it exactly once. The old token stops working
+/// immediately.
+pub fn rotate_auth_token(service: &CoreService) -> Result<String, ServerError> {
     // Two UUID v7s give ~148 bits of CSPRNG-backed entropy.
     let token = format!(
         "ss_{}{}",
@@ -122,7 +161,7 @@ pub fn ensure_auth_token(service: &CoreService) -> Result<AuthToken, ServerError
     );
     let hash = hex_encode(&token_hash(&token));
     service.settings_set(AUTH_TOKEN_SETTING, &hash, false)?;
-    Ok(AuthToken::Generated(token))
+    Ok(token)
 }
 
 /// SHA-256 of a bearer token.
@@ -146,14 +185,23 @@ pub fn stored_token_hash(service: &CoreService) -> Result<Option<[u8; 32]>, Serv
 }
 
 /// Serve `service` per `config`. With `require_auth` the token hash must
-/// already exist in settings (see [`ensure_auth_token`]).
-pub async fn serve(service: CoreService, config: ServerConfig) -> Result<(), ServerError> {
+/// already exist in settings (see [`ensure_auth_token`]). Pass a
+/// [`vault::VaultHandle`] on the same database so the metadata-only vault
+/// routes work; with `None` they answer 503.
+pub async fn serve(
+    service: CoreService,
+    vault: Option<vault::VaultHandle>,
+    config: ServerConfig,
+) -> Result<(), ServerError> {
     let auth = if config.require_auth {
         Some(stored_token_hash(&service)?.ok_or(ServerError::AuthNotInitialized)?)
     } else {
         None
     };
-    let state = AppState::new(service, auth);
+    let mut state = AppState::new(service, auth);
+    if let Some(handle) = vault {
+        state = state.with_vault(handle);
+    }
     let listener = tokio::net::TcpListener::bind(config.addr)
         .await
         .map_err(ServerError::Bind)?;
@@ -185,7 +233,10 @@ pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
 
 /// Constant-time equality for token hashes.
 pub(crate) fn ct_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 #[cfg(test)]
@@ -211,8 +262,8 @@ mod tests {
         let bytes = [0x00u8, 0x0f, 0xa5, 0xff];
         assert_eq!(hex_encode(&bytes), "000fa5ff");
         assert_eq!(hex_decode("000fa5ff").unwrap(), bytes.to_vec());
-        assert_eq!(hex_decode("zz").is_none(), true);
-        assert_eq!(hex_decode("abc").is_none(), true);
+        assert!(hex_decode("zz").is_none());
+        assert!(hex_decode("abc").is_none());
     }
 
     #[test]
@@ -249,6 +300,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn set_and_rotate_auth_token_store_only_hashes() {
+        let service = svc();
+        assert!(matches!(
+            set_auth_token(&service, "short"),
+            Err(ServerError::TokenTooShort)
+        ));
+        set_auth_token(&service, "a-long-user-chosen-token").unwrap();
+        assert_eq!(
+            stored_token_hash(&service).unwrap().unwrap(),
+            token_hash("a-long-user-chosen-token")
+        );
+
+        let rotated = rotate_auth_token(&service).unwrap();
+        assert!(rotated.starts_with("ss_"));
+        let stored = service.settings_get(AUTH_TOKEN_SETTING).unwrap().unwrap();
+        assert_eq!(stored, hex_encode(&token_hash(&rotated)));
+        assert_ne!(stored, rotated);
+        // Old token no longer matches.
+        assert_ne!(
+            stored_token_hash(&service).unwrap().unwrap(),
+            token_hash("a-long-user-chosen-token")
+        );
+    }
+
     #[tokio::test]
     async fn serve_with_auth_requires_initialized_token() {
         let service = svc();
@@ -256,7 +332,7 @@ mod tests {
             require_auth: true,
             ..ServerConfig::default()
         };
-        let err = serve(service, config).await.unwrap_err();
+        let err = serve(service, None, config).await.unwrap_err();
         assert!(matches!(err, ServerError::AuthNotInitialized));
     }
 }
