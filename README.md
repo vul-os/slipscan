@@ -1,8 +1,13 @@
-# SlipScan
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-wordmark-dark.svg">
+    <img src="assets/brand/logo-wordmark.svg" alt="slip/scan" width="280">
+  </picture>
+</p>
 
-**Self-hosted, decentralized personal finance. You are the server.**
+<p align="center"><strong>Self-hosted, decentralized personal finance & accounting. You are the server.</strong></p>
 
-SlipScan tracks your money the way services like 22seven / Vault22 do — bank transactions, receipts, budgets, categorised spending — but with one fundamental difference: **there is no central server**. Your data lives on your machine, your scrapers run with your credentials, and the only thing the community shares is knowledge, never data.
+SlipScan gives you what Vault22 / 22seven does for personal finance and what Xero does for small-business accounting — bank transactions, receipts, budgets, categorised spending, double-entry ledger, reconciliation, VAT — with one fundamental difference: **there is no central server**. Your data lives on your machine, your scrapers run with your credentials, and the only thing the community shares is knowledge, never data.
 
 SlipScan is a standalone product in the VulOS family (like Ofisi). It does not depend on VulOS or any hosted service.
 
@@ -36,22 +41,24 @@ SlipScan is a standalone product in the VulOS family (like Ofisi). It does not d
 - **Email ingestion:** connect your own mailbox (IMAP) — receipts, statements and bank alerts flow in without any central mail relay.
 - **Classification:** transactions and slips are categorised locally. Community packs improve everyone's classification without anyone uploading their transactions.
 
+## Features
+
+**Personal finance (Vault22 / 22seven class)** — accounts across banks, automatic transaction categorisation, budgets, spending breakdowns, receipts matched to transactions.
+
+**Accounting (Xero class)** — chart of accounts, double-entry ledger, manual journals, VAT, bank reconciliation, and standard exports — for freelancers and small businesses that want their books local.
+
+All of it offline-capable, on your machine, in a plain SQLite file you can back up yourself.
+
 ## Status
 
-SlipScan is in transition to its new architecture:
-
-- **Target stack:** Rust backend + [Tauri](https://tauri.app) desktop app, local SQLite.
-- **Legacy stack (this repo, working):** React/Vite frontend + Cloudflare Workers backend, being ported.
-
-See [ROADMAP.md](ROADMAP.md) for the plan.
-
-### Running the legacy stack
+Active development on the new stack: **Rust core + [Tauri](https://tauri.app) desktop app (Svelte 5 + TypeScript), local SQLite.** The previous cloud implementation (React + Cloudflare Workers) has been removed — it lives in git history. See [ROADMAP.md](ROADMAP.md).
 
 ```sh
-npm install
-npm run dev          # frontend
-npm run dev:worker   # backend (wrangler)
-npm test
+# desktop app (once scaffolded)
+cd apps/desktop && npm install && npm run tauri dev
+
+# core library & CLI
+cargo build --workspace && cargo test --workspace
 ```
 
 ## Contributing
