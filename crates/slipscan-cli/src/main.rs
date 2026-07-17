@@ -123,7 +123,7 @@ enum Command {
     },
     /// Poll the configured IMAP mailbox and import receipt documents.
     MailSync {
-        /// Where to store fetched attachments (default: <db dir>/slipscan-documents).
+        /// Where to store fetched attachments (default: `<db dir>/slipscan-documents`).
         #[arg(long)]
         storage_dir: Option<PathBuf>,
     },
@@ -290,6 +290,7 @@ fn read_bytes_arg(arg: &str, expected_len: usize, what: &str) -> anyhow::Result<
 /// prompt on a TTY, the first stdin line when piped. Never argv.
 fn read_secret(prompt: &str) -> anyhow::Result<SecretString> {
     use std::io::{BufRead, IsTerminal};
+    use zeroize::Zeroize as _;
     if std::io::stdin().is_terminal() {
         let secret = rpassword::prompt_password(prompt).context("reading secret")?;
         Ok(SecretString::new(secret))
@@ -300,7 +301,11 @@ fn read_secret(prompt: &str) -> anyhow::Result<SecretString> {
             .read_line(&mut line)
             .context("reading secret from stdin")?;
         let trimmed = line.trim_end_matches(['\n', '\r']);
-        Ok(SecretString::new(trimmed))
+        let secret = SecretString::new(trimmed);
+        // Wipe the intermediate buffer too — SecretString only zeroizes its
+        // own copy of the material.
+        line.zeroize();
+        Ok(secret)
     }
 }
 

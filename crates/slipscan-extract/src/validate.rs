@@ -63,7 +63,7 @@ pub fn attach(slip: &mut SlipExtraction) {
 const MIN_YEAR: i32 = 2000;
 
 /// Clear `purchased_at` (with a warning) when the date is unparseable, before
-/// [`MIN_YEAR`], or more than a day in the future. The date portion must be
+/// `MIN_YEAR`, or more than a day in the future. The date portion must be
 /// `YYYY-MM-DD`, optionally followed by `T` and a time.
 pub fn check_date(slip: &mut SlipExtraction) {
     let Some(ts) = slip.purchased_at.clone() else {

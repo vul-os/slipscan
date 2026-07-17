@@ -137,6 +137,7 @@ pub fn vat201_csv(summary: &Vat201Summary) -> String {
         "output_vat_minor",
         "input_base_minor",
         "input_vat_minor",
+        "net_vat_minor",
     ]);
     let currency = summary.currency.as_str();
     for r in &summary.rows {
@@ -149,6 +150,7 @@ pub fn vat201_csv(summary: &Vat201Summary) -> String {
             &r.output_vat_minor.to_string(),
             &r.input_base_minor.to_string(),
             &r.input_vat_minor.to_string(),
+            "",
         ]));
     }
     out.push_str(&row(&[
@@ -158,6 +160,7 @@ pub fn vat201_csv(summary: &Vat201Summary) -> String {
         currency,
         "",
         &summary.output_vat_minor.to_string(),
+        "",
         "",
         "",
     ]));
@@ -170,12 +173,16 @@ pub fn vat201_csv(summary: &Vat201Summary) -> String {
         "",
         "",
         &summary.input_vat_minor.to_string(),
+        "",
     ]));
+    // Net VAT gets its own column — summing the input_vat_minor column must
+    // yield input VAT only, never input + net double-counted.
     out.push_str(&row(&[
         "",
         "Net VAT payable (refundable if negative)",
         "",
         currency,
+        "",
         "",
         "",
         "",
@@ -212,6 +219,50 @@ mod tests {
         );
         assert_eq!(lines.next(), Some("cat-1,\"Groceries, snacks\",ZAR,12345"));
         assert_eq!(lines.next(), None);
+    }
+
+    #[test]
+    fn vat201_csv_puts_net_vat_in_its_own_column() {
+        // Regression: the net-VAT total used to land in the input_vat_minor
+        // column, so summing that column double-counted input + net.
+        use crate::domain::Vat201Summary;
+        let csv = vat201_csv(&Vat201Summary {
+            book_id: "b".into(),
+            from_date: "2026-07-01".into(),
+            to_date: "2026-07-31".into(),
+            currency: "ZAR".into(),
+            rows: vec![],
+            standard_rated_supplies_minor: 10_000,
+            zero_rated_supplies_minor: 0,
+            exempt_supplies_minor: 0,
+            output_vat_minor: 1_500,
+            input_vat_minor: 300,
+            net_vat_minor: 1_200,
+        });
+        let lines: Vec<&str> = csv.lines().collect();
+        let header: Vec<&str> = lines[0].split(',').collect();
+        assert_eq!(header[7], "input_vat_minor");
+        assert_eq!(header[8], "net_vat_minor");
+        let net_row: Vec<&str> = lines
+            .iter()
+            .find(|l| l.contains("Net VAT payable"))
+            .expect("net VAT row")
+            .split(',')
+            .collect();
+        assert_eq!(net_row.len(), 9);
+        assert_eq!(net_row[7], "", "input_vat_minor column must stay empty");
+        assert_eq!(net_row[8], "1200", "net VAT belongs in net_vat_minor");
+        // Summing the input column yields input VAT only.
+        let input_total: i64 = lines[1..]
+            .iter()
+            .filter_map(|l| {
+                let cells: Vec<&str> = l.split(',').collect();
+                (cells.len() == 9)
+                    .then(|| cells[7].parse::<i64>().ok())
+                    .flatten()
+            })
+            .sum();
+        assert_eq!(input_total, 300);
     }
 
     #[test]
