@@ -11,9 +11,25 @@ use slipscan_core::CoreService;
 use std::collections::HashMap;
 
 /// Persistence for per-source sync cursors.
-pub trait CursorStore: Send {
+///
+/// Deliberately not `Send`: [`SettingsCursorStore`] borrows a
+/// [`CoreService`], which is single-threaded (SQLite connection); sync loops
+/// run on the thread that owns the service.
+pub trait CursorStore {
     fn get_cursor(&self, key: &str) -> IngestResult<Option<String>>;
     fn set_cursor(&mut self, key: &str, value: &str) -> IngestResult<()>;
+}
+
+/// Mutable references delegate, so a store can be lent to a connector while
+/// the caller keeps ownership.
+impl<C: CursorStore + ?Sized> CursorStore for &mut C {
+    fn get_cursor(&self, key: &str) -> IngestResult<Option<String>> {
+        (**self).get_cursor(key)
+    }
+
+    fn set_cursor(&mut self, key: &str, value: &str) -> IngestResult<()> {
+        (**self).set_cursor(key, value)
+    }
 }
 
 /// In-memory cursor store for tests and one-shot runs.
@@ -100,7 +116,8 @@ mod tests {
         );
         // Stored under the namespaced settings key, as a non-secret.
         assert_eq!(
-            svc.settings_get("ingest.cursor.imap:example:inbox").unwrap(),
+            svc.settings_get("ingest.cursor.imap:example:inbox")
+                .unwrap(),
             Some("17".into())
         );
     }

@@ -1,23 +1,43 @@
-//! Generic IMAP mailbox connector (any host, TLS via rustls).
+//! Generic IMAP mailbox connector (any host; TLS via rustls, or plaintext
+//! strictly on loopback for Proton Bridge).
 //!
-//! Polls one folder since the last-seen UID; the cursor lives in a
-//! [`CursorStore`] so restarts resume where they left off. Protocol I/O is
-//! behind the [`ImapTransport`] trait so the sync logic is testable without a
-//! live server (tests never touch the network); [`connect_tls`] provides the
-//! real async-imap + rustls transport.
+//! Sync is UID-cursor polling: one folder, fetch everything above the
+//! last-seen UID; the cursor lives in a [`CursorStore`] so restarts resume
+//! where they left off. Push is **IMAP IDLE** — an outbound held-open
+//! connection the server answers on; when it announces new mail,
+//! [`MailboxConnector::wait_for_new`] returns and the caller runs a sync.
 //!
-//! The password is *received* (looked up from the OS keychain by the caller
-//! via `SecretStore` using [`ImapConfig::password_secret_ref`]) — this module
-//! never loads or stores secret material.
+//! Protocol I/O is behind the [`ImapTransport`] trait so the sync logic is
+//! testable without a live server (tests never touch the network);
+//! [`connect`] provides the real async-imap transport.
+//!
+//! The password is *received* (handed over by the credential vault via
+//! `use_with`, see [`crate::vault`]) — this module never loads or stores
+//! secret material.
 
-use super::{parse_inbound, InboundMessage, MailboxConnector};
+use super::{parse_inbound, InboundMessage, MailboxConnector, MailboxEvent};
 use crate::state::CursorStore;
 use crate::{IngestError, IngestResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use slipscan_core::secrets::SecretString;
+use std::time::Duration;
+
+/// How the TCP connection is protected.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImapSecurity {
+    /// Implicit TLS (port 993). The default; required for anything remote.
+    #[default]
+    Tls,
+    /// No TLS — allowed **only** for loopback hosts. Proton Bridge exposes
+    /// IMAP on `127.0.0.1` with a self-signed/bridge-local setup; the
+    /// traffic never leaves the machine.
+    LocalPlaintext,
+}
 
 /// Configuration for one IMAP mailbox. Serializable (stored in settings);
-/// contains no secret material — only the keychain entry *name*.
+/// contains no secret material — only the vault entry *name*.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImapConfig {
     pub host: String,
@@ -25,9 +45,11 @@ pub struct ImapConfig {
     /// Folder / label to poll, e.g. `"INBOX"` or `"Receipts"`.
     pub folder: String,
     pub username: String,
-    /// Name of the OS-keychain entry holding the password (never the
-    /// password itself).
+    /// Name of the vault entry holding the password (never the password
+    /// itself).
     pub password_secret_ref: String,
+    #[serde(default)]
+    pub security: ImapSecurity,
 }
 
 impl ImapConfig {
@@ -35,10 +57,18 @@ impl ImapConfig {
     pub fn cursor_key(&self) -> String {
         format!("imap:{}:{}:{}", self.host, self.username, self.folder)
     }
+
+    fn is_loopback(&self) -> bool {
+        matches!(self.host.as_str(), "localhost" | "127.0.0.1" | "::1")
+            || self
+                .host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    }
 }
 
 /// Minimal slice of the IMAP protocol the connector needs. Implemented by the
-/// real TLS session ([`connect_tls`]) and by fakes in tests.
+/// real session ([`connect`]) and by fakes in tests.
 #[async_trait]
 pub trait ImapTransport: Send {
     async fn select_folder(&mut self, folder: &str) -> IngestResult<()>;
@@ -49,6 +79,13 @@ pub trait ImapTransport: Send {
 
     /// Fetch the raw RFC 5322 bytes of one message.
     async fn uid_fetch_raw(&mut self, uid: u32) -> IngestResult<Option<Vec<u8>>>;
+
+    /// Hold an IDLE connection until the server announces activity or
+    /// `timeout` passes. Servers commonly drop IDLE after ~29 minutes;
+    /// callers simply re-issue the wait.
+    async fn idle_wait(&mut self, _timeout: Duration) -> IngestResult<MailboxEvent> {
+        Ok(MailboxEvent::Unsupported)
+    }
 
     async fn logout(&mut self) -> IngestResult<()>;
 }
@@ -80,23 +117,28 @@ impl<T: ImapTransport, C: CursorStore> ImapConnector<T, C> {
         }
     }
 
+    async fn ensure_folder(&mut self) -> IngestResult<()> {
+        if !self.folder_selected {
+            self.transport.select_folder(&self.config.folder).await?;
+            self.folder_selected = true;
+        }
+        Ok(())
+    }
+
     /// Close the session cleanly.
     pub async fn logout(&mut self) -> IngestResult<()> {
         self.transport.logout().await
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl<T: ImapTransport, C: CursorStore> MailboxConnector for ImapConnector<T, C> {
     fn name(&self) -> &str {
         "imap"
     }
 
-    async fn fetch_unseen(&mut self) -> IngestResult<Vec<InboundMessage>> {
-        if !self.folder_selected {
-            self.transport.select_folder(&self.config.folder).await?;
-            self.folder_selected = true;
-        }
+    async fn list_new(&mut self) -> IngestResult<Vec<String>> {
+        self.ensure_folder().await?;
         let last_seen = self.last_seen_uid()?;
         let mut uids: Vec<u32> = self
             .transport
@@ -107,21 +149,18 @@ impl<T: ImapTransport, C: CursorStore> MailboxConnector for ImapConnector<T, C> 
             .collect();
         uids.sort_unstable();
         uids.dedup();
+        Ok(uids.into_iter().map(|u| u.to_string()).collect())
+    }
 
-        let mut messages = Vec::with_capacity(uids.len());
-        for uid in uids {
-            if let Some(raw) = self.transport.uid_fetch_raw(uid).await? {
-                match parse_inbound(&raw, &uid.to_string()) {
-                    Ok(msg) => messages.push(msg),
-                    // A single broken message must not wedge the whole
-                    // folder: skip it; the cursor only advances when the
-                    // caller marks messages processed.
-                    Err(IngestError::Parse(_)) => continue,
-                    Err(e) => return Err(e),
-                }
-            }
+    async fn fetch_message(&mut self, message_id: &str) -> IngestResult<Option<InboundMessage>> {
+        self.ensure_folder().await?;
+        let uid: u32 = message_id
+            .parse()
+            .map_err(|_| IngestError::State(format!("not an IMAP UID: {message_id:?}")))?;
+        match self.transport.uid_fetch_raw(uid).await? {
+            Some(raw) => parse_inbound(&raw, message_id).map(Some),
+            None => Ok(None),
         }
-        Ok(messages)
     }
 
     async fn mark_processed(&mut self, message_id: &str) -> IngestResult<()> {
@@ -134,31 +173,80 @@ impl<T: ImapTransport, C: CursorStore> MailboxConnector for ImapConnector<T, C> 
         }
         Ok(())
     }
+
+    async fn wait_for_new(&mut self, timeout: Duration) -> IngestResult<MailboxEvent> {
+        self.ensure_folder().await?;
+        self.transport.idle_wait(timeout).await
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Real transport: async-imap over rustls
+// Real transport: async-imap over rustls (or loopback plaintext)
 // ---------------------------------------------------------------------------
 
 use futures::TryStreamExt;
+use std::fmt::Debug;
 use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 
-/// The production transport: an authenticated async-imap session over TLS.
-pub struct TlsImapTransport {
-    session: async_imap::Session<TlsStream<TcpStream>>,
+/// The production transport: an authenticated async-imap session over any
+/// stream (TLS for remote hosts, plain TCP strictly on loopback).
+pub struct SessionTransport<S: AsyncRead + AsyncWrite + Unpin + Debug + Send> {
+    // Option because IDLE consumes the session and hands it back.
+    session: Option<async_imap::Session<S>>,
+}
+
+/// Back-compat alias for the TLS transport type.
+pub type TlsImapTransport = SessionTransport<TlsStream<TcpStream>>;
+
+/// Either production transport, so callers can hold one type regardless of
+/// [`ImapSecurity`]. Boxed: the TLS session is an order of magnitude larger
+/// than the plain one.
+pub enum AnyImapTransport {
+    Tls(Box<SessionTransport<TlsStream<TcpStream>>>),
+    Plain(SessionTransport<TcpStream>),
+}
+
+/// Connect and log in per `config.security`.
+///
+/// `password` is handed over by the vault (`use_with`); it is used for the
+/// LOGIN command and dropped (zeroized) with the caller's scope. Plaintext
+/// connections are refused for anything that is not loopback — that mode
+/// exists only for Proton Bridge on `127.0.0.1`, which works unchanged as a
+/// generic IMAP mailbox.
+pub async fn connect(
+    config: &ImapConfig,
+    password: &SecretString,
+) -> IngestResult<AnyImapTransport> {
+    match config.security {
+        ImapSecurity::Tls => Ok(AnyImapTransport::Tls(Box::new(
+            connect_tls(config, password).await?,
+        ))),
+        ImapSecurity::LocalPlaintext => {
+            if !config.is_loopback() {
+                return Err(IngestError::Connection(format!(
+                    "plaintext IMAP is only allowed on loopback, not {:?}",
+                    config.host
+                )));
+            }
+            let tcp = tcp_connect(config).await?;
+            login(config, password, tcp)
+                .await
+                .map(AnyImapTransport::Plain)
+        }
+    }
 }
 
 /// Open a TLS connection to `config.host:port` and log in.
-///
-/// `password` must be resolved by the caller from the OS keychain
-/// (`SecretStore::get_secret(&config.password_secret_ref)`); it is used for
-/// the LOGIN command and dropped.
-pub async fn connect_tls(config: &ImapConfig, password: &str) -> IngestResult<TlsImapTransport> {
+pub async fn connect_tls(
+    config: &ImapConfig,
+    password: &SecretString,
+) -> IngestResult<TlsImapTransport> {
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let tls_config = ClientConfig::builder()
@@ -166,28 +254,50 @@ pub async fn connect_tls(config: &ImapConfig, password: &str) -> IngestResult<Tl
         .with_no_client_auth();
     let connector = TlsConnector::from(Arc::new(tls_config));
 
-    let tcp = TcpStream::connect((config.host.as_str(), config.port))
-        .await
-        .map_err(|e| IngestError::Connection(format!("{}:{}: {e}", config.host, config.port)))?;
+    let tcp = tcp_connect(config).await?;
     let server_name = ServerName::try_from(config.host.clone())
         .map_err(|e| IngestError::Connection(format!("invalid host name: {e}")))?;
     let tls = connector
         .connect(server_name, tcp)
         .await
         .map_err(|e| IngestError::Connection(format!("TLS handshake failed: {e}")))?;
+    login(config, password, tls).await
+}
 
-    let client = async_imap::Client::new(tls);
-    let session = client
-        .login(&config.username, password)
+async fn tcp_connect(config: &ImapConfig) -> IngestResult<TcpStream> {
+    TcpStream::connect((config.host.as_str(), config.port))
         .await
+        .map_err(|e| IngestError::Connection(format!("{}:{}: {e}", config.host, config.port)))
+}
+
+async fn login<S: AsyncRead + AsyncWrite + Unpin + Debug + Send>(
+    config: &ImapConfig,
+    password: &SecretString,
+    stream: S,
+) -> IngestResult<SessionTransport<S>> {
+    let client = async_imap::Client::new(stream);
+    let session = client
+        .login(&config.username, password.expose_secret())
+        .await
+        // async-imap's error carries protocol context, never the password.
         .map_err(|(e, _)| IngestError::Auth(e.to_string()))?;
-    Ok(TlsImapTransport { session })
+    Ok(SessionTransport {
+        session: Some(session),
+    })
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin + Debug + Send> SessionTransport<S> {
+    fn session(&mut self) -> IngestResult<&mut async_imap::Session<S>> {
+        self.session
+            .as_mut()
+            .ok_or_else(|| IngestError::Protocol("IMAP session was lost during IDLE".into()))
+    }
 }
 
 #[async_trait]
-impl ImapTransport for TlsImapTransport {
+impl<S: AsyncRead + AsyncWrite + Unpin + Debug + Send> ImapTransport for SessionTransport<S> {
     async fn select_folder(&mut self, folder: &str) -> IngestResult<()> {
-        self.session
+        self.session()?
             .select(folder)
             .await
             .map(|_| ())
@@ -196,7 +306,7 @@ impl ImapTransport for TlsImapTransport {
 
     async fn uid_search_from(&mut self, from: u32) -> IngestResult<Vec<u32>> {
         let uids = self
-            .session
+            .session()?
             .uid_search(format!("UID {from}:*"))
             .await
             .map_err(|e| IngestError::Protocol(e.to_string()))?;
@@ -205,7 +315,7 @@ impl ImapTransport for TlsImapTransport {
 
     async fn uid_fetch_raw(&mut self, uid: u32) -> IngestResult<Option<Vec<u8>>> {
         let fetches: Vec<_> = self
-            .session
+            .session()?
             .uid_fetch(uid.to_string(), "RFC822")
             .await
             .map_err(|e| IngestError::Protocol(e.to_string()))?
@@ -217,17 +327,80 @@ impl ImapTransport for TlsImapTransport {
             .find_map(|f| f.body().map(|b| b.to_vec())))
     }
 
+    async fn idle_wait(&mut self, timeout: Duration) -> IngestResult<MailboxEvent> {
+        let session = self
+            .session
+            .take()
+            .ok_or_else(|| IngestError::Protocol("IMAP session was lost during IDLE".into()))?;
+        let mut handle = session.idle();
+        if let Err(e) = handle.init().await {
+            // The session is stuck inside a half-initialised IDLE; drop it —
+            // the caller reconnects.
+            return Err(IngestError::Protocol(format!("IDLE init failed: {e}")));
+        }
+        let outcome = {
+            let (wait, _interrupt) = handle.wait_with_timeout(timeout);
+            wait.await
+        };
+        // Always send DONE and recover the session before interpreting the
+        // outcome, so a server burp doesn't leak the connection.
+        match handle.done().await {
+            Ok(session) => self.session = Some(session),
+            Err(e) => return Err(IngestError::Protocol(format!("IDLE done failed: {e}"))),
+        }
+        match outcome.map_err(|e| IngestError::Protocol(format!("IDLE failed: {e}")))? {
+            async_imap::extensions::idle::IdleResponse::NewData(_) => Ok(MailboxEvent::NewMail),
+            async_imap::extensions::idle::IdleResponse::Timeout
+            | async_imap::extensions::idle::IdleResponse::ManualInterrupt => {
+                Ok(MailboxEvent::Timeout)
+            }
+        }
+    }
+
     async fn logout(&mut self) -> IngestResult<()> {
-        self.session
+        self.session()?
             .logout()
             .await
             .map_err(|e| IngestError::Protocol(e.to_string()))
     }
 }
 
+macro_rules! delegate_any {
+    ($self:ident, $method:ident $(, $arg:expr)*) => {
+        match $self {
+            AnyImapTransport::Tls(t) => t.$method($($arg),*).await,
+            AnyImapTransport::Plain(t) => t.$method($($arg),*).await,
+        }
+    };
+}
+
+#[async_trait]
+impl ImapTransport for AnyImapTransport {
+    async fn select_folder(&mut self, folder: &str) -> IngestResult<()> {
+        delegate_any!(self, select_folder, folder)
+    }
+
+    async fn uid_search_from(&mut self, from: u32) -> IngestResult<Vec<u32>> {
+        delegate_any!(self, uid_search_from, from)
+    }
+
+    async fn uid_fetch_raw(&mut self, uid: u32) -> IngestResult<Option<Vec<u8>>> {
+        delegate_any!(self, uid_fetch_raw, uid)
+    }
+
+    async fn idle_wait(&mut self, timeout: Duration) -> IngestResult<MailboxEvent> {
+        delegate_any!(self, idle_wait, timeout)
+    }
+
+    async fn logout(&mut self) -> IngestResult<()> {
+        delegate_any!(self, logout)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::email::MailboxConnector;
     use crate::state::MemoryCursorStore;
     use std::collections::HashMap;
 
@@ -237,6 +410,7 @@ mod tests {
         messages: HashMap<u32, Vec<u8>>,
         selected: Option<String>,
         searches: Vec<u32>,
+        idle_scripted: Vec<MailboxEvent>,
     }
 
     fn receipt_raw(n: u32) -> Vec<u8> {
@@ -274,6 +448,10 @@ Content-Type: text/plain\r\n\r\nplain body\r\n"
             Ok(self.messages.get(&uid).cloned())
         }
 
+        async fn idle_wait(&mut self, _timeout: Duration) -> IngestResult<MailboxEvent> {
+            Ok(self.idle_scripted.pop().unwrap_or(MailboxEvent::Timeout))
+        }
+
         async fn logout(&mut self) -> IngestResult<()> {
             Ok(())
         }
@@ -286,6 +464,7 @@ Content-Type: text/plain\r\n\r\nplain body\r\n"
             folder: "Receipts".into(),
             username: "me@example".into(),
             password_secret_ref: "imap.mail.example.password".into(),
+            security: ImapSecurity::Tls,
         }
     }
 
@@ -303,7 +482,11 @@ Content-Type: text/plain\r\n\r\nplain body\r\n"
             "oldest first"
         );
         assert_eq!(conn.transport.selected.as_deref(), Some("Receipts"));
-        assert_eq!(conn.transport.searches, vec![1], "first poll starts at UID 1");
+        assert_eq!(
+            conn.transport.searches,
+            vec![1],
+            "first poll starts at UID 1"
+        );
 
         conn.mark_processed("3").await.unwrap();
         conn.mark_processed("5").await.unwrap();
@@ -354,13 +537,57 @@ Content-Type: text/plain\r\n\r\nplain body\r\n"
         assert_eq!(msgs.len(), 1, "unacked UID is fetched again");
     }
 
+    #[tokio::test]
+    async fn idle_push_selects_folder_then_waits() {
+        let transport = FakeTransport {
+            idle_scripted: vec![MailboxEvent::NewMail],
+            ..FakeTransport::default()
+        };
+        let mut conn = ImapConnector::new(config(), transport, MemoryCursorStore::new());
+        let event = conn.wait_for_new(Duration::from_secs(60)).await.unwrap();
+        assert_eq!(event, MailboxEvent::NewMail);
+        assert_eq!(conn.transport.selected.as_deref(), Some("Receipts"));
+        // Nothing scripted: falls back to timeout, caller re-issues.
+        let event = conn.wait_for_new(Duration::from_secs(60)).await.unwrap();
+        assert_eq!(event, MailboxEvent::Timeout);
+    }
+
     #[test]
     fn config_serde_and_cursor_key() {
         let cfg = config();
         let json = serde_json::to_string(&cfg).unwrap();
-        assert!(!json.contains("password\":"), "no secret material in config");
+        assert!(
+            !json.contains("password\":"),
+            "no secret material in config"
+        );
         let back: ImapConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back, cfg);
         assert_eq!(cfg.cursor_key(), "imap:mail.example:me@example:Receipts");
+        // Configs saved before the `security` field default to TLS.
+        let legacy: ImapConfig = serde_json::from_str(
+            r#"{"host":"h","port":993,"folder":"INBOX","username":"u","password_secret_ref":"r"}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.security, ImapSecurity::Tls);
+    }
+
+    #[test]
+    fn plaintext_is_loopback_only() {
+        // Proton Bridge shape: loopback + plaintext is representable…
+        let bridge = ImapConfig {
+            host: "127.0.0.1".into(),
+            port: 1143,
+            security: ImapSecurity::LocalPlaintext,
+            ..config()
+        };
+        assert!(bridge.is_loopback());
+        // …but a remote host with plaintext must be refused by connect().
+        let remote = ImapConfig {
+            security: ImapSecurity::LocalPlaintext,
+            ..config()
+        };
+        assert!(!remote.is_loopback());
+        let result = futures::executor::block_on(connect(&remote, &SecretString::new("pw")));
+        assert!(matches!(result, Err(IngestError::Connection(_))));
     }
 }

@@ -27,17 +27,11 @@ pub fn parse_inbound(raw: &[u8], fallback_id: &str) -> IngestResult<InboundMessa
         .unwrap_or("unknown")
         .to_string();
     let subject = msg.subject().map(str::to_string);
-    let received_at = msg
-        .date()
-        .map(|d| d.to_rfc3339())
-        .unwrap_or_else(now_iso);
+    let received_at = msg.date().map(|d| d.to_rfc3339()).unwrap_or_else(now_iso);
 
     let mut attachments = Vec::new();
     for part in msg.attachments() {
-        let filename = part
-            .attachment_name()
-            .unwrap_or("attachment")
-            .to_string();
+        let filename = part.attachment_name().unwrap_or("attachment").to_string();
         let mime_type = part
             .content_type()
             .map(|ct| match ct.subtype() {
@@ -200,7 +194,11 @@ Content-Type: text/html; charset=utf-8\r\n\
         assert_eq!(msg.message_id.as_deref(), Some("abc123@shop.example"));
         assert_eq!(msg.from, "till@shop.example");
         assert_eq!(msg.subject.as_deref(), Some("Your slip from SPAR"));
-        assert!(msg.received_at.starts_with("2026-07-01T"), "{}", msg.received_at);
+        assert!(
+            msg.received_at.starts_with("2026-07-01T"),
+            "{}",
+            msg.received_at
+        );
 
         assert_eq!(msg.attachments.len(), 1);
         let att = &msg.attachments[0];
@@ -221,7 +219,9 @@ Content-Type: text/html; charset=utf-8\r\n\
     #[test]
     fn receipt_heuristic_needs_word_boundaries_and_digits() {
         assert!(looks_like_receipt("Tax invoice #123: total R99.00"));
-        assert!(!looks_like_receipt("border-color totally fine, no numbers here"));
+        assert!(!looks_like_receipt(
+            "border-color totally fine, no numbers here"
+        ));
         // "order" inside "border" must not match.
         assert!(!looks_like_receipt("border: 1px; border: 2px"));
         // Two signals but no digits: not a receipt.
@@ -231,7 +231,10 @@ Content-Type: text/html; charset=utf-8\r\n\
     #[test]
     fn attachment_filter_accepts_images_rejects_calendar() {
         assert!(is_document_attachment("x.png", "image/png"));
-        assert!(is_document_attachment("scan.PDF", "application/octet-stream"));
+        assert!(is_document_attachment(
+            "scan.PDF",
+            "application/octet-stream"
+        ));
         assert!(!is_document_attachment("invite.ics", "text/calendar"));
     }
 
