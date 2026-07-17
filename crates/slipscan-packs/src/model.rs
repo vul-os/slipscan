@@ -28,7 +28,7 @@ impl FromStr for Semver {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bad = || PackError::InvalidVersion(s.to_string());
         let mut parts = s.split('.');
-        let mut next = |parts: &mut std::str::Split<'_, char>| -> PackResult<u64> {
+        let next = |parts: &mut std::str::Split<'_, char>| -> PackResult<u64> {
             let part = parts.next().ok_or_else(bad)?;
             if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
                 return Err(bad());
@@ -152,6 +152,89 @@ pub struct VatHint {
     pub note: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Benchmark payload (anonymous peer comparison — read side)
+// ---------------------------------------------------------------------------
+
+/// Minimum k-anonymity floor a benchmark pack may claim. Stats whose sample
+/// falls below the pack's own floor — or a floor below this constant — are
+/// rejected at parse time; the read side refuses to display small cohorts.
+pub const MIN_K_ANONYMITY: u64 = 10;
+
+/// The coarse cohort a benchmark set describes. Deliberately blunt buckets
+/// (see docs/BENCHMARKS.md): region, rough income band, household size.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BenchmarkCohort {
+    /// ISO 3166-1 alpha-2 region, e.g. `"ZA"`.
+    pub region: String,
+    /// Household size bucket (1..=20).
+    pub household_size: u32,
+    /// Coarse income band label, e.g. `"C"`. Short, opaque, community-defined.
+    pub income_band: String,
+}
+
+/// Aggregate statistics for one category in one period. Amounts are minor
+/// units (never floats) in the set's currency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BenchmarkStat {
+    /// Common taxonomy key, e.g. `"groceries"` — resolved locally at
+    /// comparison time; a benchmark pack declares no categories of its own.
+    pub category_key: String,
+    /// Calendar month `"YYYY-MM"`.
+    pub period: String,
+    /// Number of (noised) contributions behind this stat.
+    pub sample_size: u64,
+    pub p25_minor: i64,
+    pub median_minor: i64,
+    pub p75_minor: i64,
+    #[serde(default)]
+    pub mean_minor: Option<i64>,
+}
+
+/// A benchmark pack's payload section: one cohort, one currency, many stats.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BenchmarkSet {
+    pub cohort: BenchmarkCohort,
+    /// ISO 4217 currency code, e.g. `"ZAR"`.
+    pub currency: String,
+    /// The k-anonymity floor the aggregator enforced (>= [`MIN_K_ANONYMITY`]).
+    pub k_floor: u64,
+    pub stats: Vec<BenchmarkStat>,
+}
+
+/// What a pack carries — derived from content, not declared, so it cannot
+/// disagree with the payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackKind {
+    /// Category taxonomy and/or classification rules.
+    Taxonomy,
+    /// Aggregate cohort statistics for local peer comparison.
+    Benchmark,
+}
+
+impl PackKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PackKind::Taxonomy => "taxonomy",
+            PackKind::Benchmark => "benchmark",
+        }
+    }
+}
+
+impl FromStr for PackKind {
+    type Err = PackError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "taxonomy" => Ok(PackKind::Taxonomy),
+            "benchmark" => Ok(PackKind::Benchmark),
+            other => Err(PackError::Validation(format!(
+                "unknown pack kind {other:?}"
+            ))),
+        }
+    }
+}
+
 /// The full pack payload — the exact bytes of its JSON serialization are what
 /// gets ed25519-signed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -165,6 +248,9 @@ pub struct PackPayload {
     pub keyword_rules: Vec<KeywordRule>,
     #[serde(default)]
     pub vat_hints: Vec<VatHint>,
+    /// Present only in benchmark packs; a benchmark pack carries nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub benchmarks: Option<BenchmarkSet>,
 }
 
 impl PackPayload {
@@ -172,6 +258,16 @@ impl PackPayload {
         let payload: PackPayload = serde_json::from_slice(bytes)?;
         payload.validate()?;
         Ok(payload)
+    }
+
+    /// Derived pack kind: benchmark iff a benchmark section is present
+    /// (validation guarantees benchmark packs carry nothing else).
+    pub fn kind(&self) -> PackKind {
+        if self.benchmarks.is_some() {
+            PackKind::Benchmark
+        } else {
+            PackKind::Taxonomy
+        }
     }
 
     /// Structural validation. Called on every parse and before every build,
@@ -252,7 +348,10 @@ impl PackPayload {
                 return fail("merchant rule with empty pattern".into());
             }
             check_target("merchant rule", &rule.category_key)?;
-            check_confidence(&format!("merchant rule {:?}", rule.pattern), rule.confidence)?;
+            check_confidence(
+                &format!("merchant rule {:?}", rule.pattern),
+                rule.confidence,
+            )?;
             if rule.match_kind == MatchKind::Regex {
                 regex::Regex::new(&rule.pattern).map_err(|e| PackError::InvalidRegex {
                     pattern: rule.pattern.clone(),
@@ -286,8 +385,105 @@ impl PackPayload {
             }
         }
 
+        if let Some(set) = &self.benchmarks {
+            if !self.categories.is_empty()
+                || !self.merchant_rules.is_empty()
+                || !self.keyword_rules.is_empty()
+                || !self.vat_hints.is_empty()
+            {
+                return fail(
+                    "benchmark packs must carry only aggregate stats — \
+                     no categories, rules, or vat hints"
+                        .into(),
+                );
+            }
+            validate_benchmarks(set)?;
+        }
+
         Ok(())
     }
+}
+
+fn validate_benchmarks(set: &BenchmarkSet) -> PackResult<()> {
+    let fail = |msg: String| Err(PackError::Validation(msg));
+
+    let region = &set.cohort.region;
+    if region.len() != 2 || !region.bytes().all(|b| b.is_ascii_uppercase()) {
+        return fail(format!(
+            "benchmark cohort region {region:?} must be ISO 3166-1 alpha-2"
+        ));
+    }
+    if !(1..=20).contains(&set.cohort.household_size) {
+        return fail(format!(
+            "benchmark cohort household_size {} outside [1, 20]",
+            set.cohort.household_size
+        ));
+    }
+    if set.cohort.income_band.is_empty() || set.cohort.income_band.len() > 8 {
+        return fail("benchmark cohort income_band must be a short non-empty label".into());
+    }
+    if set.currency.len() != 3 || !set.currency.bytes().all(|b| b.is_ascii_uppercase()) {
+        return fail(format!(
+            "benchmark currency {:?} must be an ISO 4217 code",
+            set.currency
+        ));
+    }
+    if set.k_floor < MIN_K_ANONYMITY {
+        return fail(format!(
+            "benchmark k_floor {} below the minimum k-anonymity floor {}",
+            set.k_floor, MIN_K_ANONYMITY
+        ));
+    }
+
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+    for stat in &set.stats {
+        if stat.category_key.is_empty() {
+            return fail("benchmark stat with empty category_key".into());
+        }
+        if !is_year_month(&stat.period) {
+            return fail(format!(
+                "benchmark stat period {:?} must be \"YYYY-MM\"",
+                stat.period
+            ));
+        }
+        if stat.sample_size < set.k_floor {
+            return fail(format!(
+                "benchmark stat for {:?} has sample_size {} below the pack's k_floor {}",
+                stat.category_key, stat.sample_size, set.k_floor
+            ));
+        }
+        if stat.p25_minor < 0
+            || !(stat.p25_minor <= stat.median_minor && stat.median_minor <= stat.p75_minor)
+        {
+            return fail(format!(
+                "benchmark stat for {:?} has inconsistent quartiles \
+                 (need 0 <= p25 <= median <= p75)",
+                stat.category_key
+            ));
+        }
+        if !seen.insert((&stat.category_key, &stat.period)) {
+            return fail(format!(
+                "duplicate benchmark stat for ({:?}, {:?})",
+                stat.category_key, stat.period
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `"YYYY-MM"` with a real month.
+fn is_year_month(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.len() != 7 || bytes[4] != b'-' {
+        return false;
+    }
+    if !bytes[..4].iter().all(u8::is_ascii_digit) || !bytes[5..].iter().all(u8::is_ascii_digit) {
+        return false;
+    }
+    matches!(
+        &s[5..7],
+        "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09" | "10" | "11" | "12"
+    )
 }
 
 #[cfg(test)]
@@ -338,6 +534,42 @@ mod tests {
                 rate_bps: 1500,
                 note: Some("standard rate".into()),
             }],
+            benchmarks: None,
+        }
+    }
+
+    fn benchmark_payload() -> PackPayload {
+        PackPayload {
+            meta: PackMeta {
+                id: "za-benchmark-2026-06".into(),
+                name: "ZA cohort benchmarks".into(),
+                version: "1.0.0".into(),
+                region: Some("ZA".into()),
+                author: Some("tests".into()),
+                description: None,
+            },
+            categories: vec![],
+            merchant_rules: vec![],
+            keyword_rules: vec![],
+            vat_hints: vec![],
+            benchmarks: Some(BenchmarkSet {
+                cohort: BenchmarkCohort {
+                    region: "ZA".into(),
+                    household_size: 2,
+                    income_band: "C".into(),
+                },
+                currency: "ZAR".into(),
+                k_floor: 25,
+                stats: vec![BenchmarkStat {
+                    category_key: "groceries".into(),
+                    period: "2026-06".into(),
+                    sample_size: 412,
+                    p25_minor: 310_000,
+                    median_minor: 485_000,
+                    p75_minor: 702_500,
+                    mean_minor: Some(512_300),
+                }],
+            }),
         }
     }
 
@@ -350,7 +582,9 @@ mod tests {
         assert!("2.0.0".parse::<Semver>().unwrap() > v2);
         assert_eq!(v1.to_string(), "1.2.3");
 
-        for bad in ["", "1", "1.2", "1.2.3.4", "1.2.x", "v1.2.3", "1.-2.3", "1.2. 3"] {
+        for bad in [
+            "", "1", "1.2", "1.2.3.4", "1.2.x", "v1.2.3", "1.-2.3", "1.2. 3",
+        ] {
             assert!(bad.parse::<Semver>().is_err(), "should reject {bad:?}");
         }
     }
@@ -432,5 +666,51 @@ mod tests {
         let mut payload = minimal_payload();
         payload.meta.id = "Bad_Id".into();
         assert!(payload.validate().is_err());
+    }
+
+    #[test]
+    fn benchmark_payload_validates_and_reports_kind() {
+        let payload = benchmark_payload();
+        payload.validate().unwrap();
+        assert_eq!(payload.kind(), PackKind::Benchmark);
+        assert_eq!(minimal_payload().kind(), PackKind::Taxonomy);
+    }
+
+    #[test]
+    fn benchmark_pack_must_be_pure() {
+        let mut payload = benchmark_payload();
+        payload.categories = minimal_payload().categories;
+        assert!(matches!(payload.validate(), Err(PackError::Validation(_))));
+    }
+
+    #[test]
+    fn benchmark_privacy_floors_are_enforced() {
+        let mut payload = benchmark_payload();
+        payload.benchmarks.as_mut().unwrap().k_floor = 5;
+        assert!(payload.validate().is_err(), "k_floor below minimum");
+
+        let mut payload = benchmark_payload();
+        payload.benchmarks.as_mut().unwrap().stats[0].sample_size = 20;
+        assert!(payload.validate().is_err(), "sample below pack k_floor");
+    }
+
+    #[test]
+    fn benchmark_quartiles_and_period_are_checked() {
+        let mut payload = benchmark_payload();
+        payload.benchmarks.as_mut().unwrap().stats[0].p25_minor = 999_999_999;
+        assert!(payload.validate().is_err(), "p25 > median");
+
+        let mut payload = benchmark_payload();
+        payload.benchmarks.as_mut().unwrap().stats[0].period = "2026-13".into();
+        assert!(payload.validate().is_err(), "month 13");
+
+        let mut payload = benchmark_payload();
+        payload.benchmarks.as_mut().unwrap().stats[0].period = "June 2026".into();
+        assert!(payload.validate().is_err(), "free-text period");
+
+        let mut payload = benchmark_payload();
+        let dup = payload.benchmarks.as_ref().unwrap().stats[0].clone();
+        payload.benchmarks.as_mut().unwrap().stats.push(dup);
+        assert!(payload.validate().is_err(), "duplicate (category, period)");
     }
 }

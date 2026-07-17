@@ -99,8 +99,9 @@ impl Pack {
     /// enforcing all integrity rules described in the module docs.
     pub fn from_parts(manifest_toml: &str, payload_bytes: &[u8]) -> PackResult<Self> {
         let manifest: ManifestDoc = toml::from_str(manifest_toml)?;
-        let payload = PackPayload::from_json(payload_bytes)?;
 
+        // Integrity before interpretation: check the hash first so tampering
+        // is reported as tampering, never as a parse error.
         let actual = sha256_hex(payload_bytes);
         if !manifest.pack.payload_sha256.eq_ignore_ascii_case(&actual) {
             return Err(PackError::HashMismatch {
@@ -108,6 +109,7 @@ impl Pack {
                 actual,
             });
         }
+        let payload = PackPayload::from_json(payload_bytes)?;
         if manifest.pack.id != payload.meta.id {
             return Err(PackError::Mismatch(format!(
                 "manifest id {:?} != payload id {:?}",
@@ -250,6 +252,7 @@ mod tests {
             }],
             keyword_rules: vec![],
             vat_hints: vec![],
+            benchmarks: None,
         }
     }
 
@@ -315,9 +318,10 @@ mod tests {
         let pack = Pack::build(&sample_payload()).unwrap();
         pack.write_dir(&pack_dir).unwrap();
         let manifest_path = pack_dir.join(MANIFEST_FILE);
-        let manifest = std::fs::read_to_string(&manifest_path)
-            .unwrap()
-            .replace("payload = \"payload.json\"", "payload = \"../payload.json\"");
+        let manifest = std::fs::read_to_string(&manifest_path).unwrap().replace(
+            "payload = \"payload.json\"",
+            "payload = \"../payload.json\"",
+        );
         std::fs::write(&manifest_path, manifest).unwrap();
         assert!(matches!(
             Pack::load_dir(&pack_dir),

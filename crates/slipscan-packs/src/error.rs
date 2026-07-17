@@ -39,8 +39,39 @@ pub enum PackError {
     #[error("signature verification failed")]
     VerificationFailed,
 
-    #[error("pack is signed by an untrusted key")]
-    UntrustedKey,
+    #[error(
+        "pack signer {fingerprint} is not trusted; verify the fingerprint \
+         out-of-band and trust the signer first (trust-on-first-use)"
+    )]
+    UntrustedSigner { fingerprint: String },
+
+    #[error(
+        "pack {pack_id} was previously signed by a different key \
+         (pinned signer {pinned_fingerprint}); refusing to install"
+    )]
+    SignerChanged {
+        pack_id: String,
+        pinned_fingerprint: String,
+    },
+
+    #[error(
+        "refusing to trust the well-known builtin seed key for external packs \
+         (it is public knowledge and proves nothing)"
+    )]
+    SignerNotTrustable,
+
+    #[error("pack {pack_id} version {version} is already installed")]
+    AlreadyInstalled { pack_id: String, version: String },
+
+    #[error(
+        "pack {pack_id}: offered version {offered} is older than installed \
+         version {installed}; downgrades are rejected"
+    )]
+    Downgrade {
+        pack_id: String,
+        installed: String,
+        offered: String,
+    },
 
     #[error("invalid semantic version {0:?} (expected MAJOR.MINOR.PATCH)")]
     InvalidVersion(String),
@@ -53,6 +84,9 @@ pub enum PackError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("database error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
 
     #[error("core error: {0}")]
     Core(#[from] slipscan_core::CoreError),
