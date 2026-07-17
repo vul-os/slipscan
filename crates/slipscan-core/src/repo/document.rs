@@ -173,3 +173,23 @@ pub fn current_extraction(
         )
         .optional()?)
 }
+
+/// `(document_id, payload_json, document_created_at)` for every document in
+/// the book with a current extraction payload — reconciliation candidates.
+pub fn current_extraction_payloads(
+    conn: &Connection,
+    book_id: &str,
+) -> CoreResult<Vec<(String, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.document_id, e.payload, d.created_at
+         FROM document_extractions e
+         JOIN documents d ON d.id = e.document_id
+         WHERE e.book_id = ?1 AND e.is_current = 1 AND e.payload IS NOT NULL",
+    )?;
+    let rows = stmt
+        .query_map(params![book_id], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}

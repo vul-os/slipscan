@@ -17,6 +17,12 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0100_accounting",
         include_str!("migrations/0100_accounting.sql"),
     ),
+    (
+        101,
+        "0101_ledger_hardening",
+        include_str!("migrations/0101_ledger_hardening.sql"),
+    ),
+    (200, "0200_vault", include_str!("migrations/0200_vault.sql")),
 ];
 
 /// A configured, migrated SQLite database handle.
@@ -111,10 +117,10 @@ mod tests {
     #[test]
     fn migrations_apply_once_and_are_recorded() {
         let db = Db::open_in_memory().expect("open");
-        assert_eq!(db.applied_migrations().unwrap(), vec![1, 100]);
+        assert_eq!(db.applied_migrations().unwrap(), vec![1, 100, 101, 200]);
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
-        assert_eq!(db.applied_migrations().unwrap(), vec![1, 100]);
+        assert_eq!(db.applied_migrations().unwrap(), vec![1, 100, 101, 200]);
     }
 
     #[test]
@@ -148,6 +154,8 @@ mod tests {
             "settings",
             "transactions",
             "vat_rates",
+            "vault_keys",
+            "vault_secrets",
         ] {
             assert!(tables.iter().any(|t| t == expected), "missing {expected}");
         }

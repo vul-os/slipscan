@@ -70,6 +70,19 @@ pub fn list_by_state(
     Ok(rows)
 }
 
+/// Open (auto-matched or suggested, unconfirmed) matches, newest first.
+pub fn list_open(conn: &Connection, book_id: &str) -> CoreResult<Vec<ReconMatch>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM recon_matches
+         WHERE book_id = ?1 AND state IN ('auto', 'suggested')
+         ORDER BY created_at DESC, id DESC",
+    )?;
+    let rows = stmt
+        .query_map(params![book_id], map_match)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 pub fn set_state(
     conn: &Connection,
     id: &str,
@@ -99,10 +112,7 @@ pub fn actively_matched_transaction_ids(
 }
 
 /// Document ids in `book_id` that already have a non-rejected match.
-pub fn actively_matched_document_ids(
-    conn: &Connection,
-    book_id: &str,
-) -> CoreResult<Vec<String>> {
+pub fn actively_matched_document_ids(conn: &Connection, book_id: &str) -> CoreResult<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT document_id FROM recon_matches
          WHERE book_id = ?1 AND state <> 'rejected' AND document_id IS NOT NULL",
@@ -113,12 +123,91 @@ pub fn actively_matched_document_ids(
     Ok(ids)
 }
 
+/// Journal ids in `book_id` that already have a non-rejected match.
+pub fn actively_matched_journal_ids(conn: &Connection, book_id: &str) -> CoreResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT journal_id FROM recon_matches
+         WHERE book_id = ?1 AND state <> 'rejected' AND journal_id IS NOT NULL",
+    )?;
+    let ids = stmt
+        .query_map(params![book_id], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ids)
+}
+
+/// A candidate ledger entry for bank reconciliation: a manual journal's line
+/// hitting an asset (bank-side) account. Carries the line's chart-of-accounts
+/// id so the matcher can require the line to sit on the statement's *own*
+/// bank account (not any asset account like VAT input or inventory).
+#[derive(Debug, Clone)]
+pub struct BankSideJournalLine {
+    pub journal_id: String,
+    pub coa_id: String,
+    pub posted_date: String,
+    pub narrative: Option<String>,
+    pub debit_minor: i64,
+    pub credit_minor: i64,
+    pub currency: String,
+}
+
+/// Manual journals' lines on asset accounts — the ledger side of bank
+/// reconciliation (statement line ↔ posted journal).
+pub fn bank_side_journal_lines(
+    conn: &Connection,
+    book_id: &str,
+) -> CoreResult<Vec<BankSideJournalLine>> {
+    let mut stmt = conn.prepare(
+        "SELECT j.id AS journal_id, l.coa_id AS coa_id,
+                j.posted_date AS posted_date,
+                j.narrative AS narrative, l.debit_minor AS debit_minor,
+                l.credit_minor AS credit_minor, l.currency AS currency
+         FROM journals j
+         JOIN journal_lines l ON l.journal_id = j.id
+         JOIN chart_of_accounts a ON a.id = l.coa_id
+         WHERE j.book_id = ?1 AND j.source_type = 'manual'
+           AND j.reversal_of IS NULL AND a.kind = 'asset'",
+    )?;
+    let rows = stmt
+        .query_map(params![book_id], |row| {
+            Ok(BankSideJournalLine {
+                journal_id: row.get("journal_id")?,
+                coa_id: row.get("coa_id")?,
+                posted_date: row.get("posted_date")?,
+                narrative: row.get("narrative")?,
+                debit_minor: row.get("debit_minor")?,
+                credit_minor: row.get("credit_minor")?,
+                currency: row.get("currency")?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// (transaction_id, document_id) pairs the user explicitly rejected — these
 /// must never be re-suggested.
-pub fn rejected_pairs(conn: &Connection, book_id: &str) -> CoreResult<Vec<(String, String)>> {
+pub fn rejected_document_pairs(
+    conn: &Connection,
+    book_id: &str,
+) -> CoreResult<Vec<(String, String)>> {
     let mut stmt = conn.prepare(
         "SELECT transaction_id, document_id FROM recon_matches
          WHERE book_id = ?1 AND state = 'rejected' AND document_id IS NOT NULL",
+    )?;
+    let pairs = stmt
+        .query_map(params![book_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(pairs)
+}
+
+/// (transaction_id, journal_id) pairs the user explicitly rejected — these
+/// must never be re-suggested either.
+pub fn rejected_journal_pairs(
+    conn: &Connection,
+    book_id: &str,
+) -> CoreResult<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT transaction_id, journal_id FROM recon_matches
+         WHERE book_id = ?1 AND state = 'rejected' AND journal_id IS NOT NULL",
     )?;
     let pairs = stmt
         .query_map(params![book_id], |row| Ok((row.get(0)?, row.get(1)?)))?

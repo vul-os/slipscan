@@ -46,6 +46,21 @@ pub fn get(conn: &Connection, id: &str) -> CoreResult<Option<Book>> {
         .optional()?)
 }
 
+/// Set (or clear) the financial lock date: journals may not be posted on or
+/// before this date.
+pub fn set_lock_date(
+    conn: &Connection,
+    id: &str,
+    lock_date: Option<&str>,
+    updated_at: &str,
+) -> CoreResult<()> {
+    conn.execute(
+        "UPDATE books SET financial_lock_date = ?2, updated_at = ?3 WHERE id = ?1",
+        params![id, lock_date, updated_at],
+    )?;
+    Ok(())
+}
+
 pub fn list(conn: &Connection) -> CoreResult<Vec<Book>> {
     let mut stmt = conn.prepare("SELECT * FROM books ORDER BY created_at, id")?;
     let books = stmt

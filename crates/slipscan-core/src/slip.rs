@@ -42,7 +42,9 @@ pub(crate) struct SlipTotals {
 
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct SlipLineItem {
+    /// Kept for future line-item-level journal narratives.
     #[serde(default)]
+    #[allow(dead_code)]
     pub description: Option<String>,
     pub total_minor: i64,
     /// VAT rate in basis points, VAT-inclusive total.
@@ -60,7 +62,9 @@ pub(crate) struct SlipVatLine {
 impl SlipPayload {
     pub(crate) fn parse(payload_json: &str) -> CoreResult<Self> {
         let slip: SlipPayload = serde_json::from_str(payload_json).map_err(|e| {
-            CoreError::Validation(format!("document payload is not a valid slip-v2 result: {e}"))
+            CoreError::Validation(format!(
+                "document payload is not a valid slip-v2 result: {e}"
+            ))
         })?;
         Ok(slip)
     }
@@ -105,7 +109,7 @@ impl SlipPayload {
             let mut groups: Vec<VatGroup> = Vec::new();
             for item in tagged {
                 let rate = item.vat_rate_bps.unwrap_or(0);
-                let vat = vat_portion_of_inclusive(item.total_minor, rate);
+                let vat = crate::vat::vat_from_inclusive(item.total_minor, rate);
                 let base = item.total_minor - vat;
                 match groups.iter_mut().find(|g| g.rate_bps == Some(rate)) {
                     Some(g) => {
@@ -120,6 +124,24 @@ impl SlipPayload {
                 }
             }
             groups.sort_by_key(|g| g.rate_bps);
+            // Per-item rounding can drift a few cents from the VAT figure the
+            // supplier printed. The tax invoice's stated VAT is authoritative
+            // for the input-VAT claim, so reconcile the dominant positive-rate
+            // group to it (base absorbs the delta; the group's gross is kept).
+            if let Some(stated) = self.totals.vat_minor {
+                let derived: i64 = groups.iter().map(|g| g.vat_minor).sum();
+                let delta = stated - derived;
+                if delta != 0 {
+                    if let Some(g) = groups
+                        .iter_mut()
+                        .filter(|g| g.rate_bps.unwrap_or(0) > 0)
+                        .max_by_key(|g| (g.vat_minor, g.rate_bps))
+                    {
+                        g.vat_minor += delta;
+                        g.base_minor -= delta;
+                    }
+                }
+            }
             return groups;
         }
 
@@ -141,34 +163,9 @@ pub(crate) struct VatGroup {
     pub vat_minor: i64,
 }
 
-/// VAT portion of a VAT-inclusive amount at `rate_bps` (rounded half up).
-fn vat_portion_of_inclusive(total_minor: i64, rate_bps: i64) -> i64 {
-    if rate_bps <= 0 {
-        return 0;
-    }
-    let numerator = i128::from(total_minor) * i128::from(rate_bps);
-    let denominator = i128::from(10_000 + rate_bps);
-    let half = denominator / 2;
-    let rounded = if numerator >= 0 {
-        (numerator + half) / denominator
-    } else {
-        (numerator - half) / denominator
-    };
-    rounded as i64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn vat_portion_math() {
-        // R115.00 inclusive at 15% -> R15.00 VAT.
-        assert_eq!(vat_portion_of_inclusive(11_500, 1500), 1_500);
-        assert_eq!(vat_portion_of_inclusive(11_500, 0), 0);
-        // Rounding: 1000 * 1500/11500 = 130.43 -> 130.
-        assert_eq!(vat_portion_of_inclusive(1_000, 1500), 130);
-    }
 
     #[test]
     fn prefers_explicit_vat_breakdown() {
@@ -218,6 +215,51 @@ mod tests {
                     vat_minor: 1_500
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn stated_total_vat_wins_over_per_item_rounding() {
+        // 3 items of 105 minor at 15%: per-item VAT rounds to 3 × 14 = 42,
+        // but the supplier's total-level figure is 41 (315 × 15/115 = 41.08).
+        let slip = SlipPayload::parse(
+            r#"{
+                "totals": {"total_minor": 315, "vat_minor": 41},
+                "line_items": [
+                    {"description": "a", "total_minor": 105, "vat_rate_bps": 1500},
+                    {"description": "b", "total_minor": 105, "vat_rate_bps": 1500},
+                    {"description": "c", "total_minor": 105, "vat_rate_bps": 1500}
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            slip.vat_groups(),
+            vec![VatGroup {
+                rate_bps: Some(1500),
+                base_minor: 274,
+                vat_minor: 41
+            }],
+            "the stated tax-invoice VAT figure is authoritative"
+        );
+
+        // With no positive-rate group, the derived zero stays.
+        let zero = SlipPayload::parse(
+            r#"{
+                "totals": {"total_minor": 200, "vat_minor": 5},
+                "line_items": [
+                    {"description": "bread", "total_minor": 200, "vat_rate_bps": 0}
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            zero.vat_groups(),
+            vec![VatGroup {
+                rate_bps: Some(0),
+                base_minor: 200,
+                vat_minor: 0
+            }]
         );
     }
 

@@ -247,6 +247,13 @@ pub struct NewTransaction {
     pub notes: Option<String>,
     pub category_id: Option<String>,
     pub document_id: Option<String>,
+    /// Disambiguates legitimate identical lines within one import batch
+    /// (same account/date/amount/merchant/description). Importers number
+    /// repeats 0, 1, 2, … so the content-hash dedupe rejects re-imports of
+    /// the same statement without swallowing genuine duplicates. Only used
+    /// when `provider_txn_id` is absent. Defaults to 0.
+    #[serde(default)]
+    pub dedupe_occurrence: u32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -418,10 +425,25 @@ pub struct CoaAccount {
     pub name: String,
     pub kind: CoaKind,
     pub description: Option<String>,
+    /// Fixed ISO-4217 currency for this account; `None` = any currency.
+    /// Multi-currency groundwork — no FX revaluation yet.
+    pub currency: Option<String>,
     pub is_archived: bool,
     pub is_system: bool,
     pub created_at: String,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewCoaAccount {
+    pub book_id: String,
+    pub code: String,
+    pub name: String,
+    pub kind: CoaKind,
+    pub description: Option<String>,
+    /// Fixed ISO-4217 currency; omit for a currency-agnostic account.
+    #[serde(default)]
+    pub currency: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -433,6 +455,9 @@ pub struct Journal {
     pub reference: Option<String>,
     pub source_type: JournalSourceType,
     pub source_id: Option<String>,
+    /// When this journal reverses another, the reversed journal's id.
+    /// Posted journals are never edited — corrections are reversals.
+    pub reversal_of: Option<String>,
     pub created_at: String,
 }
 
@@ -537,28 +562,35 @@ pub struct ReconMatch {
 // Reports
 // ---------------------------------------------------------------------------
 
+/// Spending is grouped per (category, currency): amounts in different
+/// currencies are never summed into one figure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpendingRow {
     pub category_id: Option<String>,
     pub category_name: String,
+    pub currency: String,
     pub total_minor: i64,
 }
 
-/// Spending grouped by calendar month (`YYYY-MM`) and category.
+/// Spending grouped by calendar month (`YYYY-MM`), category, and currency.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MonthlySpendingRow {
     pub month: String,
     pub category_id: Option<String>,
     pub category_name: String,
+    pub currency: String,
     pub total_minor: i64,
 }
 
+/// One trial-balance row: totals per (account, currency). A multi-currency
+/// book yields one row per currency for accounts posted in several.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrialBalanceRow {
     pub coa_id: String,
     pub code: String,
     pub name: String,
     pub kind: CoaKind,
+    pub currency: String,
     pub debit_minor: i64,
     pub credit_minor: i64,
 }
@@ -579,6 +611,10 @@ pub struct IncomeStatement {
     pub book_id: String,
     pub from_date: String,
     pub to_date: String,
+    /// The single currency this statement is computed in (the book's base
+    /// currency). Journal lines in other currencies are excluded — they show
+    /// up per currency on the trial balance instead of being mixed in here.
+    pub currency: String,
     pub income: Vec<IncomeStatementRow>,
     pub expenses: Vec<IncomeStatementRow>,
     pub income_total_minor: i64,
@@ -599,6 +635,38 @@ pub struct Vat201Row {
     pub input_vat_minor: i64,
 }
 
+/// One balance-sheet line: an asset / liability / equity account's balance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BalanceSheetRow {
+    pub coa_id: String,
+    pub code: String,
+    pub name: String,
+    pub kind: CoaKind,
+    /// Natural-side balance: assets debit − credit; liabilities and equity
+    /// credit − debit.
+    pub amount_minor: i64,
+}
+
+/// Balance sheet as of a date. Income/expense movements up to the date are
+/// folded into `retained_earnings_minor` so the statement always balances.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BalanceSheet {
+    pub book_id: String,
+    pub as_of_date: String,
+    /// The single currency this statement is computed in (the book's base
+    /// currency). Lines in other currencies are excluded, not mixed in.
+    pub currency: String,
+    pub assets: Vec<BalanceSheetRow>,
+    pub liabilities: Vec<BalanceSheetRow>,
+    pub equity: Vec<BalanceSheetRow>,
+    /// Accumulated income − expenses up to `as_of_date` (part of equity).
+    pub retained_earnings_minor: i64,
+    pub assets_total_minor: i64,
+    pub liabilities_total_minor: i64,
+    /// Equity rows + retained earnings.
+    pub equity_total_minor: i64,
+}
+
 /// VAT201-style summary for a period: output VAT on supplies, input VAT on
 /// purchases, and the net amount payable to (positive) or refundable by
 /// (negative) the revenue service.
@@ -607,6 +675,9 @@ pub struct Vat201Summary {
     pub book_id: String,
     pub from_date: String,
     pub to_date: String,
+    /// The single currency this return is computed in (the book's base
+    /// currency); VAT-tagged lines in other currencies are excluded.
+    pub currency: String,
     pub rows: Vec<Vat201Row>,
     pub standard_rated_supplies_minor: i64,
     pub zero_rated_supplies_minor: i64,
