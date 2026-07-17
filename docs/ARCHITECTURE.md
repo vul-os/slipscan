@@ -69,6 +69,21 @@ From the legacy brand, kept and refined:
 - Inter for UI, Geist Mono for numbers/amounts/tables
 - Dark and light themes; dark is first-class
 
+## Email connectivity
+
+Inbound email is a first-class ingestion source. One `MailboxConnector` trait, multiple providers — always the **user's own** accounts and (for OAuth) the **user's own app registration**; SlipScan never operates a central OAuth client, relay, or webhook receiver.
+
+| Provider | Sync | Push |
+|---|---|---|
+| Generic IMAP (any host) | UID-cursor polling | **IMAP IDLE** |
+| Gmail | Gmail API `history.list` delta (BYO Google OAuth client, loopback flow) | **Gmail watch → Cloud Pub/Sub *pull* subscription** — pull needs no public endpoint, fits local-first |
+| Outlook / Microsoft 365 | Microsoft Graph delta queries (BYO app registration, device-code flow) | Graph change notifications **only in self-host server mode** (user exposes the endpoint); otherwise delta polling |
+| Proton Mail | via local **Proton Bridge** (IMAP to 127.0.0.1) | IMAP IDLE against the bridge |
+
+- OAuth refresh tokens, client secrets, and app passwords live in the credential vault (below) — write-only, never displayed.
+- Connectors normalise everything into the same document-import pipeline (attachments, receipt-like bodies), with per-mailbox filters (folder/label, sender allowlist).
+- No SlipScan-hosted middleman of any kind; adding a provider must never require our infrastructure.
+
 ## Credential vault (bank / IMAP / API secrets)
 
 Secrets get their own subsystem with **write-only semantics**. Design goals: a copied disk/file yields nothing; software can use secrets; humans can set, replace, and revoke — **never view**.
