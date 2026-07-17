@@ -21,6 +21,9 @@ The 0.1.0 rewrite, in progress: SlipScan rebuilt from the ground up as a fully l
 - **Headless self-host server** (`slipscan-server`) — axum wrapper over the same core services, `/api/v1` operation-per-route, binds `127.0.0.1:7151` by default with LAN bind as explicit opt-in. Guides: [docs/SELFHOST.md](docs/SELFHOST.md), [docs/API.md](docs/API.md).
 - **Documentation set** — getting started, configuration, email, bank adapters, packs, benchmarks, self-host, API, threat model, screenshots, FAQ under `docs/`; root `SECURITY.md` reporting policy.
 
+### Changed
+- **README** rewritten to the VulOS product-repo standard: centered wordmark, Part-of-VulOS banner, badges, hero screenshot, screenshot gallery, standalone quick start, architecture + decentralized-network diagrams, and a full documentation table.
+
 ### Removed
 - **The legacy cloud stack.** The previous implementation — React frontend on Cloudflare Workers with a Supabase backend, including its orgs/billing/hosted-auth concepts — has been removed from the tree; it remains in git history. Cloud concepts do not return: no hosted service, no telemetry, no central server of any kind.
 

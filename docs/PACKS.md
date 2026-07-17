@@ -2,7 +2,7 @@
 
 Good transaction categorisation needs knowledge: that `PNP FAM KENILWORTH` is Pick n Pay and Pick n Pay is groceries. Cloud products learn this from everyone's data on their servers. SlipScan ships that knowledge as **packs** — signed, versioned files containing taxonomies and rules, **never data**. Installing a pack teaches your instance; your transactions teach only your instance.
 
-This is mantra #5: community sharing moves rules, never data.
+This is [mantra #5](ARCHITECTURE.md#non-negotiables-the-mantra): community sharing moves rules, never data.
 
 ## What's in a pack
 
