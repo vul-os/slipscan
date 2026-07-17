@@ -94,7 +94,7 @@ Secrets get their own subsystem with **write-only semantics**. Design goals: a c
 - **Memory hygiene.** Secrets are `zeroize`d on drop, held for the shortest possible scope, excluded from `Debug`/`Display`/logs/error messages by construction (newtype wrappers with redacted impls).
 - **Auditability.** Every vault access (use, set, replace, revoke — never the material) is recorded in the append-only audit log.
 - **Rotation, not editing.** Replacing a credential writes a new version and destroys the old ciphertext; there is no in-place edit path.
-- Threat model and residual risks are documented in `docs/SECURITY.md`.
+- Threat model and residual risks are documented in [THREAT-MODEL.md](THREAT-MODEL.md); vulnerability reporting in [SECURITY.md](../SECURITY.md).
 
 ## Insights, nudges & anonymous peer benchmarks
 
@@ -108,7 +108,7 @@ Target: the full Vault22/22seven experience — nudges, spending insights, peer 
   - Coarse cohort buckets only (region, rough income band, household size) — chosen so every cohort clears a k-anonymity floor; submissions carrying no identifiers, no account, no stable pseudonym.
   - Anonymous transport (relay/onion-style submission, randomized timing); aggregators are community-run and can be anyone — the DP noise means even a malicious aggregator learns nothing about an individual.
   - Default is **off**. Turning it on shows exactly what would be sent, in plain language.
-- Parity North Star: feature-parity matrices vs Xero and Vault22/22seven are tracked in ROADMAP.md; gaps are issues, not surprises.
+- Parity North Star: feature-parity matrices vs Xero and Vault22/22seven are tracked in [ROADMAP.md](../ROADMAP.md); gaps are issues, not surprises.
 
 ## Non-negotiables (the mantra)
 
