@@ -44,6 +44,16 @@ Share the smarts, not the data.
 - [ ] Opt-in, privacy-preserving contribution flow (rules only — never transactions)
 - [ ] Device-to-device sync (your own devices, end-to-end encrypted)
 
+## Phase 4.5 — Insights, nudges & anonymous benchmarks
+
+Vault22/22seven-class intelligence, decentralized (design in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+
+- [ ] Local nudge engine: budget drift, category spikes, subscription & duplicate detection, fee creep, VAT deadlines
+- [ ] Optional OS notifications (local only)
+- [ ] Benchmark packs: signed aggregate-statistics packs; local peer comparison ("you vs households like yours")
+- [ ] Opt-in anonymous contribution: local differential privacy, coarse k-anonymous cohorts, anonymous transport, off by default
+- [ ] **Parity matrices**: tracked feature-by-feature vs Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency) and Vault22/22seven (net worth, goals, nudges, peer comparison) — each gap becomes an issue
+
 ## Phase 5 — Self-host server mode
 
 - [ ] Headless mode: run the core on your own home server / NAS, desktop and mobile as clients
