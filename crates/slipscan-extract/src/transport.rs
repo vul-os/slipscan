@@ -2,7 +2,7 @@
 //!
 //! Providers build an [`HttpRequest`] and hand it to a [`Transport`]. The
 //! real implementation is [`ReqwestTransport`]; tests use the canned
-//! [`mock::MockTransport`]. Requests only ever happen inside
+//! `mock::MockTransport`. Requests only ever happen inside
 //! [`crate::provider::ExtractionProvider::extract`] calls, which the user
 //! explicitly triggers — this crate performs no background network I/O.
 //!

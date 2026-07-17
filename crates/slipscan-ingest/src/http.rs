@@ -94,12 +94,23 @@ impl std::fmt::Debug for HttpRequest {
     }
 }
 
-/// A response body plus status. Bodies are provider API payloads, never
-/// secret by themselves.
-#[derive(Debug, Clone)]
+/// A response body plus status. `Debug` prints only the status and body
+/// length — OAuth token-endpoint responses carry `access_token` /
+/// `refresh_token` material in their bodies, so a `format!("{resp:?}")` in
+/// an error path must never leak them.
+#[derive(Clone)]
 pub struct HttpResponse {
     pub status: u16,
     pub body: Vec<u8>,
+}
+
+impl std::fmt::Debug for HttpResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpResponse")
+            .field("status", &self.status)
+            .field("body_len", &self.body.len())
+            .finish()
+    }
 }
 
 impl HttpResponse {
@@ -308,5 +319,18 @@ mod tests {
         assert!(!dbg.contains("s3cr3t"), "{dbg}");
         assert!(!dbg.contains("token-material"), "{dbg}");
         assert!(dbg.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn response_debug_never_prints_the_body() {
+        // Token-endpoint response bodies carry live OAuth tokens.
+        let resp = HttpResponse {
+            status: 200,
+            body: br#"{"access_token":"live-token","refresh_token":"live-refresh"}"#.to_vec(),
+        };
+        let dbg = format!("{resp:?}");
+        assert!(!dbg.contains("live-token"), "{dbg}");
+        assert!(!dbg.contains("live-refresh"), "{dbg}");
+        assert!(dbg.contains("body_len"));
     }
 }

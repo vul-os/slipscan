@@ -2,12 +2,12 @@
 //!
 //! Three layers:
 //!
-//! * [`store`] — thin trait over the OS keychain (`keyring` crate) with an
+//! * `store` — thin trait over the OS keychain (`keyring` crate) with an
 //!   in-memory mock for tests. The keychain holds exactly one vault item:
 //!   the key-encryption key (KEK). It never touches disk.
-//! * [`string`] — [`SecretString`], the only type secret material travels in:
+//! * `string` — [`SecretString`], the only type secret material travels in:
 //!   zeroized on drop, redacted `Debug`/`Display`, no serde impls.
-//! * [`vault`] — envelope encryption over SQLite. Each secret is sealed with
+//! * `vault` — envelope encryption over SQLite. Each secret is sealed with
 //!   XChaCha20-Poly1305 under a per-machine data-encryption key (DEK); the
 //!   DEK is wrapped by the KEK. Copying the SQLite file off the machine
 //!   yields nothing.

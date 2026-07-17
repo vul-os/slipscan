@@ -5,8 +5,8 @@
 //! anonymous cohort aggregates — there is nowhere in the format to put a
 //! transaction, an amount of yours, or a person.
 //!
-//! * [`format`] — the on-disk pack: `pack.toml` manifest + JSON payload, the
-//!   payload bytes being exactly what gets ed25519-signed.
+//! * [`format`](mod@format) — the on-disk pack: `pack.toml` manifest + JSON
+//!   payload, the payload bytes being exactly what gets ed25519-signed.
 //! * [`model`] — the payload: metadata, taxonomy, rules, VAT hints, and
 //!   benchmark statistics (strict validation, strict semver).
 //! * [`verify`] — signing and verification; signer identity **is** the

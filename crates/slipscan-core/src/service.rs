@@ -106,9 +106,12 @@ const BUSINESS_COA: &[CoaSeed] = &[
     ("6900", "General Expenses", CoaKind::Expense),
 ];
 
-/// Upper bound for a single journal-line amount (10^15 minor units — ten
-/// trillion currency units). Keeps SQLite `SUM()` aggregation and the i128
-/// balance check far away from i64 overflow.
+/// Upper bound for a single journal-line or transaction amount (10^15 minor
+/// units — ten trillion currency units). This is a **per-amount** cap, not a
+/// per-account aggregate invariant: it keeps `abs()` and the i128 balance
+/// check safe and gives SQLite `SUM()` ~9 000 bound-level lines of headroom
+/// per account before its integer aggregation could overflow. Realistic books
+/// stay many orders of magnitude below both limits.
 const MAX_LINE_AMOUNT_MINOR: i64 = 1_000_000_000_000_000;
 
 /// ZA VAT rates: (code, name, rate in basis points).
@@ -209,12 +212,19 @@ impl CoreService {
         if new.name.trim().is_empty() {
             return Err(CoreError::Validation("book name must not be empty".into()));
         }
+        // Normalize the base currency exactly like journal-line currencies —
+        // an un-normalized book currency ("zar") would silently empty every
+        // base-currency report (income statement, balance sheet, VAT201).
+        let currency = match new.currency {
+            Some(raw) => normalize_currency_code(&raw)?,
+            None => "ZAR".to_string(),
+        };
         let now = now_iso();
         let book = Book {
             id: new_id(),
             kind: new.kind,
             name: new.name.trim().to_string(),
-            currency: new.currency.unwrap_or_else(|| "ZAR".to_string()),
+            currency,
             country: new.country,
             locale: "en".to_string(),
             timezone: "UTC".to_string(),
@@ -358,6 +368,19 @@ impl CoreService {
             ));
         }
         let currency = normalize_currency_code(&new.currency)?;
+        // Bound transaction amounts like journal lines: keeps `abs()` (journal
+        // generation, recon scoring) panic-free and SQLite `SUM()` in integer
+        // range for realistic row counts. `checked_abs` rejects i64::MIN.
+        match new.amount_minor.checked_abs() {
+            Some(a) if a <= MAX_LINE_AMOUNT_MINOR => {}
+            _ => {
+                return Err(CoreError::Validation(format!(
+                    "transaction amount {} out of range: |amount| must be at most \
+                     {MAX_LINE_AMOUNT_MINOR} minor units",
+                    new.amount_minor
+                )))
+            }
+        }
 
         let merchant_normalized = new
             .merchant
@@ -470,7 +493,7 @@ impl CoreService {
 
         let now = now_iso();
         let tx = self.conn().unchecked_transaction()?;
-        repo::transaction::set_category(&tx, transaction_id, category_id, &now)?;
+        repo::transaction::set_category(&tx, transaction_id, Some(category_id), &now)?;
         repo::category::insert_correction(
             &tx,
             &ClassificationCorrection {
@@ -502,6 +525,43 @@ impl CoreService {
             "transaction",
             Some(transaction_id),
             "categorize",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Clear a transaction's category (back to Uncategorised). Recorded as a
+    /// classification correction with `new_category_id = None`; the stored
+    /// merchant mapping is left untouched (clearing one transaction is not
+    /// evidence the mapping itself is wrong).
+    pub fn transaction_uncategorize(&self, transaction_id: &str) -> CoreResult<Transaction> {
+        let before = self.transaction_get(transaction_id)?;
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::transaction::set_category(&tx, transaction_id, None, &now)?;
+        repo::category::insert_correction(
+            &tx,
+            &ClassificationCorrection {
+                id: new_id(),
+                book_id: before.book_id.clone(),
+                transaction_id: transaction_id.to_string(),
+                merchant_normalized: before.merchant_normalized.clone(),
+                old_category_id: before.category_id.clone(),
+                new_category_id: None,
+                created_at: now.clone(),
+            },
+        )?;
+        let mut after = before.clone();
+        after.category_id = None;
+        after.updated_at = now;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "transaction",
+            Some(transaction_id),
+            "uncategorize",
             Some(serde_json::to_string(&before)?),
             Some(serde_json::to_string(&after)?),
         )?;
@@ -584,6 +644,9 @@ impl CoreService {
                 "category does not belong to this book".into(),
             ));
         }
+        // Budget spend is matched against transactions by currency; both
+        // sides must be normalized or the comparison silently never matches.
+        let currency = normalize_currency_code(&upsert.currency)?;
         let tx = self.conn().unchecked_transaction()?;
         let budget = repo::budget::upsert(
             &tx,
@@ -591,7 +654,7 @@ impl CoreService {
             &upsert.category_id,
             &upsert.month,
             upsert.amount_minor,
-            &upsert.currency,
+            &currency,
             upsert.rollover,
         )?;
         self.emit_audit(
@@ -1300,6 +1363,14 @@ impl CoreService {
     /// * inflow: debit bank (gross), credit income (net, `output_base`),
     ///   credit VAT output control (`output_vat`)
     ///
+    /// The VAT *side* (input vs output) follows the counter account's kind,
+    /// not the cash direction: an inflow whose counter account is an expense
+    /// account is a purchase refund / supplier credit note and is booked as a
+    /// negative **input**-VAT adjustment (credit expense + credit VAT input
+    /// control), never as a sale — so the VAT201 supply/turnover boxes are
+    /// not inflated. Symmetrically, an outflow against an income account
+    /// (customer refund) reduces output VAT rather than inflating input VAT.
+    ///
     /// Accounts come from `coa_map` (account / category) with seed-code
     /// fallbacks. One journal per transaction, enforced.
     pub fn journal_generate_for_transaction(
@@ -1384,42 +1455,47 @@ impl CoreService {
             }
             Some(rate) => {
                 let (net, vat_minor) = split_inclusive(gross, rate.rate_bps);
+                // Input side (purchases) vs output side (supplies) follows
+                // the counter account's kind: expense accounts are always
+                // the purchase side even when the cash flows *in* (purchase
+                // refund / supplier credit note), and income accounts are
+                // always the supply side even when cash flows *out*
+                // (customer refund). Other kinds fall back to cash
+                // direction.
+                let input_side = match counter.kind {
+                    CoaKind::Expense => true,
+                    CoaKind::Income => false,
+                    _ => is_outflow,
+                };
+                let (base_role, vat_role, vat_control_code) = if input_side {
+                    (VatRole::InputBase, VatRole::InputVat, COA_CODE_VAT_INPUT)
+                } else {
+                    (VatRole::OutputBase, VatRole::OutputVat, COA_CODE_VAT_OUTPUT)
+                };
                 if is_outflow {
-                    lines.push(line(
-                        &counter,
-                        net,
-                        0,
-                        Some(&rate),
-                        Some(VatRole::InputBase),
-                    ));
+                    lines.push(line(&counter, net, 0, Some(&rate), Some(base_role)));
                     if vat_minor > 0 {
-                        let vat_input = self.coa_by_code(&book.id, COA_CODE_VAT_INPUT)?;
+                        let vat_control = self.coa_by_code(&book.id, vat_control_code)?;
                         lines.push(line(
-                            &vat_input,
+                            &vat_control,
                             vat_minor,
                             0,
                             Some(&rate),
-                            Some(VatRole::InputVat),
+                            Some(vat_role),
                         ));
                     }
                     lines.push(line(&bank, 0, gross, None, None));
                 } else {
                     lines.push(line(&bank, gross, 0, None, None));
-                    lines.push(line(
-                        &counter,
-                        0,
-                        net,
-                        Some(&rate),
-                        Some(VatRole::OutputBase),
-                    ));
+                    lines.push(line(&counter, 0, net, Some(&rate), Some(base_role)));
                     if vat_minor > 0 {
-                        let vat_output = self.coa_by_code(&book.id, COA_CODE_VAT_OUTPUT)?;
+                        let vat_control = self.coa_by_code(&book.id, vat_control_code)?;
                         lines.push(line(
-                            &vat_output,
+                            &vat_control,
                             0,
                             vat_minor,
                             Some(&rate),
-                            Some(VatRole::OutputVat),
+                            Some(vat_role),
                         ));
                     }
                 }
@@ -1579,7 +1655,8 @@ impl CoreService {
     /// documents (slips, via their extraction) and posted manual journals
     /// (ledger side), scored by amount, date proximity, and merchant
     /// similarity. High-confidence matches are recorded as `auto`, the rest
-    /// as `suggested`; both wait for [`recon_confirm`] / [`recon_reject`].
+    /// as `suggested`; both wait for [`Self::recon_confirm`] /
+    /// [`Self::recon_reject`].
     ///
     /// Idempotent: actively matched transactions/documents/journals and
     /// user-rejected pairs are never re-suggested. Returns all open matches.
@@ -1626,7 +1703,14 @@ impl CoreService {
                         .purchase_date()
                         .or_else(|| Some(created_at.chars().take(10).collect())),
                     merchant: slip.merchant_name().map(str::to_string),
-                    currency: slip.currency.clone(),
+                    // Extractions may return mis-cased codes ("zar");
+                    // normalize so comparison against the (normalized)
+                    // transaction currency works. Un-normalizable strings
+                    // are kept verbatim — they must never match anything.
+                    currency: slip
+                        .currency
+                        .clone()
+                        .map(|c| normalize_currency_code(&c).unwrap_or(c)),
                 })
             })
             .collect();
@@ -2003,7 +2087,9 @@ impl CoreService {
     /// Returns `Ok(None)` when the key is unset (or its keychain entry is
     /// gone) and an error when the key holds a plain, non-secret value —
     /// plain settings are not credentials and must not be laundered into
-    /// secret handling. Never exposed over IPC/HTTP.
+    /// secret handling. Never exposed over IPC/HTTP. Every access is
+    /// recorded in the audit log (metadata only, never material) — same
+    /// posture as the envelope vault's `use_with`.
     pub fn settings_use_secret<R>(
         &self,
         key: &str,
@@ -2015,7 +2101,17 @@ impl CoreService {
                 Some(entry) => match self.secrets.get_secret(&entry)? {
                     Some(material) => {
                         let secret = SecretString::new(material);
-                        Ok(Some(f(&secret)))
+                        let result = f(&secret);
+                        self.emit_audit(
+                            self.conn(),
+                            None,
+                            "settings",
+                            Some(key),
+                            "use_secret",
+                            None,
+                            None,
+                        )?;
+                        Ok(Some(result))
                     }
                     None => Ok(None),
                 },
@@ -2146,6 +2242,32 @@ mod tests {
         assert!(audit
             .iter()
             .any(|a| a.entity_type == "book" && a.action == "create"));
+    }
+
+    #[test]
+    fn book_create_normalizes_lowercase_currency() {
+        // Regression: an un-normalized book currency ("zar") silently emptied
+        // every base-currency report (they filter journal lines by
+        // l.currency = book.currency, and lines are always uppercased).
+        let svc = svc();
+        let book = svc
+            .book_create(NewBook {
+                name: "Lower".into(),
+                kind: BookKind::Business,
+                currency: Some("zar".into()),
+                country: Some("ZA".into()),
+            })
+            .unwrap();
+        assert_eq!(book.currency, "ZAR");
+        assert!(matches!(
+            svc.book_create(NewBook {
+                name: "Bad".into(),
+                kind: BookKind::Personal,
+                currency: Some("z!r".into()),
+                country: None,
+            }),
+            Err(CoreError::Validation(_))
+        ));
     }
 
     #[test]
@@ -2358,6 +2480,64 @@ mod tests {
     }
 
     #[test]
+    fn transaction_create_bounds_amounts() {
+        // Regression: unbounded transaction amounts (incl. i64::MIN, whose
+        // abs() overflows) poisoned journal generation, recon scoring, and
+        // SQLite SUM() in the spending report.
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+
+        let mut min = make_txn(&svc, &book, &account);
+        min.amount_minor = i64::MIN;
+        assert!(matches!(
+            svc.transaction_create(min),
+            Err(CoreError::Validation(_))
+        ));
+
+        let mut huge = make_txn(&svc, &book, &account);
+        huge.amount_minor = MAX_LINE_AMOUNT_MINOR + 1;
+        huge.posted_date = "2026-07-02".into();
+        assert!(matches!(
+            svc.transaction_create(huge),
+            Err(CoreError::Validation(_))
+        ));
+
+        // The boundary itself is accepted, in both directions.
+        let mut at_bound = make_txn(&svc, &book, &account);
+        at_bound.amount_minor = -MAX_LINE_AMOUNT_MINOR;
+        at_bound.posted_date = "2026-07-03".into();
+        svc.transaction_create(at_bound).unwrap();
+    }
+
+    #[test]
+    fn transaction_uncategorize_clears_category_and_records_correction() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let cat = make_category(&svc, &book, "Groceries");
+        let txn = svc
+            .transaction_create(make_txn(&svc, &book, &account))
+            .unwrap();
+        svc.transaction_categorize(&txn.id, &cat.id).unwrap();
+
+        let cleared = svc.transaction_uncategorize(&txn.id).unwrap();
+        assert_eq!(cleared.category_id, None);
+        assert_eq!(
+            svc.transaction_get(&txn.id).unwrap().category_id,
+            None,
+            "clearing must persist"
+        );
+
+        let corrections = repo::category::list_corrections(svc.conn(), &book.id).unwrap();
+        let last = corrections
+            .iter()
+            .find(|c| c.new_category_id.is_none())
+            .expect("uncategorize records a correction with no new category");
+        assert_eq!(last.old_category_id.as_deref(), Some(cat.id.as_str()));
+    }
+
+    #[test]
     fn transaction_categorize_rejects_cross_book_category() {
         let svc = svc();
         let book = make_book(&svc);
@@ -2483,6 +2663,37 @@ mod tests {
         assert_eq!(status[0].budget_minor, 600_000);
         assert_eq!(status[0].spent_minor, 150_000);
         assert_eq!(status[0].remaining_minor, 450_000);
+    }
+
+    #[test]
+    fn budget_upsert_normalizes_currency_for_spend_matching() {
+        // Regression: a budget saved with currency "zar" never matched any
+        // (normalized, "ZAR") transaction — spent_minor stayed 0 forever.
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let cat = make_category(&svc, &book, "Groceries");
+        let budget = svc
+            .budget_upsert(BudgetUpsert {
+                book_id: book.id.clone(),
+                category_id: cat.id.clone(),
+                month: "2026-07".into(),
+                amount_minor: 100_000,
+                currency: "zar".into(),
+                rollover: false,
+            })
+            .unwrap();
+        assert_eq!(budget.currency, "ZAR");
+
+        let mut spend = make_txn(&svc, &book, &account);
+        spend.category_id = Some(cat.id.clone());
+        spend.amount_minor = -25_000;
+        svc.transaction_create(spend).unwrap();
+
+        let status = svc.budget_status(&book.id, "2026-07").unwrap();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].spent_minor, 25_000);
+        assert_eq!(status[0].remaining_minor, 75_000);
     }
 
     #[test]
@@ -3559,6 +3770,67 @@ mod tests {
     }
 
     #[test]
+    fn purchase_refund_books_input_vat_adjustment_not_a_sale() {
+        // Regression: a supplier refund (inflow whose counter account is an
+        // expense) was booked as a sale, inflating the VAT201 supply and
+        // output-VAT boxes even though net VAT was right.
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let rates = svc.vat_rate_list(&book.id).unwrap();
+        let std = rate(&rates, "STD");
+        let account = make_account(&svc, &book);
+        let cat = make_category(&svc, &book, "Supplies");
+        svc.coa_map_set(
+            &book.id,
+            CoaMapEntity::Category,
+            &cat.id,
+            &by_code(&coa, "6450").id,
+        )
+        .unwrap();
+
+        // R115.00 purchase, then its R115.00 refund — both STD 15%.
+        let mut purchase = make_txn(&svc, &book, &account);
+        purchase.amount_minor = -11_500;
+        purchase.category_id = Some(cat.id.clone());
+        let purchase = svc.transaction_create(purchase).unwrap();
+        svc.journal_generate_for_transaction(&purchase.id, Some(&std.id))
+            .unwrap();
+
+        let mut refund = make_txn(&svc, &book, &account);
+        refund.amount_minor = 11_500;
+        refund.category_id = Some(cat.id.clone());
+        refund.posted_date = "2026-07-05".into();
+        let refund = svc.transaction_create(refund).unwrap();
+        let posted = svc
+            .journal_generate_for_transaction(&refund.id, Some(&std.id))
+            .unwrap();
+
+        // Refund journal: debit bank, credit expense (input base), credit
+        // VAT *input* control — never the output side.
+        assert_eq!(posted.lines.len(), 3);
+        assert_eq!(posted.lines[0].debit_minor, 11_500); // bank
+        let base = &posted.lines[1];
+        assert_eq!(base.coa_id, by_code(&coa, "6450").id);
+        assert_eq!(base.credit_minor, 10_000);
+        assert_eq!(base.vat_role, Some(VatRole::InputBase));
+        let vat = &posted.lines[2];
+        assert_eq!(vat.coa_id, by_code(&coa, "1400").id); // VAT Input Control
+        assert_eq!(vat.credit_minor, 1_500);
+        assert_eq!(vat.vat_role, Some(VatRole::InputVat));
+
+        // VAT201: the supply/turnover boxes must not be inflated — the
+        // purchase and its refund cancel on the *input* side.
+        let vat201 = svc
+            .report_vat201(&book.id, "2026-07-01", "2026-07-31")
+            .unwrap();
+        assert_eq!(vat201.output_vat_minor, 0);
+        assert_eq!(vat201.standard_rated_supplies_minor, 0);
+        assert_eq!(vat201.input_vat_minor, 0);
+        assert_eq!(vat201.net_vat_minor, 0);
+    }
+
+    #[test]
     fn generate_document_journal_splits_vat_by_rate() {
         let svc = svc();
         let book = make_business(&svc);
@@ -3913,6 +4185,38 @@ mod tests {
     }
 
     #[test]
+    fn recon_never_suggests_reversed_journals() {
+        // Regression: a journal that HAS a reversal (net ledger effect zero)
+        // was still suggested as a match for a real bank movement.
+        let svc = svc();
+        let book = make_book(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let account = make_account(&svc, &book);
+
+        let mut journal = manual(
+            &book,
+            "2026-07-01",
+            vec![
+                jl(by_code(&coa, "6000"), 12_345, 0),
+                jl(by_code(&coa, "1000"), 0, 12_345),
+            ],
+        );
+        journal.narrative = Some("Pick n Pay".into());
+        let posted = svc.journal_post(journal).unwrap();
+        svc.journal_reverse(&posted.journal.id, None, None).unwrap();
+
+        let mut new = make_txn(&svc, &book, &account);
+        new.amount_minor = -12_345;
+        new.posted_date = "2026-07-02".into();
+        svc.transaction_create(new).unwrap();
+
+        assert!(
+            svc.recon_suggest(&book.id).unwrap().is_empty(),
+            "a reversed (cancelled) journal must never be suggested"
+        );
+    }
+
+    #[test]
     fn recon_only_matches_the_statements_own_bank_account_lines() {
         let svc = svc();
         let book = make_business(&svc);
@@ -3975,6 +4279,32 @@ mod tests {
         refund.posted_date = "2026-07-01".into();
         svc.transaction_create(refund).unwrap();
         assert!(svc.recon_suggest(&book.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn recon_normalizes_mis_cased_slip_currency() {
+        // Regression: a slip extracted with `"currency": "zar"` never matched
+        // an otherwise perfect "ZAR" transaction.
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let doc = slip_doc(
+            &svc,
+            &book,
+            "r-lowercase",
+            r#"{"merchant": {"name": "Pick n Pay"},
+                "purchased_at": "2026-07-01T10:00:00Z",
+                "currency": "zar",
+                "totals": {"total_minor": 12345}}"#,
+        );
+        let txn = svc
+            .transaction_create(make_txn(&svc, &book, &account))
+            .unwrap();
+
+        let matches = svc.recon_suggest(&book.id).unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].transaction_id, txn.id);
+        assert_eq!(matches[0].document_id.as_deref(), Some(doc.id.as_str()));
     }
 
     #[test]

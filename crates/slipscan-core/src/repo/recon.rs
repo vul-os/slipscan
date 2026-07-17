@@ -152,6 +152,10 @@ pub struct BankSideJournalLine {
 
 /// Manual journals' lines on asset accounts — the ledger side of bank
 /// reconciliation (statement line ↔ posted journal).
+///
+/// Excludes journals that *are* reversals and journals that *have been*
+/// reversed: a reversed journal pair nets to zero in the ledger, so matching
+/// a real bank movement against it would leave the movement unexplained.
 pub fn bank_side_journal_lines(
     conn: &Connection,
     book_id: &str,
@@ -165,7 +169,10 @@ pub fn bank_side_journal_lines(
          JOIN journal_lines l ON l.journal_id = j.id
          JOIN chart_of_accounts a ON a.id = l.coa_id
          WHERE j.book_id = ?1 AND j.source_type = 'manual'
-           AND j.reversal_of IS NULL AND a.kind = 'asset'",
+           AND j.reversal_of IS NULL AND a.kind = 'asset'
+           AND NOT EXISTS (
+               SELECT 1 FROM journals r WHERE r.reversal_of = j.id
+           )",
     )?;
     let rows = stmt
         .query_map(params![book_id], |row| {

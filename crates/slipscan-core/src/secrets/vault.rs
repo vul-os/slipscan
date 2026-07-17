@@ -56,7 +56,7 @@ pub struct VaultSecretMeta {
     pub name: String,
     /// Rotation counter; starts at 1, bumped by [`Vault::replace`].
     pub version: i64,
-    /// First [`FINGERPRINT_HEX_LEN`] hex chars of a domain-separated
+    /// First `FINGERPRINT_HEX_LEN` hex chars of a domain-separated
     /// SHA-256 over (name, material) — enough to tell "did it change",
     /// never enough to recover anything.
     pub fingerprint: String,

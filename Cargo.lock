@@ -2029,6 +2029,7 @@ dependencies = [
  "slipscan-server",
  "tempfile",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]

@@ -146,7 +146,7 @@ pub fn list(
 pub fn set_category(
     conn: &Connection,
     id: &str,
-    category_id: &str,
+    category_id: Option<&str>,
     updated_at: &str,
 ) -> CoreResult<()> {
     conn.execute(

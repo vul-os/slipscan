@@ -540,6 +540,15 @@ async fn settings_set(
     Json(req): Json<SettingsSetReq>,
 ) -> ApiResult<OkResp> {
     reject_reserved_settings_key(&req.key)?;
+    // Secret material never transits the wire in either direction: the
+    // server does no TLS, so accepting `secret: true` here would carry raw
+    // credentials over plaintext HTTP. Secrets are set locally (CLI prompt /
+    // desktop IPC) — same contract as the vault routes below.
+    if req.secret {
+        return Err(ApiError::forbidden(
+            "secret settings are set locally (CLI / desktop app), never over HTTP",
+        ));
+    }
     s.service()?
         .settings_set(&req.key, &req.value, req.secret)?;
     Ok(Json(OK))
@@ -907,19 +916,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn secret_settings_are_write_only_over_http() {
-        let app = open_app();
-        // Store a secret via the settings API…
+    async fn secret_settings_never_transit_http() {
+        // A secret stored locally (CLI / desktop IPC path)…
+        let state = AppState::new(svc(), None);
+        state
+            .service()
+            .unwrap()
+            .settings_set("llm.api_key", "sk-super-secret", true)
+            .unwrap();
+        let app = app(state);
+
+        // Writing secret material over HTTP is rejected outright — the
+        // server does no TLS, so raw credentials must never ride a request
+        // body (regression: settings_set used to accept `secret: true`).
         let (status, body) = call(
             &app,
             post_req(
                 "/api/v1/settings_set",
-                json!({"key": "llm.api_key", "value": "sk-super-secret", "secret": true}),
+                json!({"key": "llm.api_key2", "value": "sk-other-secret", "secret": true}),
                 None,
             ),
         )
         .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
 
         // …and it must never be readable back: no GET-for-display, ever
         // (ARCHITECTURE.md credential vault: write-only semantics).

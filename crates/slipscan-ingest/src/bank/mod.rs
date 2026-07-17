@@ -105,6 +105,13 @@ pub trait BankAdapter {
 pub struct StatementImportOutcome {
     pub imported: Vec<Transaction>,
     pub duplicates: usize,
+    /// Subset of `duplicates` deduped by **content hash** (no provider id)
+    /// against transactions from an *earlier* import. These are ambiguous:
+    /// usually a re-imported statement line, but possibly a genuine
+    /// identical transaction arriving in a separate batch (see the
+    /// cross-batch caveat on [`import_statement_lines`]). Callers should
+    /// surface this count so the user can review.
+    pub content_duplicates: usize,
 }
 
 /// Feed statement lines into the core transaction pipeline. Duplicates
@@ -115,6 +122,12 @@ pub struct StatementImportOutcome {
 /// (date, amount, currency, description) tuple within the batch, so two
 /// genuine identical purchases in one statement both import while a
 /// re-import of the same statement still dedupes both.
+///
+/// **Cross-batch caveat**: the occurrence numbering is per call. A genuine
+/// identical no-provider-id transaction that arrives in a *separate* batch
+/// is indistinguishable from a re-imported line and is deduped (counted in
+/// [`StatementImportOutcome::content_duplicates`], never silently ignored).
+/// Re-importing one batch containing both lines recovers the second one.
 pub fn import_statement_lines(
     svc: &CoreService,
     book_id: &str,
@@ -128,6 +141,7 @@ pub fn import_statement_lines(
         std::collections::HashMap::new();
     for line in lines {
         let currency = line.currency.unwrap_or_else(|| account.currency.clone());
+        let content_hashed = line.provider_txn_id.is_none();
         let dedupe_occurrence = if line.provider_txn_id.is_none() {
             let counter = occurrences
                 .entry((
@@ -160,7 +174,12 @@ pub fn import_statement_lines(
         };
         match svc.transaction_create(new) {
             Ok(txn) => outcome.imported.push(txn),
-            Err(CoreError::DuplicateTransaction { .. }) => outcome.duplicates += 1,
+            Err(CoreError::DuplicateTransaction { .. }) => {
+                outcome.duplicates += 1;
+                if content_hashed {
+                    outcome.content_duplicates += 1;
+                }
+            }
             Err(e) => return Err(e.into()),
         }
     }
@@ -391,6 +410,40 @@ mod tests {
         .unwrap();
         assert!(again.imported.is_empty());
         assert_eq!(again.duplicates, 3);
+    }
+
+    #[test]
+    fn statement_import_surfaces_cross_batch_content_duplicates() {
+        // Regression for the cross-batch caveat: a genuine identical
+        // no-provider-id line arriving in a *separate* batch is deduped, but
+        // it must be surfaced via `content_duplicates` — never silently
+        // folded into plain duplicate counting.
+        let (svc, book_id, account_id) = svc_with_account();
+        let coffee = vec![line("2026-06-02", "COFFEE SHOP", -4_500, None)];
+        let first = import_statement_lines(
+            &svc,
+            &book_id,
+            &account_id,
+            TransactionSource::Import,
+            coffee.clone(),
+        )
+        .unwrap();
+        assert_eq!(first.imported.len(), 1);
+
+        let second = import_statement_lines(
+            &svc,
+            &book_id,
+            &account_id,
+            TransactionSource::Import,
+            coffee,
+        )
+        .unwrap();
+        assert!(second.imported.is_empty());
+        assert_eq!(second.duplicates, 1);
+        assert_eq!(
+            second.content_duplicates, 1,
+            "ambiguous cross-batch dedupe must be reported to the caller"
+        );
     }
 
     struct FixtureAdapter(Vec<StatementLine>);
