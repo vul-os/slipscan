@@ -96,6 +96,20 @@ Secrets get their own subsystem with **write-only semantics**. Design goals: a c
 - **Rotation, not editing.** Replacing a credential writes a new version and destroys the old ciphertext; there is no in-place edit path.
 - Threat model and residual risks are documented in `docs/SECURITY.md`.
 
+## Insights, nudges & anonymous peer benchmarks
+
+Target: the full Vault22/22seven experience — nudges, spending insights, peer comparison — without anyone learning who you are.
+
+- **Nudges are 100% local.** A rules + stats engine over your own data: budget drift, category spikes vs your own history, recurring-subscription detection, duplicate charges, bank-fee creep, VAT deadlines, unreviewed slips. Nudges surface in-app (and optional OS notifications); nothing leaves the machine.
+- **Peer comparison via benchmark packs.** Community-published, signed packs containing aggregate statistics only (e.g. "median groceries spend, ZA, household 2, income band C"). Comparing yourself = downloading a pack and computing locally — **reading is perfectly private**.
+- **Contributing is opt-in, anonymous, and lossy by design:**
+  - Only category-level aggregates for a period — never transactions, merchants, or free text.
+  - **Local differential privacy**: calibrated noise is added on-device before anything leaves it.
+  - Coarse cohort buckets only (region, rough income band, household size) — chosen so every cohort clears a k-anonymity floor; submissions carrying no identifiers, no account, no stable pseudonym.
+  - Anonymous transport (relay/onion-style submission, randomized timing); aggregators are community-run and can be anyone — the DP noise means even a malicious aggregator learns nothing about an individual.
+  - Default is **off**. Turning it on shows exactly what would be sent, in plain language.
+- Parity North Star: feature-parity matrices vs Xero and Vault22/22seven are tracked in ROADMAP.md; gaps are issues, not surprises.
+
 ## Non-negotiables (the mantra)
 
 1. **No telemetry. No analytics. No default network calls.** The app must be fully functional offline.
