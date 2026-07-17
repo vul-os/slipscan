@@ -26,6 +26,9 @@ import type {
   TransactionListQuery,
   TrialBalance,
   VatSummary,
+  VaultCredentialMeta,
+  VaultReplaceRequest,
+  VaultSetRequest,
 } from "./types";
 
 const BOOK_ID = "0197a1b0-0000-7000-8000-000000000001";
@@ -450,6 +453,38 @@ let settings: Settings = {
   ],
 };
 
+// Vault mock: metadata only — the secret is hashed into a fingerprint and
+// discarded, mirroring the write-only contract of the real vault.
+const vaultEntries: VaultCredentialMeta[] = [
+  {
+    name: "imap.password.fastmail",
+    label: "Fastmail app password",
+    version: 2,
+    fingerprint: "9f31c2ab",
+    created_at: "2026-05-02T09:12:00Z",
+    rotated_at: "2026-06-20T07:45:00Z",
+    last_used_at: "2026-07-17T05:30:00Z",
+  },
+  {
+    name: "scraper.za-fnb",
+    label: "FNB scraper login",
+    version: 1,
+    fingerprint: "4be80d17",
+    created_at: "2026-04-11T16:03:00Z",
+    rotated_at: null,
+    last_used_at: "2026-07-17T05:31:00Z",
+  },
+];
+
+/** Non-cryptographic stand-in for the real fingerprint (mock only). */
+function mockFingerprint(name: string, secret: string): string {
+  let h = 0x811c9dc5;
+  for (const c of `${name}${secret}`) {
+    h = Math.imul(h ^ c.codePointAt(0)!, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
 // ---------------------------------------------------------------------------
 // mock service surface — same names/shapes as the core services
 // ---------------------------------------------------------------------------
@@ -734,6 +769,46 @@ export const mockApi = {
   settings_set: async (q: { settings: Settings }): Promise<Settings> => {
     settings = clone(q.settings);
     return clone(settings);
+  },
+
+  vault_list: async (): Promise<VaultCredentialMeta[]> => clone(vaultEntries),
+
+  vault_set: async (q: VaultSetRequest): Promise<VaultCredentialMeta> => {
+    if (!q.secret) throw new Error("secret must not be empty");
+    if (vaultEntries.some((e) => e.name === q.name))
+      throw new Error(
+        `vault secret "${q.name}" already exists; use replace to rotate it`,
+      );
+    const meta: VaultCredentialMeta = {
+      name: q.name,
+      label: q.label?.trim() || null,
+      version: 1,
+      fingerprint: mockFingerprint(q.name, q.secret),
+      created_at: new Date().toISOString(),
+      rotated_at: null,
+      last_used_at: null,
+    };
+    vaultEntries.push(meta);
+    return clone(meta);
+  },
+
+  vault_replace: async (
+    q: VaultReplaceRequest,
+  ): Promise<VaultCredentialMeta> => {
+    if (!q.secret) throw new Error("secret must not be empty");
+    const entry = vaultEntries.find((e) => e.name === q.name);
+    if (!entry) throw new Error(`no credential named "${q.name}"`);
+    entry.version += 1;
+    entry.fingerprint = mockFingerprint(q.name, q.secret);
+    entry.rotated_at = new Date().toISOString();
+    return clone(entry);
+  },
+
+  vault_revoke: async (q: { name: string }): Promise<null> => {
+    const i = vaultEntries.findIndex((e) => e.name === q.name);
+    if (i === -1) throw new Error(`no credential named "${q.name}"`);
+    vaultEntries.splice(i, 1);
+    return null;
   },
 };
 

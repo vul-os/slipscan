@@ -30,6 +30,9 @@ import type {
   TransactionListQuery,
   TrialBalance,
   VatSummary,
+  VaultCredentialMeta,
+  VaultReplaceRequest,
+  VaultSetRequest,
 } from "./types";
 
 export const isTauri: boolean =
@@ -37,6 +40,12 @@ export const isTauri: boolean =
 
 /** True once any call has fallen back to mock data while under Tauri. */
 export let usedMockFallback = false;
+
+/** True only for "this command is not registered at all" errors — real
+ * domain errors (validation, not-found, unbalanced journal) must surface. */
+function isCommandMissing(command: string, err: unknown): boolean {
+  return String(err).includes(`Command ${command} not found`);
+}
 
 async function call<T>(
   command: string,
@@ -47,7 +56,8 @@ async function call<T>(
   try {
     return await invoke<T>(command, args);
   } catch (err) {
-    // Core not wired yet (or command missing): keep the shell usable.
+    if (!isCommandMissing(command, err)) throw err;
+    // Command not wired into src-tauri yet: keep the shell usable.
     usedMockFallback = true;
     console.warn(`[api] ${command} unavailable, using mock data:`, err);
     return mock();
@@ -141,6 +151,20 @@ export const api = {
 
   settingsSet: (q: { settings: Settings }): Promise<Settings> =>
     call("settings_set", { query: q }, () => mockApi.settings_set(q)),
+
+  // -- credential vault: write-only, metadata comes back, secrets never do --
+
+  vaultList: (): Promise<VaultCredentialMeta[]> =>
+    call("vault_list", {}, mockApi.vault_list),
+
+  vaultSet: (q: VaultSetRequest): Promise<VaultCredentialMeta> =>
+    call("vault_set", { query: q }, () => mockApi.vault_set(q)),
+
+  vaultReplace: (q: VaultReplaceRequest): Promise<VaultCredentialMeta> =>
+    call("vault_replace", { query: q }, () => mockApi.vault_replace(q)),
+
+  vaultRevoke: (q: { name: string }): Promise<null> =>
+    call("vault_revoke", { query: q }, () => mockApi.vault_revoke(q)),
 };
 
 export type Api = typeof api;

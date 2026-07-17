@@ -396,6 +396,37 @@ export interface Settings {
 }
 
 // ---------------------------------------------------------------------------
+// credential vault — write-only. IPC exposes METADATA ONLY: there is no
+// command that returns secret material, and no type here may ever carry it.
+// ---------------------------------------------------------------------------
+
+export interface VaultCredentialMeta {
+  /** Entry name, e.g. `imap.password.fastmail`. */
+  name: string;
+  /** Optional human label shown in the UI. */
+  label: string | null;
+  /** Rotation counter; starts at 1, bumped on replace. */
+  version: number;
+  /** Short non-reversible fingerprint — "did it change", never the value. */
+  fingerprint: string;
+  created_at: string;
+  rotated_at: string | null;
+  last_used_at: string | null;
+}
+
+/** Write-only input: the secret goes in and never comes back out. */
+export interface VaultSetRequest {
+  name: string;
+  label?: string;
+  secret: string;
+}
+
+export interface VaultReplaceRequest {
+  name: string;
+  secret: string;
+}
+
+// ---------------------------------------------------------------------------
 // misc
 // ---------------------------------------------------------------------------
 

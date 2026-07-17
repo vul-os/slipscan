@@ -6,7 +6,6 @@
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
   import Money from "../lib/components/Money.svelte";
-  import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
 
   let search = $state("");
@@ -59,8 +58,22 @@
 
   const accountName = (id: string) =>
     accounts.find((a) => a.id === id)?.name ?? "—";
-  const category = (id: string | null) =>
-    categories.find((c) => c.id === id) ?? null;
+
+  let categorizeError = $state<string | null>(null);
+
+  async function categorize(tx: Transaction, categoryId: string) {
+    if (!categoryId || categoryId === tx.category_id) return;
+    categorizeError = null;
+    try {
+      const updated = await api.transactionCategorize({
+        transaction_id: tx.id,
+        category_id: categoryId,
+      });
+      transactions = transactions.map((t) => (t.id === tx.id ? updated : t));
+    } catch (err) {
+      categorizeError = String(err);
+    }
+  }
 
   function clearFilters() {
     search = "";
@@ -125,6 +138,15 @@
   </span>
 </div>
 
+{#if categorizeError}
+  <p
+    class="mb-3 flex items-center gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+  >
+    <Icon name="alert-circle" size={13} />
+    {categorizeError}
+  </p>
+{/if}
+
 <div class="card overflow-hidden">
   {#if loading}
     <Skeleton rows={10} />
@@ -163,7 +185,6 @@
       </thead>
       <tbody>
         {#each filtered as tx (tx.id)}
-          {@const cat = category(tx.category_id)}
           <tr class="transition-colors hover:bg-sunken/50">
             <td class="td num whitespace-nowrap text-t2"
               >{fmtDate(tx.posted_at)}</td
@@ -180,11 +201,19 @@
             </td>
             <td class="td truncate text-t2">{accountName(tx.account_id)}</td>
             <td class="td">
-              {#if cat}
-                <span class="text-t2">{cat.icon} {cat.name}</span>
-              {:else}
-                <Badge tone="warning" label="Uncategorised" />
-              {/if}
+              <select
+                class="input h-7 w-full px-1.5 text-[12px] {tx.category_id
+                  ? 'text-t2'
+                  : 'text-warning'}"
+                aria-label="Categorise transaction"
+                value={tx.category_id ?? ""}
+                onchange={(e) => categorize(tx, e.currentTarget.value)}
+              >
+                <option value="" disabled>Categorise…</option>
+                {#each categories as c (c.id)}
+                  <option value={c.id}>{c.icon ?? ""} {c.name}</option>
+                {/each}
+              </select>
             </td>
             <td class="td text-[11px] text-t3">{sourceLabel[tx.source]}</td>
             <td class="td text-right">

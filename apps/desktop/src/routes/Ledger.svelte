@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
-  import { fmtDate, fmtMoney } from "../lib/format";
+  import { fmtDate, fmtMoney, parseMoneyInput } from "../lib/format";
   import type { LedgerAccountType } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
@@ -17,9 +17,12 @@
     { id: "trial", label: "Trial balance" },
   ];
 
+  let bookId = $state("");
+
   async function load() {
     const [book] = await api.bookList();
     if (!book) throw new Error("no book configured");
+    bookId = book.id;
     const [accounts, journal, trial] = await Promise.all([
       api.ledgerAccountList({ book_id: book.id }),
       api.journalList({ book_id: book.id }),
@@ -28,7 +31,68 @@
     return { accounts, journal, trial };
   }
 
-  const data = load();
+  let data = $state(load());
+
+  // -- manual journal entry -------------------------------------------------
+  interface FormLine {
+    ledger_account_id: string;
+    debit: string;
+    credit: string;
+  }
+  const blankLine = (): FormLine => ({
+    ledger_account_id: "",
+    debit: "",
+    credit: "",
+  });
+
+  let showForm = $state(false);
+  let entryDate = $state(new Date().toISOString().slice(0, 10));
+  let memo = $state("");
+  let lines = $state<FormLine[]>([blankLine(), blankLine()]);
+  let posting = $state(false);
+  let postError = $state<string | null>(null);
+
+  function openForm() {
+    tab = "journal";
+    showForm = true;
+    postError = null;
+  }
+
+  const lineMinor = (raw: string): number =>
+    Math.max(0, parseMoneyInput(raw) ?? 0);
+  const debitTotal = $derived(
+    lines.reduce((s, l) => s + lineMinor(l.debit), 0),
+  );
+  const creditTotal = $derived(
+    lines.reduce((s, l) => s + lineMinor(l.credit), 0),
+  );
+
+  async function postJournal() {
+    postError = null;
+    posting = true;
+    try {
+      await api.journalPost({
+        book_id: bookId,
+        entry_date: entryDate,
+        memo,
+        lines: lines
+          .filter((l) => l.ledger_account_id)
+          .map((l) => ({
+            ledger_account_id: l.ledger_account_id,
+            debit_minor: lineMinor(l.debit),
+            credit_minor: lineMinor(l.credit),
+          })),
+      });
+      memo = "";
+      lines = [blankLine(), blankLine()];
+      showForm = false;
+      data = load();
+    } catch (err) {
+      postError = String(err);
+    } finally {
+      posting = false;
+    }
+  }
 
   const typeOrder: LedgerAccountType[] = [
     "asset",
@@ -56,7 +120,7 @@
       <Icon name="plus" size={14} />
       Add account
     </button>
-    <button class="btn btn-primary">
+    <button class="btn btn-primary" onclick={openForm}>
       <Icon name="plus" size={14} />
       New journal entry
     </button>
@@ -129,6 +193,109 @@
       </div>
     {/if}
   {:else if tab === "journal"}
+    {#if showForm}
+      <form
+        class="card mb-4 p-4"
+        onsubmit={(e) => {
+          e.preventDefault();
+          postJournal();
+        }}
+      >
+        <h2 class="mb-3 text-[13px] font-semibold">New journal entry</h2>
+        {#if postError}
+          <p
+            class="mb-3 flex items-center gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+          >
+            <Icon name="alert-circle" size={13} />
+            {postError}
+          </p>
+        {/if}
+        <div class="mb-3 grid gap-3 sm:grid-cols-[10rem_1fr]">
+          <label class="block">
+            <span class="mb-1 block text-[11.5px] font-medium text-t2">Date</span>
+            <input class="input font-mono" type="date" bind:value={entryDate} />
+          </label>
+          <label class="block">
+            <span class="mb-1 block text-[11.5px] font-medium text-t2">Memo</span>
+            <input
+              class="input"
+              placeholder="What is this entry for?"
+              bind:value={memo}
+            />
+          </label>
+        </div>
+        <div class="space-y-2">
+          {#each lines as line, i (i)}
+            <div class="flex items-center gap-2">
+              <select
+                class="input h-8 flex-1"
+                aria-label="Ledger account"
+                bind:value={line.ledger_account_id}
+              >
+                <option value="" disabled>Account…</option>
+                {#each d.accounts.filter((a) => !a.archived) as a (a.id)}
+                  <option value={a.id}>{a.code} · {a.name}</option>
+                {/each}
+              </select>
+              <input
+                class="input h-8 w-32 text-right font-mono"
+                placeholder="Debit"
+                aria-label="Debit"
+                bind:value={line.debit}
+              />
+              <input
+                class="input h-8 w-32 text-right font-mono"
+                placeholder="Credit"
+                aria-label="Credit"
+                bind:value={line.credit}
+              />
+              <button
+                class="btn btn-ghost h-8 px-2"
+                type="button"
+                aria-label="Remove line"
+                disabled={lines.length <= 2}
+                onclick={() => (lines = lines.filter((_, j) => j !== i))}
+              >
+                <Icon name="x" size={13} />
+              </button>
+            </div>
+          {/each}
+        </div>
+        <div class="mt-3 flex items-center gap-2">
+          <button
+            class="btn h-7"
+            type="button"
+            onclick={() => (lines = [...lines, blankLine()])}
+          >
+            <Icon name="plus" size={13} />
+            Add line
+          </button>
+          <span class="ml-auto text-[12px] text-t3">
+            Debit <span class="num">{fmtMoney(debitTotal)}</span> · Credit
+            <span class="num">{fmtMoney(creditTotal)}</span>
+          </span>
+          {#if debitTotal === creditTotal && debitTotal > 0}
+            <Badge tone="success" label="balanced" />
+          {:else}
+            <Badge tone="warning" label="unbalanced" />
+          {/if}
+          <button
+            class="btn btn-primary h-7"
+            type="submit"
+            disabled={posting || debitTotal !== creditTotal || debitTotal === 0}
+          >
+            {posting ? "Posting…" : "Post entry"}
+          </button>
+          <button
+            class="btn btn-ghost h-7"
+            type="button"
+            onclick={() => (showForm = false)}
+          >
+            Cancel
+          </button>
+        </div>
+      </form>
+    {/if}
     {#if d.journal.length === 0}
       <div class="card">
         <EmptyState
@@ -137,7 +304,9 @@
           body="Entries appear here when you post them manually or confirm reconciled slips. Debits always equal credits — core enforces it."
         >
           {#snippet actions()}
-            <button class="btn btn-primary">New journal entry</button>
+            <button class="btn btn-primary" onclick={openForm}
+              >New journal entry</button
+            >
           {/snippet}
         </EmptyState>
       </div>

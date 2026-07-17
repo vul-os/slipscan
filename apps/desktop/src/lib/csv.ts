@@ -3,6 +3,8 @@
  * export never touches the network (it is a Blob object-URL download).
  */
 
+import { minorExponent, minorFactor } from "./format";
+
 function escapeCell(v: string | number | null | undefined): string {
   if (v == null) return "";
   const s = String(v);
@@ -18,11 +20,17 @@ export function toCsv(
   return `${lines.join("\r\n")}\r\n`;
 }
 
-/** Minor units → `842.35` (plain decimal, spreadsheet-friendly). */
-export function csvMoney(minor: number): string {
+/**
+ * Minor units → `842.35` (plain decimal, spreadsheet-friendly).
+ * Exponent-aware: JPY-class prints whole units, BHD-class three decimals.
+ */
+export function csvMoney(minor: number, currency = "ZAR"): string {
   const sign = minor < 0 ? "-" : "";
   const abs = Math.abs(minor);
-  return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")}`;
+  const exp = minorExponent(currency);
+  if (exp === 0) return `${sign}${abs}`;
+  const factor = minorFactor(currency);
+  return `${sign}${Math.floor(abs / factor)}.${String(abs % factor).padStart(exp, "0")}`;
 }
 
 export function downloadCsv(filename: string, csv: string): void {

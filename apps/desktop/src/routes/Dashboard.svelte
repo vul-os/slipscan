@@ -1,12 +1,14 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
   import { fmtDate, fmtMoney, fmtMonth, fmtPct, greeting } from "../lib/format";
+  import { computeNudges, type NudgeSeverity } from "../lib/nudges";
   import { router } from "../lib/router.svelte";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import StatCard from "../lib/components/StatCard.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
   import Money from "../lib/components/Money.svelte";
+  import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
 
   const month = new Date().toISOString().slice(0, 7);
@@ -14,11 +16,11 @@
   async function load() {
     const [book] = await api.bookList();
     if (!book) throw new Error("no book configured");
-    const [accounts, categories, recent, docs, budgets, spending] =
+    const [accounts, categories, transactions, docs, budgets, spending] =
       await Promise.all([
         api.accountList({ book_id: book.id }),
         api.categoryList({ book_id: book.id }),
-        api.transactionList({ book_id: book.id, limit: 7 }),
+        api.transactionList({ book_id: book.id }),
         api.documentList({ book_id: book.id }),
         api.budgetList({ book_id: book.id, month }),
         api.reportSpending({
@@ -27,10 +29,32 @@
           to: `${month}-31`,
         }),
       ]);
-    return { book, accounts, categories, recent, docs, budgets, spending };
+    // Nudges are computed right here, on-device, from the stats above.
+    const nudges = computeNudges({ transactions, budgets, categories, month });
+    return {
+      book,
+      accounts,
+      categories,
+      recent: transactions.slice(0, 7),
+      docs,
+      budgets,
+      spending,
+      nudges,
+    };
   }
 
   const data = load();
+
+  const nudgeTone: Record<NudgeSeverity, "danger" | "warning" | "accent"> = {
+    danger: "danger",
+    warning: "warning",
+    info: "accent",
+  };
+  const nudgeLabel: Record<NudgeSeverity, string> = {
+    danger: "act now",
+    warning: "heads up",
+    info: "insight",
+  };
 </script>
 
 {#await data}
@@ -86,6 +110,38 @@
       tone={toReview > 0 ? "warning" : "neutral"}
     />
   </div>
+
+  <!-- nudges: 100% local rules + stats over your own data -->
+  {#if d.nudges.length > 0}
+    <section class="card mt-4">
+      <header class="flex items-center justify-between px-4 pt-4">
+        <h2 class="flex items-center gap-2 text-[13px] font-semibold">
+          <Icon name="sparkle" size={15} class="text-accent-ring dark:text-accent" />
+          Nudges
+          <span class="num text-t3">{d.nudges.length}</span>
+        </h2>
+        <span class="flex items-center gap-1.5 text-[11px] text-t3">
+          <Icon name="shield" size={12} />
+          computed on this machine
+        </span>
+      </header>
+      <ul class="mt-2 pb-2">
+        {#each d.nudges as n (n.id)}
+          <li
+            class="flex items-start gap-3 border-t border-line px-4 py-2.5 first:border-t-0"
+          >
+            <span class="mt-0.5 shrink-0">
+              <Badge tone={nudgeTone[n.severity]} label={nudgeLabel[n.severity]} />
+            </span>
+            <span class="min-w-0 flex-1 leading-tight">
+              <span class="block text-[12.5px] font-medium">{n.title}</span>
+              <span class="block text-[11.5px] text-t3">{n.body}</span>
+            </span>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
 
   <div class="mt-4 grid gap-4 lg:grid-cols-5">
     <!-- spending by category -->

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
-  import { fmtMoney, fmtMonth } from "../lib/format";
+  import { fmtMoney, fmtMonth, parseMoneyInput } from "../lib/format";
+  import type { Book, Category } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
@@ -10,13 +11,56 @@
 
   const month = new Date().toISOString().slice(0, 7);
 
+  let book = $state<Book | null>(null);
+  let categories = $state<Category[]>([]);
+
   async function load() {
-    const [book] = await api.bookList();
-    if (!book) throw new Error("no book configured");
-    return api.budgetList({ book_id: book.id, month });
+    const [b] = await api.bookList();
+    if (!b) throw new Error("no book configured");
+    book = b;
+    categories = await api.categoryList({ book_id: b.id });
+    return api.budgetList({ book_id: b.id, month });
   }
 
-  const data = load();
+  let data = $state(load());
+
+  // -- new / updated budget -------------------------------------------------
+  let showForm = $state(false);
+  let formCategoryId = $state("");
+  let formAmount = $state("");
+  let formRollover = $state(false);
+  let formBusy = $state(false);
+  let formError = $state<string | null>(null);
+
+  async function saveBudget() {
+    if (!book) return;
+    const amount = parseMoneyInput(formAmount);
+    if (!formCategoryId || amount === null || amount <= 0) {
+      formError = "Pick a category and a positive amount.";
+      return;
+    }
+    formError = null;
+    formBusy = true;
+    try {
+      await api.budgetUpsert({
+        book_id: book.id,
+        category_id: formCategoryId,
+        month,
+        amount_minor: amount,
+        currency: book.currency,
+        rollover: formRollover,
+      });
+      formCategoryId = "";
+      formAmount = "";
+      formRollover = false;
+      showForm = false;
+      data = load();
+    } catch (err) {
+      formError = String(err);
+    } finally {
+      formBusy = false;
+    }
+  }
 
   function barTone(spent: number, amount: number): string {
     if (amount === 0) return "bg-ink-400";
@@ -37,12 +81,69 @@
       <Icon name="calendar" size={14} />
       {fmtMonth(month)}
     </button>
-    <button class="btn btn-primary">
+    <button class="btn btn-primary" onclick={() => (showForm = !showForm)}>
       <Icon name="plus" size={14} />
       New budget
     </button>
   {/snippet}
 </PageHeader>
+
+{#if showForm}
+  <form
+    class="card mb-4 p-4"
+    onsubmit={(e) => {
+      e.preventDefault();
+      saveBudget();
+    }}
+  >
+    <h2 class="mb-3 text-[13px] font-semibold">
+      Budget for {fmtMonth(month)}
+    </h2>
+    {#if formError}
+      <p
+        class="mb-3 flex items-center gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+      >
+        <Icon name="alert-circle" size={13} />
+        {formError}
+      </p>
+    {/if}
+    <div class="flex flex-wrap items-end gap-3">
+      <label class="block min-w-52">
+        <span class="mb-1 block text-[11.5px] font-medium text-t2">Category</span>
+        <select class="input" bind:value={formCategoryId}>
+          <option value="" disabled>Pick a category…</option>
+          {#each categories.filter((c) => c.kind === "expense") as c (c.id)}
+            <option value={c.id}>{c.icon ?? ""} {c.name}</option>
+          {/each}
+        </select>
+      </label>
+      <label class="block w-40">
+        <span class="mb-1 block text-[11.5px] font-medium text-t2"
+          >Monthly limit</span
+        >
+        <input
+          class="input text-right font-mono"
+          placeholder="e.g. 4 000,00"
+          bind:value={formAmount}
+        />
+      </label>
+      <label class="flex h-9 items-center gap-2 text-[12px] text-t2">
+        <input type="checkbox" bind:checked={formRollover} />
+        Roll over what's left
+      </label>
+      <button class="btn btn-primary" type="submit" disabled={formBusy}>
+        {formBusy ? "Saving…" : "Save budget"}
+      </button>
+      <button
+        class="btn btn-ghost"
+        type="button"
+        onclick={() => (showForm = false)}
+      >
+        Cancel
+      </button>
+    </div>
+  </form>
+{/if}
 
 {#await data}
   <div class="card"><Skeleton rows={7} /></div>
@@ -55,7 +156,7 @@
         body="Set a monthly limit on the categories you care about — groceries, eating out, fuel — and SlipScan tracks the burn as transactions come in."
       >
         {#snippet actions()}
-          <button class="btn btn-primary">
+          <button class="btn btn-primary" onclick={() => (showForm = true)}>
             <Icon name="plus" size={14} />
             Create your first budget
           </button>
