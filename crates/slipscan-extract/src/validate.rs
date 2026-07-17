@@ -1,8 +1,10 @@
-//! Arithmetic validation: do the extracted line items sum to the stated
-//! total within tolerance? Always computed locally — never trusted from the
-//! model (port of the legacy `computeValidation`, adapted to minor units).
+//! Local validation: do the extracted line items sum to the stated total
+//! within tolerance, and is the purchase date sane? Always computed locally —
+//! never trusted from the model (port of the legacy `computeValidation`,
+//! adapted to minor units).
 
 use crate::types::{SlipExtraction, Validation};
+use time::{Date, Duration, Month, OffsetDateTime};
 
 /// Tolerance in minor units (legacy used 0.05 in decimal → 5 minor units).
 pub const TOLERANCE_MINOR: i64 = 5;
@@ -55,6 +57,36 @@ pub fn attach(slip: &mut SlipExtraction) {
         ));
     }
     slip.validation = Some(validation);
+}
+
+/// Earliest plausible purchase year on a slip someone scans today.
+const MIN_YEAR: i32 = 2000;
+
+/// Clear `purchased_at` (with a warning) when the date is unparseable, before
+/// [`MIN_YEAR`], or more than a day in the future. The date portion must be
+/// `YYYY-MM-DD`, optionally followed by `T` and a time.
+pub fn check_date(slip: &mut SlipExtraction) {
+    let Some(ts) = slip.purchased_at.clone() else {
+        return;
+    };
+    let date_part = ts.split('T').next().unwrap_or("");
+    let sane = parse_iso_date(date_part).is_some_and(|d| {
+        let today = OffsetDateTime::now_utc().date();
+        d.year() >= MIN_YEAR && d <= today + Duration::days(1)
+    });
+    if !sane {
+        slip.warnings
+            .push(format!("implausible purchase date {ts:?}; cleared"));
+        slip.purchased_at = None;
+    }
+}
+
+fn parse_iso_date(s: &str) -> Option<Date> {
+    let mut parts = s.splitn(3, '-');
+    let year: i32 = parts.next()?.parse().ok()?;
+    let month: u8 = parts.next()?.parse().ok()?;
+    let day: u8 = parts.next()?.parse().ok()?;
+    Date::from_calendar_date(year, Month::try_from(month).ok()?, day).ok()
 }
 
 #[cfg(test)]
@@ -186,5 +218,56 @@ mod tests {
         attach(&mut s);
         assert!(s.validation.is_none());
         assert_eq!(s.warnings.len(), 1);
+    }
+
+    fn slip_with_date(date: &str) -> SlipExtraction {
+        let mut s = slip(
+            vec![],
+            Totals {
+                total_minor: 100,
+                ..Default::default()
+            },
+        );
+        s.purchased_at = Some(date.to_string());
+        s
+    }
+
+    #[test]
+    fn plausible_dates_are_kept() {
+        for date in ["2024-02-29", "2026-07-01T12:30:00", "2000-01-01"] {
+            let mut s = slip_with_date(date);
+            check_date(&mut s);
+            assert_eq!(s.purchased_at.as_deref(), Some(date), "kept {date}");
+        }
+    }
+
+    #[test]
+    fn implausible_dates_are_cleared() {
+        for date in [
+            "1999-12-31",
+            "2099-01-01",
+            "2026-13-01",
+            "garbage",
+            "2026-02-30",
+        ] {
+            let mut s = slip_with_date(date);
+            check_date(&mut s);
+            assert!(s.purchased_at.is_none(), "cleared {date}");
+            assert_eq!(s.warnings.len(), 1);
+        }
+    }
+
+    #[test]
+    fn missing_date_is_a_no_op() {
+        let mut s = slip(
+            vec![],
+            Totals {
+                total_minor: 100,
+                ..Default::default()
+            },
+        );
+        check_date(&mut s);
+        assert!(s.purchased_at.is_none());
+        assert!(s.warnings.is_empty());
     }
 }

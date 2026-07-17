@@ -113,9 +113,35 @@ pub fn minor_exponent(code: &str) -> u32 {
 }
 
 /// Convert a decimal amount to minor units for `code` (e.g. 12.34 ZAR → 1234).
+///
+/// Float-in by necessity: this is the boundary for amounts that arrive as
+/// JSON numbers from an LLM. Text parsed digit-by-digit should use
+/// [`minor_from_major_hundredths`] instead — exact integer math, no floats.
 pub fn to_minor(value: f64, code: &str) -> i64 {
     let factor = 10f64.powi(minor_exponent(code) as i32);
     (value * factor).round() as i64
+}
+
+/// Exact integer conversion of an amount captured as whole `major` units
+/// plus a two-digit decimal part (`hundredths`, 0..=99) into minor units
+/// for `code`. Never touches floats, so precision holds for arbitrarily
+/// large amounts; `None` on overflow.
+///
+/// * exponent 2 (most currencies): `major * 100 + hundredths`
+/// * exponent 3 (BHD-class): `major * 1000 + hundredths * 10`
+/// * exponent 0 (JPY-class): `major`, rounding the decimal part half-up
+///   instead of silently discarding it
+pub fn minor_from_major_hundredths(major: i64, hundredths: i64, code: &str) -> Option<i64> {
+    debug_assert!((0..=99).contains(&hundredths));
+    match minor_exponent(code) {
+        0 => major.checked_add(i64::from(hundredths >= 50)),
+        exponent => {
+            let factor = 10i64.checked_pow(exponent)?;
+            major
+                .checked_mul(factor)?
+                .checked_add(hundredths.checked_mul(factor / 100)?)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -162,5 +188,25 @@ mod tests {
         // Classic binary-float trap: 19.99 * 100 = 1998.9999…
         assert_eq!(to_minor(19.99, "ZAR"), 1999);
         assert_eq!(to_minor(0.1 + 0.2, "ZAR"), 30);
+    }
+
+    #[test]
+    fn integer_parts_conversion_is_exact() {
+        assert_eq!(minor_from_major_hundredths(12, 34, "ZAR"), Some(1_234));
+        assert_eq!(minor_from_major_hundredths(0, 7, "ZAR"), Some(7));
+        // JPY-class: no minor exponent — decimal part rounds, not dropped.
+        assert_eq!(minor_from_major_hundredths(1_200, 0, "JPY"), Some(1_200));
+        assert_eq!(minor_from_major_hundredths(1_200, 49, "JPY"), Some(1_200));
+        assert_eq!(minor_from_major_hundredths(1_200, 50, "JPY"), Some(1_201));
+        // BHD-class: three decimals; two captured digits scale by 10.
+        assert_eq!(minor_from_major_hundredths(1, 23, "BHD"), Some(1_230));
+        // Exact above f64's 2^53 integer ceiling (where floats would drift).
+        let big = 90_071_992_547_409_929_i64; // > 2^53 minor units
+        assert_eq!(
+            minor_from_major_hundredths(big / 100, (big % 100).abs(), "ZAR"),
+            Some(big / 100 * 100 + big % 100)
+        );
+        // Overflow is an error, not a wrap.
+        assert_eq!(minor_from_major_hundredths(i64::MAX, 99, "ZAR"), None);
     }
 }

@@ -160,8 +160,8 @@ mod tests {
 
     #[test]
     fn braces_inside_strings_are_ignored() {
-        let v = parse_lenient("noise {\"a\": \"curly } brace, and a \\\" quote\"} trailer")
-            .unwrap();
+        let v =
+            parse_lenient("noise {\"a\": \"curly } brace, and a \\\" quote\"} trailer").unwrap();
         assert_eq!(v["a"], "curly } brace, and a \" quote");
     }
 
