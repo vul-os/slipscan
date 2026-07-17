@@ -12,6 +12,7 @@ fn map_coa(row: &Row<'_>) -> rusqlite::Result<CoaAccount> {
         name: row.get("name")?,
         kind: col_enum(row, "kind")?,
         description: row.get("description")?,
+        currency: row.get("currency")?,
         is_archived: row.get("is_archived")?,
         is_system: row.get("is_system")?,
         created_at: row.get("created_at")?,
@@ -28,6 +29,7 @@ fn map_journal(row: &Row<'_>) -> rusqlite::Result<Journal> {
         reference: row.get("reference")?,
         source_type: col_enum(row, "source_type")?,
         source_id: row.get("source_id")?,
+        reversal_of: row.get("reversal_of")?,
         created_at: row.get("created_at")?,
     })
 }
@@ -59,8 +61,8 @@ fn map_line(row: &Row<'_>) -> rusqlite::Result<JournalLine> {
 pub fn insert_coa(conn: &Connection, coa: &CoaAccount) -> CoreResult<bool> {
     let n = conn.execute(
         "INSERT INTO chart_of_accounts (id, book_id, code, name, kind, description,
-                                        is_archived, is_system, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                                        currency, is_archived, is_system, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT (book_id, code) DO NOTHING",
         params![
             coa.id,
@@ -69,6 +71,7 @@ pub fn insert_coa(conn: &Connection, coa: &CoaAccount) -> CoreResult<bool> {
             coa.name,
             coa.kind.as_str(),
             coa.description,
+            coa.currency,
             coa.is_archived,
             coa.is_system,
             coa.created_at,
@@ -76,6 +79,19 @@ pub fn insert_coa(conn: &Connection, coa: &CoaAccount) -> CoreResult<bool> {
         ],
     )?;
     Ok(n > 0)
+}
+
+pub fn set_coa_archived(
+    conn: &Connection,
+    id: &str,
+    is_archived: bool,
+    updated_at: &str,
+) -> CoreResult<()> {
+    conn.execute(
+        "UPDATE chart_of_accounts SET is_archived = ?2, updated_at = ?3 WHERE id = ?1",
+        params![id, is_archived, updated_at],
+    )?;
+    Ok(())
 }
 
 pub fn get_coa(conn: &Connection, id: &str) -> CoreResult<Option<CoaAccount>> {
@@ -100,8 +116,8 @@ pub fn list_coa(conn: &Connection, book_id: &str) -> CoreResult<Vec<CoaAccount>>
 pub fn insert_journal(conn: &Connection, journal: &Journal) -> CoreResult<()> {
     conn.execute(
         "INSERT INTO journals (id, book_id, posted_date, narrative, reference,
-                               source_type, source_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                               source_type, source_id, reversal_of, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             journal.id,
             journal.book_id,
@@ -110,10 +126,40 @@ pub fn insert_journal(conn: &Connection, journal: &Journal) -> CoreResult<()> {
             journal.reference,
             journal.source_type.as_str(),
             journal.source_id,
+            journal.reversal_of,
             journal.created_at,
         ],
     )?;
     Ok(())
+}
+
+/// Journals for a book within an inclusive posted-date range, newest first.
+pub fn list_journals(
+    conn: &Connection,
+    book_id: &str,
+    from_date: &str,
+    to_date: &str,
+) -> CoreResult<Vec<Journal>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM journals
+         WHERE book_id = ?1 AND posted_date >= ?2 AND posted_date <= ?3
+         ORDER BY posted_date DESC, id DESC",
+    )?;
+    let rows = stmt
+        .query_map(params![book_id, from_date, to_date], map_journal)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Id of the journal that reverses `journal_id`, if it was reversed.
+pub fn find_reversal(conn: &Connection, journal_id: &str) -> CoreResult<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM journals WHERE reversal_of = ?1",
+            params![journal_id],
+            |row| row.get(0),
+        )
+        .optional()?)
 }
 
 pub fn get_journal(conn: &Connection, id: &str) -> CoreResult<Option<Journal>> {
@@ -203,10 +249,7 @@ fn map_coa_map(row: &Row<'_>) -> rusqlite::Result<CoaMapEntry> {
 }
 
 /// Insert or replace the CoA mapping for an entity, returning the stored row.
-pub fn upsert_coa_map(
-    conn: &Connection,
-    entry: &CoaMapEntry,
-) -> CoreResult<CoaMapEntry> {
+pub fn upsert_coa_map(conn: &Connection, entry: &CoaMapEntry) -> CoreResult<CoaMapEntry> {
     conn.execute(
         "INSERT INTO coa_map (id, book_id, entity_type, entity_id, coa_id,
                               created_at, updated_at)
@@ -246,9 +289,8 @@ pub fn get_coa_map(
 }
 
 pub fn list_coa_map(conn: &Connection, book_id: &str) -> CoreResult<Vec<CoaMapEntry>> {
-    let mut stmt = conn.prepare(
-        "SELECT * FROM coa_map WHERE book_id = ?1 ORDER BY entity_type, entity_id",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT * FROM coa_map WHERE book_id = ?1 ORDER BY entity_type, entity_id")?;
     let rows = stmt
         .query_map(params![book_id], map_coa_map)?
         .collect::<Result<Vec<_>, _>>()?;

@@ -81,7 +81,9 @@ pub fn list(conn: &Connection, book_id: &str, month: &str) -> CoreResult<Vec<Bud
 }
 
 /// Budget vs. actual spend for every budgeted category in `month`.
-/// Spend counts negative (outflow) transaction amounts against the category.
+/// Spend counts negative (outflow) transaction amounts against the category,
+/// in the budget's own currency only — amounts in other currencies are never
+/// mixed into the comparison.
 pub fn status(conn: &Connection, book_id: &str, month: &str) -> CoreResult<Vec<BudgetStatus>> {
     let mut stmt = conn.prepare(
         "SELECT b.category_id, b.month, b.amount_minor, b.currency,
@@ -89,6 +91,7 @@ pub fn status(conn: &Connection, book_id: &str, month: &str) -> CoreResult<Vec<B
                     SELECT -SUM(t.amount_minor) FROM transactions t
                     WHERE t.book_id = b.book_id
                       AND t.category_id = b.category_id
+                      AND t.currency = b.currency
                       AND t.amount_minor < 0
                       AND substr(t.posted_date, 1, 7) = b.month
                       AND t.status <> 'rejected'

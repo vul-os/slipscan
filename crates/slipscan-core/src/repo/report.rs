@@ -2,13 +2,15 @@ use rusqlite::{params, Connection};
 
 use super::col_enum;
 use crate::domain::{
-    CoaKind, IncomeStatement, IncomeStatementRow, MonthlySpendingRow, SpendingRow,
-    TrialBalanceRow, Vat201Row, Vat201Summary, VatRole,
+    BalanceSheet, BalanceSheetRow, CoaKind, IncomeStatement, IncomeStatementRow,
+    MonthlySpendingRow, SpendingRow, TrialBalanceRow, Vat201Row, Vat201Summary, VatRole,
 };
 use crate::error::CoreResult;
 
-/// Spending by category over an inclusive date range. Only outflows
-/// (negative amounts) count; rejected transactions are excluded.
+/// Spending by (category, currency) over an inclusive date range. Only
+/// outflows (negative amounts) count; rejected transactions are excluded.
+/// Amounts in different currencies are never summed together — each currency
+/// gets its own row.
 pub fn spending(
     conn: &Connection,
     book_id: &str,
@@ -18,6 +20,7 @@ pub fn spending(
     let mut stmt = conn.prepare(
         "SELECT t.category_id AS category_id,
                 COALESCE(c.name, 'Uncategorized') AS category_name,
+                t.currency AS currency,
                 -SUM(t.amount_minor) AS total_minor
          FROM transactions t
          LEFT JOIN categories c ON c.id = t.category_id
@@ -26,7 +29,7 @@ pub fn spending(
            AND t.status <> 'rejected'
            AND t.posted_date >= ?2
            AND t.posted_date <= ?3
-         GROUP BY t.category_id, category_name
+         GROUP BY t.category_id, category_name, t.currency
          ORDER BY total_minor DESC",
     )?;
     let rows = stmt
@@ -34,6 +37,7 @@ pub fn spending(
             Ok(SpendingRow {
                 category_id: row.get("category_id")?,
                 category_name: row.get("category_name")?,
+                currency: row.get("currency")?,
                 total_minor: row.get("total_minor")?,
             })
         })?
@@ -41,7 +45,8 @@ pub fn spending(
     Ok(rows)
 }
 
-/// Spending by category, grouped by calendar month, over an inclusive range.
+/// Spending by (category, currency), grouped by calendar month, over an
+/// inclusive range.
 pub fn spending_by_month(
     conn: &Connection,
     book_id: &str,
@@ -52,6 +57,7 @@ pub fn spending_by_month(
         "SELECT substr(t.posted_date, 1, 7) AS month,
                 t.category_id AS category_id,
                 COALESCE(c.name, 'Uncategorized') AS category_name,
+                t.currency AS currency,
                 -SUM(t.amount_minor) AS total_minor
          FROM transactions t
          LEFT JOIN categories c ON c.id = t.category_id
@@ -60,7 +66,7 @@ pub fn spending_by_month(
            AND t.status <> 'rejected'
            AND t.posted_date >= ?2
            AND t.posted_date <= ?3
-         GROUP BY month, t.category_id, category_name
+         GROUP BY month, t.category_id, category_name, t.currency
          ORDER BY month, total_minor DESC",
     )?;
     let rows = stmt
@@ -69,6 +75,7 @@ pub fn spending_by_month(
                 month: row.get("month")?,
                 category_id: row.get("category_id")?,
                 category_name: row.get("category_name")?,
+                currency: row.get("currency")?,
                 total_minor: row.get("total_minor")?,
             })
         })?
@@ -78,11 +85,17 @@ pub fn spending_by_month(
 
 /// Income statement over an inclusive posted-date range: income accounts by
 /// credit balance, expense accounts by debit balance, net profit.
+///
+/// Single-currency by construction: only journal lines in `currency` (the
+/// book's base currency) are aggregated. Mixing currencies into one sum would
+/// produce meaningless statements; foreign-currency lines stay visible per
+/// currency on the trial balance until FX translation exists.
 pub fn income_statement(
     conn: &Connection,
     book_id: &str,
     from_date: &str,
     to_date: &str,
+    currency: &str,
 ) -> CoreResult<IncomeStatement> {
     let mut stmt = conn.prepare(
         "SELECT a.id AS coa_id, a.code AS code, a.name AS name, a.kind AS kind,
@@ -93,6 +106,7 @@ pub fn income_statement(
          JOIN journals j ON j.id = l.journal_id
          WHERE a.book_id = ?1
            AND a.kind IN ('income', 'expense')
+           AND l.currency = ?4
            AND j.posted_date >= ?2
            AND j.posted_date <= ?3
          GROUP BY a.id, a.code, a.name, a.kind
@@ -101,7 +115,7 @@ pub fn income_statement(
     )?;
     let mut income = Vec::new();
     let mut expenses = Vec::new();
-    let rows = stmt.query_map(params![book_id, from_date, to_date], |row| {
+    let rows = stmt.query_map(params![book_id, from_date, to_date, currency], |row| {
         let kind: CoaKind = col_enum(row, "kind")?;
         let debit: i64 = row.get("debit_minor")?;
         let credit: i64 = row.get("credit_minor")?;
@@ -129,6 +143,7 @@ pub fn income_statement(
         book_id: book_id.to_string(),
         from_date: from_date.to_string(),
         to_date: to_date.to_string(),
+        currency: currency.to_string(),
         income,
         expenses,
         income_total_minor,
@@ -138,12 +153,15 @@ pub fn income_statement(
 }
 
 /// VAT201-style summary: output/input VAT and their bases, per VAT rate, over
-/// an inclusive posted-date range. Only VAT-tagged journal lines count.
+/// an inclusive posted-date range. Only VAT-tagged journal lines count, and
+/// only lines in `currency` (the book's base currency) — a VAT return is
+/// filed in one currency.
 pub fn vat201(
     conn: &Connection,
     book_id: &str,
     from_date: &str,
     to_date: &str,
+    currency: &str,
 ) -> CoreResult<Vat201Summary> {
     let mut stmt = conn.prepare(
         "SELECT l.vat_rate_id AS vat_rate_id,
@@ -158,6 +176,7 @@ pub fn vat201(
          LEFT JOIN vat_rates r ON r.id = l.vat_rate_id
          WHERE l.book_id = ?1
            AND l.vat_role IS NOT NULL
+           AND l.currency = ?4
            AND j.posted_date >= ?2
            AND j.posted_date <= ?3
          GROUP BY l.vat_rate_id, l.vat_role
@@ -173,7 +192,7 @@ pub fn vat201(
         credit_minor: i64,
     }
     let slices = stmt
-        .query_map(params![book_id, from_date, to_date], |row| {
+        .query_map(params![book_id, from_date, to_date, currency], |row| {
             Ok(Slice {
                 vat_rate_id: row.get("vat_rate_id")?,
                 code: row.get("code")?,
@@ -235,6 +254,7 @@ pub fn vat201(
         book_id: book_id.to_string(),
         from_date: from_date.to_string(),
         to_date: to_date.to_string(),
+        currency: currency.to_string(),
         rows,
         standard_rated_supplies_minor,
         zero_rated_supplies_minor,
@@ -245,25 +265,116 @@ pub fn vat201(
     })
 }
 
-/// Trial balance: total debits/credits per chart-of-accounts entry.
-pub fn trial_balance(conn: &Connection, book_id: &str) -> CoreResult<Vec<TrialBalanceRow>> {
+/// Balance sheet as of an inclusive date. Asset / liability / equity account
+/// balances at their natural side; income − expense movements up to the date
+/// are folded into retained earnings so the statement balances.
+///
+/// Single-currency by construction: only lines in `currency` (the book's
+/// base currency) are aggregated — see [`income_statement`].
+pub fn balance_sheet(
+    conn: &Connection,
+    book_id: &str,
+    as_of_date: &str,
+    currency: &str,
+) -> CoreResult<BalanceSheet> {
     let mut stmt = conn.prepare(
         "SELECT a.id AS coa_id, a.code AS code, a.name AS name, a.kind AS kind,
+                COALESCE(SUM(x.debit_minor), 0) AS debit_minor,
+                COALESCE(SUM(x.credit_minor), 0) AS credit_minor
+         FROM chart_of_accounts a
+         LEFT JOIN (
+             SELECT l.coa_id, l.debit_minor, l.credit_minor
+             FROM journal_lines l
+             JOIN journals j ON j.id = l.journal_id
+             WHERE j.posted_date <= ?2 AND l.currency = ?3
+         ) x ON x.coa_id = a.id
+         WHERE a.book_id = ?1
+         GROUP BY a.id, a.code, a.name, a.kind
+         ORDER BY a.code",
+    )?;
+
+    let mut assets = Vec::new();
+    let mut liabilities = Vec::new();
+    let mut equity = Vec::new();
+    let mut retained_earnings_minor: i64 = 0;
+
+    let rows = stmt.query_map(params![book_id, as_of_date, currency], |row| {
+        let kind: CoaKind = col_enum(row, "kind")?;
+        let debit: i64 = row.get("debit_minor")?;
+        let credit: i64 = row.get("credit_minor")?;
+        Ok((
+            kind,
+            BalanceSheetRow {
+                coa_id: row.get("coa_id")?,
+                code: row.get("code")?,
+                name: row.get("name")?,
+                kind,
+                amount_minor: match kind {
+                    CoaKind::Asset => debit - credit,
+                    _ => credit - debit,
+                },
+            },
+        ))
+    })?;
+    for row in rows {
+        let (kind, row) = row?;
+        match kind {
+            // Income and expenses roll into equity as retained earnings.
+            CoaKind::Income | CoaKind::Expense => retained_earnings_minor += row.amount_minor,
+            _ if row.amount_minor == 0 => {}
+            CoaKind::Asset => assets.push(row),
+            CoaKind::Liability => liabilities.push(row),
+            CoaKind::Equity => equity.push(row),
+        }
+    }
+
+    let assets_total_minor: i64 = assets.iter().map(|r| r.amount_minor).sum();
+    let liabilities_total_minor: i64 = liabilities.iter().map(|r| r.amount_minor).sum();
+    let equity_total_minor: i64 =
+        equity.iter().map(|r| r.amount_minor).sum::<i64>() + retained_earnings_minor;
+
+    Ok(BalanceSheet {
+        book_id: book_id.to_string(),
+        as_of_date: as_of_date.to_string(),
+        currency: currency.to_string(),
+        assets,
+        liabilities,
+        equity,
+        retained_earnings_minor,
+        assets_total_minor,
+        liabilities_total_minor,
+        equity_total_minor,
+    })
+}
+
+/// Trial balance: total debits/credits per (chart-of-accounts entry,
+/// currency). Accounts with no postings yet appear once with zero totals in
+/// `book_currency`; accounts posted in several currencies get one row per
+/// currency — sums never mix currencies.
+pub fn trial_balance(
+    conn: &Connection,
+    book_id: &str,
+    book_currency: &str,
+) -> CoreResult<Vec<TrialBalanceRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id AS coa_id, a.code AS code, a.name AS name, a.kind AS kind,
+                COALESCE(l.currency, ?2) AS currency,
                 COALESCE(SUM(l.debit_minor), 0) AS debit_minor,
                 COALESCE(SUM(l.credit_minor), 0) AS credit_minor
          FROM chart_of_accounts a
          LEFT JOIN journal_lines l ON l.coa_id = a.id
          WHERE a.book_id = ?1
-         GROUP BY a.id, a.code, a.name, a.kind
-         ORDER BY a.code",
+         GROUP BY a.id, a.code, a.name, a.kind, l.currency
+         ORDER BY a.code, currency",
     )?;
     let rows = stmt
-        .query_map(params![book_id], |row| {
+        .query_map(params![book_id, book_currency], |row| {
             Ok(TrialBalanceRow {
                 coa_id: row.get("coa_id")?,
                 code: row.get("code")?,
                 name: row.get("name")?,
                 kind: col_enum(row, "kind")?,
+                currency: row.get("currency")?,
                 debit_minor: row.get("debit_minor")?,
                 credit_minor: row.get("credit_minor")?,
             })

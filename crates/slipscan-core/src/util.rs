@@ -47,6 +47,20 @@ pub fn days_between(a: &str, b: &str) -> crate::error::CoreResult<i64> {
     Ok((parse_date(a)? - parse_date(b)?).whole_days().abs())
 }
 
+/// Validate and normalize an ISO-4217 currency code: exactly 3 ASCII
+/// letters, uppercased. Mis-cased codes ("zar" vs "ZAR") would otherwise
+/// split per-currency sums and balance checks into distinct buckets.
+pub fn normalize_currency_code(raw: &str) -> crate::error::CoreResult<String> {
+    let trimmed = raw.trim();
+    if trimmed.len() == 3 && trimmed.chars().all(|c| c.is_ascii_alphabetic()) {
+        Ok(trimmed.to_ascii_uppercase())
+    } else {
+        Err(crate::error::CoreError::Validation(format!(
+            "invalid currency code {raw:?} (expected 3 letters, e.g. \"ZAR\")"
+        )))
+    }
+}
+
 /// Similarity of two merchant names in 0..=1: Dice coefficient over character
 /// bigrams of the normalized names. Empty/unknown names score 0.
 pub fn merchant_similarity(a: &str, b: &str) -> f64 {
@@ -64,7 +78,8 @@ pub fn merchant_similarity(a: &str, b: &str) -> f64 {
     if left.is_empty() || right.is_empty() {
         return 0.0;
     }
-    let mut counts: std::collections::HashMap<(char, char), usize> = std::collections::HashMap::new();
+    let mut counts: std::collections::HashMap<(char, char), usize> =
+        std::collections::HashMap::new();
     for g in &left {
         *counts.entry(*g).or_insert(0) += 1;
     }
@@ -82,7 +97,11 @@ pub fn merchant_similarity(a: &str, b: &str) -> f64 {
 
 /// Deterministic dedupe hash for a transaction. When the provider gives us a
 /// stable transaction id we hash that; otherwise we fall back to the tuple of
-/// observable fields.
+/// observable fields plus `occurrence`, a per-batch counter importers assign
+/// to legitimate identical lines (two identical coffees in one statement)
+/// so they don't collapse into one. `occurrence == 0` keeps the historical
+/// hash for the common single-occurrence case.
+#[allow(clippy::too_many_arguments)]
 pub fn transaction_dedupe_hash(
     account_id: &str,
     posted_date: &str,
@@ -91,6 +110,7 @@ pub fn transaction_dedupe_hash(
     provider_txn_id: Option<&str>,
     merchant_normalized: Option<&str>,
     description: Option<&str>,
+    occurrence: u32,
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(account_id.as_bytes());
@@ -111,6 +131,11 @@ pub fn transaction_dedupe_hash(
             hasher.update(merchant_normalized.unwrap_or("").as_bytes());
             hasher.update([0x1f]);
             hasher.update(description.unwrap_or("").as_bytes());
+            if occurrence > 0 {
+                hasher.update([0x1f]);
+                hasher.update(b"occ");
+                hasher.update(occurrence.to_le_bytes());
+            }
         }
     }
     let digest = hasher.finalize();
@@ -133,21 +158,96 @@ mod tests {
 
     #[test]
     fn dedupe_hash_is_deterministic_and_sensitive() {
-        let a =
-            transaction_dedupe_hash("acc", "2026-01-01", -1000, "ZAR", None, Some("spar"), None);
-        let b =
-            transaction_dedupe_hash("acc", "2026-01-01", -1000, "ZAR", None, Some("spar"), None);
-        let c =
-            transaction_dedupe_hash("acc", "2026-01-01", -1001, "ZAR", None, Some("spar"), None);
+        let a = transaction_dedupe_hash(
+            "acc",
+            "2026-01-01",
+            -1000,
+            "ZAR",
+            None,
+            Some("spar"),
+            None,
+            0,
+        );
+        let b = transaction_dedupe_hash(
+            "acc",
+            "2026-01-01",
+            -1000,
+            "ZAR",
+            None,
+            Some("spar"),
+            None,
+            0,
+        );
+        let c = transaction_dedupe_hash(
+            "acc",
+            "2026-01-01",
+            -1001,
+            "ZAR",
+            None,
+            Some("spar"),
+            None,
+            0,
+        );
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
 
     #[test]
     fn dedupe_hash_prefers_provider_txn_id() {
-        let a = transaction_dedupe_hash("acc", "2026-01-01", -1000, "ZAR", Some("p1"), None, None);
-        let b = transaction_dedupe_hash("acc", "2026-02-02", -9999, "USD", Some("p1"), None, None);
+        let a =
+            transaction_dedupe_hash("acc", "2026-01-01", -1000, "ZAR", Some("p1"), None, None, 0);
+        let b =
+            transaction_dedupe_hash("acc", "2026-02-02", -9999, "USD", Some("p1"), None, None, 0);
         assert_eq!(a, b);
+        // With a provider id, occurrence is irrelevant.
+        let c =
+            transaction_dedupe_hash("acc", "2026-01-01", -1000, "ZAR", Some("p1"), None, None, 3);
+        assert_eq!(a, c);
+    }
+
+    #[test]
+    fn dedupe_hash_occurrence_distinguishes_identical_lines() {
+        let first = transaction_dedupe_hash(
+            "acc",
+            "2026-01-01",
+            -1000,
+            "ZAR",
+            None,
+            Some("spar"),
+            None,
+            0,
+        );
+        let second = transaction_dedupe_hash(
+            "acc",
+            "2026-01-01",
+            -1000,
+            "ZAR",
+            None,
+            Some("spar"),
+            None,
+            1,
+        );
+        let second_again = transaction_dedupe_hash(
+            "acc",
+            "2026-01-01",
+            -1000,
+            "ZAR",
+            None,
+            Some("spar"),
+            None,
+            1,
+        );
+        assert_ne!(first, second, "identical same-day lines must not collide");
+        assert_eq!(second, second_again, "re-imports still dedupe");
+    }
+
+    #[test]
+    fn currency_codes_normalize_or_reject() {
+        assert_eq!(normalize_currency_code("zar").unwrap(), "ZAR");
+        assert_eq!(normalize_currency_code(" USD ").unwrap(), "USD");
+        assert!(normalize_currency_code("Z1R").is_err());
+        assert!(normalize_currency_code("ZARR").is_err());
+        assert!(normalize_currency_code("").is_err());
     }
 
     #[test]

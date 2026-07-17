@@ -17,6 +17,7 @@ pub mod secrets;
 pub mod service;
 mod slip;
 pub mod util;
+pub mod vat;
 
 pub use db::Db;
 pub use error::{CoreError, CoreResult};

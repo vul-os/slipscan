@@ -1,11 +1,13 @@
-//! Secret storage indirection.
+//! OS-keychain indirection.
 //!
 //! Credentials (IMAP passwords, LLM API keys, scraper sessions) live in the
 //! OS keychain — never in SQLite or config files. The service layer only ever
-//! stores a keychain entry *name* in the settings table.
+//! stores a keychain entry *name* in the settings table, and the credential
+//! vault ([`super::vault`]) stores its key-encryption key here and nowhere
+//! else.
 //!
 //! `SecretStore` is a trait so tests (and headless environments) can plug in
-//! an in-memory fake.
+//! an in-memory mock keychain instead of the real one.
 
 use crate::error::{CoreError, CoreResult};
 use std::collections::HashMap;
