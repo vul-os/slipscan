@@ -153,15 +153,30 @@ pub struct BankSideJournalLine {
 /// Manual journals' lines on asset accounts — the ledger side of bank
 /// reconciliation (statement line ↔ posted journal).
 ///
-/// Excludes journals that *are* reversals and journals that *have been*
-/// reversed: a reversed journal pair nets to zero in the ledger, so matching
-/// a real bank movement against it would leave the movement unexplained.
+/// Excludes journals that *are* reversals and journals whose ledger effect is
+/// currently *net-cancelled* by reversal: a reversed journal pair nets to
+/// zero in the ledger, so matching a real bank movement against it would
+/// leave the movement unexplained. Net-cancellation is parity over the
+/// (linear — a journal can be reversed at most once) reversal chain: J
+/// reversed → cancelled; that reversal itself reversed (the only undo path
+/// under reversal-not-edit) → J is live again and must be matchable.
 pub fn bank_side_journal_lines(
     conn: &Connection,
     book_id: &str,
 ) -> CoreResult<Vec<BankSideJournalLine>> {
     let mut stmt = conn.prepare(
-        "SELECT j.id AS journal_id, l.coa_id AS coa_id,
+        "WITH RECURSIVE reversal_chain(root, id) AS (
+             SELECT j2.id, j2.id FROM journals j2
+              WHERE j2.book_id = ?1 AND j2.reversal_of IS NULL
+             UNION ALL
+             SELECT c.root, r.id FROM journals r
+              JOIN reversal_chain c ON r.reversal_of = c.id
+         ),
+         net_cancelled(id) AS (
+             SELECT root FROM reversal_chain
+              GROUP BY root HAVING (COUNT(*) - 1) % 2 = 1
+         )
+         SELECT j.id AS journal_id, l.coa_id AS coa_id,
                 j.posted_date AS posted_date,
                 j.narrative AS narrative, l.debit_minor AS debit_minor,
                 l.credit_minor AS credit_minor, l.currency AS currency
@@ -170,9 +185,7 @@ pub fn bank_side_journal_lines(
          JOIN chart_of_accounts a ON a.id = l.coa_id
          WHERE j.book_id = ?1 AND j.source_type = 'manual'
            AND j.reversal_of IS NULL AND a.kind = 'asset'
-           AND NOT EXISTS (
-               SELECT 1 FROM journals r WHERE r.reversal_of = j.id
-           )",
+           AND j.id NOT IN (SELECT id FROM net_cancelled)",
     )?;
     let rows = stmt
         .query_map(params![book_id], |row| {

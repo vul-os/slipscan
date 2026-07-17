@@ -595,13 +595,20 @@ mod tests {
     async fn loopback_flow_exchanges_code_for_tokens() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let vault = MemoryVault::new().with("oauth.client_secret", "cs");
+        // A long, collision-proof marker: the old 2-char needle "cs" showed
+        // up inside the random base64url state/PKCE-challenge params in ~2%
+        // of runs, making this test flaky for no real reason.
+        let secret = "client-secret-material-must-never-leak";
+        let vault = MemoryVault::new().with("oauth.client_secret", secret);
         let cfg = config();
         let flow = begin_loopback_flow(&cfg).await.unwrap();
         let url = flow.authorize_url().to_string();
         assert!(url.contains("code_challenge_method=S256"), "{url}");
         assert!(url.contains("access_type=offline"), "{url}");
-        assert!(!url.contains("cs"), "no client secret in the browser URL");
+        assert!(
+            !url.contains(secret) && !url.contains("client_secret="),
+            "no client secret in the browser URL: {url}"
+        );
         let state = flow.state.clone();
         let redirect = flow.redirect_uri().to_string();
 
