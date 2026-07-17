@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/logo-mark.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>slip/scan</title>
+    <script>
+      // Resolve theme before first paint to avoid a flash of the wrong theme.
+      // Dark is first-class: system preference is followed unless overridden.
+      (function () {
+        try {
+          var mode = localStorage.getItem("slipscan.theme");
+          var dark =
+            mode === "dark" ||
+            (mode !== "light" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (dark) document.documentElement.classList.add("dark");
+        } catch (e) {
+          /* default to light */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
