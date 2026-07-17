@@ -69,6 +69,18 @@ From the legacy brand, kept and refined:
 - Inter for UI, Geist Mono for numbers/amounts/tables
 - Dark and light themes; dark is first-class
 
+## Credential vault (bank / IMAP / API secrets)
+
+Secrets get their own subsystem with **write-only semantics**. Design goals: a copied disk/file yields nothing; software can use secrets; humans can set, replace, and revoke — **never view**.
+
+- **Envelope encryption.** Each secret is encrypted with XChaCha20-Poly1305 under a per-machine data-encryption key (DEK). The DEK is wrapped by a key-encryption key (KEK) that lives **only in the OS keychain** (macOS Keychain / Windows Credential Manager / Secret Service), never on disk. Copying the vault + SQLite files off the machine is useless without that user's unlocked OS session.
+- **User presence.** Where the platform supports it (Touch ID / Windows Hello), unwrapping the KEK for bank-scraper credentials requires user presence; at minimum it requires the OS session to be unlocked.
+- **Write-only API.** `vault.set(name, secret)`, `vault.replace(name, secret)`, `vault.revoke(name)`, and internal `vault.use_with(name, |secret| ...)` which hands the secret to the consuming adapter (scraper, IMAP, LLM client) inside a closure. There is **no** `get`-for-display, no export, no IPC command that returns secret material. The UI shows only metadata: label, created/rotated timestamps, last-used, and a short non-reversible fingerprint.
+- **Memory hygiene.** Secrets are `zeroize`d on drop, held for the shortest possible scope, excluded from `Debug`/`Display`/logs/error messages by construction (newtype wrappers with redacted impls).
+- **Auditability.** Every vault access (use, set, replace, revoke — never the material) is recorded in the append-only audit log.
+- **Rotation, not editing.** Replacing a credential writes a new version and destroys the old ciphertext; there is no in-place edit path.
+- Threat model and residual risks are documented in `docs/SECURITY.md`.
+
 ## Non-negotiables (the mantra)
 
 1. **No telemetry. No analytics. No default network calls.** The app must be fully functional offline.
