@@ -67,8 +67,9 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           ver="$(tr -d '[:space:]' < VERSION)"
           conf="$(python3 -c "import json;print(json.load(open('apps/desktop/src-tauri/tauri.conf.json'))['version'])")"
-          echo "tag=$tag VERSION=$ver tauri.conf.json=$conf"
-          [ "$tag" = "$ver" ] && [ "$tag" = "$conf" ] || {
+          base="${tag%%-*}"   # v0.1.0-rc1 dry-runs build against base version 0.1.0
+          echo "tag=$tag base=$base VERSION=$ver tauri.conf.json=$conf"
+          [ "$base" = "$ver" ] && [ "$base" = "$conf" ] || {
             echo "::error::Version mismatch — bump VERSION and tauri.conf.json before tagging"; exit 1; }
 
       - uses: actions/setup-node@v4.2.0
