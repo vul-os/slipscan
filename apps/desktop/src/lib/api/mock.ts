@@ -30,6 +30,7 @@ import type {
   Transaction,
   TransactionListQuery,
   TrialBalance,
+  VatRate,
   VatSummary,
   VaultCredentialMeta,
   VaultReplaceRequest,
@@ -74,6 +75,43 @@ const regions: RegionInfo[] = [
     country: "ZA",
     default_currency: "ZAR",
     tax_report_name: "VAT201",
+  },
+];
+
+/** The dev book is a za book, so it carries the ZA VAT rate table. */
+const vatRates: VatRate[] = [
+  {
+    id: id("vr01"),
+    book_id: BOOK_ID,
+    code: "STD",
+    name: "Standard rate (15%)",
+    rate_bps: 1_500,
+    country: "ZA",
+    is_active: true,
+    created_at: "2026-01-04T08:12:00Z",
+    updated_at: "2026-01-04T08:12:00Z",
+  },
+  {
+    id: id("vr02"),
+    book_id: BOOK_ID,
+    code: "ZER",
+    name: "Zero-rated (0%)",
+    rate_bps: 0,
+    country: "ZA",
+    is_active: true,
+    created_at: "2026-01-04T08:12:00Z",
+    updated_at: "2026-01-04T08:12:00Z",
+  },
+  {
+    id: id("vr03"),
+    book_id: BOOK_ID,
+    code: "EXE",
+    name: "Exempt",
+    rate_bps: 0,
+    country: "ZA",
+    is_active: true,
+    created_at: "2026-01-04T08:12:00Z",
+    updated_at: "2026-01-04T08:12:00Z",
   },
 ];
 
@@ -812,6 +850,30 @@ export const mockApi = {
 
   region_list: async (): Promise<RegionInfo[]> => clone(regions),
 
+  // -- tax rates: per-book, configurable (the generic profile's standard
+  // rate seeds at 0 bps until the user sets it) --
+
+  vat_rate_list: async (q: { book_id: string }): Promise<VatRate[]> =>
+    clone(vatRates.filter((r) => r.book_id === q.book_id)),
+
+  vat_rate_set_bps: async (q: {
+    book_id: string;
+    code: string;
+    rate_bps: number;
+  }): Promise<VatRate> => {
+    if (q.rate_bps < 0 || q.rate_bps > 10_000)
+      throw new Error(
+        `rate_bps must be between 0 and 10000 (0%..100%), got ${q.rate_bps}`,
+      );
+    const rate = vatRates.find(
+      (r) => r.book_id === q.book_id && r.code === q.code,
+    );
+    if (!rate) throw new Error(`vat_rate ${q.book_id}/${q.code} not found`);
+    rate.rate_bps = q.rate_bps;
+    rate.updated_at = new Date().toISOString();
+    return clone(rate);
+  },
+
   // -- FX (OpenRate) mock: mirrors core semantics — opt-in, cache-only
   // conversion, "fetch" only on explicit request (here it fabricates a
   // deterministic quote instead of any network call). --
@@ -868,9 +930,28 @@ export const mockApi = {
     from: string;
     to: string;
     amount_minor: number;
+    rate?: string;
   }): Promise<FxConversion> => {
     const from = q.from.toUpperCase();
     const to = q.to.toUpperCase();
+    if (q.rate !== undefined) {
+      // Pinned-rate replay: never re-rated by the cache. Mock-only float
+      // math; the real path is exact decimal × i64 in core.
+      const pinned = Number(q.rate);
+      if (!Number.isFinite(pinned) || pinned <= 0)
+        throw new Error(`pinned rate must be positive, got "${q.rate}"`);
+      return {
+        from_currency: from,
+        to_currency: to,
+        amount_minor: q.amount_minor,
+        converted_minor: Math.round(q.amount_minor * pinned),
+        rate: q.rate,
+        as_of: "",
+        grade: "pinned",
+        fetched_at: "",
+        age_secs: null,
+      };
+    }
     if (from === to)
       return {
         from_currency: from,

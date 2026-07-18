@@ -62,6 +62,8 @@ pub fn run() {
             commands::report_vat_summary,
             commands::report_trial_balance,
             commands::region_list,
+            commands::vat_rate_list,
+            commands::vat_rate_set_bps,
             commands::fx_status,
             commands::fx_configure,
             commands::fx_fetch_rate,

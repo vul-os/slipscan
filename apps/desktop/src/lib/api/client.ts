@@ -34,6 +34,7 @@ import type {
   Transaction,
   TransactionListQuery,
   TrialBalance,
+  VatRate,
   VatSummary,
   VaultCredentialMeta,
   VaultReplaceRequest,
@@ -152,6 +153,19 @@ export const api = {
   regionList: (): Promise<RegionInfo[]> =>
     call("region_list", {}, mockApi.region_list),
 
+  // -- tax rates: listed and configurable per book (the generic profile's
+  // standard rate is a placeholder until the user sets it) --
+
+  vatRateList: (q: { book_id: string }): Promise<VatRate[]> =>
+    call("vat_rate_list", { query: q }, () => mockApi.vat_rate_list(q)),
+
+  vatRateSetBps: (q: {
+    book_id: string;
+    code: string;
+    rate_bps: number;
+  }): Promise<VatRate> =>
+    call("vat_rate_set_bps", { query: q }, () => mockApi.vat_rate_set_bps(q)),
+
   // -- FX (OpenRate): opt-in. Only fxFetchRate touches the network, and only
   // on an explicit user action against the configured endpoint. --
 
@@ -167,6 +181,9 @@ export const api = {
     from: string;
     to: string;
     amount_minor: number;
+    /** Optional pinned decimal rate: replays a booked conversion exactly
+     * instead of using the current cached rate. */
+    rate?: string;
   }): Promise<FxConversion> =>
     call("fx_convert", { query: q }, () => mockApi.fx_convert(q)),
 
