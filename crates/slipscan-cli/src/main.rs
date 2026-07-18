@@ -14,9 +14,12 @@ mod extractor;
 
 use anyhow::{anyhow, bail, Context};
 use clap::{Parser, Subcommand, ValueEnum};
-use slipscan_core::domain::{Book, BookKind, DocumentSource, NewBook, TransactionFilter};
+use slipscan_core::domain::{
+    Account, Book, BookKind, DocumentSource, NewBook, TransactionFilter, TransactionSource,
+};
 use slipscan_core::secrets::SecretString;
 use slipscan_core::CoreService;
+use slipscan_ingest::bank::import_statement_lines;
 use slipscan_ingest::email::imap::{connect_tls, ImapConfig, ImapConnector};
 use slipscan_ingest::email::import_message_documents;
 use slipscan_ingest::import::{import_document_file, FileImport};
@@ -112,6 +115,10 @@ enum Command {
         /// international profile; see --list-regions.
         #[arg(long)]
         region: Option<String>,
+        /// ISO-4217 book currency (e.g. EUR, INR, JPY). Defaults to the
+        /// region profile's currency — pass this to book in any currency.
+        #[arg(long)]
+        currency: Option<String>,
         /// Seed the region profile's default chart of accounts into the new
         /// book.
         #[arg(long)]
@@ -120,11 +127,24 @@ enum Command {
         #[arg(long)]
         list_regions: bool,
     },
-    /// Import document/statement files (pdf, images, html, csv, ofx).
+    /// Import document/statement files (pdf, images, html, csv, ofx). With
+    /// --preset, CSV statements are also parsed into transactions.
     Import {
         /// Files to import.
-        #[arg(required = true)]
+        #[arg(required_unless_present = "list_presets")]
         paths: Vec<PathBuf>,
+        /// Statement-preset id (see --list-presets, e.g. za-fnb,
+        /// generic-mdy): parse each CSV with this column mapping and import
+        /// the lines as transactions (requires --account).
+        #[arg(long)]
+        preset: Option<String>,
+        /// Account (id or exact name) the statement lines belong to.
+        /// Required with --preset; create one with `slipscan account add`.
+        #[arg(long)]
+        account: Option<String>,
+        /// List the statement-preset catalog (grouped by region) and exit.
+        #[arg(long)]
+        list_presets: bool,
     },
     /// Run extraction on pending slips via the configured provider.
     Extract {
@@ -156,6 +176,17 @@ enum Command {
     Fx {
         #[command(subcommand)]
         action: FxAction,
+    },
+    /// Accounts (bank/cash/card) within a book.
+    Account {
+        #[command(subcommand)]
+        action: AccountAction,
+    },
+    /// Tax rates for a book (list and configure — e.g. the generic
+    /// profile's configurable standard rate).
+    Tax {
+        #[command(subcommand)]
+        action: TaxAction,
     },
     /// Signed classification/category packs.
     Pack {
@@ -199,6 +230,38 @@ enum ReconAction {
 }
 
 #[derive(Debug, Subcommand)]
+enum AccountAction {
+    /// Create an account in the selected book.
+    Add {
+        /// Account display name, e.g. "Cheque".
+        name: String,
+        /// Account kind: bank, cash, card, asset or liability.
+        #[arg(long, default_value = "bank")]
+        kind: String,
+        /// ISO-4217 currency; defaults to the book currency.
+        #[arg(long)]
+        currency: Option<String>,
+        /// Bank/institution label.
+        #[arg(long)]
+        institution: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum TaxAction {
+    /// List the book's configured tax rates.
+    Rates,
+    /// Set a tax rate's percentage in basis points (1500 = 15.00%) — how
+    /// the generic profile's standard-rate placeholder gets its actual rate.
+    SetRate {
+        /// Rate code, e.g. STD.
+        code: String,
+        /// Basis points, 0..=10000.
+        rate_bps: i64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum FxAction {
     /// Show the FX configuration and locally cached rates (never a network
     /// call).
@@ -215,6 +278,11 @@ enum FxAction {
         to: String,
         #[arg(allow_negative_numbers = true)]
         amount_minor: i64,
+        /// Replay at this pinned decimal rate (e.g. a previously recorded
+        /// conversion's rate) instead of the current cached rate — booked
+        /// conversions reproduce exactly, never re-rated.
+        #[arg(long)]
+        rate: Option<String>,
     },
 }
 
@@ -280,6 +348,19 @@ fn resolve_book(svc: &CoreService, selector: Option<&str>) -> anyhow::Result<Boo
             n => bail!("{n} books exist; pick one with --book <id-or-name>"),
         },
     }
+}
+
+/// Resolve an account within `book_id` by id or exact name.
+fn resolve_account(svc: &CoreService, book_id: &str, selector: &str) -> anyhow::Result<Account> {
+    svc.account_list(book_id)?
+        .into_iter()
+        .find(|a| a.id == selector || a.name == selector)
+        .ok_or_else(|| {
+            anyhow!(
+                "no account with id or name {selector:?} in this book; \
+                 see `slipscan list accounts` or create one with `slipscan account add`"
+            )
+        })
 }
 
 fn emit<T: serde::Serialize>(
@@ -436,6 +517,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             ref name,
             kind,
             ref region,
+            ref currency,
             seed_coa,
             list_regions,
         } => {
@@ -462,11 +544,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let book = match name {
                 Some(name) => {
                     // Default is the generic international profile — never a
-                    // hardcoded jurisdiction; core rejects unknown ids.
+                    // hardcoded jurisdiction; core rejects unknown ids. An
+                    // explicit --currency overrides the profile's default so
+                    // a book can be denominated in any currency, day one.
                     let book = svc.book_create(NewBook {
                         name: name.clone(),
                         kind: kind.into(),
-                        currency: None,
+                        currency: currency.clone(),
                         country: None,
                         region: region.clone(),
                     })?;
@@ -496,9 +580,45 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             })
         }
 
-        Command::Import { ref paths } => {
+        Command::Import {
+            ref paths,
+            ref preset,
+            ref account,
+            list_presets,
+        } => {
+            if list_presets {
+                // Pure catalog data — presets are region data, not code.
+                let groups = slipscan_ingest::bank::presets::statement_presets_by_region();
+                return emit(cli.json, &groups, || {
+                    for g in &groups {
+                        println!("{} — {}", g.region, g.region_name);
+                        for p in &g.presets {
+                            println!("  {}\t{}", p.id, p.bank_name);
+                        }
+                    }
+                });
+            }
             let svc = open_service(&cli.db)?;
             let book = resolve_book(&svc, cli.book.as_deref())?;
+            // With --preset, each CSV is parsed into transactions via the
+            // preset's column mapping (in addition to being stored as a
+            // statement document).
+            let preset = match preset.as_deref() {
+                None => None,
+                Some(id) => {
+                    let preset = slipscan_ingest::bank::presets::statement_preset(id)
+                        .ok_or_else(|| {
+                            anyhow!("unknown statement preset {id:?}; see `slipscan import --list-presets`")
+                        })?;
+                    let account = account.as_deref().ok_or_else(|| {
+                        anyhow!(
+                            "--preset needs --account <id-or-name> (create one with \
+                             `slipscan account add`)"
+                        )
+                    })?;
+                    Some((preset, resolve_account(&svc, &book.id, account)?))
+                }
+            };
             let mut results = Vec::new();
             for path in paths {
                 let (status, id) =
@@ -510,10 +630,37 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         Err(IngestError::UnsupportedFile(_)) => ("unsupported", None),
                         Err(e) => return Err(e).context(format!("importing {}", path.display())),
                     };
+                let statement = match &preset {
+                    None => None,
+                    Some((preset, account)) => {
+                        let lines =
+                            preset
+                                .adapter_for_path(path)?
+                                .parse_all()
+                                .with_context(|| {
+                                    format!("parsing {} with preset {}", path.display(), preset.id)
+                                })?;
+                        let outcome = import_statement_lines(
+                            &svc,
+                            &book.id,
+                            &account.id,
+                            TransactionSource::Import,
+                            lines,
+                        )?;
+                        Some(serde_json::json!({
+                            "preset": preset.id,
+                            "account_id": account.id,
+                            "transactions_imported": outcome.imported.len(),
+                            "duplicates": outcome.duplicates,
+                            "content_duplicates": outcome.content_duplicates,
+                        }))
+                    }
+                };
                 results.push(serde_json::json!({
                     "path": path.display().to_string(),
                     "status": status,
                     "document_id": id,
+                    "statement": statement,
                 }));
             }
             emit(cli.json, &results, || {
@@ -524,8 +671,75 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         r["document_id"].as_str().unwrap_or("-"),
                         r["path"].as_str().unwrap_or("")
                     );
+                    if let Some(s) = r["statement"].as_object() {
+                        println!(
+                            "  transactions: {} imported, {} duplicate(s) ({} ambiguous \
+                             cross-batch)",
+                            s["transactions_imported"], s["duplicates"], s["content_duplicates"]
+                        );
+                    }
                 }
             })
+        }
+
+        Command::Account { ref action } => {
+            let svc = open_service(&cli.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                AccountAction::Add {
+                    name,
+                    kind,
+                    currency,
+                    institution,
+                } => {
+                    let kind: slipscan_core::domain::AccountKind = kind.parse()?;
+                    // Default is the *book's* currency — profile data the
+                    // user picked, never a hardcoded one.
+                    let account = svc.account_create(slipscan_core::domain::NewAccount {
+                        book_id: book.id.clone(),
+                        name: name.clone(),
+                        kind,
+                        currency: currency.clone().unwrap_or_else(|| book.currency.clone()),
+                        institution: institution.clone(),
+                        account_number_masked: None,
+                        opening_balance_minor: None,
+                    })?;
+                    emit(cli.json, &account, || {
+                        println!(
+                            "Created account {} ({}) — {} {}",
+                            account.name, account.id, account.kind, account.currency
+                        );
+                    })
+                }
+            }
+        }
+
+        Command::Tax { ref action } => {
+            let svc = open_service(&cli.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                TaxAction::Rates => {
+                    let rates = svc.vat_rate_list(&book.id)?;
+                    emit(cli.json, &rates, || {
+                        for r in &rates {
+                            println!("{}\t{}\t{} bps", r.code, r.name, r.rate_bps);
+                        }
+                    })
+                }
+                TaxAction::SetRate { code, rate_bps } => {
+                    let updated = svc.vat_rate_set_bps(&book.id, code, *rate_bps)?;
+                    emit(cli.json, &updated, || {
+                        println!(
+                            "Set {} ({}) to {} bps ({}.{:02}%)",
+                            updated.code,
+                            updated.name,
+                            updated.rate_bps,
+                            updated.rate_bps / 100,
+                            updated.rate_bps % 100
+                        );
+                    })
+                }
+            }
         }
 
         Command::Extract { limit } => {
@@ -822,7 +1036,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             quote.rate,
                             quote.as_of,
                             quote.grade,
-                            fmt_age(Some(quote.age_sec)),
+                            fmt_age(quote.age_sec),
                             if quote.sources.is_empty() {
                                 "-".to_string()
                             } else {
@@ -835,8 +1049,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     from,
                     to,
                     amount_minor,
+                    rate,
                 } => {
-                    let conversion = svc.fx_convert(from, to, *amount_minor)?;
+                    let conversion = match rate.as_deref() {
+                        // Pinned-rate replay: a booked conversion reproduces
+                        // exactly, no matter how the cache moved since.
+                        Some(rate) => svc.fx_convert_at(from, to, *amount_minor, rate)?,
+                        None => svc.fx_convert(from, to, *amount_minor)?,
+                    };
                     emit(cli.json, &conversion, || {
                         println!(
                             "{} {} = {} {} (rate {} as of {}, grade {}, age {})",
@@ -845,7 +1065,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             fmt_minor(conversion.converted_minor),
                             conversion.to_currency,
                             conversion.rate,
-                            conversion.as_of,
+                            if conversion.as_of.is_empty() {
+                                "-"
+                            } else {
+                                &conversion.as_of
+                            },
                             conversion.grade,
                             fmt_age(conversion.age_secs)
                         );
@@ -1140,7 +1364,7 @@ mod tests {
             Cli::try_parse_from(["slipscan", "--book", "Biz", "import", "a.pdf", "b.jpg"]).unwrap();
         assert_eq!(cli.book.as_deref(), Some("Biz"));
         match cli.command {
-            Command::Import { paths } => assert_eq!(paths.len(), 2),
+            Command::Import { paths, .. } => assert_eq!(paths.len(), 2),
             other => panic!("unexpected {other:?}"),
         }
         // No paths at all is a parse error.
@@ -1293,6 +1517,128 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("atlantis"), "{err}");
+    }
+
+    #[test]
+    fn init_currency_flag_overrides_the_profile_default() {
+        // Regression: `init` had no --currency, so a generic-region book was
+        // always USD — a JPY/EUR user could not create a correctly
+        // denominated book from the CLI.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("c.sqlite");
+        run(Cli::try_parse_from([
+            "slipscan",
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+            "init",
+            "--name",
+            "Mumbai",
+            "--currency",
+            "inr",
+        ])
+        .unwrap())
+        .unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        let book = svc.book_list().unwrap().remove(0);
+        assert_eq!(book.region, "generic");
+        assert_eq!(book.currency, "INR", "normalized override wins");
+    }
+
+    #[test]
+    fn tax_rate_is_configurable_end_to_end_for_a_generic_book() {
+        // Regression: the generic profile's STD rate seeded at 0 bps with no
+        // CLI surface able to change it — all tax math ran at 0%.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("t.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let run_cli = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_cli(&["init", "--name", "W", "--region", "generic", "--seed-coa"]).unwrap();
+        run_cli(&["tax", "rates"]).unwrap();
+        run_cli(&["tax", "set-rate", "STD", "750"]).unwrap();
+
+        let svc = CoreService::open(&db).unwrap();
+        let book = svc.book_list().unwrap().remove(0);
+        let rates = svc.vat_rate_list(&book.id).unwrap();
+        let std = rates.iter().find(|r| r.code == "STD").unwrap();
+        assert_eq!(std.rate_bps, 750);
+        // Out-of-range rejected.
+        assert!(run_cli(&["tax", "set-rate", "STD", "10001"]).is_err());
+    }
+
+    #[test]
+    fn import_with_a_generic_preset_creates_transactions() {
+        // Regression: the statement-preset catalog had no CLI consumer — a
+        // US-format CSV imported as a document only, `list transactions`
+        // stayed empty.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("p.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let csv_path = dir.path().join("us-statement.csv");
+        std::fs::write(
+            &csv_path,
+            "Date,Description,Amount\n06/15/2026,ACME PAYROLL,\"2,345.67\"\n06/16/2026,COFFEE HOUSE,-4.50\n",
+        )
+        .unwrap();
+        let run_cli = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_cli(&["init", "--name", "W", "--region", "generic", "--seed-coa"]).unwrap();
+        run_cli(&["import", "--list-presets"]).unwrap();
+        run_cli(&["account", "add", "Checking"]).unwrap();
+        run_cli(&[
+            "import",
+            csv_path.to_str().unwrap(),
+            "--preset",
+            "generic-mdy",
+            "--account",
+            "Checking",
+        ])
+        .unwrap();
+
+        let svc = CoreService::open(&db).unwrap();
+        let book = svc.book_list().unwrap().remove(0);
+        let txns = svc
+            .transaction_list(&book.id, &TransactionFilter::default())
+            .unwrap();
+        assert_eq!(txns.len(), 2, "statement lines became transactions");
+        let payroll = txns
+            .iter()
+            .find(|t| t.description.as_deref() == Some("ACME PAYROLL"))
+            .unwrap();
+        assert_eq!(payroll.amount_minor, 234_567);
+        assert_eq!(payroll.posted_date, "2026-06-15", "MM/DD/YYYY parsed");
+        assert_eq!(payroll.currency, "USD", "account inherits book currency");
+        // The statement document is stored too.
+        assert_eq!(svc.document_list(&book.id, None).unwrap().len(), 1);
+
+        // Unknown preset and missing --account fail with guidance.
+        let err = run_cli(&[
+            "import",
+            csv_path.to_str().unwrap(),
+            "--preset",
+            "nope-bank",
+            "--account",
+            "Checking",
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("--list-presets"), "{err}");
+        let err = run_cli(&[
+            "import",
+            csv_path.to_str().unwrap(),
+            "--preset",
+            "generic-mdy",
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("--account"), "{err}");
     }
 
     #[test]

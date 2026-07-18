@@ -14,9 +14,12 @@
 //!   `fetched_at`, computed `age_secs`) instead of re-fetching.
 //! * **Provenance recorded.** Every conversion records the exact rate it
 //!   used (returned payload + audit log), so reports reproduce offline.
+//!   Replaying a booked conversion at its recorded rate goes through
+//!   `fx_convert_at` — never re-rated by cache refreshes.
 //!
 //! The service surface is on [`CoreService`](crate::service::CoreService):
-//! `fx_configure`, `fx_status`, `fx_fetch_rate`, `fx_convert`.
+//! `fx_configure`, `fx_status`, `fx_fetch_rate`, `fx_convert`,
+//! `fx_convert_at`.
 
 pub mod cache;
 pub mod client;
@@ -177,6 +180,40 @@ mod tests {
     }
 
     #[test]
+    fn credentialed_urls_are_rejected_on_every_write_path() {
+        // Regression: fx_configure stored user:pass@host verbatim as a
+        // PLAIN setting — plaintext credentials on disk, echoed by
+        // fx_status and the CLI (mantra #4).
+        let svc = svc();
+        let err = svc
+            .fx_configure("https://alice:hunter2@fx.example.org")
+            .unwrap_err();
+        assert!(!err.to_string().contains("hunter2"), "{err}");
+        // The generic settings surface must not be a bypass.
+        let err = svc
+            .settings_set(
+                FX_BASE_URL_KEY,
+                "https://alice:hunter2@fx.example.org",
+                false,
+            )
+            .unwrap_err();
+        assert!(!err.to_string().contains("hunter2"), "{err}");
+        assert_eq!(svc.settings_get(FX_BASE_URL_KEY).unwrap(), None);
+        assert!(!svc.fx_status().unwrap().configured);
+        // And valid URLs written via settings_set are normalized like
+        // fx_configure would.
+        svc.settings_set(FX_BASE_URL_KEY, " HTTPS://fx.example.org/ ", false)
+            .unwrap();
+        assert_eq!(
+            svc.settings_get(FX_BASE_URL_KEY).unwrap().as_deref(),
+            Some("https://fx.example.org")
+        );
+        // Clearing through settings_set still works (empty = FX off).
+        svc.settings_set(FX_BASE_URL_KEY, "", false).unwrap();
+        assert!(!svc.fx_status().unwrap().configured);
+    }
+
+    #[test]
     fn configure_validates_normalizes_and_clears() {
         let svc = svc();
         svc.fx_configure(" https://fx.example.org/ ").unwrap();
@@ -273,6 +310,72 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, CoreError::FxUnknownPair { .. }), "{err}");
         assert!(svc.fx_status().unwrap().cached_rates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn non_positive_rates_are_rejected_at_fetch_and_never_cached() {
+        // Regression: rate=-5 used to be cached (poisoning every later
+        // conversion) and rate=0 silently converted every amount to 0.
+        let svc = svc();
+        svc.fx_configure("https://fx.example.org").unwrap();
+        for bad in ["-5", "0", "0.000"] {
+            let body = convert_body("USD", "ZAR", bad, "2026-07-17T16:00:00Z", "A");
+            let transport = MockFxTransport::new().route("/convert", 200, &body);
+            let err = svc
+                .fx_fetch_rate(&transport, "USD", "ZAR")
+                .await
+                .unwrap_err();
+            assert!(matches!(err, CoreError::FxParse(_)), "rate {bad}: {err}");
+            assert!(
+                svc.fx_status().unwrap().cached_rates.is_empty(),
+                "rate {bad} must not be cached"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn convert_at_replays_a_booked_conversion_after_a_cache_refresh() {
+        // The contract half fx_convert alone cannot give: the same booked
+        // conversion must reproduce identically after the cache re-rates.
+        let svc = svc();
+        svc.fx_configure("https://fx.example.org").unwrap();
+        let body = convert_body("USD", "ZAR", "18.0", "2026-07-17T16:00:00Z", "A");
+        let transport = MockFxTransport::new().route("/convert", 200, &body);
+        svc.fx_fetch_rate(&transport, "USD", "ZAR").await.unwrap();
+        let booked = svc.fx_convert("USD", "ZAR", 10_000).unwrap();
+        assert_eq!(booked.converted_minor, 180_000);
+
+        // Cache moves on (18.0 → 18.5): fx_convert now re-rates…
+        let body = convert_body("USD", "ZAR", "18.5", "2026-07-18T07:00:00Z", "A");
+        let transport = MockFxTransport::new().route("/convert", 200, &body);
+        svc.fx_fetch_rate(&transport, "USD", "ZAR").await.unwrap();
+        assert_eq!(
+            svc.fx_convert("USD", "ZAR", 10_000)
+                .unwrap()
+                .converted_minor,
+            185_000
+        );
+
+        // …but replaying at the recorded rate reproduces the booking exactly.
+        let replay = svc
+            .fx_convert_at("usd", "zar", 10_000, &booked.rate.to_string())
+            .unwrap();
+        assert_eq!(replay.converted_minor, booked.converted_minor);
+        assert_eq!(replay.rate, booked.rate);
+        assert_eq!(replay.grade, "pinned");
+        assert_eq!(replay.age_secs, None);
+        // Offline too: works with no cache row at all.
+        let offline = svc.fx_convert_at("GBP", "JPY", 100, "163.25").unwrap();
+        assert_eq!(offline.converted_minor, 16_325);
+        // Garbage or non-positive pinned rates are rejected.
+        assert!(svc.fx_convert_at("USD", "ZAR", 100, "eighteen").is_err());
+        assert!(svc.fx_convert_at("USD", "ZAR", 100, "0").is_err());
+        assert!(svc.fx_convert_at("USD", "ZAR", 100, "-1.5").is_err());
+        // And the replay is audited with the rate it used.
+        let audits = svc.audit_list(None, 50).unwrap();
+        assert!(audits
+            .iter()
+            .any(|a| a.entity_type == "fx_conversion" && a.action == "convert_at"));
     }
 
     #[test]

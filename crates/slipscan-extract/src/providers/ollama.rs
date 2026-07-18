@@ -100,7 +100,7 @@ impl ExtractionProvider for OllamaProvider {
         let http = self.build_request(&request);
         let response = super::post_with_retry(self.transport.as_ref(), http, self.name()).await?;
         let text = response_text(&response.body)?;
-        wire::parse_slip(&text, wire::DEFAULT_CURRENCY)
+        wire::parse_slip(&text, request.default_currency.as_deref().unwrap_or(""))
     }
 }
 

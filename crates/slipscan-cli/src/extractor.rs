@@ -45,6 +45,9 @@ pub async fn run_extraction(
     book_id: &str,
     limit: usize,
 ) -> Result<ExtractionRun> {
+    // The book currency is the extraction fallback for slips that show no
+    // currency of their own — injected here, never hardcoded downstream.
+    let book = svc.book_get(book_id)?;
     let pending = svc.document_list(book_id, Some(DocumentStatus::Pending))?;
     let mut run = ExtractionRun::default();
 
@@ -68,7 +71,9 @@ pub async fn run_extraction(
         };
 
         svc.document_transition(&doc.id, DocumentStatus::Processing, None)?;
-        match provider.extract(ExtractionRequest::new(mime, bytes)).await {
+        let request =
+            ExtractionRequest::new(mime, bytes).with_default_currency(book.currency.clone());
+        match provider.extract(request).await {
             Ok(slip) => {
                 let payload = serde_json::to_string(&slip)?;
                 svc.document_record_extraction(&doc.id, Some(provider.name()), None, &payload)?;
@@ -152,6 +157,9 @@ mod tests {
                 return Err(ExtractError::Provider("boom".into()));
             }
             assert!(!request.bytes.is_empty());
+            // The runner must inject the book currency (generic-region test
+            // book → USD) so extraction never falls back to a hardcoded one.
+            assert_eq!(request.default_currency.as_deref(), Some("USD"));
             Ok(SlipExtraction {
                 schema: slipscan_extract::SLIP_SCHEMA_VERSION.to_string(),
                 merchant: None,

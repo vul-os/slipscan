@@ -2154,6 +2154,17 @@ impl CoreService {
     /// Store a setting. With `secret = true` the value goes to the OS
     /// keychain and only the keychain entry name is stored in SQLite.
     pub fn settings_set(&self, key: &str, value: &str, secret: bool) -> CoreResult<()> {
+        // The FX base URL gets the same validation here as in
+        // `fx_configure` — otherwise the generic settings surface would be a
+        // bypass for storing a credentialed URL in plaintext (mantra #4).
+        if key == fx::FX_BASE_URL_KEY && !secret && !value.trim().is_empty() {
+            let normalized = fx::normalize_base_url(value)?;
+            return self.settings_set_raw(key, &normalized, false);
+        }
+        self.settings_set_raw(key, value, secret)
+    }
+
+    fn settings_set_raw(&self, key: &str, value: &str, secret: bool) -> CoreResult<()> {
         let now = now_iso();
         if secret {
             let entry = format!("settings.{key}");
@@ -2296,6 +2307,15 @@ impl CoreService {
         let base_url = self.fx_base_url()?.ok_or(CoreError::FxNotConfigured)?;
         let client = fx::OpenRateClient::new(&base_url, transport)?;
         let quote = client.convert_one(&from, &to).await?;
+        // Sanity-check before persisting: a non-positive rate would poison
+        // the cache (0 silently converts everything to 0; negative fails
+        // every later conversion) until a refetch.
+        if quote.rate <= rust_decimal::Decimal::ZERO {
+            return Err(CoreError::FxParse(format!(
+                "OpenRate returned a non-positive rate {} for {from}/{to} — not caching it",
+                quote.rate
+            )));
+        }
         let row = fx::cache::FxRateRow {
             from_currency: from.clone(),
             to_currency: to.clone(),
@@ -2381,6 +2401,58 @@ impl CoreService {
             "fx_conversion",
             Some(&format!("{from}/{to}")),
             "convert",
+            None,
+            Some(serde_json::to_string(&conversion)?),
+        )?;
+        Ok(conversion)
+    }
+
+    /// Convert an amount **at a caller-supplied pinned rate** — the replay
+    /// half of the contract "every conversion records the rate it used at
+    /// booking time; reports reproduce offline and never silently re-rate".
+    /// [`Self::fx_convert`] rates at the *current* cached rate; a booked
+    /// conversion is replayed by feeding its recorded rate (a decimal
+    /// string, e.g. from the returned [`fx::FxConversion`] or the audit log)
+    /// back through here — the result is identical no matter how the cache
+    /// has moved since. Purely local, never a network call.
+    pub fn fx_convert_at(
+        &self,
+        from: &str,
+        to: &str,
+        amount_minor: i64,
+        rate: &str,
+    ) -> CoreResult<fx::FxConversion> {
+        use std::str::FromStr as _;
+
+        let from = normalize_currency_code(from)?;
+        let to = normalize_currency_code(to)?;
+        let rate = rust_decimal::Decimal::from_str(rate.trim())
+            .map_err(|e| CoreError::Validation(format!("pinned rate {rate:?}: {e}")))?;
+        if rate <= rust_decimal::Decimal::ZERO {
+            return Err(CoreError::Validation(format!(
+                "pinned rate must be positive, got {rate}"
+            )));
+        }
+        let converted_minor = fx::convert_minor(amount_minor, rate)?;
+        let conversion = fx::FxConversion {
+            from_currency: from.clone(),
+            to_currency: to.clone(),
+            amount_minor,
+            converted_minor,
+            rate,
+            // Provenance of a pinned rate lives with the original booking;
+            // this replay only knows the rate itself.
+            as_of: String::new(),
+            grade: "pinned".to_string(),
+            fetched_at: String::new(),
+            age_secs: None,
+        };
+        self.emit_audit(
+            self.conn(),
+            None,
+            "fx_conversion",
+            Some(&format!("{from}/{to}")),
+            "convert_at",
             None,
             Some(serde_json::to_string(&conversion)?),
         )?;
