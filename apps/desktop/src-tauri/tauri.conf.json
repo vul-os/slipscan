@@ -26,14 +26,32 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["dmg", "msi", "nsis", "appimage", "deb"],
     "category": "Finance",
+    "publisher": "Vulos",
+    "copyright": "© 2026 Vulos. MIT License.",
+    "shortDescription": "Self-hosted personal finance and accounting",
+    "longDescription": "slip/scan — self-hosted personal finance and accounting. Local-first: embedded SQLite, no telemetry, no default network calls.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": false,
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "linux": {
+      "deb": {
+        "section": "utils"
+      }
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
   }
 }
