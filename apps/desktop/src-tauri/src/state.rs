@@ -86,9 +86,11 @@ impl AppState {
     }
 }
 
-/// First-run seed: a Personal (ZA) book, the SA chart of accounts + VAT
-/// rates, and a starter category set. Idempotent — a populated database is
-/// left untouched.
+/// First-run seed: a Personal book on the **generic** region profile (global
+/// by default — no jurisdiction is ever hardcoded; existing databases keep
+/// whatever region their book already has), the profile's chart of accounts
+/// and tax rates, and a starter category set. Idempotent — a populated
+/// database is left untouched.
 pub fn ensure_seeded(service: &CoreService) -> CoreResult<Book> {
     if let Some(book) = service.book_list()?.into_iter().next() {
         return Ok(book);
@@ -97,7 +99,8 @@ pub fn ensure_seeded(service: &CoreService) -> CoreResult<Book> {
         name: "Personal".to_string(),
         kind: BookKind::Personal,
         currency: None,
-        country: Some("ZA".to_string()),
+        country: None,
+        region: None, // core resolves this to the generic profile
     })?;
     service.coa_seed(&book.id)?;
     for &(name, kind, icon) in DEFAULT_CATEGORIES {
@@ -126,6 +129,9 @@ mod tests {
         );
         let book = ensure_seeded(&service).unwrap();
         assert_eq!(book.kind, BookKind::Personal);
+        // Global by default: the first-run book is generic, never a
+        // hardcoded jurisdiction.
+        assert_eq!(book.region, "generic");
         let tree = service.category_tree(&book.id).unwrap();
         assert_eq!(tree.len(), DEFAULT_CATEGORIES.len());
         assert!(!service.coa_list(&book.id).unwrap().is_empty());

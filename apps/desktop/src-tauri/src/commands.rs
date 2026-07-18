@@ -15,7 +15,7 @@ use slipscan_core::domain::{
     self as core, CategoryNode, DocumentKind, DocumentSource, JournalSourceType, NewDocument,
     NewJournal, NewJournalLine, TransactionFilter,
 };
-use slipscan_core::secrets::{SecretString, SecretStore, Vault};
+use slipscan_core::secrets::{SecretStore, SecretString, Vault};
 use slipscan_core::util::{new_id, now_iso};
 use slipscan_core::CoreService;
 
@@ -53,10 +53,7 @@ fn category_maps(
     ) {
         for n in nodes {
             names.insert(n.category.id.clone(), n.category.name.clone());
-            kinds.insert(
-                n.category.id.clone(),
-                n.category.kind.as_str().to_string(),
-            );
+            kinds.insert(n.category.id.clone(), n.category.kind.as_str().to_string());
             walk(&n.children, names, kinds);
         }
     }
@@ -330,7 +327,10 @@ pub async fn document_import(
 
     let sha256 = {
         let digest = Sha256::digest(&bytes);
-        digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     };
 
     // Keep the stored name collision-free but recognisable.
@@ -569,9 +569,7 @@ pub async fn report_spending(
         by_category: rows
             .into_iter()
             .map(|r| SpendingByCategoryDto {
-                category_id: r
-                    .category_id
-                    .unwrap_or_else(|| "uncategorized".to_string()),
+                category_id: r.category_id.unwrap_or_else(|| "uncategorized".to_string()),
                 category_name: r.category_name,
                 amount_minor: r.total_minor,
                 share: if total == 0 {
@@ -651,7 +649,7 @@ pub async fn report_vat_summary(
     let service = state.service()?;
     let book = book_by_id(&service, &query.book_id)?;
     let summary = service
-        .report_vat201(
+        .report_tax_summary(
             &query.book_id,
             &format!("{}-01", query.period),
             &format!("{}-31", query.period),
@@ -661,6 +659,10 @@ pub async fn report_vat_summary(
         book_id: query.book_id.clone(),
         period: query.period.clone(),
         currency: book.currency,
+        // Report name + box labels come from the book's region profile
+        // ("VAT201" for za, "Tax summary" generically) — never hardcoded.
+        report_name: summary.report_name,
+        labels: summary.labels,
         output_vat_minor: summary.output_vat_minor,
         input_vat_minor: summary.input_vat_minor,
         net_vat_minor: summary.net_vat_minor,
@@ -697,6 +699,87 @@ pub async fn report_trial_balance(
         total_credit_minor: rows.iter().map(|r| r.credit_minor).sum(),
         rows,
     })
+}
+
+// ---------------------------------------------------------------------------
+// regions — profiles are data the user picks, never a hardcoded default
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn region_list() -> Result<Vec<slipscan_core::region::RegionInfo>, String> {
+    Ok(slipscan_core::region::region_infos())
+}
+
+// ---------------------------------------------------------------------------
+// FX (OpenRate) — opt-in. Only `fx_fetch_rate` ever touches the network,
+// only on an explicit user action, and only against the configured base URL.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn fx_status(state: State<'_, AppState>) -> Result<slipscan_core::fx::FxStatus, String> {
+    state.service()?.fx_status().map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct FxConfigureQuery {
+    /// OpenRate base URL; an empty string clears it (FX off).
+    pub base_url: String,
+}
+
+#[tauri::command]
+pub async fn fx_configure(
+    state: State<'_, AppState>,
+    query: FxConfigureQuery,
+) -> Result<slipscan_core::fx::FxStatus, String> {
+    let service = state.service()?;
+    service.fx_configure(&query.base_url).map_err(err)?;
+    service.fx_status().map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct FxPairQuery {
+    pub from: String,
+    pub to: String,
+}
+
+#[tauri::command]
+pub async fn fx_fetch_rate(
+    state: State<'_, AppState>,
+    query: FxPairQuery,
+) -> Result<slipscan_core::fx::FxQuote, String> {
+    // Core's FX future is `?Send`, so it cannot ride Tauri's async workers
+    // directly: hop off the runtime with block_in_place and drive it on a
+    // self-contained current-thread runtime. Network happens only here, only
+    // because the user clicked, and only to the configured OpenRate URL.
+    tokio::task::block_in_place(|| {
+        let transport = slipscan_ingest::fx::ReqwestFxTransport::new().map_err(err)?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("fx runtime: {e}"))?;
+        let service = state.service()?;
+        rt.block_on(service.fx_fetch_rate(&transport, &query.from, &query.to))
+            .map_err(err)
+    })
+}
+
+#[derive(serde::Deserialize)]
+pub struct FxConvertQuery {
+    pub from: String,
+    pub to: String,
+    pub amount_minor: i64,
+}
+
+#[tauri::command]
+pub async fn fx_convert(
+    state: State<'_, AppState>,
+    query: FxConvertQuery,
+) -> Result<slipscan_core::fx::FxConversion, String> {
+    // Cache-only: a missing pair is an error, never a silent fetch.
+    state
+        .service()?
+        .fx_convert(&query.from, &query.to, query.amount_minor)
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------------

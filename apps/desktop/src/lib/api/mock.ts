@@ -13,6 +13,10 @@ import type {
   Document,
   DocumentImportRequest,
   DocumentReviewRequest,
+  FxCachedRate,
+  FxConversion,
+  FxQuote,
+  FxStatus,
   Health,
   IncomeExpenseReport,
   JournalEntry,
@@ -20,6 +24,7 @@ import type {
   LedgerAccount,
   ReconConfirmRequest,
   ReconSuggestion,
+  RegionInfo,
   Settings,
   SpendingReport,
   Transaction,
@@ -46,9 +51,31 @@ const book: Book = {
   slug: "personal",
   kind: "personal",
   currency: "ZAR",
+  // The demo book uses the South African region profile — that is demo
+  // *data*, never a code default (regions are data, not code).
+  region: "za",
+  region_name: "South Africa",
+  tax_report_name: "VAT201",
   file_path: "~/SlipScan/personal.slipscan.db",
   created_at: "2026-01-04T08:12:00Z",
 };
+
+const regions: RegionInfo[] = [
+  {
+    id: "generic",
+    display_name: "Generic (international)",
+    country: null,
+    default_currency: "USD",
+    tax_report_name: "Tax summary",
+  },
+  {
+    id: "za",
+    display_name: "South Africa",
+    country: "ZA",
+    default_currency: "ZAR",
+    tax_report_name: "VAT201",
+  },
+];
 
 const accounts: Account[] = [
   {
@@ -407,6 +434,13 @@ let reconSuggestions: ReconSuggestion[] = documents
     };
   });
 
+/** FX starts unconfigured — opt-in, exactly like the real core service. */
+const fxState: FxStatus = {
+  configured: false,
+  base_url: null,
+  cached_rates: [],
+};
+
 let settings: Settings = {
   theme: "system",
   llm: {
@@ -729,6 +763,16 @@ export const mockApi = {
     book_id: BOOK_ID,
     period: "2026-07",
     currency: "ZAR",
+    // Labels come from the demo book's za profile — data, not code.
+    report_name: "VAT201",
+    labels: {
+      standard_rated_supplies: "Standard-rated supplies",
+      zero_rated_supplies: "Zero-rated supplies",
+      exempt_supplies: "Exempt supplies",
+      output_tax: "Output VAT",
+      input_tax: "Input VAT",
+      net_tax: "Net VAT payable (refundable if negative)",
+    },
     output_vat_minor: 0,
     input_vat_minor: 24_396,
     net_vat_minor: -24_396,
@@ -763,6 +807,99 @@ export const mockApi = {
       rows,
       total_debit_minor: rows.reduce((s, r) => s + r.debit_minor, 0),
       total_credit_minor: rows.reduce((s, r) => s + r.credit_minor, 0),
+    };
+  },
+
+  region_list: async (): Promise<RegionInfo[]> => clone(regions),
+
+  // -- FX (OpenRate) mock: mirrors core semantics — opt-in, cache-only
+  // conversion, "fetch" only on explicit request (here it fabricates a
+  // deterministic quote instead of any network call). --
+
+  fx_status: async (): Promise<FxStatus> => clone(fxState),
+
+  fx_configure: async (q: { base_url: string }): Promise<FxStatus> => {
+    const trimmed = q.base_url.trim().replace(/\/+$/, "");
+    if (trimmed === "") {
+      fxState.configured = false;
+      fxState.base_url = null;
+    } else {
+      if (!/^https?:\/\/\S+$/.test(trimmed))
+        throw new Error(`invalid OpenRate base URL "${q.base_url}"`);
+      fxState.configured = true;
+      fxState.base_url = trimmed;
+    }
+    return clone(fxState);
+  },
+
+  fx_fetch_rate: async (q: { from: string; to: string }): Promise<FxQuote> => {
+    if (!fxState.configured)
+      throw new Error(
+        "exchange rates are not configured: set the OpenRate base URL first",
+      );
+    const from = q.from.toUpperCase();
+    const to = q.to.toUpperCase();
+    const now = new Date().toISOString();
+    const quote: FxQuote = {
+      from_currency: from,
+      to_currency: to,
+      rate: "18.074219053",
+      as_of: now,
+      age_sec: 0,
+      grade: "B",
+      sources: ["mock"],
+    };
+    const cached: FxCachedRate = {
+      from_currency: from,
+      to_currency: to,
+      rate: quote.rate,
+      as_of: quote.as_of,
+      grade: quote.grade,
+      fetched_at: now,
+      age_secs: 0,
+    };
+    fxState.cached_rates = fxState.cached_rates
+      .filter((r) => !(r.from_currency === from && r.to_currency === to))
+      .concat(cached);
+    return clone(quote);
+  },
+
+  fx_convert: async (q: {
+    from: string;
+    to: string;
+    amount_minor: number;
+  }): Promise<FxConversion> => {
+    const from = q.from.toUpperCase();
+    const to = q.to.toUpperCase();
+    if (from === to)
+      return {
+        from_currency: from,
+        to_currency: to,
+        amount_minor: q.amount_minor,
+        converted_minor: q.amount_minor,
+        rate: "1",
+        as_of: new Date().toISOString(),
+        grade: "identity",
+        fetched_at: new Date().toISOString(),
+        age_secs: 0,
+      };
+    const cached = fxState.cached_rates.find(
+      (r) => r.from_currency === from && r.to_currency === to,
+    );
+    if (!cached)
+      throw new Error(`fx_rate ${from}/${to} not found: fetch the rate first`);
+    // Mock-only arithmetic; the real path does exact decimal × i64 in core.
+    const converted = Math.round(q.amount_minor * Number(cached.rate));
+    return {
+      from_currency: from,
+      to_currency: to,
+      amount_minor: q.amount_minor,
+      converted_minor: converted,
+      rate: cached.rate,
+      as_of: cached.as_of,
+      grade: cached.grade,
+      fetched_at: cached.fetched_at,
+      age_secs: cached.age_secs,
     };
   },
 

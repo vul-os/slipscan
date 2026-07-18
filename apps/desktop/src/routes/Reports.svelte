@@ -121,28 +121,28 @@
     downloadCsv(`spending-${book.slug}-${month}.csv`, csv);
   }
 
-  function exportVat(book: Book, vat: VatSummary) {
+  // The tax report's name and box labels come from the book's region
+  // profile ("VAT201" in South Africa, "Tax summary" generically) — the UI
+  // never hardcodes a jurisdiction's wording.
+  function exportTax(book: Book, vat: VatSummary) {
     exportError = null;
     const csv = toCsv(
       ["item", "amount", "currency"],
       [
-        ["Output VAT (sales)", csvMoney(vat.output_vat_minor, vat.currency), vat.currency],
-        ["Input VAT (purchases)", csvMoney(vat.input_vat_minor, vat.currency), vat.currency],
-        [
-          "Net VAT payable (refundable if negative)",
-          csvMoney(vat.net_vat_minor, vat.currency),
-          vat.currency,
-        ],
+        [vat.labels.output_tax, csvMoney(vat.output_vat_minor, vat.currency), vat.currency],
+        [vat.labels.input_tax, csvMoney(vat.input_vat_minor, vat.currency), vat.currency],
+        [vat.labels.net_tax, csvMoney(vat.net_vat_minor, vat.currency), vat.currency],
       ],
     );
-    downloadCsv(`vat-summary-${book.slug}-${vat.period}.csv`, csv);
+    const slug = vat.report_name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    downloadCsv(`${slug}-${book.slug}-${vat.period}.csv`, csv);
   }
 </script>
 
 <PageHeader
   eyebrow="Insight without upload"
   title="Reports"
-  subtitle="Spending, income vs expense, VAT and trial balance — computed locally, exportable as CSV."
+  subtitle="Spending, income vs expense, tax and trial balance — computed locally, exportable as CSV."
 >
   {#snippet actions()}
     <button
@@ -264,25 +264,27 @@
       {/if}
     </section>
 
-    <!-- VAT summary -->
+    <!-- tax-period summary (named by the book's region profile) -->
     <section class="card p-4">
       <header class="mb-3 flex items-baseline justify-between">
-        <h2 class="text-[13px] font-semibold">VAT summary · {fmtMonth(month)}</h2>
+        <h2 class="text-[13px] font-semibold">
+          {d.vat.report_name} · {fmtMonth(month)}
+        </h2>
         <button
           class="btn btn-ghost h-6 px-1.5 text-[11.5px] text-t3"
-          onclick={() => exportVat(d.book, d.vat)}
+          onclick={() => exportTax(d.book, d.vat)}
         >
           <Icon name="download" size={12} />
-          VAT export
+          CSV export
         </button>
       </header>
       <dl class="divide-y divide-line text-[12.5px]">
         <div class="flex items-center justify-between py-2">
-          <dt class="text-t2">Output VAT (sales)</dt>
+          <dt class="text-t2">{d.vat.labels.output_tax}</dt>
           <dd class="num">{fmtMoney(d.vat.output_vat_minor, d.vat.currency)}</dd>
         </div>
         <div class="flex items-center justify-between py-2">
-          <dt class="text-t2">Input VAT (purchases)</dt>
+          <dt class="text-t2">{d.vat.labels.input_tax}</dt>
           <dd class="num">{fmtMoney(d.vat.input_vat_minor, d.vat.currency)}</dd>
         </div>
         <div class="flex items-center justify-between py-2 font-semibold">

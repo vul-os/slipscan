@@ -18,6 +18,9 @@ import type {
   Category,
   Document,
   DocumentImportRequest,
+  FxConversion,
+  FxQuote,
+  FxStatus,
   Health,
   IncomeExpenseReport,
   JournalEntry,
@@ -25,6 +28,7 @@ import type {
   LedgerAccount,
   ReconConfirmRequest,
   ReconSuggestion,
+  RegionInfo,
   Settings,
   SpendingReport,
   Transaction,
@@ -144,6 +148,27 @@ export const api = {
     call("report_trial_balance", { query: q }, () =>
       mockApi.report_trial_balance(q),
     ),
+
+  regionList: (): Promise<RegionInfo[]> =>
+    call("region_list", {}, mockApi.region_list),
+
+  // -- FX (OpenRate): opt-in. Only fxFetchRate touches the network, and only
+  // on an explicit user action against the configured endpoint. --
+
+  fxStatus: (): Promise<FxStatus> => call("fx_status", {}, mockApi.fx_status),
+
+  fxConfigure: (q: { base_url: string }): Promise<FxStatus> =>
+    call("fx_configure", { query: q }, () => mockApi.fx_configure(q)),
+
+  fxFetchRate: (q: { from: string; to: string }): Promise<FxQuote> =>
+    call("fx_fetch_rate", { query: q }, () => mockApi.fx_fetch_rate(q)),
+
+  fxConvert: (q: {
+    from: string;
+    to: string;
+    amount_minor: number;
+  }): Promise<FxConversion> =>
+    call("fx_convert", { query: q }, () => mockApi.fx_convert(q)),
 
   settingsGet: (): Promise<Settings> =>
     call("settings_get", {}, mockApi.settings_get),
