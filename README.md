@@ -23,7 +23,7 @@
 <p align="center">
   <img src="assets/screens/dashboard.png" alt="SlipScan dashboard — design direction" width="820">
   <br>
-  <sub><em>Design direction — an archived capture of the legacy cloud app, kept as the visual target (<a href="docs/SCREENSHOTS.md">honest notes</a>). Shots of the shipped desktop app replace these as screens are finished.</em></sub>
+  <sub><em>Design direction — the visual target the desktop app is built toward (<a href="docs/SCREENSHOTS.md">notes</a>). Shots of the shipped app replace these as screens are finished.</em></sub>
 </p>
 
 <table align="center">
@@ -77,7 +77,7 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
 - Ingestion from your own mailbox — always your accounts, [never our infrastructure](docs/EMAIL.md); generic IMAP polling works today, Gmail/Graph connectors and push are built but not yet wired to a surface
 - Open-source, local bank-scraper framework — adapters run in your session, first adapters in progress ([framework](docs/BANK-ADAPTERS.md))
 - Write-only credential vault rooted in the OS keychain — secrets can be set, rotated, revoked, and used, never viewed ([threat model](docs/THREAT-MODEL.md))
-- Opt-in multi-currency FX via [OpenRate](https://github.com/vul-os/openrate) — self-hosted, provenance-graded rates (quality grade + as-of age shown wherever a converted amount is), cached locally, every conversion recording the rate it used; no endpoint configured means zero FX network calls ([contract](docs/ARCHITECTURE.md#exchange-rates--openrate); integration lands in Phase 4.7)
+- Opt-in multi-currency FX via [OpenRate](https://github.com/vul-os/openrate) — self-hosted, provenance-graded rates. The engine is in the core today: decimal-only rate math (floats never touch money), a local rate cache, and every conversion recording the exact rate, quality grade, and as-of age it used; converted report views and the CLI/desktop surfaces are still landing (Phase 4.7). No endpoint configured means zero FX network calls ([contract](docs/ARCHITECTURE.md#exchange-rates--openrate))
 - Headless self-host server mode for an always-on box ([guide](docs/SELFHOST.md))
 
 > [!NOTE]
@@ -85,7 +85,7 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
 
 ## Screenshots
 
-These are **design-direction previews** — the target UI the desktop app is being built toward. Some depict legacy cloud-era concepts that are not coming back (workspaces, members, sign-in); the full annotated set with honest notes is in [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md).
+These are **design-direction previews** — the target UI the desktop app is being built toward. A few show concepts that aren't part of the product (workspaces, members, sign-in); the full annotated set is in [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md).
 
 <table>
   <tr>
