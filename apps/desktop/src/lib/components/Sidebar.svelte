@@ -45,7 +45,15 @@
     router.go("transactions");
   }
 
-  const mockData = $derived(!isTauri || apiStatus.usedMockFallback);
+  // `?screenshot=1` (scripts/screenshot.mjs) hides the mock badge so docs
+  // captures show the product, not the dev harness. Dev in a browser still
+  // always shows it.
+  const screenshotMode = new URLSearchParams(window.location.search).has(
+    "screenshot",
+  );
+  const mockData = $derived(
+    (!isTauri || apiStatus.usedMockFallback) && !screenshotMode,
+  );
 </script>
 
 <aside
