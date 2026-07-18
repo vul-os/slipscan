@@ -125,6 +125,7 @@ img{max-width:100%;display:block}
     <div class="nav-spacer"></div>
     <nav class="nav-links">
       <a href="./index.html#features">Features</a>
+      <a href="./index.html#download">Download</a>
       <a href="./index.html#decentralized">Decentralized</a>
       <a href="./docs.html">Docs</a>
       <a href="https://github.com/vul-os/slipscan" target="_blank" rel="noopener">GitHub</a>
@@ -140,12 +141,13 @@ img{max-width:100%;display:block}
     <p class="tagline">Self-hosted, decentralized personal finance &amp; accounting. You are the server.</p>
     <p class="blurb">A Rust core over a local SQLite file, wrapped in a Tauri desktop app. Scan slips, ingest your inbox, scrape your own bank sessions, keep double-entry books — everything computed on your machine, credentials in your OS keychain, and community smarts shared as signed rule packs instead of pooled data. Global by default: anything country-specific ships as a region profile you pick — South Africa first, a generic profile for everywhere else.</p>
     <div class="cta-row">
-      <a class="btn btn-primary" href="#quickstart">Get started</a>
+      <a class="btn btn-primary" href="#download">Download</a>
+      <a class="btn btn-ghost" href="#quickstart">Get started</a>
       <a class="btn btn-ghost" href="./docs.html">Read the docs</a>
       <a class="btn btn-ghost" href="https://github.com/vul-os/slipscan" target="_blank" rel="noopener">View on GitHub</a>
     </div>
-    <div class="hero-visual"><img src="./screenshots/dashboard.png" alt="Design direction — an empty workspace state from the legacy app's visual design; current Tauri app screenshots are in progress" loading="lazy"></div>
-    <p style="font-size:12px;opacity:.7;margin-top:8px">Shown: the legacy design direction, not the shipped Tauri app — current screenshots are in progress.</p>
+    <div class="hero-visual"><img src="./screenshots/dashboard.png" alt="The shipped SlipScan desktop app — Dashboard with net balance, monthly spend, budget remaining, nudges, and recent activity" loading="lazy"></div>
+    <p style="font-size:12px;opacity:.7;margin-top:8px">Shown: the shipped desktop app (Dashboard, demo data). Every screen is in the <a href="./docs.html#screenshots" style="text-decoration:underline">docs gallery</a>.</p>
   </div></section>
 
   <section class="section" id="features"><div class="wrap">
@@ -161,9 +163,20 @@ img{max-width:100%;display:block}
     </div>
   </div></section>
 
+  <section class="section" id="download"><div class="wrap">
+    <h2>Download</h2>
+    <p class="lead">Installers for every desktop platform, straight from GitHub Releases. No account to create — there is nothing to sign in to.</p>
+    <div class="grid">
+      <a class="card" href="https://github.com/vul-os/slipscan/releases/latest" target="_blank" rel="noopener"><div class="dot"></div><h3>macOS</h3><p>Download the <code>.dmg</code> from the latest release. Builds are unsigned for now — first launch is right-click → Open.</p></a>
+      <a class="card" href="https://github.com/vul-os/slipscan/releases/latest" target="_blank" rel="noopener"><div class="dot"></div><h3>Windows</h3><p>Download the <code>.msi</code> or <code>-setup.exe</code> from the latest release. If SmartScreen appears: "More info" → "Run anyway".</p></a>
+      <a class="card" href="https://github.com/vul-os/slipscan/releases/latest" target="_blank" rel="noopener"><div class="dot"></div><h3>Linux</h3><p>Download the <code>.AppImage</code> or <code>.deb</code> from the latest release. Make the AppImage executable and run it.</p></a>
+    </div>
+    <p style="color:var(--muted);font-size:14.5px;margin-top:22px">Standalone CLI binaries ship alongside the installers in the same release — headless, for servers and scripts. Prefer to compile it yourself? <a href="#quickstart" style="color:var(--accent);font-weight:600">Build from source</a> below.</p>
+  </div></section>
+
   <section class="section" id="quickstart"><div class="wrap">
     <h2>Quick start</h2>
-    <p class="lead">Build from source, make a book, feed it. No account to create — there is nothing to sign in to.</p>
+    <p class="lead">Building from source? Clone, make a book, feed it — the desktop app and CLI come from the same workspace.</p>
     <div class="quick">
       <div class="codeblock">
         <div class="bar"><i></i><i></i><i></i></div>

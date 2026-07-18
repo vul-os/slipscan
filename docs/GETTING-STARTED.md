@@ -8,7 +8,7 @@ This guide takes you from a clone to a working book with imported transactions, 
 
 ## Prerequisites
 
-There are no binary releases yet — you build from source.
+Packaged installers (macOS, Windows, Linux) are on the [releases page](https://github.com/vul-os/slipscan/releases/latest) — download, open, done. The steps below are for building from source (contributors, or platforms without a package).
 
 - **Rust** (stable) — https://rustup.rs
 - **Node.js** 20+ and npm
