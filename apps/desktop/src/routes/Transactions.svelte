@@ -175,8 +175,11 @@
     {/each}
   </select>
   <span class="ml-auto text-[12px] text-t3">
-    {filtered.length} of {transactions.length} · outflow
-    <span class="num">{fmtMoney(outflow, book?.currency ?? "ZAR")}</span>
+    {filtered.length} of {transactions.length}
+    {#if book}
+      · outflow
+      <span class="num">{fmtMoney(outflow, book.currency)}</span>
+    {/if}
   </span>
 </div>
 

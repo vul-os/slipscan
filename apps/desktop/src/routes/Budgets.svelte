@@ -209,7 +209,7 @@
   {:else}
     {@const total = budgets.reduce((s, b) => s + b.amount_minor, 0)}
     {@const spent = budgets.reduce((s, b) => s + b.spent_minor, 0)}
-    {@const cur = budgets[0]?.currency ?? book?.currency ?? "ZAR"}
+    {@const cur = budgets[0].currency}
     <div class="mb-4 grid grid-cols-3 gap-3">
       <StatCard label="Budgeted" value={fmtMoney(total, cur)} />
       <StatCard

@@ -8,16 +8,25 @@ rust-version.workspace = true
 description = "SlipScan domain model, SQLite storage, migrations, and core services"
 
 [dependencies]
+async-trait = { workspace = true }
 chacha20poly1305 = { workspace = true }
 keyring = { workspace = true }
 rusqlite = { workspace = true }
+rust_decimal = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+# raw_value: the FX client captures OpenRate's decimal `rate` token verbatim
+# (RawValue) so it never round-trips through f64. Purely additive feature.
+serde_json = { workspace = true, features = ["raw_value"] }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 uuid = { workspace = true }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+# Executor for the async FX transport tests (mock transports only — the crate
+# itself performs no I/O).
+tokio = { workspace = true }
 
 # Native OS keychain backends. keyring compiles to a mock store on platforms
 # where no backend feature is enabled, so builds stay green everywhere.

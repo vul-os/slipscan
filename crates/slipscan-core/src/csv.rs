@@ -231,6 +231,13 @@ mod tests {
             from_date: "2026-07-01".into(),
             to_date: "2026-07-31".into(),
             currency: "ZAR".into(),
+            report_name: crate::region::profile_or_generic("za")
+                .tax_report
+                .report_name
+                .into(),
+            labels: crate::region::profile_or_generic("za")
+                .tax_report
+                .box_labels(),
             rows: vec![],
             standard_rated_supplies_minor: 10_000,
             zero_rated_supplies_minor: 0,

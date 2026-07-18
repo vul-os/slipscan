@@ -12,6 +12,8 @@ pub mod csv;
 pub mod db;
 pub mod domain;
 pub mod error;
+pub mod fx;
+pub mod region;
 pub mod repo;
 pub mod secrets;
 pub mod service;

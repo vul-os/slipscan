@@ -9,10 +9,15 @@
 //! — overlapping fetches are always safe.
 //!
 //! First concrete implementation: [`csv_statement::CsvStatementAdapter`], a
-//! file-based adapter over downloaded CSV statements with column-mapping
-//! presets for the SA banks (FNB, Standard Bank, Capitec, Nedbank, Absa).
+//! file-based adapter over downloaded CSV statements. Column-mapping presets
+//! are **region-profile data, not code** (docs/ARCHITECTURE.md "Global by
+//! default"): the [`presets`] catalog groups them by region — the five SA
+//! banks (FNB, Standard Bank, Capitec, Nedbank, Absa) as the first region,
+//! a `generic` family for common worldwide layouts, and
+//! [`csv_statement::CustomMappingSpec`] for any other bank on day one.
 
 pub mod csv_statement;
+pub mod presets;
 
 use crate::{IngestError, IngestResult};
 use async_trait::async_trait;
@@ -198,12 +203,43 @@ pub async fn sync_bank_adapter(
     import_statement_lines(svc, book_id, account_id, TransactionSource::Import, lines)
 }
 
+/// How the decimal separator is written in statement amounts.
+///
+/// Stored inside [`csv_statement::CsvMapping`]; `Auto` (the default, and
+/// what every mapping saved before this field existed deserializes to)
+/// keeps the original heuristic that covers SA bank shapes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DecimalStyle {
+    /// Heuristic: the last `.` or `,` followed by 1–2 digits is the decimal
+    /// separator; anything else is a thousands separator.
+    #[default]
+    Auto,
+    /// `.` is the decimal separator, `,` groups thousands: `1,234.56`.
+    Point,
+    /// `,` is the decimal separator, `.` groups thousands: `1.234,56`.
+    Comma,
+}
+
 /// Parse a statement amount into minor units without ever touching floats.
 ///
 /// Handles the shapes SA bank exports actually produce: `-123.45`,
 /// `1 234,56`, `1,234.56`, `R 123.45`, `(123.45)`, `123.45-`, `123.45 Cr`,
 /// `123.45Dr`. `Dr`/parentheses/minus mean money out (negative).
+///
+/// Equivalent to [`parse_amount_minor_styled`] with [`DecimalStyle::Auto`].
 pub fn parse_amount_minor(raw: &str) -> IngestResult<i64> {
+    parse_amount_minor_styled(raw, DecimalStyle::Auto)
+}
+
+/// [`parse_amount_minor`] with an explicit [`DecimalStyle`].
+///
+/// With `Point` or `Comma` the declared separator **is** the decimal point —
+/// `1.234` under `Comma` is one-thousand-two-hundred-and-thirty-four, and
+/// more than two digits after the declared decimal separator is a parse
+/// error (it means the mapping's style is wrong for this file, which must
+/// surface, not silently mis-scale money).
+pub fn parse_amount_minor_styled(raw: &str, style: DecimalStyle) -> IngestResult<i64> {
     let original = raw;
     let mut s = raw.trim().to_string();
     if s.is_empty() {
@@ -238,13 +274,17 @@ pub fn parse_amount_minor(raw: &str) -> IngestResult<i64> {
         )));
     }
 
-    // The last '.' or ',' is the decimal separator iff 1–2 digits follow;
-    // otherwise it is a thousands separator ("1,234" == 1234).
-    let (major_part, minor_part) = match cleaned.rfind(['.', ',']) {
-        Some(idx) if (1..=2).contains(&(cleaned.len() - idx - 1)) => {
-            (cleaned[..idx].to_string(), cleaned[idx + 1..].to_string())
-        }
-        _ => (cleaned.clone(), String::new()),
+    let (major_part, minor_part) = match style {
+        // The last '.' or ',' is the decimal separator iff 1–2 digits
+        // follow; otherwise it is a thousands separator ("1,234" == 1234).
+        DecimalStyle::Auto => match cleaned.rfind(['.', ',']) {
+            Some(idx) if (1..=2).contains(&(cleaned.len() - idx - 1)) => {
+                (cleaned[..idx].to_string(), cleaned[idx + 1..].to_string())
+            }
+            _ => (cleaned.clone(), String::new()),
+        },
+        DecimalStyle::Point => split_on_decimal_sep(&cleaned, '.', original)?,
+        DecimalStyle::Comma => split_on_decimal_sep(&cleaned, ',', original)?,
     };
     let major: String = major_part.chars().filter(char::is_ascii_digit).collect();
     let major: i64 = if major.is_empty() {
@@ -264,6 +304,30 @@ pub fn parse_amount_minor(raw: &str) -> IngestResult<i64> {
         .and_then(|m| m.checked_add(cents))
         .ok_or_else(|| IngestError::Parse(format!("amount overflow in {original:?}")))?;
     Ok(if negative { -minor } else { minor })
+}
+
+/// Split `cleaned` (digits plus `.`/`,` only) on the declared decimal
+/// separator; the other separator is thousands grouping and is dropped by
+/// the caller's digit filter. 3+ digits after the declared separator means
+/// the style does not match the file — an error, never a silent mis-scale.
+fn split_on_decimal_sep(
+    cleaned: &str,
+    sep: char,
+    original: &str,
+) -> IngestResult<(String, String)> {
+    match cleaned.rfind(sep) {
+        Some(idx) => {
+            let frac = &cleaned[idx + 1..];
+            if frac.len() > 2 || frac.contains(['.', ',']) {
+                return Err(IngestError::Parse(format!(
+                    "amount {original:?} does not match decimal-{} style",
+                    if sep == '.' { "point" } else { "comma" }
+                )));
+            }
+            Ok((cleaned[..idx].to_string(), frac.to_string()))
+        }
+        None => Ok((cleaned.to_string(), String::new())),
+    }
 }
 
 #[cfg(test)]
@@ -331,6 +395,46 @@ mod tests {
         assert_eq!(parse_amount_minor("0.07").unwrap(), 7);
         assert!(parse_amount_minor("").is_err());
         assert!(parse_amount_minor("n/a").is_err());
+    }
+
+    #[test]
+    fn explicit_decimal_styles_resolve_separator_ambiguity() {
+        use DecimalStyle::{Comma, Point};
+        // Point: ',' groups thousands, '.' is the decimal point.
+        assert_eq!(
+            parse_amount_minor_styled("1,234.56", Point).unwrap(),
+            123_456
+        );
+        assert_eq!(parse_amount_minor_styled("1,234", Point).unwrap(), 123_400);
+        assert_eq!(parse_amount_minor_styled("-4.50", Point).unwrap(), -450);
+        assert_eq!(parse_amount_minor_styled("5.5", Point).unwrap(), 550);
+        // Comma: '.' groups thousands, ',' is the decimal point. "1.234"
+        // is one thousand — the Auto heuristic can't know that, an
+        // explicit style can.
+        assert_eq!(
+            parse_amount_minor_styled("1.234,56", Comma).unwrap(),
+            123_456
+        );
+        assert_eq!(parse_amount_minor_styled("1.234", Comma).unwrap(), 123_400);
+        assert_eq!(
+            parse_amount_minor_styled("2.500,00", Comma).unwrap(),
+            250_000
+        );
+        assert_eq!(parse_amount_minor_styled("-0,07", Comma).unwrap(), -7);
+        // Sign shapes still apply under explicit styles.
+        assert_eq!(
+            parse_amount_minor_styled("(1.234,56)", Comma).unwrap(),
+            -123_456
+        );
+        assert_eq!(
+            parse_amount_minor_styled("1,250.00 Dr", Point).unwrap(),
+            -125_000
+        );
+        // A file that contradicts the declared style errors instead of
+        // silently mis-scaling money.
+        assert!(parse_amount_minor_styled("1.234,56", Point).is_err());
+        assert!(parse_amount_minor_styled("1,234.56", Comma).is_err());
+        assert!(parse_amount_minor_styled("", Point).is_err());
     }
 
     #[test]

@@ -91,8 +91,10 @@ enum ReportKind {
     Pl,
     /// Balance sheet.
     Bs,
-    /// VAT summary.
-    Vat,
+    /// Tax-period summary (named by your region profile — e.g. VAT201 in
+    /// South Africa). `vat` is accepted as an alias for compatibility.
+    #[value(alias = "vat")]
+    Tax,
 }
 
 #[derive(Debug, Subcommand)]
@@ -132,7 +134,7 @@ enum Command {
         #[command(subcommand)]
         action: ReconAction,
     },
-    /// Reports: trial balance, profit & loss, balance sheet, VAT.
+    /// Reports: trial balance, profit & loss, balance sheet, tax summary.
     Report {
         #[arg(value_enum)]
         kind: ReportKind,
@@ -667,10 +669,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         println!("Balanced\t{}", bs.balanced);
                     })
                 }
-                ReportKind::Vat => {
+                ReportKind::Tax => {
                     let vat = ops::report_vat(&svc, &book.id)?;
                     emit(cli.json, &vat, || {
-                        println!("VAT summary — {}", book.name);
+                        println!("Tax summary — {}", book.name);
                         for r in &vat.rates {
                             println!("rate\t{}\t{}\t{} bps", r.code, r.name, r.rate_bps);
                         }
@@ -683,7 +685,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 fmt_minor(a.credit_minor)
                             );
                         }
-                        println!("Net VAT position\t{}", fmt_minor(vat.net_minor));
+                        println!("Net tax position\t{}", fmt_minor(vat.net_minor));
                     })
                 }
             }
@@ -1011,7 +1013,9 @@ mod tests {
             ("tb", ReportKind::Tb),
             ("pl", ReportKind::Pl),
             ("bs", ReportKind::Bs),
-            ("vat", ReportKind::Vat),
+            ("tax", ReportKind::Tax),
+            // Old name kept as an alias: `report vat` still works.
+            ("vat", ReportKind::Tax),
         ] {
             let cli = Cli::try_parse_from(["slipscan", "report", arg]).unwrap();
             match cli.command {
@@ -1021,7 +1025,7 @@ mod tests {
                         (ReportKind::Tb, ReportKind::Tb)
                             | (ReportKind::Pl, ReportKind::Pl)
                             | (ReportKind::Bs, ReportKind::Bs)
-                            | (ReportKind::Vat, ReportKind::Vat)
+                            | (ReportKind::Tax, ReportKind::Tax)
                     ));
                     assert!(!csv);
                 }

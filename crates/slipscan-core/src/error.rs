@@ -39,6 +39,21 @@ pub enum CoreError {
     #[error("secret store error: {0}")]
     Secret(String),
 
+    #[error(
+        "exchange rates are not configured: set the OpenRate base URL first \
+         (fx_configure) — SlipScan makes no FX network calls until you do"
+    )]
+    FxNotConfigured,
+
+    #[error("unknown currency pair {from}/{to}")]
+    FxUnknownPair { from: String, to: String },
+
+    #[error("fx transport error: {0}")]
+    FxTransport(String),
+
+    #[error("fx response parse error: {0}")]
+    FxParse(String),
+
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 }

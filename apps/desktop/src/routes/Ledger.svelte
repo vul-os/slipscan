@@ -19,25 +19,29 @@
   ];
 
   let bookId = $state("");
-  let bookCurrency = $state("ZAR");
 
   async function load() {
     const [book] = await api.bookList();
     if (!book) throw new Error("no book configured");
     bookId = book.id;
-    bookCurrency = book.currency;
     const [accounts, journal, trial] = await Promise.all([
       api.ledgerAccountList({ book_id: book.id }),
       api.journalList({ book_id: book.id }),
       api.reportTrialBalance({ book_id: book.id }),
     ]);
-    return { accounts, journal, trial };
+    // The book currency travels with the (cached) data — formatting never
+    // falls back to a hardcoded currency.
+    return { accounts, journal, trial, currency: book.currency };
   }
 
   type Data = Awaited<ReturnType<typeof load>>;
   const reload = (fresh = false) =>
     swrLoad<Data>("ledger", load, (v) => (data = v), { fresh });
   let data = $state(reload());
+  /** Book currency once data is available (cached or fresh); the journal
+   * form only renders inside the resolved branch, so this is always set by
+   * the time an amount is parsed or formatted. */
+  const bookCurrency = $derived(data instanceof Promise ? "" : data.currency);
 
   // -- manual journal entry -------------------------------------------------
   interface FormLine {
@@ -162,7 +166,7 @@
         <EmptyState
           icon="ledger"
           title="No chart of accounts yet"
-          body="The standard SA chart of accounts is seeded when a book is created. If this book has none, seed it from the CLI: slipscan init."
+          body="A chart of accounts is seeded from your region profile when a book is created. If this book has none, seed it from the CLI: slipscan init."
         />
       </div>
     {:else}

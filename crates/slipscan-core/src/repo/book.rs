@@ -11,6 +11,7 @@ fn map_book(row: &Row<'_>) -> rusqlite::Result<Book> {
         name: row.get("name")?,
         currency: row.get("currency")?,
         country: row.get("country")?,
+        region: row.get("region")?,
         locale: row.get("locale")?,
         timezone: row.get("timezone")?,
         financial_lock_date: row.get("financial_lock_date")?,
@@ -21,15 +22,16 @@ fn map_book(row: &Row<'_>) -> rusqlite::Result<Book> {
 
 pub fn insert(conn: &Connection, book: &Book) -> CoreResult<()> {
     conn.execute(
-        "INSERT INTO books (id, kind, name, currency, country, locale, timezone,
+        "INSERT INTO books (id, kind, name, currency, country, region, locale, timezone,
                             financial_lock_date, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             book.id,
             book.kind.as_str(),
             book.name,
             book.currency,
             book.country,
+            book.region,
             book.locale,
             book.timezone,
             book.financial_lock_date,

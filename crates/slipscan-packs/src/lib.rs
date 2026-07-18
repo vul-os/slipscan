@@ -19,8 +19,9 @@
 //! * [`benchmark`] — read-side peer comparison: pure local math over public
 //!   aggregate packs (reading is perfectly private; contribution is a
 //!   separate opt-in pipeline that does not live here).
-//! * [`builtin`] — two embedded SA seed packs (`za-personal`,
-//!   `za-business-vat`).
+//! * [`builtin`] — embedded seed packs: the SA region pair (`za-personal`,
+//!   `za-business-vat`, region `ZA`) and the global `intl-starter` (no
+//!   region). Regions are data on the pack manifest, never code.
 //!
 //! Everything is offline: this crate performs no network access of any kind.
 //! Packs are files; fetch them however you like.

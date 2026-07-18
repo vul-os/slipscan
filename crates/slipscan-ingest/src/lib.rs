@@ -15,8 +15,11 @@
 //! * [`watch`] — drop-folder scanning and watching (`notify`) for
 //!   PDFs/images/CSVs.
 //! * [`bank`] — the [`bank::BankAdapter`] framework (fetch statement lines
-//!   for a date range) with a CSV-statement adapter and column-mapping
-//!   presets for SA banks (FNB, Standard Bank, Capitec, Nedbank, Absa). See
+//!   for a date range) with a CSV-statement adapter and a region-grouped
+//!   column-mapping preset catalog ([`bank::presets`]): SA banks (FNB,
+//!   Standard Bank, Capitec, Nedbank, Absa), a `generic` worldwide family,
+//!   and a custom-mapping constructor
+//!   ([`bank::csv_statement::CustomMappingSpec`]) for any other bank. See
 //!   `docs/BANK-ADAPTERS.md`.
 //! * [`vault`] — how connectors receive credentials: a `use_with`-style
 //!   handoff mirroring the core credential vault. Connectors never load,
@@ -29,6 +32,7 @@
 mod b64;
 pub mod bank;
 pub mod email;
+pub mod fx;
 pub mod http;
 pub mod import;
 pub mod state;

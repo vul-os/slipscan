@@ -32,7 +32,7 @@
   let data = $state(reload());
 
   const shortMonth = (m: string) =>
-    new Date(`${m}-01T12:00:00Z`).toLocaleString("en-ZA", { month: "short" });
+    new Date(`${m}-01T12:00:00Z`).toLocaleString(undefined, { month: "short" });
 
   // -- CSV exports: computed locally, downloaded as Blob object-URLs ---------
 

@@ -13,6 +13,7 @@ use rusqlite::Connection;
 use crate::db::Db;
 use crate::domain::*;
 use crate::error::{CoreError, CoreResult};
+use crate::fx;
 use crate::repo;
 use crate::secrets::SecretString;
 use crate::secrets::{KeyringSecretStore, SecretStore};
@@ -212,12 +213,25 @@ impl CoreService {
         if new.name.trim().is_empty() {
             return Err(CoreError::Validation("book name must not be empty".into()));
         }
+        // Region profile: inferred from the country when given (e.g. "ZA" →
+        // the za profile), otherwise the generic profile — never a hardcoded
+        // jurisdiction ("global by default — regions are data, not code").
+        let profile = crate::region::for_country(new.country.as_deref())
+            .unwrap_or_else(|| crate::region::profile_or_generic(crate::region::DEFAULT_REGION_ID));
         // Normalize the base currency exactly like journal-line currencies —
         // an un-normalized book currency ("zar") would silently empty every
-        // base-currency report (income statement, balance sheet, VAT201).
+        // base-currency report (income statement, balance sheet, tax summary).
+        // When omitted it comes from the region profile's data, not from core.
         let currency = match new.currency {
             Some(raw) => normalize_currency_code(&raw)?,
-            None => "ZAR".to_string(),
+            None => match profile.default_currency {
+                Some(c) => c.to_string(),
+                None => {
+                    return Err(CoreError::Validation(
+                        "currency is required (the selected region profile has no default)".into(),
+                    ))
+                }
+            },
         };
         let now = now_iso();
         let book = Book {
@@ -226,6 +240,7 @@ impl CoreService {
             name: new.name.trim().to_string(),
             currency,
             country: new.country,
+            region: profile.id.to_string(),
             locale: "en".to_string(),
             timezone: "UTC".to_string(),
             financial_lock_date: None,
@@ -2104,7 +2119,15 @@ impl CoreService {
         to_date: &str,
     ) -> CoreResult<Vat201Summary> {
         let book = self.book_get(book_id)?;
-        repo::report::vat201(self.conn(), book_id, from_date, to_date, &book.currency)
+        let profile = crate::region::profile_or_generic(&book.region);
+        repo::report::vat201(
+            self.conn(),
+            book_id,
+            from_date,
+            to_date,
+            &book.currency,
+            profile,
+        )
     }
 
     // -----------------------------------------------------------------------
@@ -2197,6 +2220,154 @@ impl CoreService {
                 ))),
             },
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // FX (OpenRate) — opt-in, cached, decimal-only. See `crate::fx` docs.
+    // -----------------------------------------------------------------------
+
+    /// Set the OpenRate base URL (validated, normalized), or clear it with
+    /// an empty string. A plain setting — an endpoint the user chose, not a
+    /// secret. While unset, every FX fetch path fails with
+    /// [`CoreError::FxNotConfigured`] before any transport is touched.
+    pub fn fx_configure(&self, base_url: &str) -> CoreResult<()> {
+        if base_url.trim().is_empty() {
+            self.settings_set(fx::FX_BASE_URL_KEY, "", false)
+        } else {
+            let normalized = fx::normalize_base_url(base_url)?;
+            self.settings_set(fx::FX_BASE_URL_KEY, &normalized, false)
+        }
+    }
+
+    fn fx_base_url(&self) -> CoreResult<Option<String>> {
+        Ok(self
+            .settings_get(fx::FX_BASE_URL_KEY)?
+            .filter(|url| !url.is_empty()))
+    }
+
+    /// FX configuration plus the cached rates with computed staleness.
+    /// Purely local — never performs network I/O.
+    pub fn fx_status(&self) -> CoreResult<fx::FxStatus> {
+        let base_url = self.fx_base_url()?;
+        let now = time::OffsetDateTime::now_utc();
+        let cached_rates = fx::cache::list(self.conn())?
+            .into_iter()
+            .map(|row| fx::cached_rate_from_row(row, now))
+            .collect::<CoreResult<Vec<_>>>()?;
+        Ok(fx::FxStatus {
+            configured: base_url.is_some(),
+            base_url,
+            cached_rates,
+        })
+    }
+
+    /// Fetch the current rate for a pair from the configured OpenRate
+    /// instance over `transport`, persist it to the local cache, and return
+    /// the quote (rate, `as_of`, quality grade, staleness, sources).
+    ///
+    /// This is the **only** FX path that talks to the network, and only when
+    /// the user configured a base URL — otherwise it fails with
+    /// [`CoreError::FxNotConfigured`] without invoking the transport.
+    pub async fn fx_fetch_rate(
+        &self,
+        transport: &dyn fx::FxTransport,
+        from: &str,
+        to: &str,
+    ) -> CoreResult<fx::FxQuote> {
+        let from = normalize_currency_code(from)?;
+        let to = normalize_currency_code(to)?;
+        let base_url = self.fx_base_url()?.ok_or(CoreError::FxNotConfigured)?;
+        let client = fx::OpenRateClient::new(&base_url, transport)?;
+        let quote = client.convert_one(&from, &to).await?;
+        let row = fx::cache::FxRateRow {
+            from_currency: from.clone(),
+            to_currency: to.clone(),
+            rate: quote.rate.to_string(),
+            as_of: quote.as_of.clone(),
+            grade: quote.grade.clone(),
+            fetched_at: now_iso(),
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        fx::cache::upsert(&tx, &row)?;
+        self.emit_audit(
+            &tx,
+            None,
+            "fx_rate",
+            Some(&format!("{from}/{to}")),
+            "fetch",
+            None,
+            Some(serde_json::to_string(&quote)?),
+        )?;
+        tx.commit()?;
+        Ok(quote)
+    }
+
+    /// Convert an amount in minor units using the **cached** rate for the
+    /// pair — never a network call, never a silent refresh. The returned
+    /// conversion carries the exact decimal rate it used plus provenance
+    /// (`as_of`, grade, `fetched_at`, computed staleness), and the same
+    /// record lands in the audit log so booked conversions reproduce
+    /// offline. A missing pair is a cache miss (`NotFound`): fetch first,
+    /// explicitly.
+    pub fn fx_convert(
+        &self,
+        from: &str,
+        to: &str,
+        amount_minor: i64,
+    ) -> CoreResult<fx::FxConversion> {
+        use std::str::FromStr as _;
+
+        let from = normalize_currency_code(from)?;
+        let to = normalize_currency_code(to)?;
+        let conversion = if from == to {
+            // Identity: no rate involved, works offline and unconfigured.
+            let now = now_iso();
+            fx::FxConversion {
+                from_currency: from.clone(),
+                to_currency: to.clone(),
+                amount_minor,
+                converted_minor: amount_minor,
+                rate: rust_decimal::Decimal::ONE,
+                as_of: now.clone(),
+                grade: "identity".to_string(),
+                fetched_at: now,
+                age_secs: Some(0),
+            }
+        } else {
+            let row =
+                fx::cache::get(self.conn(), &from, &to)?.ok_or_else(|| CoreError::NotFound {
+                    entity: "fx_rate",
+                    id: format!("{from}/{to}"),
+                })?;
+            let rate = rust_decimal::Decimal::from_str(&row.rate).map_err(|e| {
+                CoreError::FxParse(format!("cached rate {:?} for {from}/{to}: {e}", row.rate))
+            })?;
+            let converted_minor = fx::convert_minor(amount_minor, rate)?;
+            let age_secs = fx::age_secs_since(&row.as_of, time::OffsetDateTime::now_utc());
+            fx::FxConversion {
+                from_currency: row.from_currency,
+                to_currency: row.to_currency,
+                amount_minor,
+                converted_minor,
+                rate,
+                as_of: row.as_of,
+                grade: row.grade,
+                fetched_at: row.fetched_at,
+                age_secs,
+            }
+        };
+        // Record the rate used at booking time (rate serializes as a decimal
+        // string) — conversions must reproduce offline, never re-rate.
+        self.emit_audit(
+            self.conn(),
+            None,
+            "fx_conversion",
+            Some(&format!("{from}/{to}")),
+            "convert",
+            None,
+            Some(serde_json::to_string(&conversion)?),
+        )?;
+        Ok(conversion)
     }
 
     // -----------------------------------------------------------------------

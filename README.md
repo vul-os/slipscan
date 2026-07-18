@@ -36,7 +36,9 @@
 
 ## What is SlipScan?
 
-SlipScan gives you what Vault22 / 22seven does for personal finance and what Xero does for small-business accounting — bank transactions, receipts, budgets, categorised spending, double-entry ledger, reconciliation, VAT — with one fundamental difference: **there is no central server**. A Rust core over a plain SQLite file, wrapped in a Tauri desktop app. It is a standalone product: no account, no cloud, no telemetry, and it never depends on any hosted service.
+SlipScan gives you what Vault22 / 22seven does for personal finance and what Xero does for small-business accounting — bank transactions, receipts, budgets, categorised spending, double-entry ledger, reconciliation, tax — with one fundamental difference: **there is no central server**. A Rust core over a plain SQLite file, wrapped in a Tauri desktop app. It is a standalone product: no account, no cloud, no telemetry, and it never depends on any hosted service.
+
+It is also **global by default**: nothing country-specific is hardcoded — chart-of-accounts seeds, tax rates and return labels, bank CSV presets, and merchant packs all ship as **region profiles** (data you pick, [contract](docs/ARCHITECTURE.md#global-by-default--regions-are-data-not-code)). South Africa is the first region profile; a generic profile covers any country from day one.
 
 Your data lives on your machine, your bank and mailbox credentials stay in your OS keychain, and the only thing the community shares is knowledge — signed classification packs today, with differentially-private benchmark statistics designed but [not yet implemented](docs/BENCHMARKS.md) — never data.
 
@@ -60,7 +62,7 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
     <td valign="top">
       <ul>
         <li>Double-entry ledger: chart of accounts, journals, balanced-by-construction journal lines</li>
-        <li>SA-flavoured chart-of-accounts seeds and VAT rates, VAT summaries, and returns groundwork</li>
+        <li>Chart-of-accounts seeds, tax rates, tax-period summaries, and returns groundwork from your <em>region profile</em> — South Africa first, generic profile everywhere else</li>
         <li>Bank reconciliation: suggested matches between documents, transactions, and journal lines</li>
         <li>Trial balance, income statement, balance sheet, and CSV export</li>
         <li>Immutable posted journals — corrections are reversals, never edits</li>
@@ -75,6 +77,7 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
 - Ingestion from your own mailbox — always your accounts, [never our infrastructure](docs/EMAIL.md); generic IMAP polling works today, Gmail/Graph connectors and push are built but not yet wired to a surface
 - Open-source, local bank-scraper framework — adapters run in your session, first adapters in progress ([framework](docs/BANK-ADAPTERS.md))
 - Write-only credential vault rooted in the OS keychain — secrets can be set, rotated, revoked, and used, never viewed ([threat model](docs/THREAT-MODEL.md))
+- Opt-in multi-currency FX via [OpenRate](https://github.com/vul-os/openrate) — self-hosted, provenance-graded rates (quality grade + as-of age shown wherever a converted amount is), cached locally, every conversion recording the rate it used; no endpoint configured means zero FX network calls ([contract](docs/ARCHITECTURE.md#exchange-rates--openrate); integration lands in Phase 4.7)
 - Headless self-host server mode for an always-on box ([guide](docs/SELFHOST.md))
 
 > [!NOTE]
@@ -117,7 +120,7 @@ cargo run -p slipscan-cli -- --help    # import, extract, mail-sync, recon, repo
 
 ## How it works
 
-Everything runs on your machine. Sources feed one Rust core, the core owns a plain SQLite database holding your books, and the desktop app is a thin shell over the same services:
+Everything runs on your machine. Sources feed one Rust core, the core owns a plain SQLite database holding your books, and the desktop app is a thin shell over the same services. The only network endpoints in the picture are ones **you** configured — your bank, your mailbox, your LLM provider, and (opt-in, for multi-currency) your own [OpenRate](https://github.com/vul-os/openrate) instance for provenance-graded FX rates:
 
 ```mermaid
 flowchart LR
@@ -137,6 +140,8 @@ flowchart LR
         core <--> db
         app <-->|"IPC"| core
     end
+    openrate["OpenRate<br/>(your self-hosted FX instance —<br/>opt-in, no URL = no FX calls)"]
+    openrate -.->|"rates + provenance,<br/>cached locally"| core
 ```
 
 Between machines there is no hub — every node is a self-hosted peer. The only things that ever cross the network are **signed packs** (taxonomies and rules, verified with ed25519 on install) and, for users who opt in, **differentially-private aggregates** — category-level statistics noised on-device before they leave it. Aggregators are community-run and untrusted by design; transactions, merchants, and credentials never appear on any edge:
