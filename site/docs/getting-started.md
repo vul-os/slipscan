@@ -56,6 +56,8 @@ From the CLI:
 slipscan init --name "Personal" --kind personal
 ```
 
+Every book carries a **region profile** — the data bundle (chart-of-accounts seeds, tax rates, tax-report labels, default currency) that makes it country-specific ([CONFIGURATION.md](CONFIGURATION.md#region-profiles)). Pick one at creation with `slipscan init --region <id>` (`slipscan init --list-regions` shows what ships built-in — South Africa's `za` profile with VAT rates, VAT201 labels and ZAR, and the worldwide `generic` profile: neutral chart, one configurable tax rate, USD default). With no region given — including the desktop's first-run book — you get the **generic** profile; no jurisdiction is ever assumed. Existing databases migrate automatically: books that were implicitly South African come out on the `za` profile.
+
 Data locations are documented in [CONFIGURATION.md](CONFIGURATION.md#data-locations).
 
 ## 2. Import a bank statement (CSV)
@@ -64,7 +66,7 @@ Honest status first: statement files are currently imported as **documents**, no
 
 1. Download a statement CSV (or OFX) from your bank's internet banking.
 2. Import it: `slipscan import statement.csv` — it is stored as a bank-statement document, content-hash deduplicated.
-3. The statement→transactions step — column mapping (with per-SA-bank presets already implemented in `crates/slipscan-ingest`), landing rows in an account, deduplication by provider id / content hash — exists in the ingest crate but is **not wired to the CLI or desktop yet**. There is no OFX parser yet at all. Both are tracked in [ROADMAP.md](../ROADMAP.md).
+3. The statement→transactions step — column mapping (a region-grouped preset catalog: SA-bank presets, a `generic` worldwide family, and a custom mapping for any other bank, all in `crates/slipscan-ingest` — see [BANK-ADAPTERS.md](BANK-ADAPTERS.md#statement-csv-presets--region-data-not-code)), landing rows in an account, deduplication by provider id / content hash — exists in the ingest crate but is **not wired to the CLI or desktop yet**. There is no OFX parser yet at all. Both are tracked in [ROADMAP.md](../ROADMAP.md).
 
 For the design of automatic pulls straight from your bank, see [BANK-ADAPTERS.md](BANK-ADAPTERS.md).
 

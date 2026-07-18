@@ -33,7 +33,7 @@ Everything country-specific is **data on the book, not a hidden global setting**
 | `za` | South Africa (first region profile) | SA business chart with VAT controls, 15%/zero/exempt VAT rates, VAT201 labels, ZAR default currency |
 | `generic` | Generic (international) | Neutral chart of accounts, one configurable standard tax rate, neutral report labels |
 
-You pick the region when the book is created; adding a country means adding profile data, never touching core logic. **Existing databases keep working**: a migration backfills the column — books that were implicitly South African (explicit `ZA` country, `ZAR` currency, or seeded ZA VAT rates) come out as `za`; everything else as `generic`. A book stored with a region id a build doesn't know falls back to the generic profile instead of breaking.
+The region is fixed at book creation and can be chosen explicitly: `slipscan init --region za` on the CLI (`slipscan init --list-regions` prints the built-in profiles), or the optional `region` field on the server's `book_create` route. An explicit region wins; an unknown explicit id is rejected (a typo can't silently produce a generic book). Without one, creation infers the region from the book's country (`ZA` → `za`; anything else, or none, → `generic`). Adding a country means adding profile data, never touching core logic. **Existing databases keep working**: a migration backfills the column — books that were implicitly South African (explicit `ZA` country, `ZAR` currency, or seeded ZA VAT rates) come out as `za`; everything else as `generic`. A book stored with a region id a build doesn't know falls back to the generic profile instead of breaking.
 
 ## Data locations
 
