@@ -23,9 +23,25 @@ export interface Book {
   slug: string;
   kind: BookKind;
   currency: string;
+  /** Region profile id ("za", "generic", …) — regions are data, not code. */
+  region: string;
+  /** Region profile display name, e.g. "South Africa". */
+  region_name: string;
+  /** The region profile's name for the tax-period report, e.g. "VAT201". */
+  tax_report_name: string;
   /** User-visible path of the SQLite file backing this book. */
   file_path: string;
   created_at: string;
+}
+
+/** A selectable region profile (chart of accounts, tax config, labels). */
+export interface RegionInfo {
+  id: string;
+  display_name: string;
+  /** ISO 3166-1 alpha-2; null for the generic profile. */
+  country: string | null;
+  default_currency: string | null;
+  tax_report_name: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,10 +329,23 @@ export interface IncomeExpenseReport {
   months: IncomeExpensePoint[];
 }
 
+/** Tax-report box labels, straight from the book's region profile. */
+export interface TaxBoxLabels {
+  standard_rated_supplies: string;
+  zero_rated_supplies: string;
+  exempt_supplies: string;
+  output_tax: string;
+  input_tax: string;
+  net_tax: string;
+}
+
 export interface VatSummary {
   book_id: string;
   period: string;
   currency: string;
+  /** Region-profile report name ("VAT201" for za, "Tax summary" generic). */
+  report_name: string;
+  labels: TaxBoxLabels;
   output_vat_minor: number;
   input_vat_minor: number;
   net_vat_minor: number;
@@ -424,6 +453,59 @@ export interface VaultSetRequest {
 export interface VaultReplaceRequest {
   name: string;
   secret: string;
+}
+
+// ---------------------------------------------------------------------------
+// FX (OpenRate) — opt-in exchange rates. Rates are decimal STRINGS, never
+// floats; money stays integer minor units end-to-end.
+// ---------------------------------------------------------------------------
+
+/** A locally cached rate with provenance and computed staleness. */
+export interface FxCachedRate {
+  from_currency: string;
+  to_currency: string;
+  /** Exact decimal rate as a string — never parse into a float for money math. */
+  rate: string;
+  /** RFC 3339 instant the rate is dated at (from OpenRate). */
+  as_of: string;
+  /** OpenRate quality grade at fetch time (e.g. "A", "B"). */
+  grade: string;
+  /** When this SlipScan fetched the rate. */
+  fetched_at: string;
+  /** Seconds since `as_of`, computed at read time; null if unparsable. */
+  age_secs: number | null;
+}
+
+/** FX configuration + cache overview. Reading this never touches the network. */
+export interface FxStatus {
+  configured: boolean;
+  base_url: string | null;
+  cached_rates: FxCachedRate[];
+}
+
+/** One fetched quote (the only FX call that touches the network — explicitly). */
+export interface FxQuote {
+  from_currency: string;
+  to_currency: string;
+  rate: string;
+  as_of: string;
+  /** Server-reported staleness at fetch time, seconds. */
+  age_sec: number;
+  grade: string;
+  sources: string[];
+}
+
+/** One performed conversion, carrying the exact rate it used. */
+export interface FxConversion {
+  from_currency: string;
+  to_currency: string;
+  amount_minor: number;
+  converted_minor: number;
+  rate: string;
+  as_of: string;
+  grade: string;
+  fetched_at: string;
+  age_secs: number | null;
 }
 
 // ---------------------------------------------------------------------------

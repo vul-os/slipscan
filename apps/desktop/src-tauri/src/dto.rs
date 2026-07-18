@@ -21,17 +21,29 @@ pub struct BookDto {
     pub slug: String,
     pub kind: String,
     pub currency: String,
+    /// Region profile id ("za", "generic", …) — regions are data, not code.
+    pub region: String,
+    /// Region profile display name, e.g. "South Africa".
+    pub region_name: String,
+    /// The region profile's name for the tax-period report (e.g. "VAT201").
+    pub tax_report_name: String,
     pub file_path: String,
     pub created_at: String,
 }
 
 pub fn book_dto(book: &core::Book, db_path: &std::path::Path) -> BookDto {
+    // Unknown stored regions render as the generic profile — same tolerance
+    // core applies (`profile_or_generic`).
+    let profile = slipscan_core::region::profile_or_generic(&book.region);
     BookDto {
         id: book.id.clone(),
         name: book.name.clone(),
         slug: slugify(&book.name),
         kind: book.kind.as_str().to_string(),
         currency: book.currency.clone(),
+        region: book.region.clone(),
+        region_name: profile.display_name.to_string(),
+        tax_report_name: profile.tax_report.report_name.to_string(),
         file_path: db_path.display().to_string(),
         created_at: book.created_at.clone(),
     }
@@ -586,6 +598,11 @@ pub struct VatSummaryDto {
     pub book_id: String,
     pub period: String,
     pub currency: String,
+    /// Region-profile display name for this report ("VAT201" for za,
+    /// "Tax summary" generically) — the UI never hardcodes it.
+    pub report_name: String,
+    /// Box labels straight from the region profile.
+    pub labels: core::TaxBoxLabels,
     pub output_vat_minor: i64,
     pub input_vat_minor: i64,
     pub net_vat_minor: i64,
@@ -771,7 +788,10 @@ mod tests {
     #[test]
     fn slugify_basics() {
         assert_eq!(slugify("Personal"), "personal");
-        assert_eq!(slugify("Molefe Consulting (Pty) Ltd"), "molefe-consulting-pty-ltd");
+        assert_eq!(
+            slugify("Molefe Consulting (Pty) Ltd"),
+            "molefe-consulting-pty-ltd"
+        );
     }
 
     #[test]
