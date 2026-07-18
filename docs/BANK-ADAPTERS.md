@@ -2,9 +2,11 @@
 
 Aggregators like Plaid, Yodlee, or the engine behind 22seven work by taking your internet-banking credentials onto **their** servers and scraping on your behalf. SlipScan inverts that: the scraper is open-source code that runs on **your** machine, in **your** session, with credentials that never leave your OS keychain. You can read every line of the adapter that touches your bank.
 
+The framework is bank-agnostic and country-agnostic by design ([regions are data, not code](ARCHITECTURE.md#global-by-default--regions-are-data-not-code)): an adapter for any bank in any country plugs into the same trait, the same vault handoff, and the same dedupe pipeline. What differs per country is **data** — statement CSV column presets and, eventually, live adapters.
+
 ## The framework
 
-> **Status:** the framework below is implemented in `crates/slipscan-ingest`, and the only adapter that exists today is a **file-based CSV statement adapter** with column presets for the big SA banks (FNB, Standard Bank, Capitec, Nedbank, Absa). No live scraper adapter ships yet — Phase 3 in [ROADMAP.md](../ROADMAP.md).
+> **Status:** the framework below is implemented in `crates/slipscan-ingest`, and the only adapter that exists today is a **file-based CSV statement adapter** with three tiers of coverage (see [Statement presets](#statement-csv-presets--region-data-not-code)): ready-made presets for the big South African banks (FNB, Standard Bank, Capitec, Nedbank, Absa — SA is the first region with presets), a `generic` preset family for common worldwide CSV layouts, and a fully custom column mapping for any other bank on day one. No live scraper adapter ships yet — Phase 3 in [ROADMAP.md](../ROADMAP.md).
 
 `crates/slipscan-ingest` defines one small trait per concern. A bank adapter implements `BankAdapter` (`crates/slipscan-ingest/src/bank/mod.rs`):
 
@@ -61,9 +63,19 @@ Before you trust an adapter with your bank login, read it. The review bar, for a
 
 Small diffs, one bank per PR, fixtures included. An adapter nobody can review in twenty minutes is too big.
 
-## Adapter roadmap — South Africa first
+## Statement CSV presets — region data, not code
 
-SlipScan's first target market has no Plaid. Planned adapters, tracked in [ROADMAP.md](../ROADMAP.md) Phase 3:
+Until your bank has a live adapter, downloaded statement CSVs are the way in — and the mappings that parse them are **region-profile data**: a catalog of named, region-tagged column mappings (`crates/slipscan-ingest/src/bank/presets.rs`), listed grouped by region. Adding a country's banks means adding rows to the catalog, never touching core. Three tiers cover every bank in the world:
+
+1. **Region presets** — ready-made mappings for specific banks' exports. South Africa, the first region profile, ships five: `za-fnb`, `za-standard`, `za-capitec`, `za-nedbank`, `za-absa`.
+2. **The `generic` family** — common single-format layouts (date/description/signed-amount and date/description/debit/credit) in the widespread conventions: ISO and DMY dates, US MM/DD/YYYY, EU dotted dates with decimal comma and `;` delimiters.
+3. **Custom mapping** — a declarative spec (`CustomMappingSpec`: column indices, date format, decimal style, delimiter, debit/credit or signed amounts) that handles any other bank, in any country, on day one. Amount parsing is float-free and knows both `1,234.56` and `1.234,56`.
+
+The statement→transactions wiring into CLI/desktop is still in progress — see [GETTING-STARTED.md](GETTING-STARTED.md#2-import-a-bank-statement-csv) for what works today.
+
+## Adapter roadmap
+
+Live scraper adapters are tracked in [ROADMAP.md](../ROADMAP.md) Phase 3. South Africa — a market with no Plaid — is the first planned set:
 
 | Bank | id | Notes |
 |---|---|---|
@@ -73,9 +85,9 @@ SlipScan's first target market has no Plaid. Planned adapters, tracked in [ROADM
 | Nedbank | `za-nedbank` | CSV statement column preset ships today |
 | Absa | `za-absa` | CSV statement column preset ships today |
 
-Until your bank has a live adapter, statement CSV parsing is the stopgap (the presets above; the statement→transactions wiring into CLI/desktop is still in progress — see [GETTING-STARTED.md](GETTING-STARTED.md#2-import-a-bank-statement-csv)). Bank-alert email parsing is planned but not implemented ([EMAIL.md](EMAIL.md#what-gets-ingested)). Everything reconciles into the same accounts when the adapter lands.
+Bank-alert email parsing is planned but not implemented ([EMAIL.md](EMAIL.md#what-gets-ingested)). Everything reconciles into the same accounts when the adapter lands.
 
-Contributions for any bank, any country, are welcome — this is the single highest-leverage way to contribute to SlipScan. See [CONTRIBUTING.md](../CONTRIBUTING.md).
+Contributions for any bank, any country, are welcome — this is the single highest-leverage way to contribute to SlipScan; the trait, the vault handoff, and the review bar are identical whether the bank is in Johannesburg, London, or Tokyo. See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 ---
 

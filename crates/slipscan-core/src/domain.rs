@@ -152,6 +152,9 @@ pub struct Book {
     pub name: String,
     pub currency: String,
     pub country: Option<String>,
+    /// Region profile id ("za", "generic", …) driving chart-of-accounts
+    /// seeds, tax rate table, and tax-report labels — see [`crate::region`].
+    pub region: String,
     pub locale: String,
     pub timezone: String,
     pub financial_lock_date: Option<String>,
@@ -163,8 +166,11 @@ pub struct Book {
 pub struct NewBook {
     pub name: String,
     pub kind: BookKind,
-    /// Defaults to "ZAR" when omitted.
+    /// Defaults to the region profile's default currency when omitted.
     pub currency: Option<String>,
+    /// ISO 3166-1 alpha-2. Also used to infer the region profile when
+    /// [`crate::CoreService::book_create`] is called without an explicit
+    /// region (e.g. "ZA" → the "za" profile).
     pub country: Option<String>,
 }
 
@@ -622,9 +628,9 @@ pub struct IncomeStatement {
     pub net_profit_minor: i64,
 }
 
-/// Per-VAT-rate totals feeding the VAT201 summary.
+/// Per-tax-rate totals feeding the tax-period summary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Vat201Row {
+pub struct TaxSummaryRow {
     pub vat_rate_id: Option<String>,
     pub code: String,
     pub name: String,
@@ -634,6 +640,10 @@ pub struct Vat201Row {
     pub input_base_minor: i64,
     pub input_vat_minor: i64,
 }
+
+/// Deprecated alias — the row type was renamed to [`TaxSummaryRow`];
+/// "VAT201" is the SA region profile's label, not a core concept.
+pub type Vat201Row = TaxSummaryRow;
 
 /// One balance-sheet line: an asset / liability / equity account's balance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -667,18 +677,34 @@ pub struct BalanceSheet {
     pub equity_total_minor: i64,
 }
 
-/// VAT201-style summary for a period: output VAT on supplies, input VAT on
-/// purchases, and the net amount payable to (positive) or refundable by
-/// (negative) the revenue service.
+/// Display labels for the tax-period summary boxes, taken from the book's
+/// region profile — core never hardcodes report wording.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Vat201Summary {
+pub struct TaxBoxLabels {
+    pub standard_rated_supplies: String,
+    pub zero_rated_supplies: String,
+    pub exempt_supplies: String,
+    pub output_tax: String,
+    pub input_tax: String,
+    pub net_tax: String,
+}
+
+/// Tax-period summary: output tax on supplies, input tax on purchases, and
+/// the net amount payable to (positive) or refundable by (negative) the
+/// revenue service. The report name and box labels come from the book's
+/// region profile — South Africa's profile labels this report "VAT201".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaxPeriodSummary {
     pub book_id: String,
     pub from_date: String,
     pub to_date: String,
     /// The single currency this return is computed in (the book's base
-    /// currency); VAT-tagged lines in other currencies are excluded.
+    /// currency); tax-tagged lines in other currencies are excluded.
     pub currency: String,
-    pub rows: Vec<Vat201Row>,
+    /// Region-profile display name for this report (e.g. "VAT201").
+    pub report_name: String,
+    pub labels: TaxBoxLabels,
+    pub rows: Vec<TaxSummaryRow>,
     pub standard_rated_supplies_minor: i64,
     pub zero_rated_supplies_minor: i64,
     pub exempt_supplies_minor: i64,
@@ -686,6 +712,10 @@ pub struct Vat201Summary {
     pub input_vat_minor: i64,
     pub net_vat_minor: i64,
 }
+
+/// Deprecated alias — renamed to [`TaxPeriodSummary`]; "VAT201" is the SA
+/// region profile's label for the generic tax-period summary.
+pub type Vat201Summary = TaxPeriodSummary;
 
 // ---------------------------------------------------------------------------
 // Audit

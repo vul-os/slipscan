@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS pack_installs (
     name         TEXT NOT NULL,
     version      TEXT NOT NULL,
     kind         TEXT NOT NULL CHECK (kind IN ('taxonomy', 'benchmark')),
+    region       TEXT,
     signer       TEXT NOT NULL,
     payload_json BLOB NOT NULL,
     installed_at TEXT NOT NULL,
@@ -78,6 +79,8 @@ pub struct InstalledPack {
     pub name: String,
     pub version: String,
     pub kind: PackKind,
+    /// ISO 3166-1 alpha-2 region the pack targets; `None` = global.
+    pub region: Option<String>,
     /// Signer identity (hex public key, or a reserved builtin/dev label).
     pub signer: String,
     pub installed_at: String,
@@ -108,10 +111,12 @@ pub struct Installer<'c> {
 }
 
 impl<'c> Installer<'c> {
-    /// Open the installer, creating the pack tables if needed.
+    /// Open the installer, creating the pack tables if needed and migrating
+    /// older ones in place.
     pub fn open(conn: &'c Connection) -> PackResult<Self> {
         conn.execute_batch(trust::TRUST_SCHEMA)?;
         conn.execute_batch(INSTALL_SCHEMA)?;
+        migrate_region_column(conn)?;
         Ok(Self { conn })
     }
 
@@ -170,13 +175,14 @@ impl<'c> Installer<'c> {
 
         tx.execute(
             "INSERT INTO pack_installs
-                 (book_id, pack_id, name, version, kind, signer, payload_json,
-                  installed_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+                 (book_id, pack_id, name, version, kind, region, signer,
+                  payload_json, installed_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
              ON CONFLICT (book_id, pack_id) DO UPDATE SET
                  name = excluded.name,
                  version = excluded.version,
                  kind = excluded.kind,
+                 region = excluded.region,
                  signer = excluded.signer,
                  payload_json = excluded.payload_json,
                  updated_at = excluded.updated_at",
@@ -186,6 +192,7 @@ impl<'c> Installer<'c> {
                 payload.meta.name,
                 offered.to_string(),
                 payload.kind().as_str(),
+                payload.meta.region,
                 pack.signer(),
                 pack.pack().payload_bytes(),
                 now,
@@ -264,7 +271,8 @@ impl<'c> Installer<'c> {
     /// Installed packs for a book, by pack id.
     pub fn list(&self, book_id: &str) -> PackResult<Vec<InstalledPack>> {
         let mut stmt = self.conn.prepare(
-            "SELECT book_id, pack_id, name, version, kind, signer, installed_at, updated_at
+            "SELECT book_id, pack_id, name, version, kind, region, signer,
+                    installed_at, updated_at
              FROM pack_installs WHERE book_id = ?1 ORDER BY pack_id",
         )?;
         let packs = stmt
@@ -278,7 +286,8 @@ impl<'c> Installer<'c> {
         Ok(self
             .conn
             .query_row(
-                "SELECT book_id, pack_id, name, version, kind, signer, installed_at, updated_at
+                "SELECT book_id, pack_id, name, version, kind, region, signer,
+                        installed_at, updated_at
                  FROM pack_installs WHERE book_id = ?1 AND pack_id = ?2",
                 params![book_id, pack_id],
                 map_installed,
@@ -345,10 +354,54 @@ fn map_installed(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstalledPack> {
         name: row.get(2)?,
         version: row.get(3)?,
         kind,
-        signer: row.get(5)?,
-        installed_at: row.get(6)?,
-        updated_at: row.get(7)?,
+        region: row.get(5)?,
+        signer: row.get(6)?,
+        installed_at: row.get(7)?,
+        updated_at: row.get(8)?,
     })
+}
+
+/// In-place migration for databases created before packs carried a region:
+/// add the `region` column and backfill it from each install's stored
+/// (signed) payload. Packs whose payload declares no region stay `NULL`
+/// (global) — the original ZA seed payloads always declared `"ZA"`, so
+/// implicitly-SA installs come out labeled `ZA` without guesswork.
+fn migrate_region_column(conn: &Connection) -> PackResult<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(pack_installs)")?;
+    let has_region = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|name| name == "region");
+    if has_region {
+        return Ok(());
+    }
+
+    conn.execute_batch("ALTER TABLE pack_installs ADD COLUMN region TEXT")?;
+    let mut stmt = conn.prepare("SELECT book_id, pack_id, payload_json FROM pack_installs")?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (book_id, pack_id, payload_json) in rows {
+        // A payload that no longer parses is surfaced as CorruptState on
+        // access ([`Installer::payload`]); it must not brick the migration.
+        let Ok(payload) = PackPayload::from_json(&payload_json) else {
+            continue;
+        };
+        if let Some(region) = payload.meta.region {
+            conn.execute(
+                "UPDATE pack_installs SET region = ?1 WHERE book_id = ?2 AND pack_id = ?3",
+                params![region, book_id, pack_id],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn category_map(

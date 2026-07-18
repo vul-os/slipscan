@@ -24,7 +24,7 @@ export function toCsv(
  * Minor units → `842.35` (plain decimal, spreadsheet-friendly).
  * Exponent-aware: JPY-class prints whole units, BHD-class three decimals.
  */
-export function csvMoney(minor: number, currency = "ZAR"): string {
+export function csvMoney(minor: number, currency: string): string {
   const sign = minor < 0 ? "-" : "";
   const abs = Math.abs(minor);
   const exp = minorExponent(currency);

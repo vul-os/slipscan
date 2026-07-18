@@ -1,16 +1,24 @@
 //! CSV-statement adapter: the first concrete [`BankAdapter`].
 //!
-//! Every SA bank can export account history as CSV even when it has no API.
-//! This adapter parses a downloaded statement file through a configurable
-//! [`CsvMapping`] (column positions, date format, signed vs debit/credit
-//! amount columns) and yields normalised [`StatementLine`]s. Presets for the
-//! big SA banks live in [`SaBankPreset`]; they are defaults, not gospel —
-//! banks tweak their exports, and every field of the mapping is
-//! user-adjustable in settings.
+//! Nearly every bank in the world can export account history as CSV even
+//! when it has no API. This adapter parses a downloaded statement file
+//! through a configurable [`CsvMapping`] (column positions, date format,
+//! decimal style, signed vs debit/credit amount columns) and yields
+//! normalised [`StatementLine`]s.
+//!
+//! Mappings come from three places, in escalating generality:
+//! 1. bank presets in the region-grouped catalog
+//!    ([`super::presets`]) — defaults, not gospel: banks tweak their
+//!    exports, and every field of the mapping is user-adjustable in
+//!    settings ([`SaBankPreset`] remains the typed handle for the SA five);
+//! 2. the catalog's `generic` family for common worldwide layouts;
+//! 3. [`CustomMappingSpec`] — a flat, serde-friendly constructor usable
+//!    from CLI flags or a server payload, so any statement anywhere imports
+//!    on day one.
 //!
 //! Purely local: reads a file, talks to nothing.
 
-use super::{parse_amount_minor, BankAdapter, DateRange, StatementLine};
+use super::{parse_amount_minor_styled, BankAdapter, DateRange, DecimalStyle, StatementLine};
 use crate::{IngestError, IngestResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -28,6 +36,12 @@ pub enum DateFormat {
     SlashDmy,
     /// `01-06-2026`
     DashDmy,
+    /// `01.06.2026`
+    DotDmy,
+    /// `06/01/2026` — US month-first.
+    SlashMdy,
+    /// `06-01-2026` — US month-first.
+    DashMdy,
     /// `20260601`
     CompactYmd,
     /// `01 Jun 2026` / `1 June 2026`
@@ -64,6 +78,108 @@ pub struct CsvMapping {
     pub reference_col: Option<usize>,
     /// ISO-4217 override; `None` = account currency.
     pub currency: Option<String>,
+    /// Decimal-separator style for amounts. Defaults to
+    /// [`DecimalStyle::Auto`] — mappings stored before this field existed
+    /// deserialize unchanged.
+    #[serde(default)]
+    pub decimal: DecimalStyle,
+}
+
+/// Flat, serde-friendly custom column mapping — the "any bank in the world,
+/// day one" escape hatch.
+///
+/// Built from CLI flags or deserialized from a server/desktop JSON payload,
+/// then validated into a [`CsvMapping`] via [`CustomMappingSpec::build`].
+/// Exactly one amount shape must be given: `amount_col` (one signed column)
+/// **or** both `debit_col` and `credit_col`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomMappingSpec {
+    pub date_col: usize,
+    pub date_format: DateFormat,
+    pub description_col: usize,
+    /// One signed amount column (negative = money out).
+    #[serde(default)]
+    pub amount_col: Option<usize>,
+    /// Debit column (money out); requires `credit_col` too.
+    #[serde(default)]
+    pub debit_col: Option<usize>,
+    /// Credit column (money in); requires `debit_col` too.
+    #[serde(default)]
+    pub credit_col: Option<usize>,
+    /// Decimal separator style; default [`DecimalStyle::Auto`].
+    #[serde(default)]
+    pub decimal: DecimalStyle,
+    /// Field delimiter; default `,` (use `;` for many EU exports).
+    #[serde(default)]
+    pub delimiter: Option<char>,
+    /// Junk lines before the table.
+    #[serde(default)]
+    pub skip_rows: usize,
+    /// Whether the first table row is a header; default `true`.
+    #[serde(default = "default_true")]
+    pub has_header: bool,
+    #[serde(default)]
+    pub balance_col: Option<usize>,
+    #[serde(default)]
+    pub reference_col: Option<usize>,
+    /// ISO-4217 override; `None` = account currency.
+    #[serde(default)]
+    pub currency: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl CustomMappingSpec {
+    /// Validate the spec into a [`CsvMapping`].
+    pub fn build(self) -> IngestResult<CsvMapping> {
+        let amount = match (self.amount_col, self.debit_col, self.credit_col) {
+            (Some(col), None, None) => AmountMapping::Signed { col },
+            (None, Some(debit_col), Some(credit_col)) => AmountMapping::DebitCredit {
+                debit_col,
+                credit_col,
+            },
+            _ => {
+                return Err(IngestError::Parse(
+                    "custom mapping needs either amount_col, or both debit_col and credit_col"
+                        .into(),
+                ))
+            }
+        };
+        let delimiter = match self.delimiter {
+            None => b',',
+            Some(c) if c.is_ascii() && c != '\r' && c != '\n' => c as u8,
+            Some(c) => {
+                return Err(IngestError::Parse(format!(
+                    "delimiter must be a single ASCII character, got {c:?}"
+                )))
+            }
+        };
+        Ok(CsvMapping {
+            delimiter,
+            skip_rows: self.skip_rows,
+            has_header: self.has_header,
+            date_col: self.date_col,
+            date_format: self.date_format,
+            description_col: self.description_col,
+            amount,
+            balance_col: self.balance_col,
+            reference_col: self.reference_col,
+            currency: self.currency,
+            decimal: self.decimal,
+        })
+    }
+
+    /// Validate and wrap a statement file in an adapter under `bank_id`
+    /// (any stable id the caller chooses, e.g. `"custom-mybank"`).
+    pub fn adapter_for_path(
+        self,
+        bank_id: impl Into<String>,
+        path: &Path,
+    ) -> IngestResult<CsvStatementAdapter> {
+        CsvStatementAdapter::from_path(bank_id, self.build()?, path)
+    }
 }
 
 /// Column-mapping presets for the SA banks' CSV exports
@@ -79,6 +195,26 @@ pub enum SaBankPreset {
 }
 
 impl SaBankPreset {
+    /// Every SA preset, in catalog display order.
+    pub const ALL: [Self; 5] = [
+        Self::Fnb,
+        Self::StandardBank,
+        Self::Capitec,
+        Self::Nedbank,
+        Self::Absa,
+    ];
+
+    /// Bank display name for preset listings.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Fnb => "FNB",
+            Self::StandardBank => "Standard Bank",
+            Self::Capitec => "Capitec",
+            Self::Nedbank => "Nedbank",
+            Self::Absa => "Absa",
+        }
+    }
+
     /// Stable bank id, matching the adapter roadmap table.
     pub fn bank_id(&self) -> &'static str {
         match self {
@@ -103,6 +239,7 @@ impl SaBankPreset {
             balance_col: Some(3),
             reference_col: None,
             currency: None,
+            decimal: DecimalStyle::Auto,
         };
         match self {
             // FNB: Date, Amount, Balance, Description — dates 2026/06/01.
@@ -198,13 +335,14 @@ impl CsvStatementAdapter {
                 continue;
             };
 
+            let parse_amount = |raw: &str| parse_amount_minor_styled(raw, self.mapping.decimal);
             let amount_minor = match self.mapping.amount {
                 AmountMapping::Signed { col } => {
                     let raw = field(col);
                     if raw.is_empty() {
                         continue; // dated but amount-less: opening-balance rows
                     }
-                    parse_amount_minor(raw)?
+                    parse_amount(raw)?
                 }
                 AmountMapping::DebitCredit {
                     debit_col,
@@ -214,12 +352,12 @@ impl CsvStatementAdapter {
                     let credit = field(credit_col);
                     match (debit.is_empty(), credit.is_empty()) {
                         (true, true) => continue, // e.g. balance-only rows
-                        (false, true) => -parse_amount_minor(debit)?.abs(),
-                        (true, false) => parse_amount_minor(credit)?.abs(),
+                        (false, true) => -parse_amount(debit)?.abs(),
+                        (true, false) => parse_amount(credit)?.abs(),
                         (false, false) => {
                             // Some exports fill the unused column with 0.
-                            let d = parse_amount_minor(debit)?;
-                            let c = parse_amount_minor(credit)?;
+                            let d = parse_amount(debit)?;
+                            let c = parse_amount(credit)?;
                             match (d == 0, c == 0) {
                                 (true, false) => c.abs(),
                                 (false, true) => -d.abs(),
@@ -242,7 +380,7 @@ impl CsvStatementAdapter {
                 balance_minor: self
                     .mapping
                     .balance_col
-                    .and_then(|col| parse_amount_minor(field(col)).ok()),
+                    .and_then(|col| parse_amount(field(col)).ok()),
                 provider_txn_id: self
                     .mapping
                     .reference_col
@@ -284,6 +422,18 @@ pub fn parse_statement_date(raw: &str, format: DateFormat) -> IngestResult<Strin
         DateFormat::DashDmy => {
             let (d, m, y) = split3(raw, '-').ok_or_else(bad)?;
             (y as i32, m, d as u32)
+        }
+        DateFormat::DotDmy => {
+            let (d, m, y) = split3(raw, '.').ok_or_else(bad)?;
+            (y as i32, m, d as u32)
+        }
+        DateFormat::SlashMdy => {
+            let (m, d, y) = split3(raw, '/').ok_or_else(bad)?;
+            (y as i32, m as u32, d)
+        }
+        DateFormat::DashMdy => {
+            let (m, d, y) = split3(raw, '-').ok_or_else(bad)?;
+            (y as i32, m as u32, d)
         }
         DateFormat::CompactYmd => {
             if raw.len() != 8 || !raw.bytes().all(|b| b.is_ascii_digit()) {
@@ -369,6 +519,154 @@ mod tests {
         );
         assert!(parse_statement_date("13/13/2026", DateFormat::SlashDmy).is_err());
         assert!(parse_statement_date("junk", DateFormat::IsoYmd).is_err());
+    }
+
+    #[test]
+    fn worldwide_date_formats_parse_to_iso() {
+        assert_eq!(
+            parse_statement_date("06/01/2026", DateFormat::SlashMdy).unwrap(),
+            "2026-06-01",
+            "US month-first"
+        );
+        assert_eq!(
+            parse_statement_date("06-01-2026", DateFormat::DashMdy).unwrap(),
+            "2026-06-01"
+        );
+        assert_eq!(
+            parse_statement_date("01.06.2026", DateFormat::DotDmy).unwrap(),
+            "2026-06-01",
+            "EU dotted day-first"
+        );
+        // Same string, opposite conventions — the mapping decides.
+        assert_eq!(
+            parse_statement_date("03/04/2026", DateFormat::SlashDmy).unwrap(),
+            "2026-04-03"
+        );
+        assert_eq!(
+            parse_statement_date("03/04/2026", DateFormat::SlashMdy).unwrap(),
+            "2026-03-04"
+        );
+        assert!(parse_statement_date("13/32/2026", DateFormat::SlashMdy).is_err());
+    }
+
+    #[test]
+    fn stored_mappings_without_decimal_field_deserialize_to_auto() {
+        // Backward compatibility: mappings saved in settings before the
+        // `decimal` field existed must load unchanged.
+        let json = r#"{
+            "delimiter": 44, "skip_rows": 0, "has_header": true,
+            "date_col": 0, "date_format": "slash_ymd", "description_col": 3,
+            "amount": {"kind": "signed", "col": 1},
+            "balance_col": 2, "reference_col": null, "currency": null
+        }"#;
+        let mapping: CsvMapping = serde_json::from_str(json).unwrap();
+        assert_eq!(mapping.decimal, DecimalStyle::Auto);
+        assert_eq!(mapping, SaBankPreset::Fnb.mapping());
+    }
+
+    #[test]
+    fn custom_mapping_spec_roundtrips_and_parses_any_layout() {
+        // A made-up bank nobody has a preset for: pipe-delimited, US dates,
+        // debit/credit columns, reference ids — imports day one.
+        let spec = CustomMappingSpec {
+            date_col: 1,
+            date_format: DateFormat::SlashMdy,
+            description_col: 3,
+            amount_col: None,
+            debit_col: Some(4),
+            credit_col: Some(5),
+            decimal: DecimalStyle::Point,
+            delimiter: Some('|'),
+            skip_rows: 1,
+            has_header: true,
+            balance_col: Some(6),
+            reference_col: Some(2),
+            currency: Some("USD".into()),
+        };
+
+        // Serde roundtrip — the spec travels as JSON from CLI/server.
+        let json = serde_json::to_string(&spec).unwrap();
+        let back: CustomMappingSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, spec);
+
+        let csv = "\
+First Global Bank statement export
+No|Date|Ref|Description|Debit|Credit|Balance
+1|06/15/2026|TX-9|WIRE OUT|1,250.00||8,750.00
+2|06/16/2026|TX-10|DEPOSIT||3,000.00|11,750.00
+";
+        let adapter = CsvStatementAdapter::new(
+            "custom-first-global",
+            back.build().unwrap(),
+            csv.as_bytes().to_vec(),
+        );
+        let lines = adapter.parse_all().unwrap();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].posted_date, "2026-06-15");
+        assert_eq!(lines[0].amount_minor, -125_000);
+        assert_eq!(lines[0].provider_txn_id.as_deref(), Some("TX-9"));
+        assert_eq!(lines[0].balance_minor, Some(875_000));
+        assert_eq!(lines[0].currency.as_deref(), Some("USD"));
+        assert_eq!(lines[1].amount_minor, 300_000);
+    }
+
+    #[test]
+    fn custom_mapping_spec_defaults_apply_from_minimal_json() {
+        // A minimal CLI/server payload: only the columns that matter.
+        let json =
+            r#"{"date_col": 0, "date_format": "iso_ymd", "description_col": 1, "amount_col": 2}"#;
+        let spec: CustomMappingSpec = serde_json::from_str(json).unwrap();
+        let mapping = spec.build().unwrap();
+        assert_eq!(mapping.delimiter, b',');
+        assert!(mapping.has_header);
+        assert_eq!(mapping.skip_rows, 0);
+        assert_eq!(mapping.decimal, DecimalStyle::Auto);
+        assert_eq!(mapping.amount, AmountMapping::Signed { col: 2 });
+    }
+
+    #[test]
+    fn custom_mapping_spec_rejects_invalid_amount_shapes_and_delimiters() {
+        let base = CustomMappingSpec {
+            date_col: 0,
+            date_format: DateFormat::IsoYmd,
+            description_col: 1,
+            amount_col: None,
+            debit_col: None,
+            credit_col: None,
+            decimal: DecimalStyle::Auto,
+            delimiter: None,
+            skip_rows: 0,
+            has_header: true,
+            balance_col: None,
+            reference_col: None,
+            currency: None,
+        };
+        // No amount shape at all.
+        assert!(base.clone().build().is_err());
+        // Both shapes at once.
+        assert!(CustomMappingSpec {
+            amount_col: Some(2),
+            debit_col: Some(3),
+            credit_col: Some(4),
+            ..base.clone()
+        }
+        .build()
+        .is_err());
+        // Debit without credit.
+        assert!(CustomMappingSpec {
+            debit_col: Some(2),
+            ..base.clone()
+        }
+        .build()
+        .is_err());
+        // Non-ASCII delimiter.
+        assert!(CustomMappingSpec {
+            amount_col: Some(2),
+            delimiter: Some('€'),
+            ..base
+        }
+        .build()
+        .is_err());
     }
 
     #[test]

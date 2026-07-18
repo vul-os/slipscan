@@ -669,6 +669,50 @@ mod tests {
     }
 
     #[test]
+    fn global_payload_without_region_validates_and_round_trips() {
+        let mut payload = minimal_payload();
+        payload.meta.region = None;
+        payload.validate().unwrap();
+
+        let bytes = serde_json::to_vec_pretty(&payload).unwrap();
+        let parsed = PackPayload::from_json(&bytes).unwrap();
+        assert_eq!(parsed, payload);
+        assert_eq!(parsed.meta.region, None);
+        // Absent region is omitted from JSON entirely, or serialized as null
+        // — either way an old reader sees a well-formed document.
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["meta"]["region"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn region_accepts_any_iso_alpha2_and_rejects_junk() {
+        for good in ["ZA", "DE", "US", "BR", "JP", "NG"] {
+            let mut payload = minimal_payload();
+            payload.meta.region = Some(good.into());
+            payload.validate().unwrap_or_else(|e| panic!("{good}: {e}"));
+        }
+        for bad in ["za", "ZAF", "Z", "Z1", "", "SOUTH AFRICA"] {
+            let mut payload = minimal_payload();
+            payload.meta.region = Some(bad.into());
+            assert!(payload.validate().is_err(), "should reject region {bad:?}");
+        }
+    }
+
+    #[test]
+    fn benchmark_cohort_region_is_generic_iso_not_za_specific() {
+        for good in ["ZA", "DE", "US", "IN", "KE"] {
+            let mut payload = benchmark_payload();
+            payload.benchmarks.as_mut().unwrap().cohort.region = good.into();
+            payload.validate().unwrap_or_else(|e| panic!("{good}: {e}"));
+        }
+        for bad in ["za", "ZAF", "", "Z1"] {
+            let mut payload = benchmark_payload();
+            payload.benchmarks.as_mut().unwrap().cohort.region = bad.into();
+            assert!(payload.validate().is_err(), "should reject cohort {bad:?}");
+        }
+    }
+
+    #[test]
     fn benchmark_payload_validates_and_reports_kind() {
         let payload = benchmark_payload();
         payload.validate().unwrap();

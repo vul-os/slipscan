@@ -3,14 +3,15 @@
 
   let {
     amount,
-    currency = "ZAR",
+    currency,
     signed = false,
     colored = false,
     class: cls = "",
   }: {
     /** Integer minor units, signed. */
     amount: number;
-    currency?: string;
+    /** ISO-4217 code from the data (book/account/txn) — no fallback. */
+    currency: string;
     /** Always render an explicit +/− sign. */
     signed?: boolean;
     /** Tint income green; leave outflows neutral. */

@@ -64,7 +64,7 @@ Honest status first: statement files are currently imported as **documents**, no
 
 1. Download a statement CSV (or OFX) from your bank's internet banking.
 2. Import it: `slipscan import statement.csv` — it is stored as a bank-statement document, content-hash deduplicated.
-3. The statement→transactions step — column mapping (with per-SA-bank presets already implemented in `crates/slipscan-ingest`), landing rows in an account, deduplication by provider id / content hash — exists in the ingest crate but is **not wired to the CLI or desktop yet**. There is no OFX parser yet at all. Both are tracked in [ROADMAP.md](../ROADMAP.md).
+3. The statement→transactions step — column mapping (a region-grouped preset catalog: SA-bank presets, a `generic` worldwide family, and a custom mapping for any other bank, all in `crates/slipscan-ingest` — see [BANK-ADAPTERS.md](BANK-ADAPTERS.md#statement-csv-presets--region-data-not-code)), landing rows in an account, deduplication by provider id / content hash — exists in the ingest crate but is **not wired to the CLI or desktop yet**. There is no OFX parser yet at all. Both are tracked in [ROADMAP.md](../ROADMAP.md).
 
 For the design of automatic pulls straight from your bank, see [BANK-ADAPTERS.md](BANK-ADAPTERS.md).
 

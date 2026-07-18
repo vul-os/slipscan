@@ -29,6 +29,7 @@ fn make_book(conn: &Connection) -> String {
         name: "Test book".into(),
         currency: "ZAR".into(),
         country: Some("ZA".into()),
+        region: "za".into(),
         locale: "en".into(),
         timezone: "UTC".into(),
         financial_lock_date: None,
@@ -320,18 +321,31 @@ fn seed_packs_install_and_classify_sa_merchants() {
     let book_id = make_book(conn);
 
     let reports = builtin::install_seed_packs(conn, &book_id).unwrap();
-    assert_eq!(reports.len(), 2);
-    // Idempotent: second run skips both.
+    assert_eq!(reports.len(), 3);
+    // Idempotent: second run skips all of them.
     assert!(builtin::install_seed_packs(conn, &book_id)
         .unwrap()
         .is_empty());
 
     let installer = Installer::open(conn).unwrap();
     let installed = installer.list(&book_id).unwrap();
-    assert_eq!(installed.len(), 2);
+    assert_eq!(installed.len(), 3);
     for pack in &installed {
         assert_eq!(pack.signer, builtin::seed_public_key_hex());
     }
+    // The listing exposes each pack's region: ZA seeds are namespaced to
+    // "ZA", the starter pack is global (no region).
+    let region_of = |id: &str| {
+        installed
+            .iter()
+            .find(|p| p.pack_id == id)
+            .unwrap()
+            .region
+            .clone()
+    };
+    assert_eq!(region_of("za-personal").as_deref(), Some("ZA"));
+    assert_eq!(region_of("za-business-vat").as_deref(), Some("ZA"));
+    assert_eq!(region_of("intl-starter"), None);
 
     // Seed taxonomies became real core categories.
     let categories = repo::category::list(conn, &book_id).unwrap();
@@ -367,7 +381,7 @@ fn seed_packs_install_and_classify_sa_merchants() {
     // pack-seeded mappings.
     assert!(installer.uninstall(&book_id, "za-personal").unwrap());
     assert!(!installer.uninstall(&book_id, "za-personal").unwrap());
-    assert_eq!(installer.list(&book_id).unwrap().len(), 1);
+    assert_eq!(installer.list(&book_id).unwrap().len(), 2);
     let classifier = slipscan_packs::engine::Classifier::load(conn, &book_id).unwrap();
     assert!(classifier.suggest("CHECKERS SIXTY60").is_none());
     // Categories survive uninstall — history never breaks.
@@ -375,6 +389,182 @@ fn seed_packs_install_and_classify_sa_merchants() {
         .unwrap()
         .iter()
         .any(|c| c.name == "Groceries"));
+}
+
+/// The global starter pack works in a non-ZA book on its own: it installs,
+/// exposes no region, and classifies worldwide merchant strings.
+#[test]
+fn intl_starter_installs_and_classifies_global_merchants() {
+    let db = Db::open_in_memory().unwrap();
+    let conn = db.conn();
+    let now = now_iso();
+    let book = Book {
+        id: new_id(),
+        kind: BookKind::Personal,
+        name: "Berlin book".into(),
+        currency: "EUR".into(),
+        country: Some("DE".into()),
+        region: "generic".into(),
+        locale: "de".into(),
+        timezone: "UTC".into(),
+        financial_lock_date: None,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    repo::book::insert(conn, &book).unwrap();
+
+    let installer = Installer::open(conn).unwrap();
+    let intl = builtin::seed_packs()
+        .unwrap()
+        .into_iter()
+        .find(|p| p.pack().id() == "intl-starter")
+        .expect("intl-starter is a builtin seed");
+    let report = installer.install(&book.id, &intl).unwrap();
+    assert_eq!(report.outcome, InstallOutcome::Installed);
+    assert_eq!(report.pack.region, None);
+    assert_eq!(report.pack.kind, PackKind::Taxonomy);
+
+    let installed = installer.list(&book.id).unwrap();
+    assert_eq!(installed.len(), 1);
+    assert_eq!(installed[0].pack_id, "intl-starter");
+    assert_eq!(installed[0].region, None);
+
+    let map = installer.category_map(&book.id, "intl-starter").unwrap();
+    let classifier = slipscan_packs::engine::Classifier::load(conn, &book.id).unwrap();
+    let cases = [
+        ("AMAZON MKTPLACE PMTS", "shopping.online"),
+        ("AMAZON PRIME*MEMBERSHIP", "subscriptions.streaming"),
+        ("UBER *TRIP HELP.UBER.COM", "transport.ride-hailing"),
+        ("UBER EATS BERLIN", "eating-out.delivery"),
+        ("NETFLIX.COM", "subscriptions.streaming"),
+        ("SPOTIFY P233194845", "subscriptions.streaming"),
+        ("APPLE.COM/BILL", "subscriptions.software"),
+        ("GOOGLE *GOOGLE PLAY", "subscriptions.software"),
+        ("PAYPAL *DIGITALRIV", "shopping.online"),
+        ("AIRBNB * HM2XYZ", "travel"),
+        ("MCDONALDS 40123", "eating-out"),
+        ("SHELL 6045 HAMBURG", "transport.fuel"),
+        ("IKEA DELFT", "home"),
+        ("ALDI SUED SAGT DANKE", "groceries"),
+        ("LIDL SAGT DANKE", "groceries"),
+        ("CARREFOUR MARKET PARIS 11", "groceries"),
+        ("TESCO STORES 3297", "groceries"),
+        ("WAL-MART SUPERCENTER", "groceries"),
+        ("TARGET 00021212", "shopping"),
+    ];
+    for (merchant, expected_key) in cases {
+        let hit = classifier
+            .suggest(merchant)
+            .unwrap_or_else(|| panic!("no suggestion for {merchant}"));
+        assert_eq!(
+            hit.category_id, map[expected_key],
+            "{merchant} should classify as {expected_key}"
+        );
+        assert_eq!(hit.pack_id, "intl-starter");
+    }
+}
+
+/// The optional region travels payload → manifest → install → listing, in
+/// both states: set (an ISO code) and absent (global).
+#[test]
+fn region_field_round_trips_through_manifest_and_install() {
+    let db = Db::open_in_memory().unwrap();
+    let conn = db.conn();
+    let book_id = make_book(conn);
+    let installer = Installer::open(conn).unwrap();
+    TrustStore::open(conn)
+        .unwrap()
+        .trust(&signer_hex(7), "t")
+        .unwrap();
+
+    let mut regional = taxonomy_payload("1.0.0");
+    regional.meta.id = "de-test".into();
+    regional.meta.region = Some("DE".into());
+    let mut global = taxonomy_payload("1.0.0");
+    global.meta.id = "global-test".into();
+    global.meta.region = None;
+
+    for payload in [&regional, &global] {
+        // Manifest TOML round-trip preserves the region exactly.
+        let pack = Pack::build(payload).unwrap();
+        let manifest = pack.manifest_toml().unwrap();
+        match &payload.meta.region {
+            Some(region) => assert!(manifest.contains(&format!("region = \"{region}\""))),
+            None => assert!(!manifest.contains("region")),
+        }
+        let reparsed = Pack::from_parts(&manifest, pack.payload_bytes()).unwrap();
+        assert_eq!(reparsed.payload().meta.region, payload.meta.region);
+
+        // Install exposes it on the report, the listing, and the get path.
+        let verified = sign_pack(&pack, &signer(7)).verify().unwrap();
+        let report = installer.install(&book_id, &verified).unwrap();
+        assert_eq!(report.pack.region, payload.meta.region);
+        let got = installer.get(&book_id, &payload.meta.id).unwrap().unwrap();
+        assert_eq!(got.region, payload.meta.region);
+    }
+
+    let regions: Vec<Option<String>> = installer
+        .list(&book_id)
+        .unwrap()
+        .into_iter()
+        .map(|p| p.region)
+        .collect();
+    assert_eq!(regions, [Some("DE".to_string()), None]);
+}
+
+/// Databases written before packs carried a region keep working: opening the
+/// installer adds the column and backfills it from each install's stored
+/// payload, so implicitly-SA installs come out labeled "ZA" and everything
+/// else stays global.
+#[test]
+fn legacy_pack_installs_table_gains_region_on_open() {
+    let conn = Connection::open_in_memory().unwrap();
+    // The pre-region schema, exactly as older releases created it.
+    conn.execute_batch(
+        "CREATE TABLE pack_installs (
+             book_id      TEXT NOT NULL,
+             pack_id      TEXT NOT NULL,
+             name         TEXT NOT NULL,
+             version      TEXT NOT NULL,
+             kind         TEXT NOT NULL CHECK (kind IN ('taxonomy', 'benchmark')),
+             signer       TEXT NOT NULL,
+             payload_json BLOB NOT NULL,
+             installed_at TEXT NOT NULL,
+             updated_at   TEXT NOT NULL,
+             PRIMARY KEY (book_id, pack_id)
+         );",
+    )
+    .unwrap();
+    let insert = |pack_id: &str, payload_json: &str| {
+        conn.execute(
+            "INSERT INTO pack_installs
+                 (book_id, pack_id, name, version, kind, signer, payload_json,
+                  installed_at, updated_at)
+             VALUES ('b1', ?1, ?1, '1.0.0', 'taxonomy', 'signer',
+                     ?2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            rusqlite::params![pack_id, payload_json.as_bytes()],
+        )
+        .unwrap();
+    };
+    insert("za-personal", builtin::ZA_PERSONAL_JSON);
+    insert("intl-starter", builtin::INTL_STARTER_JSON);
+
+    // Opening the installer migrates in place (and is idempotent).
+    let installer = Installer::open(&conn).unwrap();
+    let installed = installer.list("b1").unwrap();
+    assert_eq!(installed.len(), 2);
+    let region_of = |id: &str| {
+        installed
+            .iter()
+            .find(|p| p.pack_id == id)
+            .unwrap()
+            .region
+            .clone()
+    };
+    assert_eq!(region_of("za-personal").as_deref(), Some("ZA"));
+    assert_eq!(region_of("intl-starter"), None);
+    // Idempotent: a second open is a no-op, not a re-migration.
+    Installer::open(&conn).unwrap();
 }
 
 #[test]

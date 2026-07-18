@@ -28,6 +28,12 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0201_regenerable_sources",
         include_str!("migrations/0201_regenerable_sources.sql"),
     ),
+    (300, "0300_fx", include_str!("migrations/0300_fx.sql")),
+    (
+        301,
+        "0301_region",
+        include_str!("migrations/0301_region.sql"),
+    ),
 ];
 
 /// A configured, migrated SQLite database handle.
@@ -124,14 +130,94 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 100, 101, 200, 201]
+            vec![1, 100, 101, 200, 201, 300, 301]
         );
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 100, 101, 200, 201]
+            vec![1, 100, 101, 200, 201, 300, 301]
         );
+    }
+
+    /// A database from the implicit-SA era (pre-0301) migrates its books onto
+    /// region profiles: SA evidence (ZA VAT seeds / country / the old ZAR
+    /// currency default) maps to 'za', everything else to 'generic'.
+    #[test]
+    fn region_migration_maps_implicit_sa_books_to_za() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        // Apply everything before the region migration.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (
+                version    INTEGER PRIMARY KEY,
+                name       TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        for &(version, name, sql) in MIGRATIONS {
+            if version >= 301 {
+                continue;
+            }
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![version, name, now_iso()],
+            )
+            .unwrap();
+        }
+
+        // Old-world books (no region column yet).
+        let insert_book = "INSERT INTO books (id, kind, name, currency, country, locale,
+                                             timezone, created_at, updated_at)
+                           VALUES (?1, 'personal', ?2, ?3, ?4, 'en', 'UTC', 't', 't')";
+        // Seeded SA book: has the ZA VAT rate table.
+        conn.execute(
+            insert_book,
+            rusqlite::params!["b-seeded", "Seeded", "ZAR", Option::<String>::None],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO vat_rates (id, book_id, code, name, rate_bps, country,
+                                    is_active, created_at, updated_at)
+             VALUES ('r1', 'b-seeded', 'STD', 'Standard rate (15%)', 1500, 'ZA', 1, 't', 't')",
+            [],
+        )
+        .unwrap();
+        // Unseeded book that used the implicit ZAR default.
+        conn.execute(
+            insert_book,
+            rusqlite::params!["b-zar", "Implicit", "ZAR", Option::<String>::None],
+        )
+        .unwrap();
+        // Explicit ZA country, never seeded.
+        conn.execute(
+            insert_book,
+            rusqlite::params!["b-country", "Country", "USD", Some("ZA")],
+        )
+        .unwrap();
+        // Explicitly foreign book: not implicitly SA.
+        conn.execute(
+            insert_book,
+            rusqlite::params!["b-usd", "Foreign", "USD", Option::<String>::None],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let region = |id: &str| -> String {
+            conn.query_row(
+                "SELECT region FROM books WHERE id = ?1",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(region("b-seeded"), "za");
+        assert_eq!(region("b-zar"), "za");
+        assert_eq!(region("b-country"), "za");
+        assert_eq!(region("b-usd"), "generic");
     }
 
     #[test]
@@ -157,6 +243,7 @@ mod tests {
             "classification_corrections",
             "document_extractions",
             "documents",
+            "fx_rates",
             "journal_lines",
             "journals",
             "merchant_mappings",

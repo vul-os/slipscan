@@ -25,8 +25,10 @@ const moneyFmtCache = new Map<string, Intl.NumberFormat>();
 function moneyFmt(currency: string): Intl.NumberFormat {
   let fmt = moneyFmtCache.get(currency);
   if (!fmt) {
-    // en-ZA renders ZAR as `R 1 234,56` — matches SA slip conventions.
-    fmt = new Intl.NumberFormat("en-ZA", {
+    // The user's own locale drives symbol placement and separators — the
+    // currency itself always comes from the data (book/account/txn), never
+    // from a hardcoded default (contract: regions are data, not code).
+    fmt = new Intl.NumberFormat(undefined, {
       style: "currency",
       currency,
       currencyDisplay: "narrowSymbol",
@@ -37,12 +39,14 @@ function moneyFmt(currency: string): Intl.NumberFormat {
 }
 
 /**
- * `84235` → `R 842,35`. Pass `signed` to always show +/−.
+ * `84235` + `"EUR"` → `€842.35` (rendered in the user's locale). Pass
+ * `signed` to always show +/−. The currency is required — callers pass the
+ * book/account/transaction currency; there is no fallback currency.
  * Exponent-aware: JPY-class minor units divide by 1, BHD-class by 1000.
  */
 export function fmtMoney(
   minor: number,
-  currency = "ZAR",
+  currency: string,
   opts: { signed?: boolean } = {},
 ): string {
   const abs = moneyFmt(currency).format(Math.abs(minor) / minorFactor(currency));
@@ -51,7 +55,7 @@ export function fmtMoney(
   return abs;
 }
 
-const dateFmt = new Intl.DateTimeFormat("en-ZA", {
+const dateFmt = new Intl.DateTimeFormat(undefined, {
   day: "numeric",
   month: "short",
   year: "numeric",
@@ -62,7 +66,7 @@ export function fmtDate(iso: string): string {
   return dateFmt.format(new Date(iso));
 }
 
-const monthFmt = new Intl.DateTimeFormat("en-ZA", {
+const monthFmt = new Intl.DateTimeFormat(undefined, {
   month: "long",
   year: "numeric",
 });
@@ -79,15 +83,24 @@ export function fmtPct(share: number): string {
 
 /**
  * Parse a user-typed amount into integer minor units for `currency`.
- * Accepts `1 234,56`, `1234.56`, `R 500`, `-84,10`. Returns null on garbage.
+ * Accepts `1 234,56`, `1234.56`, `R 500`, `$500`, `EUR 1.234,56`, `-84,10`.
+ * Returns null on garbage. Any leading currency symbol or code is stripped
+ * generically — no jurisdiction's notation is special-cased.
  * Exponent-aware: `1234` JPY → 1234 minor; `1.234` BHD → 1234 minor.
  */
-export function parseMoneyInput(raw: string, currency = "ZAR"): number | null {
+export function parseMoneyInput(raw: string, currency: string): number | null {
   const exp = minorExponent(currency);
-  let s = raw.trim().replace(/[Rr]\s*/, "").replace(/\s+/g, "");
+  let s = raw.trim().replace(/\s+/g, "");
   if (s === "") return null;
   let negative = false;
   if (s.startsWith("-") || s.startsWith("−")) {
+    negative = true;
+    s = s.slice(1);
+  }
+  // Strip a leading currency symbol / letter code (`R`, `$`, `EUR`, `¥`…);
+  // the sign may also follow it (`R-500`).
+  s = s.replace(/^[\p{L}\p{Sc}]+/u, "");
+  if (!negative && (s.startsWith("-") || s.startsWith("−"))) {
     negative = true;
     s = s.slice(1);
   }
@@ -111,7 +124,7 @@ export function parseMoneyInput(raw: string, currency = "ZAR"): number | null {
 }
 
 /** Minor units → plain editable string: `84235` → `842.35` (exponent-aware). */
-export function minorToInput(minor: number, currency = "ZAR"): string {
+export function minorToInput(minor: number, currency: string): string {
   const sign = minor < 0 ? "-" : "";
   const abs = Math.abs(minor);
   const exp = minorExponent(currency);

@@ -162,6 +162,7 @@ pub fn vat201(
     from_date: &str,
     to_date: &str,
     currency: &str,
+    profile: &crate::region::RegionProfile,
 ) -> CoreResult<Vat201Summary> {
     let mut stmt = conn.prepare(
         "SELECT l.vat_rate_id AS vat_rate_id,
@@ -241,12 +242,12 @@ pub fn vat201(
         .sum();
     let zero_rated_supplies_minor = rows
         .iter()
-        .filter(|r| r.rate_bps == 0 && r.code != "EXE")
+        .filter(|r| r.rate_bps == 0 && !profile.is_exempt_code(&r.code))
         .map(|r| r.output_base_minor)
         .sum();
     let exempt_supplies_minor = rows
         .iter()
-        .filter(|r| r.code == "EXE")
+        .filter(|r| profile.is_exempt_code(&r.code))
         .map(|r| r.output_base_minor)
         .sum();
 
@@ -255,6 +256,8 @@ pub fn vat201(
         from_date: from_date.to_string(),
         to_date: to_date.to_string(),
         currency: currency.to_string(),
+        report_name: profile.tax_report.report_name.to_string(),
+        labels: profile.tax_report.box_labels(),
         rows,
         standard_rated_supplies_minor,
         zero_rated_supplies_minor,

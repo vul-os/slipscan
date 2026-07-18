@@ -1,8 +1,16 @@
 //! Builtin seed packs, compiled into the binary.
 //!
-//! Two South African seed packs ship as embedded fixtures:
-//! * `za-personal` — personal-finance taxonomy + rules for major SA merchants;
-//! * `za-business-vat` — small-business taxonomy with advisory VAT hints.
+//! Three seed packs ship as embedded fixtures — two for the `ZA` region and
+//! one global (regions are data, not code; a pack without a region applies
+//! anywhere):
+//! * `za-personal` (region `ZA`) — personal-finance taxonomy + rules for
+//!   major SA merchants;
+//! * `za-business-vat` (region `ZA`) — small-business taxonomy with advisory
+//!   VAT hints;
+//! * `intl-starter` (no region — global) — region-agnostic taxonomy + rules
+//!   for worldwide merchants. Its category names deliberately match
+//!   `za-personal` where the concepts coincide, so installing both composes
+//!   onto one category tree instead of duplicating it.
 //!
 //! # Trust model, stated plainly
 //!
@@ -35,6 +43,8 @@ use crate::PackError;
 pub const ZA_PERSONAL_JSON: &str = include_str!("fixtures/za-personal.json");
 /// Embedded payload of the SA small-business/VAT seed pack.
 pub const ZA_BUSINESS_VAT_JSON: &str = include_str!("fixtures/za-business-vat.json");
+/// Embedded payload of the global (region-agnostic) starter seed pack.
+pub const INTL_STARTER_JSON: &str = include_str!("fixtures/intl-starter.json");
 
 /// The well-known development signing key for builtin seeds. Deliberately
 /// public — see the module docs. **Never** use it to sign a real pack.
@@ -67,6 +77,7 @@ pub fn seed_packs() -> PackResult<Vec<VerifiedPack>> {
     Ok(vec![
         seed_pack(ZA_PERSONAL_JSON)?,
         seed_pack(ZA_BUSINESS_VAT_JSON)?,
+        seed_pack(INTL_STARTER_JSON)?,
     ])
 }
 
@@ -94,9 +105,9 @@ mod tests {
     #[test]
     fn seed_packs_parse_validate_and_verify() {
         let packs = seed_packs().unwrap();
-        assert_eq!(packs.len(), 2);
+        assert_eq!(packs.len(), 3);
         let ids: Vec<&str> = packs.iter().map(|p| p.pack().id()).collect();
-        assert_eq!(ids, ["za-personal", "za-business-vat"]);
+        assert_eq!(ids, ["za-personal", "za-business-vat", "intl-starter"]);
         for pack in &packs {
             assert_eq!(pack.provenance(), Provenance::Builtin);
             assert_eq!(pack.signer(), seed_public_key_hex());
@@ -107,5 +118,11 @@ mod tests {
         }
         // The business pack carries VAT hints; the personal pack does not.
         assert!(!packs[1].payload().vat_hints.is_empty());
+        // Regions: ZA seeds declare "ZA"; the starter pack is global (none),
+        // and being global it carries no jurisdictional VAT hints either.
+        assert_eq!(packs[0].payload().meta.region.as_deref(), Some("ZA"));
+        assert_eq!(packs[1].payload().meta.region.as_deref(), Some("ZA"));
+        assert_eq!(packs[2].payload().meta.region, None);
+        assert!(packs[2].payload().vat_hints.is_empty());
     }
 }

@@ -90,6 +90,14 @@ impl From<CoreError> for ApiError {
                 (StatusCode::UNPROCESSABLE_ENTITY, "validation")
             }
             CoreError::Json(_) => (StatusCode::BAD_REQUEST, "invalid_json"),
+            // FX: not configured is a user-precondition (set the OpenRate URL
+            // first), an unknown pair is a missing rate, and transport/parse
+            // failures are upstream problems — never internal errors.
+            CoreError::FxNotConfigured => (StatusCode::CONFLICT, "fx_not_configured"),
+            CoreError::FxUnknownPair { .. } => (StatusCode::NOT_FOUND, "fx_unknown_pair"),
+            CoreError::FxTransport(_) | CoreError::FxParse(_) => {
+                (StatusCode::BAD_GATEWAY, "fx_upstream")
+            }
             CoreError::Sqlite(_) | CoreError::Migration { .. } | CoreError::Secret(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal")
             }
