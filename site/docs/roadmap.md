@@ -54,6 +54,23 @@ Vault22/22seven-class intelligence, decentralized (design in [docs/ARCHITECTURE.
 - [ ] Opt-in anonymous contribution: local differential privacy, coarse k-anonymous cohorts, anonymous transport, off by default
 - [ ] **Parity matrices**: tracked feature-by-feature vs Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency) and Vault22/22seven (net worth, goals, nudges, peer comparison) — each gap becomes an issue
 
+## Phase 4.7 — Global by default + OpenRate FX
+
+SlipScan is a worldwide product; countries are region profiles, not code (contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
+
+- [ ] Region profiles: CoA seeds, tax config (rates + report labels/box mappings), bank CSV presets, and merchant packs as selectable data — SA becomes the first profile, generic profile for everywhere else
+- [ ] Generic tax-period summary in core; "VAT201" only as the SA profile's label
+- [ ] Remove every hardcoded currency/jurisdiction default from core, CLI, server, desktop
+- [ ] OpenRate client: user-configured endpoint, decimal-only rate math, local rate cache with `as_of` + quality grade, rate recorded per conversion
+- [ ] Converted report views ("all activity in book currency, rated at booking time") with provenance shown
+
+## Phase 4.8 — Fold ShapePay ([TODO-FOLD-SHAPEPAY.md](TODO-FOLD-SHAPEPAY.md))
+
+- [ ] Payment expectations (reference code, amount tolerance, expiry, one-shot/recurring)
+- [ ] Matcher inside the ingestion pipeline
+- [ ] Webhook dispatcher: vault-held secrets, HMAC-signed payloads, SQLite retry queue (fires when the box regains network), audited deliveries
+- [ ] CLI `slipscan pay`, server routes, desktop expectations + delivery-status screen
+
 ## Phase 5 — Self-host server mode
 
 - [ ] Headless mode: run the core on your own home server / NAS, desktop and mobile as clients *(partial: `slipscan-server` serves the core surface over HTTP with optional bearer auth; no in-server connectors/scheduler yet, and the desktop cannot connect to a remote server yet)*

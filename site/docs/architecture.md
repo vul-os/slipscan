@@ -97,6 +97,26 @@ Secrets get their own subsystem with **write-only semantics**. Design goals: a c
 - **Rotation, not editing.** Replacing a credential writes a new version and destroys the old ciphertext; there is no in-place edit path.
 - Threat model and residual risks are documented in [THREAT-MODEL.md](THREAT-MODEL.md); vulnerability reporting in [SECURITY.md](../SECURITY.md).
 
+## Global by default — regions are data, not code
+
+SlipScan is a **worldwide product**. No jurisdiction may be hardcoded into core logic; everything country-specific ships as a **region profile** — data the user picks, never an assumption baked into code.
+
+- **A region profile carries:** chart-of-accounts seeds, tax configuration (rate table, tax-report labels and box mappings — e.g. South Africa's profile names its return "VAT201"; other regions name and map their own), bank statement CSV presets, and region merchant/classification packs.
+- **Core is region-neutral.** The tax engine works on configured rates and roles; reports are labeled from the profile, not from constants. The generic tax-period summary is the core concept; "VAT201" is the SA profile's label for it.
+- **No hardcoded currency anywhere.** The book's currency drives formatting, budgets, and reports end-to-end; UI fallbacks to a fixed currency (e.g. ZAR) are contract violations.
+- **South Africa is the first region profile** — fully supported, never special-cased. Adding a country must never require touching core.
+- A **generic profile** (neutral CoA, single configurable tax rate, custom CSV column mapping) makes SlipScan usable in any country on day one, before its dedicated profile exists.
+
+## Exchange rates — OpenRate
+
+Multi-currency conversion comes from **[OpenRate](https://github.com/vul-os/openrate)** (MIT, Go, self-hostable — the VulOS family's open FX engine), consumed over its HTTP JSON API from a **user-configured endpoint** (their own self-hosted instance, or any instance they choose to trust).
+
+- **Opt-in, mantra-compliant.** No OpenRate URL configured → SlipScan makes zero FX network calls and reports stay strictly per-currency / base-currency-scoped, exactly as today.
+- **Client shape:** thin Rust client over `GET /api/v1/convert?from=&to=&amount=1` (plus `/api/v1/meta` for currency discovery and `/healthz`). The `rate` field is parsed as a **decimal from the JSON token — never through `f64`**; money conversion is `i64` minor units × decimal rate with explicit banker's rounding, in integer paths only.
+- **Rates are cached locally** (rate, `as_of`, quality grade, fetch time) in SQLite. OpenRate serves **latest rates only** (no history), so every conversion used in a report or posting **records the rate it used** at booking time — reports reproduce offline and never silently re-rate.
+- **Provenance surfaces to the user.** OpenRate's quality grade and staleness (`age_sec`) are shown wherever a converted amount is; a stale weekend rate says so.
+- Refresh is user-triggered or an explicit schedule the user turns on — never a default background call.
+
 ## Insights, nudges & anonymous peer benchmarks
 
 Target: the full Vault22/22seven experience — nudges, spending insights, peer comparison — without anyone learning who you are.

@@ -56,6 +56,8 @@ From the CLI:
 slipscan init --name "Personal" --kind personal
 ```
 
+Every book carries a **region profile** — the data bundle (chart-of-accounts seeds, tax rates, tax-report labels, default currency) that makes it country-specific ([CONFIGURATION.md](CONFIGURATION.md#region-profiles)). Pick one at creation with `slipscan init --region <id>` (`slipscan init --list-regions` shows what ships built-in — South Africa's `za` profile with VAT rates, VAT201 labels and ZAR, and the worldwide `generic` profile: neutral chart, one configurable tax rate, USD default). With no region given — including the desktop's first-run book — you get the **generic** profile; no jurisdiction is ever assumed. Existing databases migrate automatically: books that were implicitly South African come out on the `za` profile.
+
 Data locations are documented in [CONFIGURATION.md](CONFIGURATION.md#data-locations).
 
 ## 2. Import a bank statement (CSV)

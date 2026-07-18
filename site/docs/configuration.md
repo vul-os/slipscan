@@ -18,10 +18,22 @@ Two kinds of values:
 - **Secret-referencing settings** — anything sensitive stores only a **keychain entry name**, never the material. The secret itself goes to the [credential vault](THREAT-MODEL.md). Copying your SQLite file copies configuration, not credentials.
 
 ```
-settings:  llm.provider = "ollama"                 ← plain
-settings:  mailbox.home.secret = "imap-home"       ← a *name*
-keychain:  slipscan / imap-home = <app password>   ← the secret, OS keychain only
+settings:  llm.provider = "ollama"                     ← plain
+settings:  fx.openrate_base_url = "https://rates.you"  ← plain (an endpoint you chose)
+settings:  mailbox.home.secret = "imap-home"           ← a *name*
+keychain:  slipscan / imap-home = <app password>       ← the secret, OS keychain only
 ```
+
+## Region profiles
+
+Everything country-specific is **data on the book, not a hidden global setting** ([the contract](ARCHITECTURE.md#global-by-default--regions-are-data-not-code)). Each book stores a `region` id naming the region profile that drives its chart-of-accounts seeds, tax-rate table, and tax-report labels ("VAT201" is the `za` profile's name for the tax-period summary; the generic profile just says "Tax summary"). Two profiles ship built-in, as embedded data in `slipscan-core` (`src/region.rs`):
+
+| Region id | Profile | Seeds |
+|---|---|---|
+| `za` | South Africa (first region profile) | SA business chart with VAT controls, 15%/zero/exempt VAT rates, VAT201 labels, ZAR default currency |
+| `generic` | Generic (international) | Neutral chart of accounts, one configurable standard tax rate, neutral report labels |
+
+The region is fixed at book creation and can be chosen explicitly: `slipscan init --region za` on the CLI (`slipscan init --list-regions` prints the built-in profiles), or the optional `region` field on the server's `book_create` route. An explicit region wins; an unknown explicit id is rejected (a typo can't silently produce a generic book). Without one, creation infers the region from the book's country (`ZA` → `za`; anything else, or none, → `generic`). Adding a country means adding profile data, never touching core logic. **Existing databases keep working**: a migration backfills the column — books that were implicitly South African (explicit `ZA` country, `ZAR` currency, or seeded ZA VAT rates) come out as `za`; everything else as `generic`. A book stored with a region id a build doesn't know falls back to the generic profile instead of breaking.
 
 ## Data locations
 
@@ -73,7 +85,23 @@ Per mailbox: connection details and a folder to watch (the `mail.imap.config` se
 
 ### Bank adapters
 
-Design: per adapter, a bank id, account mapping, and sync schedule, with credentials in the vault, handed to the adapter only inside a closure at run time. No live adapter ships yet — see [BANK-ADAPTERS.md](BANK-ADAPTERS.md) for what exists (CSV statement presets) versus what's planned.
+Design: per adapter, a bank id, account mapping, and sync schedule, with credentials in the vault, handed to the adapter only inside a closure at run time. No live adapter ships yet — see [BANK-ADAPTERS.md](BANK-ADAPTERS.md) for what exists (region-grouped CSV statement presets plus a custom column mapping for any bank) versus what's planned.
+
+### Exchange rates — OpenRate (opt-in)
+
+Multi-currency FX has exactly **one configuration knob**:
+
+| Key | Value | Kind |
+|---|---|---|
+| `fx.openrate_base_url` | Base URL of the [OpenRate](https://github.com/vul-os/openrate) instance you host or trust, e.g. `https://rates.example.net` | Plain setting — a URL you chose is an endpoint, not a secret |
+
+Absent or empty means **FX is off**: every fetch path fails with `fx_not_configured` *before* touching any transport — zero FX network calls, exactly the [mantra](ARCHITECTURE.md#non-negotiables-the-mantra). With it set, rate fetches are explicit (never a background default), and:
+
+- fetched rates are **cached locally** in the `fx_rates` table — decimal rate (stored as text, never a float), `as_of`, OpenRate's quality grade, and fetch time;
+- conversions **serve from the cache** and surface staleness (`age_secs`) instead of silently re-fetching — a stale weekend rate says so;
+- every conversion **records the exact rate it used** (returned payload + audit log), so converted reports reproduce offline and never silently re-rate.
+
+The core service surface is `fx_configure`, `fx_status`, `fx_fetch_rate`, `fx_convert` ([ARCHITECTURE.md](ARCHITECTURE.md#exchange-rates--openrate) is the binding contract; [API.md](API.md) tracks which transports expose the fx operations as they are wired).
 
 ### File watch
 
