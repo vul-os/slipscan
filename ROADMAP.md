@@ -64,6 +64,15 @@ SlipScan is a worldwide product; countries are region profiles, not code (contra
 - [ ] OpenRate client: user-configured endpoint, decimal-only rate math, local rate cache with `as_of` + quality grade, rate recorded per conversion
 - [ ] Converted report views ("all activity in book currency, rated at booking time") with provenance shown
 
+## Phase 4.75 — Movable data folder & bring-your-own backup
+
+Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Data location & backup".
+
+- [ ] One data folder (SQLite + documents), pointer file in the fixed app-data dir, resolved identically by desktop/CLI/server
+- [ ] Settings + CLI flow to move it: copy → verify (checksums, open/migrate check) → atomic pointer switch → remove old
+- [ ] Safety rails: no nested targets, permission checks, existing-database detection (open-instead), read-only during move
+- [ ] In-app + docs backup guidance: sync the folder with your own cloud (iCloud/Dropbox/Syncthing/Nextcloud/NAS) — **users back up their own data**; note the keychain KEK never travels with the folder
+
 ## Phase 4.8 — Fold ShapePay ([TODO-FOLD-SHAPEPAY.md](TODO-FOLD-SHAPEPAY.md))
 
 - [ ] Payment expectations (reference code, amount tolerance, expiry, one-shot/recurring)
