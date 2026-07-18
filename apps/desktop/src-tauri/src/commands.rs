@@ -711,6 +711,39 @@ pub async fn region_list() -> Result<Vec<slipscan_core::region::RegionInfo>, Str
 }
 
 // ---------------------------------------------------------------------------
+// tax rates — listed and configurable per book (the generic profile's
+// standard rate is a placeholder until the user sets it)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn vat_rate_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::VatRate>, String> {
+    state.service()?.vat_rate_list(&query.book_id).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct VatRateSetQuery {
+    pub book_id: String,
+    /// Rate code within the book, e.g. "STD".
+    pub code: String,
+    /// Basis points: 1500 = 15.00%.
+    pub rate_bps: i64,
+}
+
+#[tauri::command]
+pub async fn vat_rate_set_bps(
+    state: State<'_, AppState>,
+    query: VatRateSetQuery,
+) -> Result<core::VatRate, String> {
+    state
+        .service()?
+        .vat_rate_set_bps(&query.book_id, &query.code, query.rate_bps)
+        .map_err(err)
+}
+
+// ---------------------------------------------------------------------------
 // FX (OpenRate) — opt-in. Only `fx_fetch_rate` ever touches the network,
 // only on an explicit user action, and only against the configured base URL.
 // ---------------------------------------------------------------------------
@@ -768,6 +801,10 @@ pub struct FxConvertQuery {
     pub from: String,
     pub to: String,
     pub amount_minor: i64,
+    /// Optional pinned rate (decimal string): replays a booked conversion at
+    /// exactly this rate instead of the current cached one.
+    #[serde(default)]
+    pub rate: Option<String>,
 }
 
 #[tauri::command]
@@ -775,11 +812,17 @@ pub async fn fx_convert(
     state: State<'_, AppState>,
     query: FxConvertQuery,
 ) -> Result<slipscan_core::fx::FxConversion, String> {
-    // Cache-only: a missing pair is an error, never a silent fetch.
-    state
-        .service()?
-        .fx_convert(&query.from, &query.to, query.amount_minor)
-        .map_err(err)
+    let service = state.service()?;
+    match query.rate.as_deref() {
+        // Pinned-rate replay — booked conversions reproduce, never re-rate.
+        Some(rate) => service
+            .fx_convert_at(&query.from, &query.to, query.amount_minor, rate)
+            .map_err(err),
+        // Cache-only: a missing pair is an error, never a silent fetch.
+        None => service
+            .fx_convert(&query.from, &query.to, query.amount_minor)
+            .map_err(err),
+    }
 }
 
 // ---------------------------------------------------------------------------

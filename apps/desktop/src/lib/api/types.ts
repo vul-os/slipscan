@@ -44,6 +44,22 @@ export interface RegionInfo {
   tax_report_name: string;
 }
 
+/** One configured tax rate in a book (mirrors core's VatRate). */
+export interface VatRate {
+  id: string;
+  book_id: string;
+  /** Stable code within the book, e.g. "STD", "ZER". */
+  code: string;
+  name: string;
+  /** Basis points: 1500 = 15.00%. The generic profile's standard rate seeds
+   * at 0 until configured via vat_rate_set_bps. */
+  rate_bps: number;
+  country: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 // ---------------------------------------------------------------------------
 // account (personal-finance view)
 // ---------------------------------------------------------------------------
@@ -489,8 +505,9 @@ export interface FxQuote {
   to_currency: string;
   rate: string;
   as_of: string;
-  /** Server-reported staleness at fetch time, seconds. */
-  age_sec: number;
+  /** Server-reported staleness at fetch time, seconds. Null when the server
+   * omitted it — unknown staleness, never shown as "fresh". */
+  age_sec: number | null;
   grade: string;
   sources: string[];
 }
