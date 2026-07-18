@@ -13,12 +13,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use slipscan_core::domain::*;
-use slipscan_core::CoreError;
+use slipscan_core::region::RegionInfo;
+use slipscan_core::{fx, CoreError};
 
 use slipscan_core::secrets::VaultSecretMeta;
 
 use crate::ops::{
-    self, BalanceSheet, InstalledPackEntry, OpsError, PackInstallResult, ProfitAndLoss, VatReport,
+    self, BalanceSheet, InstalledPackEntry, OpsError, PackInstallResult, ProfitAndLoss, TaxReport,
 };
 use crate::{ct_eq, hex_decode, token_hash, AppState, AUTH_TOKEN_SETTING};
 
@@ -72,6 +73,15 @@ impl ApiError {
             status: StatusCode::SERVICE_UNAVAILABLE,
             code: "vault_unavailable",
             message: "no vault is attached to this server instance".into(),
+        }
+    }
+
+    fn fx_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "fx_unavailable",
+            message: "this server instance has no FX transport; fetch rates locally (CLI/desktop)"
+                .into(),
         }
     }
 }
@@ -262,6 +272,25 @@ struct PackInstallReq {
 #[derive(Debug, Deserialize)]
 struct VaultNameReq {
     name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FxConfigureReq {
+    /// OpenRate base URL; an empty string clears the configuration (FX off).
+    base_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FxPairReq {
+    from: String,
+    to: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct FxConvertReq {
+    from: String,
+    to: String,
+    amount_minor: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -522,8 +551,8 @@ async fn report_trial_balance(
     Ok(Json(s.service()?.report_trial_balance(&req.book_id)?))
 }
 
-async fn report_vat(State(s): State<AppState>, Json(req): Json<BookIdReq>) -> ApiResult<VatReport> {
-    Ok(Json(ops::report_vat(&*s.service()?, &req.book_id)?))
+async fn report_tax(State(s): State<AppState>, Json(req): Json<BookIdReq>) -> ApiResult<TaxReport> {
+    Ok(Json(ops::report_tax(&*s.service()?, &req.book_id)?))
 }
 
 async fn report_profit_loss(
@@ -572,6 +601,65 @@ async fn settings_get(
         key: req.key,
         value,
     }))
+}
+
+/// Built-in region profiles for pickers ("global by default — regions are
+/// data, not code"). Static data; no book required.
+async fn region_list(State(_): State<AppState>) -> ApiResult<Vec<RegionInfo>> {
+    Ok(Json(slipscan_core::region::region_infos()))
+}
+
+// -- FX (OpenRate): mirrors the core service surface. Only `fx_fetch_rate`
+// ever touches the network, only when a client explicitly calls it, and only
+// against the user-configured base URL — the server never auto-fetches.
+
+async fn fx_configure(
+    State(s): State<AppState>,
+    Json(req): Json<FxConfigureReq>,
+) -> ApiResult<OkResp> {
+    s.service()?.fx_configure(&req.base_url)?;
+    Ok(Json(OK))
+}
+
+async fn fx_status(State(s): State<AppState>) -> ApiResult<fx::FxStatus> {
+    Ok(Json(s.service()?.fx_status()?))
+}
+
+async fn fx_convert(
+    State(s): State<AppState>,
+    Json(req): Json<FxConvertReq>,
+) -> ApiResult<fx::FxConversion> {
+    // Cache-only: a missing pair is a 404, never a silent fetch.
+    Ok(Json(s.service()?.fx_convert(
+        &req.from,
+        &req.to,
+        req.amount_minor,
+    )?))
+}
+
+async fn fx_fetch_rate(
+    State(s): State<AppState>,
+    Json(req): Json<FxPairReq>,
+) -> ApiResult<fx::FxQuote> {
+    let factory = s.fx_transport().ok_or_else(ApiError::fx_unavailable)?;
+    let service = s.service_owned();
+    // Core's FX future is `?Send`, so it cannot ride an axum worker: drive
+    // it to completion on a blocking thread with a self-contained
+    // current-thread runtime. The transport is built and dropped there.
+    let quote = tokio::task::spawn_blocking(move || -> Result<fx::FxQuote, ApiError> {
+        let transport = factory()?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| ApiError::internal(format!("fx runtime: {e}")))?;
+        let service = service
+            .lock()
+            .map_err(|_| ApiError::internal("service state poisoned"))?;
+        Ok(rt.block_on(service.fx_fetch_rate(transport.as_ref(), &req.from, &req.to))?)
+    })
+    .await
+    .map_err(|e| ApiError::internal(format!("fx fetch task: {e}")))??;
+    Ok(Json(quote))
 }
 
 /// Vault over HTTP is metadata-only: list and revoke. Setting or replacing
@@ -684,9 +772,17 @@ pub fn app(state: AppState) -> Router {
         .route("/recon_confirm", post(recon_confirm))
         .route("/report_spending", post(report_spending))
         .route("/report_trial_balance", post(report_trial_balance))
-        .route("/report_vat", post(report_vat))
+        // Generic name first; `/report_vat` stays as a compatibility alias
+        // ("VAT" wording belongs to region profiles, not the API).
+        .route("/report_tax", post(report_tax))
+        .route("/report_vat", post(report_tax))
         .route("/report_profit_loss", post(report_profit_loss))
         .route("/report_balance_sheet", post(report_balance_sheet))
+        .route("/region_list", post(region_list))
+        .route("/fx_configure", post(fx_configure))
+        .route("/fx_status", post(fx_status))
+        .route("/fx_fetch_rate", post(fx_fetch_rate))
+        .route("/fx_convert", post(fx_convert))
         .route("/settings_set", post(settings_set))
         .route("/settings_get", post(settings_get))
         .route("/pack_install", post(pack_install))
@@ -990,6 +1086,233 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn region_list_and_regioned_book_create() {
+        let app = open_app();
+        let (status, regions) = call(&app, post_req("/api/v1/region_list", json!({}), None)).await;
+        assert_eq!(status, StatusCode::OK);
+        let ids: Vec<&str> = regions
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"generic") && ids.contains(&"za"), "{ids:?}");
+        // Profile summaries carry what a picker needs.
+        let za = regions
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == "za")
+            .unwrap();
+        assert_eq!(za["display_name"], "South Africa");
+        assert_eq!(za["default_currency"], "ZAR");
+        assert_eq!(za["tax_report_name"], "VAT201");
+
+        // book_create accepts an explicit region; the profile drives the
+        // default currency.
+        let (status, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "SA books", "kind": "business", "region": "za"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{book}");
+        assert_eq!(book["region"], "za");
+        assert_eq!(book["currency"], "ZAR");
+
+        // Unknown regions are rejected, not silently mapped.
+        let (status, body) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Atlantis", "kind": "personal", "region": "atlantis"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+
+    /// Scripted FX transport: records every URL, answers with a canned body.
+    struct ScriptedFx {
+        status_code: u16,
+        body: String,
+        requested: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl slipscan_core::fx::FxTransport for ScriptedFx {
+        async fn get(&self, url: &str) -> Result<fx::FxHttpResponse, CoreError> {
+            self.requested.lock().unwrap().push(url.to_string());
+            Ok(fx::FxHttpResponse {
+                status: self.status_code,
+                body: self.body.clone().into_bytes(),
+            })
+        }
+    }
+
+    fn scripted_fx_factory(
+        status_code: u16,
+        body: &str,
+    ) -> (
+        crate::FxTransportFactory,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let requested = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let urls = requested.clone();
+        let body = body.to_string();
+        let factory: crate::FxTransportFactory = std::sync::Arc::new(move || {
+            Ok(Box::new(ScriptedFx {
+                status_code,
+                body: body.clone(),
+                requested: urls.clone(),
+            }) as Box<dyn slipscan_core::fx::FxTransport>)
+        });
+        (factory, requested)
+    }
+
+    /// A realistic OpenRate convert body (mirrors core's test fixture).
+    fn convert_body(rate: &str, as_of: &str, grade: &str) -> String {
+        format!(
+            r#"{{"rate":{{"rate":{rate},"as_of":"{as_of}","age_sec":600,
+                 "sources":["ecb"],"quality":{{"grade":"{grade}"}}}}}}"#
+        )
+    }
+
+    #[tokio::test]
+    async fn fx_fetch_without_a_transport_is_unavailable_and_local_routes_still_work() {
+        let app = open_app(); // no FX transport factory attached
+        let (status, body) = call(
+            &app,
+            post_req(
+                "/api/v1/fx_fetch_rate",
+                json!({"from": "USD", "to": "ZAR"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "fx_unavailable");
+
+        // Purely local FX routes work without any transport.
+        let (status, body) = call(&app, post_req("/api/v1/fx_status", json!({}), None)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["configured"], false);
+        // Identity conversion needs neither configuration nor cache.
+        let (status, body) = call(
+            &app,
+            post_req(
+                "/api/v1/fx_convert",
+                json!({"from": "EUR", "to": "eur", "amount_minor": -1234}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["converted_minor"], -1234);
+    }
+
+    #[tokio::test]
+    async fn fx_fetch_refuses_while_unconfigured_and_never_touches_the_transport() {
+        let (factory, requested) = scripted_fx_factory(200, "should never be requested");
+        let app = app(AppState::new(svc(), None).with_fx_transport(factory));
+        let (status, body) = call(
+            &app,
+            post_req(
+                "/api/v1/fx_fetch_rate",
+                json!({"from": "USD", "to": "ZAR"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert_eq!(body["error"]["code"], "fx_not_configured");
+        assert!(
+            requested.lock().unwrap().is_empty(),
+            "no network call may ever happen while FX is unconfigured"
+        );
+    }
+
+    #[tokio::test]
+    async fn fx_configure_fetch_convert_round_trip() {
+        let body = convert_body("18.074219053", "2026-07-17T16:00:00Z", "B");
+        let (factory, requested) = scripted_fx_factory(200, &body);
+        let app = app(AppState::new(svc(), None).with_fx_transport(factory));
+
+        // Configure the OpenRate endpoint (normalized on save).
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/fx_configure",
+                json!({"base_url": " https://fx.example.org/ "}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, status_body) = call(&app, post_req("/api/v1/fx_status", json!({}), None)).await;
+        assert_eq!(status_body["configured"], true);
+        assert_eq!(status_body["base_url"], "https://fx.example.org");
+
+        // Explicit fetch: the only route that touches the transport, and it
+        // carries the rate as a decimal string (never a JSON float).
+        let (status, quote) = call(
+            &app,
+            post_req(
+                "/api/v1/fx_fetch_rate",
+                json!({"from": "usd", "to": "zar"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{quote}");
+        assert_eq!(quote["rate"], json!("18.074219053"));
+        assert_eq!(quote["grade"], "B");
+        {
+            let urls = requested.lock().unwrap();
+            assert_eq!(urls.len(), 1);
+            assert!(
+                urls[0].starts_with("https://fx.example.org/api/v1/convert"),
+                "{urls:?}"
+            );
+        }
+
+        // Conversion serves from the cache with provenance — no new fetch.
+        let (status, conv) = call(
+            &app,
+            post_req(
+                "/api/v1/fx_convert",
+                json!({"from": "USD", "to": "ZAR", "amount_minor": 10_000}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{conv}");
+        assert_eq!(conv["converted_minor"], 180_742);
+        assert_eq!(conv["rate"], json!("18.074219053"));
+        assert_eq!(conv["as_of"], "2026-07-17T16:00:00Z");
+        assert!(conv["age_secs"].is_i64(), "staleness must surface: {conv}");
+        assert_eq!(requested.lock().unwrap().len(), 1, "convert never fetches");
+
+        // Status lists the cached pair; an uncached pair is a 404 miss.
+        let (_, status_body) = call(&app, post_req("/api/v1/fx_status", json!({}), None)).await;
+        assert_eq!(status_body["cached_rates"].as_array().unwrap().len(), 1);
+        let (status, body) = call(
+            &app,
+            post_req(
+                "/api/v1/fx_convert",
+                json!({"from": "GBP", "to": "JPY", "amount_minor": 100}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    }
+
+    #[tokio::test]
     async fn derived_report_routes_respond() {
         let app = open_app();
         let (_, book) = call(
@@ -1012,7 +1335,8 @@ mod tests {
         for route in [
             "/api/v1/report_profit_loss",
             "/api/v1/report_balance_sheet",
-            "/api/v1/report_vat",
+            "/api/v1/report_tax",
+            "/api/v1/report_vat", // compatibility alias for report_tax
             "/api/v1/report_trial_balance",
         ] {
             let (status, body) =

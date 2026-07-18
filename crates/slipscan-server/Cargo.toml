@@ -15,10 +15,14 @@ sha2 = { workspace = true }
 slipscan-core = { workspace = true }
 slipscan-packs = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+# `time` on top of the workspace set: the explicit FX fetch drives core's
+# `?Send` future on a self-contained current-thread runtime whose timer must
+# exist for transport timeouts.
+tokio = { workspace = true, features = ["time"] }
 uuid = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 ed25519-dalek = { workspace = true }
 tower = { workspace = true }
 

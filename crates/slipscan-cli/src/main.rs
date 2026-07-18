@@ -1,8 +1,8 @@
 //! slipscan — command-line interface.
 //!
 //! Subcommands: `init`, `import`, `extract`, `mail-sync`, `recon`, `report`,
-//! `pack`, `vault`, `serve`, `list`. Every command has human-readable output
-//! by default and `--json` for machines. Binaries may use anyhow.
+//! `fx`, `pack`, `vault`, `serve`, `list`. Every command has human-readable
+//! output by default and `--json` for machines. Binaries may use anyhow.
 //!
 //! Privacy posture:
 //! * `serve` binds 127.0.0.1 unless the user passes `--lan` (explicit opt-in)
@@ -107,9 +107,18 @@ enum Command {
         /// Kind of the first book.
         #[arg(long, value_enum, default_value_t = CliBookKind::Personal)]
         kind: CliBookKind,
-        /// Seed a default chart of accounts into the new book.
+        /// Region profile for the new book (chart of accounts, tax rates and
+        /// report labels are data, not code). Defaults to the generic
+        /// international profile; see --list-regions.
+        #[arg(long)]
+        region: Option<String>,
+        /// Seed the region profile's default chart of accounts into the new
+        /// book.
         #[arg(long)]
         seed_coa: bool,
+        /// List the built-in region profiles and exit.
+        #[arg(long)]
+        list_regions: bool,
     },
     /// Import document/statement files (pdf, images, html, csv, ofx).
     Import {
@@ -141,6 +150,12 @@ enum Command {
         /// CSV output (trial balance only).
         #[arg(long)]
         csv: bool,
+    },
+    /// Exchange rates via your configured OpenRate endpoint (opt-in: with no
+    /// URL configured, SlipScan makes zero FX network calls).
+    Fx {
+        #[command(subcommand)]
+        action: FxAction,
     },
     /// Signed classification/category packs.
     Pack {
@@ -181,6 +196,26 @@ enum ReconAction {
     Suggest,
     /// Confirm a suggested match by id.
     Confirm { match_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum FxAction {
+    /// Show the FX configuration and locally cached rates (never a network
+    /// call).
+    Status,
+    /// Set the OpenRate base URL; pass an empty string to clear it (FX off).
+    SetUrl { url: String },
+    /// Fetch and cache the current rate for a currency pair — an explicit
+    /// network call to your configured OpenRate endpoint, nowhere else.
+    Rate { from: String, to: String },
+    /// Convert an amount (in minor units) using the locally cached rate for
+    /// the pair (never a network call; fetch first with `fx rate`).
+    Convert {
+        from: String,
+        to: String,
+        #[arg(allow_negative_numbers = true)]
+        amount_minor: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -265,6 +300,17 @@ fn fmt_minor(minor: i64) -> String {
     let sign = if minor < 0 { "-" } else { "" };
     let abs = minor.unsigned_abs();
     format!("{sign}{}.{:02}", abs / 100, abs % 100)
+}
+
+/// Rate staleness in human units — a stale weekend rate must say so.
+fn fmt_age(age_secs: Option<i64>) -> String {
+    match age_secs {
+        None => "unknown".to_string(),
+        Some(s) if s < 120 => format!("{s}s"),
+        Some(s) if s < 7_200 => format!("{}m", s / 60),
+        Some(s) if s < 172_800 => format!("{}h", s / 3_600),
+        Some(s) => format!("{}d", s / 86_400),
+    }
 }
 
 /// `--signature`/`--public-key` argument: hex, or `@file` (hex text or raw
@@ -389,19 +435,40 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Init {
             ref name,
             kind,
+            ref region,
             seed_coa,
+            list_regions,
         } => {
+            if list_regions {
+                // Pure data listing — no database is created or touched.
+                let infos = slipscan_core::region::region_infos();
+                return emit(cli.json, &infos, || {
+                    for r in &infos {
+                        println!(
+                            "{}\t{}\tcountry {}\tcurrency {}\ttax report {}",
+                            r.id,
+                            r.display_name,
+                            r.country.as_deref().unwrap_or("-"),
+                            r.default_currency.as_deref().unwrap_or("-"),
+                            r.tax_report_name
+                        );
+                    }
+                });
+            }
             let svc = open_service(&cli.db)?;
             if seed_coa && name.is_none() {
                 bail!("--seed-coa needs --name (a book to seed)");
             }
             let book = match name {
                 Some(name) => {
+                    // Default is the generic international profile — never a
+                    // hardcoded jurisdiction; core rejects unknown ids.
                     let book = svc.book_create(NewBook {
                         name: name.clone(),
                         kind: kind.into(),
                         currency: None,
                         country: None,
+                        region: region.clone(),
                     })?;
                     if seed_coa {
                         svc.coa_seed(&book.id)?;
@@ -417,9 +484,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             });
             emit(cli.json, &out, || {
                 if let Some(book) = &book {
-                    println!("Created book {} ({})", book.name, book.id);
+                    println!(
+                        "Created book {} ({}) — region {}, currency {}",
+                        book.name, book.id, book.region, book.currency
+                    );
                     if seed_coa {
-                        println!("Seeded default chart of accounts.");
+                        println!("Seeded the region profile's chart of accounts.");
                     }
                 }
                 println!("Database ready at {}", cli.db.display());
@@ -670,13 +740,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     })
                 }
                 ReportKind::Tax => {
-                    let vat = ops::report_vat(&svc, &book.id)?;
-                    emit(cli.json, &vat, || {
-                        println!("Tax summary — {}", book.name);
-                        for r in &vat.rates {
+                    let tax = ops::report_tax(&svc, &book.id)?;
+                    emit(cli.json, &tax, || {
+                        // The report is named by the book's region profile
+                        // ("VAT201" in South Africa, "Tax summary" generically).
+                        println!("{} — {}", tax.report_name, book.name);
+                        for r in &tax.rates {
                             println!("rate\t{}\t{}\t{} bps", r.code, r.name, r.rate_bps);
                         }
-                        for a in &vat.accounts {
+                        for a in &tax.accounts {
                             println!(
                                 "account\t{}\t{}\t{}\t{}",
                                 a.code,
@@ -685,7 +757,98 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 fmt_minor(a.credit_minor)
                             );
                         }
-                        println!("Net tax position\t{}", fmt_minor(vat.net_minor));
+                        println!("Net tax position\t{}", fmt_minor(tax.net_minor));
+                    })
+                }
+            }
+        }
+
+        Command::Fx { ref action } => {
+            let svc = open_service(&cli.db)?;
+            match action {
+                FxAction::Status => {
+                    let status = svc.fx_status()?;
+                    emit(cli.json, &status, || {
+                        match status.base_url.as_deref() {
+                            Some(url) => println!("OpenRate endpoint: {url}"),
+                            None => println!(
+                                "FX is off: no OpenRate endpoint configured \
+                                 (set one with `slipscan fx set-url <URL>`)."
+                            ),
+                        }
+                        if status.cached_rates.is_empty() {
+                            println!("No cached rates.");
+                        }
+                        for r in &status.cached_rates {
+                            println!(
+                                "{}/{}\t{}\tas of {}\tgrade {}\tfetched {}\tage {}",
+                                r.from_currency,
+                                r.to_currency,
+                                r.rate,
+                                r.as_of,
+                                r.grade,
+                                r.fetched_at,
+                                fmt_age(r.age_secs)
+                            );
+                        }
+                    })
+                }
+                FxAction::SetUrl { url } => {
+                    svc.fx_configure(url)?;
+                    let cleared = url.trim().is_empty();
+                    let status = svc.fx_status()?;
+                    emit(cli.json, &status, || {
+                        if cleared {
+                            println!("FX turned off: OpenRate endpoint cleared.");
+                        } else {
+                            println!(
+                                "OpenRate endpoint set to {} — rates are only ever fetched \
+                                 when you ask (fx rate).",
+                                status.base_url.as_deref().unwrap_or("")
+                            );
+                        }
+                    })
+                }
+                FxAction::Rate { from, to } => {
+                    // The one FX path that talks to the network — explicitly
+                    // requested here, and only to the configured endpoint.
+                    let transport = slipscan_ingest::fx::ReqwestFxTransport::new()?;
+                    let quote = runtime()?.block_on(svc.fx_fetch_rate(&transport, from, to))?;
+                    emit(cli.json, &quote, || {
+                        println!(
+                            "{}/{} = {} (as of {}, grade {}, age {}, sources: {})",
+                            quote.from_currency,
+                            quote.to_currency,
+                            quote.rate,
+                            quote.as_of,
+                            quote.grade,
+                            fmt_age(Some(quote.age_sec)),
+                            if quote.sources.is_empty() {
+                                "-".to_string()
+                            } else {
+                                quote.sources.join(", ")
+                            }
+                        );
+                    })
+                }
+                FxAction::Convert {
+                    from,
+                    to,
+                    amount_minor,
+                } => {
+                    let conversion = svc.fx_convert(from, to, *amount_minor)?;
+                    emit(cli.json, &conversion, || {
+                        println!(
+                            "{} {} = {} {} (rate {} as of {}, grade {}, age {})",
+                            fmt_minor(conversion.amount_minor),
+                            conversion.from_currency,
+                            fmt_minor(conversion.converted_minor),
+                            conversion.to_currency,
+                            conversion.rate,
+                            conversion.as_of,
+                            conversion.grade,
+                            fmt_age(conversion.age_secs)
+                        );
                     })
                 }
             }
@@ -858,9 +1021,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
             eprintln!("Serving on http://{addr}");
             let vault = VaultHandle::open(&cli.db)?;
+            // FX transport for the explicit fx_fetch_rate route: built per
+            // fetch, only ever pointed at the user-configured OpenRate URL.
+            let fx_transport: slipscan_server::FxTransportFactory = std::sync::Arc::new(|| {
+                Ok(Box::new(slipscan_ingest::fx::ReqwestFxTransport::new()?)
+                    as Box<dyn slipscan_core::fx::FxTransport>)
+            });
             runtime()?.block_on(slipscan_server::serve(
                 svc,
                 Some(vault),
+                Some(fx_transport),
                 ServerConfig { addr, require_auth },
             ))?;
             Ok(())
@@ -873,7 +1043,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     let books = svc.book_list()?;
                     emit(cli.json, &books, || {
                         for b in &books {
-                            println!("{}\t{}\t{}", b.id, b.kind, b.name);
+                            println!(
+                                "{}\t{}\t{}\t{}\t{}",
+                                b.id, b.kind, b.name, b.region, b.currency
+                            );
                         }
                     })
                 }
@@ -1037,6 +1210,158 @@ mod tests {
     }
 
     #[test]
+    fn parses_init_region_flags() {
+        let cli =
+            Cli::try_parse_from(["slipscan", "init", "--name", "Biz", "--region", "za"]).unwrap();
+        match cli.command {
+            Command::Init { name, region, .. } => {
+                assert_eq!(name.as_deref(), Some("Biz"));
+                assert_eq!(region.as_deref(), Some("za"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["slipscan", "init", "--list-regions"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Init {
+                list_regions: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn init_creates_regioned_books_and_defaults_to_generic() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("r.sqlite");
+        run(Cli::try_parse_from([
+            "slipscan",
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+            "init",
+            "--name",
+            "SA Biz",
+            "--kind",
+            "business",
+            "--region",
+            "za",
+            "--seed-coa",
+        ])
+        .unwrap())
+        .unwrap();
+        run(Cli::try_parse_from([
+            "slipscan",
+            "--db",
+            db.to_str().unwrap(),
+            "--json",
+            "init",
+            "--name",
+            "Anywhere",
+        ])
+        .unwrap())
+        .unwrap();
+
+        let svc = CoreService::open(&db).unwrap();
+        let books = svc.book_list().unwrap();
+        let sa = books.iter().find(|b| b.name == "SA Biz").unwrap();
+        assert_eq!(sa.region, "za");
+        assert_eq!(sa.currency, "ZAR");
+        // Seeded from the za profile: VAT control accounts present.
+        assert!(svc
+            .coa_list(&sa.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.code == "1400" && c.name.contains("VAT")));
+        // No region flag → the generic international profile, never a
+        // hardcoded jurisdiction.
+        let generic = books.iter().find(|b| b.name == "Anywhere").unwrap();
+        assert_eq!(generic.region, "generic");
+
+        // Unknown regions are rejected by core, surfaced as an error.
+        let err = run(Cli::try_parse_from([
+            "slipscan",
+            "--db",
+            db.to_str().unwrap(),
+            "init",
+            "--name",
+            "Nope",
+            "--region",
+            "atlantis",
+        ])
+        .unwrap())
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("atlantis"), "{err}");
+    }
+
+    #[test]
+    fn parses_fx_actions_and_offline_paths_work() {
+        let cli = Cli::try_parse_from(["slipscan", "fx", "status"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Fx {
+                action: FxAction::Status
+            }
+        ));
+        let cli = Cli::try_parse_from(["slipscan", "fx", "rate", "USD", "ZAR"]).unwrap();
+        match cli.command {
+            Command::Fx {
+                action: FxAction::Rate { from, to },
+            } => {
+                assert_eq!(from, "USD");
+                assert_eq!(to, "ZAR");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["slipscan", "fx", "convert", "USD", "ZAR", "1000"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Fx {
+                action: FxAction::Convert {
+                    amount_minor: 1000,
+                    ..
+                }
+            }
+        ));
+
+        // Offline flows end-to-end: set-url, status, identity convert; a
+        // fetch while unconfigured fails fast without touching the network.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("fx.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let run_fx = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json", "fx"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_fx(&["status"]).unwrap();
+        let err = run_fx(&["rate", "USD", "ZAR"]).unwrap_err().to_string();
+        assert!(err.to_lowercase().contains("openrate"), "{err}");
+        run_fx(&["set-url", "https://fx.example.org/"]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        let status = svc.fx_status().unwrap();
+        assert!(status.configured);
+        assert_eq!(status.base_url.as_deref(), Some("https://fx.example.org"));
+        drop(svc);
+        run_fx(&["convert", "EUR", "eur", "-500"]).unwrap(); // identity, offline
+                                                             // Cache miss (no fetch happened): convert errors instead of fetching.
+        assert!(run_fx(&["convert", "USD", "ZAR", "100"]).is_err());
+        run_fx(&["set-url", ""]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        assert!(!svc.fx_status().unwrap().configured);
+    }
+
+    #[test]
+    fn fmt_age_humanizes() {
+        assert_eq!(fmt_age(None), "unknown");
+        assert_eq!(fmt_age(Some(45)), "45s");
+        assert_eq!(fmt_age(Some(600)), "10m");
+        assert_eq!(fmt_age(Some(93_600)), "26h");
+        assert_eq!(fmt_age(Some(700_000)), "8d");
+    }
+
+    #[test]
     fn parses_pack_actions() {
         let cli = Cli::try_parse_from([
             "slipscan",
@@ -1167,6 +1492,7 @@ mod tests {
                 kind: BookKind::Personal,
                 currency: None,
                 country: None,
+                region: None,
             })
             .unwrap();
         assert_eq!(resolve_book(&svc, None).unwrap().id, personal.id);
@@ -1184,6 +1510,7 @@ mod tests {
             kind: BookKind::Business,
             currency: None,
             country: None,
+            region: None,
         })
         .unwrap();
         assert!(resolve_book(&svc, None).is_err()); // ambiguous now

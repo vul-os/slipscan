@@ -348,6 +348,7 @@ mod tests {
                 kind: BookKind::Personal,
                 currency: None,
                 country: None,
+                region: None,
             })
             .unwrap();
         let account = svc

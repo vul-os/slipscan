@@ -129,6 +129,7 @@ mod tests {
                 kind: BookKind::Personal,
                 currency: None,
                 country: None,
+                region: None,
             })
             .unwrap();
         (svc, book.id)

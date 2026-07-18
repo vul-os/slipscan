@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use slipscan_core::fx::FxTransport;
 use slipscan_core::{CoreError, CoreService};
 
 pub mod ops;
@@ -72,14 +73,28 @@ impl Default for ServerConfig {
     }
 }
 
+/// Builds an [`FxTransport`] for one explicit FX fetch (the `fx_fetch_rate`
+/// route). The factory itself is `Send + Sync`; the transport it builds is
+/// only ever used on the thread that called it (core's transports are
+/// `?Send`). Without a factory the fetch route answers 503 — every other FX
+/// route (configure/status/convert) is purely local and works regardless.
+///
+/// Mantra: this transport is only invoked when a client explicitly calls
+/// `fx_fetch_rate`, and core only ever points it at the user-configured
+/// OpenRate base URL — the server never fetches rates on its own.
+pub type FxTransportFactory =
+    Arc<dyn Fn() -> Result<Box<dyn FxTransport>, CoreError> + Send + Sync>;
+
 /// Shared router state: one core service behind a mutex (SQLite connections
-/// are `Send` but not `Sync`), the optional expected token hash, and the
-/// optional credential-vault handle (its own connection to the same file).
+/// are `Send` but not `Sync`), the optional expected token hash, the
+/// optional credential-vault handle (its own connection to the same file),
+/// and the optional FX transport factory for explicit rate fetches.
 #[derive(Clone)]
 pub struct AppState {
     service: Arc<Mutex<CoreService>>,
     auth: Option<[u8; 32]>,
     vault: Option<Arc<Mutex<vault::VaultHandle>>>,
+    fx_transport: Option<FxTransportFactory>,
 }
 
 impl AppState {
@@ -90,6 +105,7 @@ impl AppState {
             service: Arc::new(Mutex::new(service)),
             auth,
             vault: None,
+            fx_transport: None,
         }
     }
 
@@ -99,10 +115,27 @@ impl AppState {
         self
     }
 
+    /// Attach an FX transport factory so the explicit `fx_fetch_rate` route
+    /// works. Without one the route answers 503; no other route needs it.
+    pub fn with_fx_transport(mut self, factory: FxTransportFactory) -> Self {
+        self.fx_transport = Some(factory);
+        self
+    }
+
     pub(crate) fn service(&self) -> Result<MutexGuard<'_, CoreService>, routes::ApiError> {
         self.service
             .lock()
             .map_err(|_| routes::ApiError::internal("service state poisoned"))
+    }
+
+    /// Owned handle for work that must move to a blocking thread (the FX
+    /// fetch drives a `?Send` future off the async workers).
+    pub(crate) fn service_owned(&self) -> Arc<Mutex<CoreService>> {
+        Arc::clone(&self.service)
+    }
+
+    pub(crate) fn fx_transport(&self) -> Option<FxTransportFactory> {
+        self.fx_transport.clone()
     }
 
     pub(crate) fn vault(&self) -> Result<MutexGuard<'_, vault::VaultHandle>, routes::ApiError> {
@@ -187,10 +220,13 @@ pub fn stored_token_hash(service: &CoreService) -> Result<Option<[u8; 32]>, Serv
 /// Serve `service` per `config`. With `require_auth` the token hash must
 /// already exist in settings (see [`ensure_auth_token`]). Pass a
 /// [`vault::VaultHandle`] on the same database so the metadata-only vault
-/// routes work; with `None` they answer 503.
+/// routes work; with `None` they answer 503. Pass an [`FxTransportFactory`]
+/// so the explicit `fx_fetch_rate` route works; with `None` it answers 503
+/// (all other FX routes are purely local).
 pub async fn serve(
     service: CoreService,
     vault: Option<vault::VaultHandle>,
+    fx_transport: Option<FxTransportFactory>,
     config: ServerConfig,
 ) -> Result<(), ServerError> {
     let auth = if config.require_auth {
@@ -201,6 +237,9 @@ pub async fn serve(
     let mut state = AppState::new(service, auth);
     if let Some(handle) = vault {
         state = state.with_vault(handle);
+    }
+    if let Some(factory) = fx_transport {
+        state = state.with_fx_transport(factory);
     }
     let listener = tokio::net::TcpListener::bind(config.addr)
         .await
@@ -332,7 +371,7 @@ mod tests {
             require_auth: true,
             ..ServerConfig::default()
         };
-        let err = serve(service, None, config).await.unwrap_err();
+        let err = serve(service, None, None, config).await.unwrap_err();
         assert!(matches!(err, ServerError::AuthNotInitialized));
     }
 }
