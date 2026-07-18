@@ -3,7 +3,7 @@
 SlipScan has **one service surface, two transports**. Every operation is a function on the core service layer (`crates/slipscan-core`); the Tauri desktop app calls it over IPC and `slipscan-server` exposes the same operations over HTTP. Full same-name/same-payload parity is the contract in [ARCHITECTURE.md](ARCHITECTURE.md#ipc--api-surface) — **and it is not met yet**:
 
 - The **HTTP server is the canonical, near-complete surface** — the operation tables below describe it.
-- The **desktop IPC currently exposes a UI-shaped subset** (30 commands) with display-oriented DTOs. Missing from IPC today: `book_create`/`book_get`, all account CRUD, `transaction_create`/`transaction_get`, `category_create`, `budget_status`, the document status-machine ops (`document_transition`, `document_record_extraction`, `document_current_extraction`), `journal_get`, `coa_seed`, `vat_rate_list`, `report_profit_loss`, `report_balance_sheet`, `audit_list`, and `pack_install`/`pack_list`.
+- The **desktop IPC currently exposes a UI-shaped subset** (32 commands) with display-oriented DTOs. Missing from IPC today: `book_create`/`book_get`, all account CRUD, `transaction_create`/`transaction_get`, `category_create`, `budget_status`, the document status-machine ops (`document_transition`, `document_record_extraction`, `document_current_extraction`), `journal_get`, `coa_seed`, `report_profit_loss`, `report_balance_sheet`, `audit_list`, and `pack_install`/`pack_list`.
 - Three names currently diverge where both surfaces exist: desktop `report_vat_summary` vs server `report_tax` (the server keeps `report_vat` as a deprecated route alias), desktop `ledger_account_list` vs server `coa_list`, and desktop `category_list` vs server `category_tree`. `settings_get`/`settings_set` share names across both, but the payloads diverge: the desktop carries a whole-settings UI blob, the server generic key/value pairs. The desktop additionally has `journal_list`, `budget_list`, `report_income_expense`, and `vault_set`/`vault_replace`, none of which are HTTP routes (vault writes are deliberately local-only — see below).
 
 Closing this gap (one name, one payload, both transports) is tracked in [ROADMAP.md](../ROADMAP.md).
@@ -67,7 +67,7 @@ The surface, grouped by domain module. It mirrors the `pub fn`s on the core serv
 |---|---|
 | `coa_list` / `coa_seed` | Chart of accounts; seed a standard chart into a new business book |
 | `journal_post` / `journal_get` | Post balanced journals — unbalanced lines are rejected at the service layer |
-| `vat_rate_list` | VAT rates for the book |
+| `vat_rate_list` / `vat_rate_set_bps` | Tax rates for the book: list them, and set a rate's basis points (how the generic profile's configurable standard rate — seeded at 0 — gets its actual percentage; `slipscan tax set-rate` on the CLI) |
 
 ### Reconciliation
 
@@ -102,7 +102,7 @@ The opt-in OpenRate FX operations ([CONFIGURATION.md](CONFIGURATION.md#exchange-
 | `fx_configure` | Set (or clear, with an empty string) the OpenRate base URL — purely local |
 | `fx_status` | Configured flag, base URL, and cached rates with staleness/grade — purely local, never fetches |
 | `fx_fetch_rate` | **The only operation that touches the network**, always on explicit user action, only against the configured URL. Persists the fetched rate to the local cache. Without a configured URL it fails `fx_not_configured` before any transport is touched; a server started without an FX transport answers `503 fx_unavailable` |
-| `fx_convert` | Convert `amount_minor` between currencies **from the cache only** (a missing pair is an error, never a silent fetch); records the exact decimal rate used in the response and the audit log |
+| `fx_convert` | Convert `amount_minor` between currencies **from the cache only** (a missing pair is an error, never a silent fetch); records the exact decimal rate used in the response and the audit log. With the optional `rate` field (a decimal string) the conversion instead **replays at that pinned rate** (core `fx_convert_at`, `slipscan fx convert --rate`) — how a booked conversion reproduces offline without ever being re-rated by cache refreshes |
 
 Rates are decimal strings end-to-end — never floats. The single FX setting (`fx.openrate_base_url`) can also be written through the generic `settings_set` route.
 

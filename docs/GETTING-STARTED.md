@@ -62,11 +62,10 @@ Data locations are documented in [CONFIGURATION.md](CONFIGURATION.md#data-locati
 
 ## 2. Import a bank statement (CSV)
 
-Honest status first: statement files are currently imported as **documents**, not yet as transactions.
-
 1. Download a statement CSV (or OFX) from your bank's internet banking.
-2. Import it: `slipscan import statement.csv` — it is stored as a bank-statement document, content-hash deduplicated.
-3. The statement→transactions step — column mapping (a region-grouped preset catalog: SA-bank presets, a `generic` worldwide family, and a custom mapping for any other bank, all in `crates/slipscan-ingest` — see [BANK-ADAPTERS.md](BANK-ADAPTERS.md#statement-csv-presets--region-data-not-code)), landing rows in an account, deduplication by provider id / content hash — exists in the ingest crate but is **not wired to the CLI or desktop yet**. There is no OFX parser yet at all. Both are tracked in [ROADMAP.md](../ROADMAP.md).
+2. Create the account the lines belong to (once): `slipscan account add "Cheque"` — it inherits the book currency unless you pass `--currency`.
+3. Import it **with a statement preset**: `slipscan import statement.csv --preset za-fnb --account Cheque`. The preset's column mapping (a region-grouped catalog: SA-bank presets, a `generic` worldwide family — `slipscan import --list-presets` shows all of it; see [BANK-ADAPTERS.md](BANK-ADAPTERS.md#statement-csv-presets--region-data-not-code)) parses the rows into transactions, deduplicated by provider id / content hash, and the file itself is also stored as a bank-statement document. Without `--preset`, the file is stored as a document only.
+4. Honest gaps: the desktop app cannot run preset imports yet, the fully custom column mapping has no CLI flags yet, and there is no OFX parser at all — all tracked in [ROADMAP.md](../ROADMAP.md).
 
 For the design of automatic pulls straight from your bank, see [BANK-ADAPTERS.md](BANK-ADAPTERS.md).
 
