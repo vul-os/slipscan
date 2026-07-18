@@ -50,62 +50,9 @@ const fn fallback_income_code(kind: BookKind) -> &'static str {
     }
 }
 
-type CoaSeed = (&'static str, &'static str, CoaKind);
-
-/// Minimal personal chart of accounts.
-const PERSONAL_COA: &[CoaSeed] = &[
-    ("1000", "Bank", CoaKind::Asset),
-    ("1100", "Cash", CoaKind::Asset),
-    ("1500", "Other Assets", CoaKind::Asset),
-    ("2000", "Credit Card", CoaKind::Liability),
-    ("2500", "Other Liabilities", CoaKind::Liability),
-    ("3000", "Opening Balances", CoaKind::Equity),
-    ("4000", "Salary & Wages", CoaKind::Income),
-    ("4100", "Other Income", CoaKind::Income),
-    ("6000", "Living Expenses", CoaKind::Expense),
-    ("6100", "Bank Fees", CoaKind::Expense),
-];
-
-/// South-African small-business chart of accounts, incl. VAT control accounts.
-const BUSINESS_COA: &[CoaSeed] = &[
-    ("1000", "Bank", CoaKind::Asset),
-    ("1050", "Petty Cash", CoaKind::Asset),
-    ("1100", "Accounts Receivable", CoaKind::Asset),
-    ("1200", "Inventory", CoaKind::Asset),
-    ("1400", "VAT Input Control", CoaKind::Asset),
-    ("1500", "Office Equipment", CoaKind::Asset),
-    ("1510", "Computer Equipment", CoaKind::Asset),
-    ("1600", "Accumulated Depreciation", CoaKind::Asset),
-    ("2000", "Accounts Payable", CoaKind::Liability),
-    ("2100", "VAT Output Control", CoaKind::Liability),
-    ("2150", "VAT Control (SARS settlement)", CoaKind::Liability),
-    ("2200", "PAYE & UIF Payable", CoaKind::Liability),
-    ("2300", "Loans Payable", CoaKind::Liability),
-    ("3000", "Owner's Capital", CoaKind::Equity),
-    ("3100", "Owner's Drawings", CoaKind::Equity),
-    ("3200", "Retained Earnings", CoaKind::Equity),
-    ("4000", "Sales", CoaKind::Income),
-    ("4100", "Interest Received", CoaKind::Income),
-    ("4200", "Other Income", CoaKind::Income),
-    ("5000", "Cost of Sales", CoaKind::Expense),
-    ("6000", "Accounting Fees", CoaKind::Expense),
-    ("6050", "Advertising & Marketing", CoaKind::Expense),
-    ("6100", "Bank Fees", CoaKind::Expense),
-    ("6200", "Computer & Internet", CoaKind::Expense),
-    ("6250", "Depreciation", CoaKind::Expense),
-    ("6300", "Entertainment", CoaKind::Expense),
-    ("6350", "Insurance", CoaKind::Expense),
-    ("6400", "Motor Vehicle Expenses", CoaKind::Expense),
-    ("6450", "Office Supplies & Stationery", CoaKind::Expense),
-    ("6500", "Rent", CoaKind::Expense),
-    ("6550", "Repairs & Maintenance", CoaKind::Expense),
-    ("6600", "Salaries & Wages", CoaKind::Expense),
-    ("6650", "Subscriptions", CoaKind::Expense),
-    ("6700", "Telephone", CoaKind::Expense),
-    ("6750", "Travel", CoaKind::Expense),
-    ("6800", "Utilities", CoaKind::Expense),
-    ("6900", "General Expenses", CoaKind::Expense),
-];
+// Chart-of-accounts and tax-rate seed data lives in the region profiles
+// (`crate::region`) — core seeds whatever the book's profile carries and
+// never hardcodes a jurisdiction.
 
 /// Upper bound for a single journal-line or transaction amount (10^15 minor
 /// units — ten trillion currency units). This is a **per-amount** cap, not a
@@ -114,13 +61,6 @@ const BUSINESS_COA: &[CoaSeed] = &[
 /// per account before its integer aggregation could overflow. Realistic books
 /// stay many orders of magnitude below both limits.
 const MAX_LINE_AMOUNT_MINOR: i64 = 1_000_000_000_000_000;
-
-/// ZA VAT rates: (code, name, rate in basis points).
-const VAT_RATE_SEEDS: &[(&str, &str, i64)] = &[
-    ("STD", "Standard rate (15%)", 1500),
-    ("ZER", "Zero-rated (0%)", 0),
-    ("EXE", "Exempt", 0),
-];
 
 // ---------------------------------------------------------------------------
 // Reconciliation matcher tuning.
@@ -213,11 +153,27 @@ impl CoreService {
         if new.name.trim().is_empty() {
             return Err(CoreError::Validation("book name must not be empty".into()));
         }
-        // Region profile: inferred from the country when given (e.g. "ZA" →
-        // the za profile), otherwise the generic profile — never a hardcoded
-        // jurisdiction ("global by default — regions are data, not code").
-        let profile = crate::region::for_country(new.country.as_deref())
-            .unwrap_or_else(|| crate::region::profile_or_generic(crate::region::DEFAULT_REGION_ID));
+        // Region profile: an explicit region wins; otherwise inferred from
+        // the country when given (e.g. "ZA" → the za profile); otherwise the
+        // generic profile — never a hardcoded jurisdiction ("global by
+        // default — regions are data, not code"). Unknown explicit ids are
+        // rejected here so a typo cannot silently produce a generic book;
+        // *stored* regions stay tolerant via `profile_or_generic`.
+        let profile = match new.region.as_deref() {
+            Some(id) => crate::region::profile(id).ok_or_else(|| {
+                CoreError::Validation(format!(
+                    "unknown region profile {id:?} (known: {})",
+                    crate::region::profiles()
+                        .iter()
+                        .map(|p| p.id)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })?,
+            None => crate::region::for_country(new.country.as_deref()).unwrap_or_else(|| {
+                crate::region::profile_or_generic(crate::region::DEFAULT_REGION_ID)
+            }),
+        };
         // Normalize the base currency exactly like journal-line currencies —
         // an un-normalized book currency ("zar") would silently empty every
         // base-currency report (income statement, balance sheet, tax summary).
@@ -892,7 +848,7 @@ impl CoreService {
     }
 
     /// Reverse a posted journal: post a new journal with every line's sides
-    /// swapped (VAT tags preserved so the VAT201 nets out), linked via
+    /// swapped (VAT tags preserved so the tax-period summary nets out), linked via
     /// `reversal_of`. Posted journals are never edited or deleted — this is
     /// the only correction path. A journal can be reversed at most once.
     pub fn journal_reverse(
@@ -1307,15 +1263,19 @@ impl CoreService {
         Ok(after)
     }
 
-    /// Seed the SA-flavoured default chart of accounts for the book's kind
-    /// (personal or small-business incl. VAT control accounts) plus the ZA
-    /// VAT rate table (15% standard, zero-rated, exempt).
-    /// Idempotent: existing codes are left untouched.
+    /// Seed the default chart of accounts for the book's kind plus the tax
+    /// rate table, both taken from the book's **region profile** (e.g. the
+    /// za profile seeds VAT control accounts and the 15%/zero/exempt VAT
+    /// table; the generic profile seeds a neutral chart and one
+    /// standard-rate placeholder to be configured via
+    /// [`Self::vat_rate_set_bps`]). Idempotent: existing codes are left
+    /// untouched.
     pub fn coa_seed(&self, book_id: &str) -> CoreResult<Vec<CoaAccount>> {
         let book = self.book_get(book_id)?;
+        let profile = crate::region::profile_or_generic(&book.region);
         let seeds = match book.kind {
-            BookKind::Personal => PERSONAL_COA,
-            BookKind::Business => BUSINESS_COA,
+            BookKind::Personal => profile.personal_coa,
+            BookKind::Business => profile.business_coa,
         };
         let now = now_iso();
         let tx = self.conn().unchecked_transaction()?;
@@ -1339,16 +1299,18 @@ impl CoreService {
             )?;
             inserted_any = inserted_any || inserted;
         }
-        for &(code, name, rate_bps) in VAT_RATE_SEEDS {
+        for seed in profile.tax_rates {
             repo::ledger::insert_vat_rate(
                 &tx,
                 &VatRate {
                     id: new_id(),
                     book_id: book_id.to_string(),
-                    code: code.to_string(),
-                    name: name.to_string(),
-                    rate_bps,
-                    country: Some("ZA".to_string()),
+                    code: seed.code.to_string(),
+                    name: seed.label.to_string(),
+                    // `None` marks a profile placeholder: it seeds at 0 and
+                    // is configured per book via `vat_rate_set_bps`.
+                    rate_bps: seed.rate_bps.unwrap_or(0),
+                    country: profile.country.map(str::to_string),
                     is_active: true,
                     created_at: now.clone(),
                     updated_at: now.clone(),
@@ -1372,6 +1334,47 @@ impl CoreService {
 
     pub fn vat_rate_list(&self, book_id: &str) -> CoreResult<Vec<VatRate>> {
         repo::ledger::list_vat_rates(self.conn(), book_id)
+    }
+
+    /// Configure a tax rate's percentage (basis points) for one book — how
+    /// the generic profile's standard-rate placeholder gets its actual rate
+    /// at book init, and how a statutory rate change is tracked. Audited;
+    /// already-posted journal lines are never touched.
+    pub fn vat_rate_set_bps(
+        &self,
+        book_id: &str,
+        code: &str,
+        rate_bps: i64,
+    ) -> CoreResult<VatRate> {
+        if !(0..=10_000).contains(&rate_bps) {
+            return Err(CoreError::Validation(format!(
+                "rate_bps must be between 0 and 10000 (0%..100%), got {rate_bps}"
+            )));
+        }
+        let before = repo::ledger::list_vat_rates(self.conn(), book_id)?
+            .into_iter()
+            .find(|r| r.code == code)
+            .ok_or_else(|| CoreError::NotFound {
+                entity: "vat_rate",
+                id: format!("{book_id}/{code}"),
+            })?;
+        let now = now_iso();
+        let mut after = before.clone();
+        after.rate_bps = rate_bps;
+        after.updated_at = now.clone();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::ledger::set_vat_rate_bps(&tx, &before.id, rate_bps, &now)?;
+        self.emit_audit(
+            &tx,
+            Some(book_id),
+            "vat_rate",
+            Some(&before.id),
+            "set_rate",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
     }
 
     // -----------------------------------------------------------------------
@@ -1417,7 +1420,7 @@ impl CoreService {
     /// not the cash direction: an inflow whose counter account is an expense
     /// account is a purchase refund / supplier credit note and is booked as a
     /// negative **input**-VAT adjustment (credit expense + credit VAT input
-    /// control), never as a sale — so the VAT201 supply/turnover boxes are
+    /// control), never as a sale — so the tax-summary supply/turnover boxes are
     /// not inflated. Symmetrically, an outflow against an income account
     /// (customer refund) reduces output VAT rather than inflating input VAT.
     ///
@@ -1527,7 +1530,7 @@ impl CoreService {
                 // asset/liability/equity counter (a transfer between own
                 // accounts, a loan repayment) is neither a supply nor a
                 // purchase, and booking output/input VAT for it would put
-                // phantom amounts in the VAT201 boxes.
+                // phantom amounts in the tax-period summary boxes.
                 if !matches!(counter.kind, CoaKind::Expense | CoaKind::Income) {
                     return Err(CoreError::Validation(format!(
                         "cannot apply VAT rate {} to this transaction: its \
@@ -2108,19 +2111,20 @@ impl CoreService {
         repo::report::balance_sheet(self.conn(), book_id, as_of_date, &book.currency)
     }
 
-    /// VAT-period summary suitable for filling in a VAT201: output/input VAT
-    /// and their bases per rate, plus supply-type totals and the net
-    /// position — in the book's base currency (a return is filed in one
-    /// currency).
-    pub fn report_vat201(
+    /// Tax-period summary: output/input tax and their bases per rate, plus
+    /// supply-type totals and the net position — in the book's base
+    /// currency (a return is filed in one currency). The report name and
+    /// box labels come from the book's region profile (e.g. "VAT201" for
+    /// za, "Tax summary" for generic).
+    pub fn report_tax_summary(
         &self,
         book_id: &str,
         from_date: &str,
         to_date: &str,
-    ) -> CoreResult<Vat201Summary> {
+    ) -> CoreResult<TaxPeriodSummary> {
         let book = self.book_get(book_id)?;
         let profile = crate::region::profile_or_generic(&book.region);
-        repo::report::vat201(
+        repo::report::tax_period_summary(
             self.conn(),
             book_id,
             from_date,
@@ -2128,6 +2132,19 @@ impl CoreService {
             &book.currency,
             profile,
         )
+    }
+
+    /// Deprecated alias for [`Self::report_tax_summary`] — "VAT201" is the
+    /// SA region profile's label for the generic tax-period summary, not a
+    /// core concept.
+    #[deprecated(note = "renamed to report_tax_summary — VAT201 is the SA profile's report label")]
+    pub fn report_vat201(
+        &self,
+        book_id: &str,
+        from_date: &str,
+        to_date: &str,
+    ) -> CoreResult<TaxPeriodSummary> {
+        self.report_tax_summary(book_id, from_date, to_date)
     }
 
     // -----------------------------------------------------------------------
@@ -2428,6 +2445,7 @@ mod tests {
             kind: BookKind::Personal,
             currency: None,
             country: Some("ZA".into()),
+            region: None,
         })
         .unwrap()
     }
@@ -2504,6 +2522,7 @@ mod tests {
                 kind: BookKind::Business,
                 currency: Some("zar".into()),
                 country: Some("ZA".into()),
+                region: None,
             })
             .unwrap();
         assert_eq!(book.currency, "ZAR");
@@ -2513,6 +2532,7 @@ mod tests {
                 kind: BookKind::Personal,
                 currency: Some("z!r".into()),
                 country: None,
+                region: None,
             }),
             Err(CoreError::Validation(_))
         ));
@@ -2527,6 +2547,73 @@ mod tests {
                 kind: BookKind::Business,
                 currency: None,
                 country: None,
+                region: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)));
+    }
+
+    #[test]
+    fn book_create_takes_explicit_region() {
+        let svc = svc();
+        // Explicit region, no country: za profile and its default currency.
+        let za = svc
+            .book_create(NewBook {
+                name: "SA books".into(),
+                kind: BookKind::Business,
+                currency: None,
+                country: None,
+                region: Some("za".into()),
+            })
+            .unwrap();
+        assert_eq!(za.region, "za");
+        assert_eq!(za.currency, "ZAR");
+
+        // Case-insensitive; canonical lowercase id is stored.
+        let shouty = svc
+            .book_create(NewBook {
+                name: "Shouty".into(),
+                kind: BookKind::Personal,
+                currency: None,
+                country: None,
+                region: Some("GENERIC".into()),
+            })
+            .unwrap();
+        assert_eq!(shouty.region, "generic");
+
+        // Explicit region wins over country inference.
+        let expat = svc
+            .book_create(NewBook {
+                name: "Expat".into(),
+                kind: BookKind::Personal,
+                currency: Some("EUR".into()),
+                country: Some("ZA".into()),
+                region: Some("generic".into()),
+            })
+            .unwrap();
+        assert_eq!(expat.region, "generic");
+        assert_eq!(expat.currency, "EUR");
+
+        // Neither region nor country: the generic default.
+        let default = svc
+            .book_create(NewBook {
+                name: "Anywhere".into(),
+                kind: BookKind::Personal,
+                currency: None,
+                country: None,
+                region: None,
+            })
+            .unwrap();
+        assert_eq!(default.region, crate::region::DEFAULT_REGION_ID);
+
+        // Unknown explicit region is rejected, not silently generic.
+        let err = svc
+            .book_create(NewBook {
+                name: "Lost".into(),
+                kind: BookKind::Personal,
+                currency: None,
+                country: None,
+                region: Some("atlantis".into()),
             })
             .unwrap_err();
         assert!(matches!(err, CoreError::Validation(_)));
@@ -2795,6 +2882,7 @@ mod tests {
                 kind: BookKind::Business,
                 currency: None,
                 country: None,
+                region: None,
             })
             .unwrap();
         let account = make_account(&svc, &book);
@@ -2849,6 +2937,7 @@ mod tests {
                 kind: BookKind::Business,
                 currency: None,
                 country: None,
+                region: None,
             })
             .unwrap();
         let parent = make_category(&svc, &other, "Foreign");
@@ -3123,6 +3212,7 @@ mod tests {
                 kind: BookKind::Business,
                 currency: None,
                 country: Some("ZA".into()),
+                region: None,
             })
             .unwrap();
         let personal_coa = svc.coa_seed(&personal.id).unwrap();
@@ -3479,6 +3569,7 @@ mod tests {
             kind: BookKind::Business,
             currency: None,
             country: Some("ZA".into()),
+            region: None,
         })
         .unwrap()
     }
@@ -3657,7 +3748,7 @@ mod tests {
 
         // The purchase's input VAT is cancelled in the VAT201.
         let vat = svc
-            .report_vat201(&book.id, "2026-02-01", "2026-02-28")
+            .report_tax_summary(&book.id, "2026-02-01", "2026-02-28")
             .unwrap();
         assert_eq!(vat.input_vat_minor, 0);
         assert_eq!(vat.output_vat_minor, 1_500);
@@ -3958,7 +4049,7 @@ mod tests {
 
         // End-to-end: it lands in the VAT201.
         let vat201 = svc
-            .report_vat201(&book.id, "2026-07-01", "2026-07-31")
+            .report_tax_summary(&book.id, "2026-07-01", "2026-07-31")
             .unwrap();
         assert_eq!(vat201.input_vat_minor, 1_500);
         assert_eq!(vat201.net_vat_minor, -1_500);
@@ -4009,7 +4100,7 @@ mod tests {
         assert_eq!(posted.lines[1].vat_role, Some(VatRole::OutputBase));
 
         let vat201 = svc
-            .report_vat201(&book.id, "2026-07-01", "2026-07-31")
+            .report_tax_summary(&book.id, "2026-07-01", "2026-07-31")
             .unwrap();
         assert_eq!(vat201.output_vat_minor, 3_000);
         assert_eq!(vat201.standard_rated_supplies_minor, 20_000);
@@ -4070,7 +4161,7 @@ mod tests {
         // VAT201: the supply/turnover boxes must not be inflated — the
         // purchase and its refund cancel on the *input* side.
         let vat201 = svc
-            .report_vat201(&book.id, "2026-07-01", "2026-07-31")
+            .report_tax_summary(&book.id, "2026-07-01", "2026-07-31")
             .unwrap();
         assert_eq!(vat201.output_vat_minor, 0);
         assert_eq!(vat201.standard_rated_supplies_minor, 0);
@@ -4751,7 +4842,7 @@ mod tests {
             bs.liabilities_total_minor + bs.equity_total_minor
         );
         let vat = svc
-            .report_vat201(&book.id, "2026-07-01", "2026-07-31")
+            .report_tax_summary(&book.id, "2026-07-01", "2026-07-31")
             .unwrap();
         assert_eq!(vat.currency, "ZAR");
     }
@@ -4875,12 +4966,19 @@ mod tests {
     }
 
     #[test]
-    fn vat201_on_fixture() {
+    fn tax_summary_on_fixture_with_za_labels() {
         let svc = svc();
         let (book, _, _) = fixture_book(&svc);
         let vat = svc
-            .report_vat201(&book.id, "2026-01-01", "2026-03-31")
+            .report_tax_summary(&book.id, "2026-01-01", "2026-03-31")
             .unwrap();
+        // The za book labels its tax-period summary from the za profile.
+        assert_eq!(vat.report_name, "VAT201");
+        assert_eq!(vat.labels.output_tax, "Output VAT");
+        assert_eq!(
+            vat.labels.standard_rated_supplies,
+            "Standard-rated supplies"
+        );
         assert_eq!(vat.output_vat_minor, 1_500);
         assert_eq!(vat.input_vat_minor, 300);
         assert_eq!(vat.net_vat_minor, 1_200); // payable to SARS
@@ -4894,11 +4992,132 @@ mod tests {
 
         // Outside the period: nothing.
         let empty = svc
-            .report_vat201(&book.id, "2026-05-01", "2026-05-31")
+            .report_tax_summary(&book.id, "2026-05-01", "2026-05-31")
             .unwrap();
         assert_eq!(empty.output_vat_minor, 0);
         assert_eq!(empty.input_vat_minor, 0);
         assert_eq!(empty.net_vat_minor, 0);
+
+        // Deprecated alias still answers, identically.
+        #[allow(deprecated)]
+        let via_alias = svc
+            .report_vat201(&book.id, "2026-01-01", "2026-03-31")
+            .unwrap();
+        assert_eq!(via_alias, vat);
+    }
+
+    #[test]
+    fn generic_book_end_to_end_with_generic_labels() {
+        // A book in a country without a dedicated profile: neutral chart,
+        // one standard-rate placeholder configured at init, tax summary
+        // labeled from the generic profile.
+        let svc = svc();
+        let book = svc
+            .book_create(NewBook {
+                name: "Anywhere Trading".into(),
+                kind: BookKind::Business,
+                currency: None,
+                country: None,
+                region: None,
+            })
+            .unwrap();
+        assert_eq!(book.region, "generic");
+        assert_eq!(book.currency, "USD");
+
+        let coa = svc.coa_seed(&book.id).unwrap();
+        // Neutral account names — no jurisdiction leaks into the chart.
+        assert_eq!(by_code(&coa, "1400").name, "Tax Input Control");
+        assert_eq!(by_code(&coa, "2100").name, "Tax Output Control");
+        for c in &coa {
+            for term in ["VAT", "SARS", "PAYE", "UIF"] {
+                assert!(!c.name.contains(term), "{:?} leaks {term}", c.name);
+            }
+        }
+
+        // Single standard-rate placeholder, configured at book init.
+        let rates = svc.vat_rate_list(&book.id).unwrap();
+        assert_eq!(rates.len(), 1);
+        assert_eq!(rates[0].code, "STD");
+        assert_eq!(rates[0].rate_bps, 0);
+        assert_eq!(rates[0].country, None);
+        let std = svc.vat_rate_set_bps(&book.id, "STD", 2_000).unwrap();
+        assert_eq!(std.rate_bps, 2_000);
+        assert_eq!(
+            rate(&svc.vat_rate_list(&book.id).unwrap(), "STD").rate_bps,
+            2_000
+        );
+
+        // Post a standard-rated sale end-to-end: $120.00 in at 20%.
+        let account = svc
+            .account_create(NewAccount {
+                book_id: book.id.clone(),
+                name: "Checking".into(),
+                kind: AccountKind::Bank,
+                currency: "USD".into(),
+                institution: None,
+                account_number_masked: None,
+                opening_balance_minor: Some(0),
+            })
+            .unwrap();
+        let mut sale = make_txn(&svc, &book, &account);
+        sale.amount_minor = 12_000;
+        sale.currency = "USD".into();
+        sale.merchant = Some("Client".into());
+        let sale = svc.transaction_create(sale).unwrap();
+        let posted = svc
+            .journal_generate_for_transaction(&sale.id, Some(&std.id))
+            .unwrap();
+        assert_eq!(posted.lines.len(), 3);
+        assert_eq!(posted.lines[1].credit_minor, 10_000); // net sale
+        assert_eq!(posted.lines[2].credit_minor, 2_000); // tax at 20%
+        assert_eq!(posted.lines[2].coa_id, by_code(&coa, "2100").id);
+
+        // The tax-period summary carries the generic profile's labels.
+        let summary = svc
+            .report_tax_summary(&book.id, "2026-07-01", "2026-07-31")
+            .unwrap();
+        assert_eq!(summary.report_name, "Tax summary");
+        assert_eq!(summary.labels.output_tax, "Output tax");
+        assert_eq!(
+            summary.labels.standard_rated_supplies,
+            "Standard-rated sales"
+        );
+        assert_eq!(summary.currency, "USD");
+        assert_eq!(summary.output_vat_minor, 2_000);
+        assert_eq!(summary.standard_rated_supplies_minor, 10_000);
+        assert_eq!(summary.net_vat_minor, 2_000);
+
+        // And the CSV export wears the same labels.
+        let csv = crate::csv::tax_summary_csv(&summary);
+        assert!(csv.contains("Total Output tax"));
+        assert!(csv.contains("Net tax payable (refundable if negative)"));
+    }
+
+    #[test]
+    fn vat_rate_set_bps_validates_and_audits() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+
+        assert!(matches!(
+            svc.vat_rate_set_bps(&book.id, "STD", 10_001),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.vat_rate_set_bps(&book.id, "STD", -1),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.vat_rate_set_bps(&book.id, "NOPE", 1_500),
+            Err(CoreError::NotFound { .. })
+        ));
+
+        let updated = svc.vat_rate_set_bps(&book.id, "STD", 1_550).unwrap();
+        assert_eq!(updated.rate_bps, 1_550);
+        let audit = svc.audit_list(Some(&book.id), 50).unwrap();
+        assert!(audit
+            .iter()
+            .any(|a| a.entity_type == "vat_rate" && a.action == "set_rate"));
     }
 
     #[test]
@@ -5123,7 +5342,7 @@ mod tests {
         assert_eq!(vat.vat_role, Some(VatRole::OutputVat));
 
         let vat201 = svc
-            .report_vat201(&book.id, "2026-07-01", "2026-07-31")
+            .report_tax_summary(&book.id, "2026-07-01", "2026-07-31")
             .unwrap();
         assert_eq!(vat201.input_vat_minor, 0, "input box must not be inflated");
         assert_eq!(vat201.output_vat_minor, -1_500);
@@ -5161,7 +5380,7 @@ mod tests {
         // Without a VAT rate the transfer journal is fine.
         svc.journal_generate_for_transaction(&txn.id, None).unwrap();
         let vat201 = svc
-            .report_vat201(&book.id, "2026-07-01", "2026-07-31")
+            .report_tax_summary(&book.id, "2026-07-01", "2026-07-31")
             .unwrap();
         assert_eq!(vat201.standard_rated_supplies_minor, 0);
         assert_eq!(vat201.output_vat_minor, 0);

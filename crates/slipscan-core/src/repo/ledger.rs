@@ -338,6 +338,19 @@ pub fn insert_vat_rate(conn: &Connection, rate: &VatRate) -> CoreResult<()> {
     Ok(())
 }
 
+pub fn set_vat_rate_bps(
+    conn: &Connection,
+    rate_id: &str,
+    rate_bps: i64,
+    now: &str,
+) -> CoreResult<()> {
+    conn.execute(
+        "UPDATE vat_rates SET rate_bps = ?2, updated_at = ?3 WHERE id = ?1",
+        params![rate_id, rate_bps, now],
+    )?;
+    Ok(())
+}
+
 pub fn list_vat_rates(conn: &Connection, book_id: &str) -> CoreResult<Vec<VatRate>> {
     let mut stmt = conn.prepare("SELECT * FROM vat_rates WHERE book_id = ?1 ORDER BY code")?;
     let rows = stmt

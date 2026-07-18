@@ -165,38 +165,65 @@ pub fn pack_list(service: &CoreService) -> Result<Vec<InstalledPackEntry>, OpsEr
     }
 }
 
-/// VAT summary: configured rates plus the trial-balance position of the VAT
-/// control accounts (accounts whose name contains "VAT"), in the book's base
-/// currency — a VAT return is filed in one currency, so other-currency rows
-/// are excluded rather than mixed into the net position.
+/// Well-known tax control account codes, stable across every region profile
+/// (contract in `slipscan_core::region`): tax input control, tax output
+/// control, and the tax-authority settlement account.
+const TAX_CONTROL_CODES: [&str; 3] = ["1400", "2100", "2150"];
+
+/// Tax summary: configured rates plus the trial-balance position of the tax
+/// control accounts, in the book's base currency — a return is filed in one
+/// currency, so other-currency rows are excluded rather than mixed into the
+/// net position. The report is named by the book's region profile ("VAT201"
+/// for za, "Tax summary" for generic) — never hardcoded here.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VatReport {
+pub struct TaxReport {
+    /// Region-profile display name for this report (e.g. "VAT201").
+    pub report_name: String,
     pub currency: String,
     pub rates: Vec<VatRate>,
     pub accounts: Vec<TrialBalanceRow>,
-    /// Net VAT position in minor units: credits minus debits over the VAT
+    /// Net tax position in minor units: credits minus debits over the tax
     /// control accounts. Positive = owed to the revenue service.
     pub net_minor: i64,
 }
 
-pub fn report_vat(service: &CoreService, book_id: &str) -> Result<VatReport, OpsError> {
+/// Deprecated alias — the report was renamed to [`TaxReport`]; "VAT" is
+/// jurisdiction wording that belongs to region profiles.
+#[deprecated(note = "renamed to TaxReport")]
+pub type VatReport = TaxReport;
+
+pub fn report_tax(service: &CoreService, book_id: &str) -> Result<TaxReport, OpsError> {
     let book = service.book_get(book_id)?;
+    let profile = slipscan_core::region::profile_or_generic(&book.region);
     let rates = service.vat_rate_list(book_id)?;
+    // Tax control accounts: the well-known codes every profile keeps, plus
+    // (for older/custom charts) anything the user named as a VAT account.
     let accounts: Vec<TrialBalanceRow> = service
         .report_trial_balance(book_id)?
         .into_iter()
-        .filter(|row| row.currency == book.currency && row.name.to_lowercase().contains("vat"))
+        .filter(|row| {
+            row.currency == book.currency
+                && (TAX_CONTROL_CODES.contains(&row.code.as_str())
+                    || row.name.to_lowercase().contains("vat"))
+        })
         .collect();
     let net_minor = accounts
         .iter()
         .map(|r| r.credit_minor - r.debit_minor)
         .sum();
-    Ok(VatReport {
+    Ok(TaxReport {
+        report_name: profile.tax_report.report_name.to_string(),
         currency: book.currency,
         rates,
         accounts,
         net_minor,
     })
+}
+
+/// Deprecated alias for [`report_tax`].
+#[deprecated(note = "renamed to report_tax")]
+pub fn report_vat(service: &CoreService, book_id: &str) -> Result<TaxReport, OpsError> {
+    report_tax(service, book_id)
 }
 
 /// One ledger account's contribution to a derived report, in minor units.
@@ -334,6 +361,7 @@ mod tests {
                 kind: BookKind::Business,
                 currency: None,
                 country: Some("ZA".into()),
+                region: None,
             })
             .unwrap()
             .id
@@ -484,7 +512,9 @@ mod tests {
             })
             .unwrap();
 
-        let report = report_vat(&service, &book_id).unwrap();
+        let report = report_tax(&service, &book_id).unwrap();
+        // The za profile names the report after its return form.
+        assert_eq!(report.report_name, "VAT201");
         // Core seeds the ZA rate set; the standard 15% rate must be there.
         assert!(!report.rates.is_empty());
         assert!(report
@@ -501,10 +531,65 @@ mod tests {
     }
 
     #[test]
-    fn vat_report_unknown_book_is_not_found() {
+    fn tax_report_is_region_neutral_for_a_generic_book() {
+        let service = svc();
+        // A generic-region book: control accounts are named "Tax …", not
+        // "VAT …" — the report must find them by the well-known codes.
+        let book_id = service
+            .book_create(NewBook {
+                name: "Global".into(),
+                kind: BookKind::Business,
+                currency: Some("EUR".into()),
+                country: None,
+                region: Some("generic".into()),
+            })
+            .unwrap()
+            .id;
+        let coa = service.coa_seed(&book_id).unwrap();
+        let id_of = |code: &str| coa.iter().find(|c| c.code == code).unwrap().id.clone();
+        service
+            .journal_post(NewJournal {
+                book_id: book_id.clone(),
+                posted_date: "2026-07-01".into(),
+                narrative: Some("Output tax".into()),
+                reference: None,
+                source_type: slipscan_core::domain::JournalSourceType::Manual,
+                source_id: None,
+                lines: vec![
+                    NewJournalLine {
+                        coa_id: id_of("1000"),
+                        debit_minor: 2_000,
+                        credit_minor: 0,
+                        currency: "EUR".into(),
+                        description: None,
+                        vat_rate_id: None,
+                        vat_role: None,
+                    },
+                    NewJournalLine {
+                        coa_id: id_of("2100"),
+                        debit_minor: 0,
+                        credit_minor: 2_000,
+                        currency: "EUR".into(),
+                        description: None,
+                        vat_rate_id: None,
+                        vat_role: None,
+                    },
+                ],
+            })
+            .unwrap();
+
+        let report = report_tax(&service, &book_id).unwrap();
+        assert_eq!(report.report_name, "Tax summary");
+        assert_eq!(report.currency, "EUR");
+        assert!(report.accounts.iter().any(|a| a.code == "2100"));
+        assert_eq!(report.net_minor, 2_000);
+    }
+
+    #[test]
+    fn tax_report_unknown_book_is_not_found() {
         let service = svc();
         assert!(matches!(
-            report_vat(&service, "missing"),
+            report_tax(&service, "missing"),
             Err(OpsError::Core(CoreError::NotFound { .. }))
         ));
     }

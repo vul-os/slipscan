@@ -172,6 +172,12 @@ pub struct NewBook {
     /// [`crate::CoreService::book_create`] is called without an explicit
     /// region (e.g. "ZA" → the "za" profile).
     pub country: Option<String>,
+    /// Region profile id ("za", "generic", …) — see [`crate::region`]. Wins
+    /// over `country` inference when set; unknown ids are rejected. When
+    /// both this and `country` are omitted the book gets the generic
+    /// profile.
+    #[serde(default)]
+    pub region: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -643,6 +649,7 @@ pub struct TaxSummaryRow {
 
 /// Deprecated alias — the row type was renamed to [`TaxSummaryRow`];
 /// "VAT201" is the SA region profile's label, not a core concept.
+#[deprecated(note = "renamed to TaxSummaryRow")]
 pub type Vat201Row = TaxSummaryRow;
 
 /// One balance-sheet line: an asset / liability / equity account's balance.
@@ -715,6 +722,7 @@ pub struct TaxPeriodSummary {
 
 /// Deprecated alias — renamed to [`TaxPeriodSummary`]; "VAT201" is the SA
 /// region profile's label for the generic tax-period summary.
+#[deprecated(note = "renamed to TaxPeriodSummary — VAT201 is the SA profile's report label")]
 pub type Vat201Summary = TaxPeriodSummary;
 
 // ---------------------------------------------------------------------------

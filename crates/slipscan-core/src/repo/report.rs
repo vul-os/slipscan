@@ -3,7 +3,7 @@ use rusqlite::{params, Connection};
 use super::col_enum;
 use crate::domain::{
     BalanceSheet, BalanceSheetRow, CoaKind, IncomeStatement, IncomeStatementRow,
-    MonthlySpendingRow, SpendingRow, TrialBalanceRow, Vat201Row, Vat201Summary, VatRole,
+    MonthlySpendingRow, SpendingRow, TaxPeriodSummary, TaxSummaryRow, TrialBalanceRow, VatRole,
 };
 use crate::error::CoreResult;
 
@@ -152,18 +152,19 @@ pub fn income_statement(
     })
 }
 
-/// VAT201-style summary: output/input VAT and their bases, per VAT rate, over
-/// an inclusive posted-date range. Only VAT-tagged journal lines count, and
-/// only lines in `currency` (the book's base currency) — a VAT return is
-/// filed in one currency.
-pub fn vat201(
+/// Tax-period summary: output/input tax and their bases, per tax rate, over
+/// an inclusive posted-date range. Only tax-tagged journal lines count, and
+/// only lines in `currency` (the book's base currency) — a return is filed
+/// in one currency. Labels come from the region profile (za labels this
+/// report "VAT201").
+pub fn tax_period_summary(
     conn: &Connection,
     book_id: &str,
     from_date: &str,
     to_date: &str,
     currency: &str,
     profile: &crate::region::RegionProfile,
-) -> CoreResult<Vat201Summary> {
+) -> CoreResult<TaxPeriodSummary> {
     let mut stmt = conn.prepare(
         "SELECT l.vat_rate_id AS vat_rate_id,
                 COALESCE(r.code, '') AS code,
@@ -206,12 +207,12 @@ pub fn vat201(
         })?
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut rows: Vec<Vat201Row> = Vec::new();
+    let mut rows: Vec<TaxSummaryRow> = Vec::new();
     for s in slices {
         let row = match rows.iter_mut().find(|r| r.vat_rate_id == s.vat_rate_id) {
             Some(existing) => existing,
             None => {
-                rows.push(Vat201Row {
+                rows.push(TaxSummaryRow {
                     vat_rate_id: s.vat_rate_id.clone(),
                     code: s.code.clone(),
                     name: s.name.clone(),
@@ -251,7 +252,7 @@ pub fn vat201(
         .map(|r| r.output_base_minor)
         .sum();
 
-    Ok(Vat201Summary {
+    Ok(TaxPeriodSummary {
         book_id: book_id.to_string(),
         from_date: from_date.to_string(),
         to_date: to_date.to_string(),

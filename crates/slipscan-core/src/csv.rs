@@ -3,7 +3,7 @@
 //! exact integers, no float formatting surprises.
 
 use crate::domain::{
-    IncomeStatement, MonthlySpendingRow, SpendingRow, TrialBalanceRow, Vat201Summary,
+    IncomeStatement, MonthlySpendingRow, SpendingRow, TaxPeriodSummary, TrialBalanceRow,
 };
 
 /// Quote a CSV field per RFC 4180 when it contains a comma, quote, or newline.
@@ -127,7 +127,10 @@ pub fn income_statement_csv(statement: &IncomeStatement) -> String {
     out
 }
 
-pub fn vat201_csv(summary: &Vat201Summary) -> String {
+/// Tax-period summary as CSV. Total-row wording comes from the summary's
+/// region-profile labels (e.g. "Output VAT" for za, "Output tax" for
+/// generic); column names stay stable machine-readable identifiers.
+pub fn tax_summary_csv(summary: &TaxPeriodSummary) -> String {
     let mut out = row(&[
         "code",
         "name",
@@ -155,7 +158,7 @@ pub fn vat201_csv(summary: &Vat201Summary) -> String {
     }
     out.push_str(&row(&[
         "",
-        "Total output VAT",
+        &format!("Total {}", summary.labels.output_tax),
         "",
         currency,
         "",
@@ -166,7 +169,7 @@ pub fn vat201_csv(summary: &Vat201Summary) -> String {
     ]));
     out.push_str(&row(&[
         "",
-        "Total input VAT",
+        &format!("Total {}", summary.labels.input_tax),
         "",
         currency,
         "",
@@ -175,11 +178,11 @@ pub fn vat201_csv(summary: &Vat201Summary) -> String {
         &summary.input_vat_minor.to_string(),
         "",
     ]));
-    // Net VAT gets its own column — summing the input_vat_minor column must
-    // yield input VAT only, never input + net double-counted.
+    // Net tax gets its own column — summing the input_vat_minor column must
+    // yield input tax only, never input + net double-counted.
     out.push_str(&row(&[
         "",
-        "Net VAT payable (refundable if negative)",
+        &summary.labels.net_tax,
         "",
         currency,
         "",
@@ -189,6 +192,13 @@ pub fn vat201_csv(summary: &Vat201Summary) -> String {
         &summary.net_vat_minor.to_string(),
     ]));
     out
+}
+
+/// Deprecated alias for [`tax_summary_csv`] — "VAT201" is the SA region
+/// profile's label for the generic tax-period summary.
+#[deprecated(note = "renamed to tax_summary_csv — VAT201 is the SA profile's report label")]
+pub fn vat201_csv(summary: &TaxPeriodSummary) -> String {
+    tax_summary_csv(summary)
 }
 
 #[cfg(test)]
@@ -222,11 +232,10 @@ mod tests {
     }
 
     #[test]
-    fn vat201_csv_puts_net_vat_in_its_own_column() {
-        // Regression: the net-VAT total used to land in the input_vat_minor
+    fn tax_summary_csv_puts_net_tax_in_its_own_column() {
+        // Regression: the net-tax total used to land in the input_vat_minor
         // column, so summing that column double-counted input + net.
-        use crate::domain::Vat201Summary;
-        let csv = vat201_csv(&Vat201Summary {
+        let csv = tax_summary_csv(&TaxPeriodSummary {
             book_id: "b".into(),
             from_date: "2026-07-01".into(),
             to_date: "2026-07-31".into(),
