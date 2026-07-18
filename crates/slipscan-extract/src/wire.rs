@@ -8,7 +8,7 @@
 //! finalization pass: currency normalisation, arithmetic validation, sane
 //! dates, and confidence scoring.
 
-use crate::currency::{normalize_currency, to_minor};
+use crate::currency::{normalize_currency_opt, to_minor};
 use crate::provider::ExtractError;
 use crate::types::{
     DiscountLine, LineItem, MerchantInfo, PaymentInfo, SlipExtraction, Totals, VatLine,
@@ -16,10 +16,6 @@ use crate::types::{
 };
 use crate::{confidence, json_util, validate};
 use serde::Deserialize;
-
-/// Currency assumed when the slip shows none (SA-first, matching the
-/// legacy stack; [`normalize_currency`] falls back to it too).
-pub const DEFAULT_CURRENCY: &str = "ZAR";
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct WireSlip {
@@ -115,9 +111,18 @@ pub struct WirePayment {
 
 impl WireSlip {
     /// Convert to the canonical slip-v2 shape (minor units, bps).
+    ///
+    /// `default_currency` is the caller-injected fallback (the book
+    /// currency) used when the slip shows no currency of its own. With an
+    /// empty default and no detectable currency the result's `currency` is
+    /// `None` — never a hardcoded jurisdiction ("global by default").
     pub fn into_slip(self, default_currency: &str) -> Result<SlipExtraction, ExtractError> {
-        let code = normalize_currency(self.currency.as_deref().unwrap_or(""), default_currency);
-        let m = |v: f64| to_minor(v, &code);
+        let code = normalize_currency_opt(self.currency.as_deref().unwrap_or(""))
+            .or_else(|| normalize_currency_opt(default_currency));
+        // Minor-unit exponent: the resolved currency's, or the common
+        // 2-decimal shape when unknown (`minor_exponent` default).
+        let exponent_code = code.clone().unwrap_or_default();
+        let m = |v: f64| to_minor(v, &exponent_code);
         let mut warnings = Vec::new();
 
         let mut line_items = Vec::with_capacity(self.items.len());
@@ -203,7 +208,7 @@ impl WireSlip {
             schema: SLIP_SCHEMA_VERSION.to_string(),
             merchant,
             purchased_at,
-            currency: Some(code.clone()),
+            currency: code,
             totals: Totals {
                 subtotal_minor: self.subtotal.map(m),
                 discount_minor: self.discount.map(|v| m(v).abs()),
@@ -336,5 +341,26 @@ mod tests {
         let slip = parse_slip(text, "ZAR").unwrap();
         assert_eq!(slip.currency.as_deref(), Some("JPY"));
         assert_eq!(slip.totals.total_minor, 1_200);
+    }
+
+    #[test]
+    fn missing_currency_uses_the_injected_book_default() {
+        // Regression: this used to hardcode ZAR regardless of the book.
+        let text = r#"{"currency": null, "total": 12.34}"#;
+        let slip = parse_slip(text, "EUR").unwrap();
+        assert_eq!(slip.currency.as_deref(), Some("EUR"));
+        let slip = parse_slip(text, "jpy").unwrap();
+        assert_eq!(slip.currency.as_deref(), Some("JPY"));
+        assert_eq!(slip.totals.total_minor, 12, "default drives the exponent");
+    }
+
+    #[test]
+    fn missing_currency_without_a_default_stays_unknown() {
+        // No slip currency + no default → None, never a hardcoded currency
+        // ("global by default" contract). Amounts convert at the common
+        // 2-decimal exponent.
+        let slip = parse_slip(r#"{"total": 12.34}"#, "").unwrap();
+        assert_eq!(slip.currency, None);
+        assert_eq!(slip.totals.total_minor, 1_234);
     }
 }

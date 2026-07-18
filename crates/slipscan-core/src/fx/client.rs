@@ -50,13 +50,20 @@ pub struct FxQuote {
     pub rate: Decimal,
     /// RFC 3339 timestamp the rate is dated at (validated on parse).
     pub as_of: String,
-    /// Server-reported staleness at fetch time, in seconds.
-    pub age_sec: i64,
+    /// Server-reported staleness at fetch time, in seconds. `None` when the
+    /// server omitted it — unknown staleness must never masquerade as
+    /// "fresh" (0).
+    pub age_sec: Option<i64>,
     /// OpenRate quality grade (e.g. "A", "B").
     pub grade: String,
     /// Upstream sources that produced the rate.
     pub sources: Vec<String>,
 }
+
+/// How far in the future a quote's `as_of` may be before it is rejected as
+/// bogus. Generous enough for real clock skew, small enough that a
+/// far-future-dated rate cannot masquerade as fresh forever.
+const MAX_AS_OF_FUTURE_SKEW: time::Duration = time::Duration::days(1);
 
 /// A currency from `/api/v1/meta`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -65,19 +72,58 @@ pub struct FxCurrency {
     pub name: Option<String>,
 }
 
-/// Validate and normalize an OpenRate base URL: http(s), no trailing slash.
+/// Validate and normalize an OpenRate base URL: http(s) with a host,
+/// optionally a port and path — nothing else. No trailing slash, no
+/// userinfo (credentials embedded in a URL would land in a plain setting,
+/// status output and transport error strings — mantra #4), no query, no
+/// fragment. The scheme is accepted case-insensitively, normalized to
+/// lowercase.
 pub fn normalize_base_url(raw: &str) -> CoreResult<String> {
-    let trimmed = raw.trim().trim_end_matches('/');
-    let rest = trimmed
-        .strip_prefix("https://")
-        .or_else(|| trimmed.strip_prefix("http://"));
-    match rest {
-        Some(host) if !host.is_empty() && !host.contains(char::is_whitespace) => {
-            Ok(trimmed.to_string())
-        }
-        _ => Err(CoreError::Validation(format!(
+    let invalid = || {
+        CoreError::Validation(format!(
             "invalid OpenRate base URL {raw:?} (expected http(s)://host[:port][/path])"
-        ))),
+        ))
+    };
+    let trimmed = raw.trim().trim_end_matches('/');
+    let (scheme, rest) = trimmed.split_once("://").ok_or_else(invalid)?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return Err(invalid());
+    }
+    if rest.is_empty() || rest.contains(char::is_whitespace) {
+        return Err(invalid());
+    }
+    if rest.contains(['?', '#']) {
+        return Err(CoreError::Validation(format!(
+            "invalid OpenRate base URL {raw:?}: queries and fragments are not allowed"
+        )));
+    }
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty() {
+        return Err(invalid());
+    }
+    if authority.contains('@') {
+        // Deliberately not echoing the URL — it contains the credentials.
+        return Err(CoreError::Validation(
+            "OpenRate base URL must not embed credentials (user:pass@host): the URL is stored \
+             as a plain setting and shown in status output; front the instance with \
+             network-level auth instead"
+                .into(),
+        ));
+    }
+    Ok(format!("{scheme}://{rest}"))
+}
+
+/// Validate a currency code before URL interpolation: exactly 3 ASCII
+/// uppercase letters. Defense in depth — the service normalizes first, but
+/// this public client must never emit an injectable query string.
+fn validate_currency_code(code: &str) -> CoreResult<()> {
+    if code.len() == 3 && code.bytes().all(|b| b.is_ascii_uppercase()) {
+        Ok(())
+    } else {
+        Err(CoreError::Validation(format!(
+            "invalid currency code {code:?} (expected 3 uppercase ASCII letters)"
+        )))
     }
 }
 
@@ -104,10 +150,12 @@ impl<'a> OpenRateClient<'a> {
         })
     }
 
-    /// Fetch the current rate for one pair (`amount=1`). Currency codes must
-    /// already be normalized (3 uppercase letters). A 404 means OpenRate
-    /// does not know the pair.
+    /// Fetch the current rate for one pair (`amount=1`). Currency codes are
+    /// validated here (3 uppercase ASCII letters) so nothing injectable can
+    /// reach the query string. A 404 means OpenRate does not know the pair.
     pub async fn convert_one(&self, from: &str, to: &str) -> CoreResult<FxQuote> {
+        validate_currency_code(from)?;
+        validate_currency_code(to)?;
         let url = format!(
             "{}/api/v1/convert?from={from}&to={to}&amount=1",
             self.base_url
@@ -122,10 +170,19 @@ impl<'a> OpenRateClient<'a> {
         expect_success(&response)?;
         let wire: ConvertWire = serde_json::from_slice(&response.body)
             .map_err(|e| CoreError::FxParse(format!("convert response: {e}")))?;
-        // as_of must be a real RFC 3339 instant — staleness math depends on it.
-        OffsetDateTime::parse(&wire.rate.as_of, &Rfc3339).map_err(|e| {
+        // as_of must be a real RFC 3339 instant — staleness math depends on
+        // it. A far-future date (hostile/misconfigured server) would make a
+        // stale rate look perfectly fresh forever, so it is rejected here;
+        // small clock skew stays tolerated.
+        let as_of = OffsetDateTime::parse(&wire.rate.as_of, &Rfc3339).map_err(|e| {
             CoreError::FxParse(format!("as_of {:?} is not RFC 3339: {e}", wire.rate.as_of))
         })?;
+        if as_of - OffsetDateTime::now_utc() > MAX_AS_OF_FUTURE_SKEW {
+            return Err(CoreError::FxParse(format!(
+                "as_of {:?} is more than a day in the future — refusing to treat it as fresh",
+                wire.rate.as_of
+            )));
+        }
         Ok(FxQuote {
             from_currency: from.to_string(),
             to_currency: to.to_string(),
@@ -188,8 +245,9 @@ struct RateWire {
     #[serde(deserialize_with = "decimal_from_token")]
     rate: Decimal,
     as_of: String,
+    /// Optional on the wire: a missing value is *unknown* staleness, not 0.
     #[serde(default)]
-    age_sec: i64,
+    age_sec: Option<i64>,
     #[serde(default)]
     sources: Vec<String>,
     quality: QualityWire,
@@ -314,10 +372,35 @@ mod tests {
             normalize_base_url("http://127.0.0.1:8080/openrate//").unwrap(),
             "http://127.0.0.1:8080/openrate"
         );
+        // A legal uppercase scheme is accepted and normalized to lowercase.
+        assert_eq!(
+            normalize_base_url("HTTPS://fx.example.org").unwrap(),
+            "https://fx.example.org"
+        );
         assert!(normalize_base_url("").is_err());
         assert!(normalize_base_url("ftp://fx.example.org").is_err());
         assert!(normalize_base_url("https://").is_err());
         assert!(normalize_base_url("https://a b").is_err());
+        // No host at all (path only) is rejected.
+        assert!(normalize_base_url("https:///nohost-path-only").is_err());
+        // Queries and fragments would corrupt the request URLs built on top.
+        assert!(normalize_base_url("https://fx.example.org?query=1").is_err());
+        assert!(normalize_base_url("https://fx.example.org#frag").is_err());
+    }
+
+    #[test]
+    fn base_url_with_embedded_credentials_is_rejected_without_echoing_them() {
+        // Regression: user:pass in the URL used to be accepted, landing the
+        // password in a PLAIN setting, fx_status output and error strings
+        // (mantra #4: credentials never on disk in plaintext).
+        let err = normalize_base_url("https://alice:hunter2@fx.example.org").unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)), "{err}");
+        let rendered = err.to_string();
+        assert!(rendered.contains("credentials"), "{rendered}");
+        assert!(
+            !rendered.contains("hunter2") && !rendered.contains("alice"),
+            "the rejection must not echo the credentials: {rendered}"
+        );
     }
 
     #[tokio::test]
@@ -335,7 +418,7 @@ mod tests {
         let quote = client.convert_one("USD", "ZAR").await.unwrap();
         assert_eq!(quote.rate.to_string(), "0.052631578947368421");
         assert_eq!(quote.as_of, "2026-07-17T16:00:00Z");
-        assert_eq!(quote.age_sec, 93600);
+        assert_eq!(quote.age_sec, Some(93600));
         assert_eq!(quote.grade, "B");
         assert_eq!(quote.sources, vec!["ecb".to_string(), "sarb".to_string()]);
         assert_eq!(
@@ -398,6 +481,44 @@ mod tests {
         let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
         let err = client.convert_one("USD", "ZAR").await.unwrap_err();
         assert!(matches!(err, CoreError::FxParse(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn far_future_as_of_is_rejected_at_fetch_time() {
+        // Regression: a hostile/misconfigured server dating rates in year
+        // 9999 would surface as age 0 ("fresh") forever.
+        let body = convert_body("USD", "ZAR", "1.5", "9999-01-01T00:00:00Z", "A");
+        let transport = MockFxTransport::new().route("/convert", 200, &body);
+        let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+        let err = client.convert_one("USD", "ZAR").await.unwrap_err();
+        assert!(matches!(err, CoreError::FxParse(_)), "{err}");
+        assert!(err.to_string().contains("future"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn missing_age_sec_reports_unknown_not_fresh() {
+        let body = r#"{"rate":{"rate":"1.5","as_of":"2026-07-17T16:00:00Z",
+                       "sources":[],"quality":{"grade":"A"}}}"#;
+        let transport = MockFxTransport::new().route("/convert", 200, body);
+        let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+        let quote = client.convert_one("USD", "ZAR").await.unwrap();
+        assert_eq!(quote.age_sec, None, "omitted staleness must stay unknown");
+    }
+
+    #[tokio::test]
+    async fn injectable_currency_codes_are_rejected_before_any_request() {
+        // Regression: `from="USD&to=EUR"` used to be interpolated verbatim
+        // into the query string.
+        let transport = MockFxTransport::new();
+        let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+        for (from, to) in [("USD&to=EUR", "ZAR"), ("usd", "ZAR"), ("USD", "ZARR")] {
+            let err = client.convert_one(from, to).await.unwrap_err();
+            assert!(matches!(err, CoreError::Validation(_)), "{err}");
+        }
+        assert!(
+            transport.requested_urls().is_empty(),
+            "invalid codes must never reach the transport"
+        );
     }
 
     #[tokio::test]

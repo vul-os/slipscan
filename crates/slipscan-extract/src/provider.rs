@@ -22,6 +22,11 @@ pub struct ExtractionRequest {
     pub bytes: Vec<u8>,
     /// Optional user hint, e.g. "grocery slip" or a document kind.
     pub hint: Option<String>,
+    /// Currency assumed when the slip itself shows none — the *book's*
+    /// currency, injected by the caller. Never a hardcoded jurisdiction
+    /// ("global by default"): when absent and undetectable, the extracted
+    /// currency stays `None` and downstream falls back to the book currency.
+    pub default_currency: Option<String>,
 }
 
 impl ExtractionRequest {
@@ -30,7 +35,14 @@ impl ExtractionRequest {
             mime_type: mime_type.into(),
             bytes,
             hint: None,
+            default_currency: None,
         }
+    }
+
+    /// Set the currency assumed when the slip shows none (the book currency).
+    pub fn with_default_currency(mut self, currency: impl Into<String>) -> Self {
+        self.default_currency = Some(currency.into());
+        self
     }
 
     pub fn is_pdf(&self) -> bool {

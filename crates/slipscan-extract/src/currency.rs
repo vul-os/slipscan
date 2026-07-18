@@ -57,29 +57,22 @@ fn is_iso_code(s: &str) -> bool {
     s.len() == 3 && s.chars().all(|c| c.is_ascii_alphabetic())
 }
 
-/// Convert whatever the model returned to a 3-letter ISO code, falling back
-/// to `default` (uppercased) when empty or unrecognised.
-pub fn normalize_currency(raw: &str, default: &str) -> String {
-    let fallback = || {
-        if default.is_empty() {
-            "ZAR".to_string()
-        } else {
-            default.to_uppercase()
-        }
-    };
-
+/// Convert whatever the model returned to a 3-letter ISO code. `None` when
+/// `raw` is empty/unrecognised — the caller decides the fallback (book
+/// currency); this module never assumes a jurisdiction.
+pub fn normalize_currency_opt(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return fallback();
+        return None;
     }
 
     let upper = trimmed.to_uppercase();
     if is_iso_code(&upper) {
-        return upper;
+        return Some(upper);
     }
 
     if let Some(code) = lookup_symbol(trimmed) {
-        return code.to_string();
+        return Some(code.to_string());
     }
 
     // Extract a leading symbol/letter prefix (e.g. "R 1,200" → "R").
@@ -90,14 +83,22 @@ pub fn normalize_currency(raw: &str, default: &str) -> String {
     if !prefix.is_empty() {
         let prefix_upper = prefix.to_uppercase();
         if is_iso_code(&prefix_upper) {
-            return prefix_upper;
+            return Some(prefix_upper);
         }
         if let Some(code) = lookup_symbol(&prefix) {
-            return code.to_string();
+            return Some(code.to_string());
         }
     }
 
-    fallback()
+    None
+}
+
+/// [`normalize_currency_opt`], falling back to `default` (uppercased) when
+/// unrecognised. With an empty `default` the result is the empty string —
+/// **never** a hardcoded currency (contract: "no hardcoded currency
+/// anywhere"); callers that need "unknown" as a state use the `_opt` form.
+pub fn normalize_currency(raw: &str, default: &str) -> String {
+    normalize_currency_opt(raw).unwrap_or_else(|| default.trim().to_uppercase())
 }
 
 /// ISO 4217 minor-unit exponent for a currency code (uppercase).
@@ -169,9 +170,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_falls_back_to_default() {
+    fn unknown_falls_back_to_default_never_a_hardcoded_currency() {
         assert_eq!(normalize_currency("???", "usd"), "USD");
-        assert_eq!(normalize_currency("", ""), "ZAR");
+        // Regression: with no default there is no answer — the old code
+        // hardcoded ZAR here, a "global by default" contract violation.
+        assert_eq!(normalize_currency("", ""), "");
+        assert_eq!(normalize_currency_opt(""), None);
+        assert_eq!(normalize_currency_opt("???"), None);
+        assert_eq!(normalize_currency_opt("R 12.00").as_deref(), Some("ZAR"));
+        assert_eq!(normalize_currency_opt("inr").as_deref(), Some("INR"));
     }
 
     #[test]

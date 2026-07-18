@@ -37,7 +37,9 @@ impl std::fmt::Debug for ReqwestFxTransport {
 impl FxTransport for ReqwestFxTransport {
     async fn get(&self, url: &str) -> Result<FxHttpResponse, CoreError> {
         // reqwest errors include at most the URL — an OpenRate endpoint the
-        // user configured, not a secret.
+        // user configured, not a secret. That assumption is *enforced*, not
+        // assumed: `fx::normalize_base_url` rejects credential-embedding
+        // URLs (user:pass@host) on every configuration path.
         let response = self
             .client
             .get(url)

@@ -33,7 +33,7 @@ OUTPUT RULES — read carefully before filling any field:
 - All money amounts: decimal numbers exactly as printed. No currency symbols, no thousand-separators.
 - All amounts positive EXCEPT entries in the discounts array (negative numbers).
 - date: ISO 8601 YYYY-MM-DD. Null if not visible. time: HH:MM (24h). Null if not visible.
-- currency: 3-letter ISO code (ZAR, USD, EUR, ...). Null if absent.
+- currency: 3-letter ISO code (USD, EUR, ZAR, JPY, ...). Null if absent.
 - Use null for any field you cannot read confidently.
 
 MERCHANT:
@@ -50,7 +50,7 @@ ITEMS ARRAY — one entry per purchased product/service line:
 - category: two-level dot-separated category from this taxonomy:
 {CATEGORY_TAXONOMY}
   If the sub-category is unclear use the parent + ".other" (e.g. "groceries.other").
-- vat_rate_percent: the VAT rate applied to this line as a percentage (e.g. 15 for standard South African VAT, 0 for zero-rated basics such as bread, milk, eggs, most vegetables, fruit, rice, maize meal). Null if unknown.
+- vat_rate_percent: the VAT/sales-tax rate applied to this line as a percentage, exactly as shown on the receipt (e.g. 15 for a 15% rate, 0 for zero-rated or tax-free items). Follow the receipt's own tax markings — do not assume any country's tax rules. Null if unknown.
 
 DISCOUNTS ARRAY — any slip-level line that reduces the total (loyalty rewards,
 promotional discounts, coupons, manager overrides). DO NOT include these in items.

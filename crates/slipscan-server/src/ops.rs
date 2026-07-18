@@ -170,6 +170,16 @@ pub fn pack_list(service: &CoreService) -> Result<Vec<InstalledPackEntry>, OpsEr
 /// control, and the tax-authority settlement account.
 const TAX_CONTROL_CODES: [&str; 3] = ["1400", "2100", "2150"];
 
+/// Whether an account *name* marks a tax control account (fallback for
+/// older/custom charts that renamed the well-known codes). Matches the word
+/// "vat" only — whole-word, so "Private Drawings" ("pri-vat-e") never
+/// pollutes the net tax position. Localized names are covered by the
+/// well-known codes above, never by wording heuristics.
+fn name_marks_tax_control(name: &str) -> bool {
+    name.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| word.eq_ignore_ascii_case("vat"))
+}
+
 /// Tax summary: configured rates plus the trial-balance position of the tax
 /// control accounts, in the book's base currency — a return is filed in one
 /// currency, so other-currency rows are excluded rather than mixed into the
@@ -204,7 +214,7 @@ pub fn report_tax(service: &CoreService, book_id: &str) -> Result<TaxReport, Ops
         .filter(|row| {
             row.currency == book.currency
                 && (TAX_CONTROL_CODES.contains(&row.code.as_str())
-                    || row.name.to_lowercase().contains("vat"))
+                    || name_marks_tax_control(&row.name))
         })
         .collect();
     let net_minor = accounts
@@ -583,6 +593,18 @@ mod tests {
         assert_eq!(report.currency, "EUR");
         assert!(report.accounts.iter().any(|a| a.code == "2100"));
         assert_eq!(report.net_minor, 2_000);
+    }
+
+    #[test]
+    fn tax_control_name_matching_is_whole_word() {
+        // Regression: the old substring check classified "Private Drawings"
+        // as a VAT account ("pri-VAT-e").
+        assert!(name_marks_tax_control("VAT Input Control"));
+        assert!(name_marks_tax_control("Output VAT"));
+        assert!(name_marks_tax_control("vat control (settlement)"));
+        assert!(!name_marks_tax_control("Private Drawings"));
+        assert!(!name_marks_tax_control("Elevated Costs"));
+        assert!(!name_marks_tax_control("Motivation Fund"));
     }
 
     #[test]

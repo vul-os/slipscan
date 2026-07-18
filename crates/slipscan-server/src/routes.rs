@@ -291,6 +291,20 @@ struct FxConvertReq {
     from: String,
     to: String,
     amount_minor: i64,
+    /// Optional pinned rate (decimal string). When present the conversion
+    /// replays at exactly this rate (`fx_convert_at`) instead of the current
+    /// cached rate — booked conversions must reproduce, never re-rate.
+    #[serde(default)]
+    rate: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VatRateSetReq {
+    book_id: String,
+    /// Rate code within the book, e.g. "STD".
+    code: String,
+    /// Basis points: 1500 = 15.00%.
+    rate_bps: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -519,6 +533,20 @@ async fn vat_rate_list(
     Ok(Json(s.service()?.vat_rate_list(&req.book_id)?))
 }
 
+/// Configure a tax rate's percentage for one book — how the generic
+/// profile's standard-rate placeholder (seeded at 0 bps) gets its actual
+/// rate, and how a statutory rate change is tracked.
+async fn vat_rate_set_bps(
+    State(s): State<AppState>,
+    Json(req): Json<VatRateSetReq>,
+) -> ApiResult<VatRate> {
+    Ok(Json(s.service()?.vat_rate_set_bps(
+        &req.book_id,
+        &req.code,
+        req.rate_bps,
+    )?))
+}
+
 async fn recon_suggest(
     State(s): State<AppState>,
     Json(req): Json<BookIdReq>,
@@ -629,12 +657,14 @@ async fn fx_convert(
     State(s): State<AppState>,
     Json(req): Json<FxConvertReq>,
 ) -> ApiResult<fx::FxConversion> {
-    // Cache-only: a missing pair is a 404, never a silent fetch.
-    Ok(Json(s.service()?.fx_convert(
-        &req.from,
-        &req.to,
-        req.amount_minor,
-    )?))
+    let service = s.service()?;
+    Ok(Json(match req.rate.as_deref() {
+        // Pinned-rate replay: reproduces a booked conversion no matter how
+        // the cache has moved. Purely local.
+        Some(rate) => service.fx_convert_at(&req.from, &req.to, req.amount_minor, rate)?,
+        // Cache-only: a missing pair is a 404, never a silent fetch.
+        None => service.fx_convert(&req.from, &req.to, req.amount_minor)?,
+    }))
 }
 
 async fn fx_fetch_rate(
@@ -768,6 +798,7 @@ pub fn app(state: AppState) -> Router {
         .route("/coa_list", post(coa_list))
         .route("/coa_seed", post(coa_seed))
         .route("/vat_rate_list", post(vat_rate_list))
+        .route("/vat_rate_set_bps", post(vat_rate_set_bps))
         .route("/recon_suggest", post(recon_suggest))
         .route("/recon_confirm", post(recon_confirm))
         .route("/report_spending", post(report_spending))
@@ -1310,6 +1341,108 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    }
+
+    #[tokio::test]
+    async fn generic_book_tax_rate_is_configurable_over_http() {
+        // Regression: the generic profile's STD placeholder seeded at 0 bps
+        // with no surface able to configure it — all tax math ran at 0%.
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Global", "kind": "business", "region": "generic"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+        let (status, _) = call(
+            &app,
+            post_req("/api/v1/coa_seed", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (_, rates) = call(
+            &app,
+            post_req("/api/v1/vat_rate_list", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert_eq!(rates[0]["code"], "STD");
+        assert_eq!(rates[0]["rate_bps"], 0, "placeholder seeds at 0");
+
+        let (status, updated) = call(
+            &app,
+            post_req(
+                "/api/v1/vat_rate_set_bps",
+                json!({"book_id": book_id, "code": "STD", "rate_bps": 750}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{updated}");
+        assert_eq!(updated["rate_bps"], 750);
+        let (_, rates) = call(
+            &app,
+            post_req("/api/v1/vat_rate_list", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert_eq!(rates[0]["rate_bps"], 750, "persisted");
+
+        // Out-of-range and unknown codes are rejected cleanly.
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/vat_rate_set_bps",
+                json!({"book_id": book_id, "code": "STD", "rate_bps": 10_001}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/vat_rate_set_bps",
+                json!({"book_id": book_id, "code": "NOPE", "rate_bps": 100}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn fx_convert_accepts_a_pinned_rate_for_replay() {
+        // A booked conversion replays at its recorded rate — locally, with
+        // no transport and no cache row for the pair.
+        let app = open_app();
+        let (status, conv) = call(
+            &app,
+            post_req(
+                "/api/v1/fx_convert",
+                json!({"from": "USD", "to": "ZAR", "amount_minor": 10_000, "rate": "18.0"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{conv}");
+        assert_eq!(conv["converted_minor"], 180_000);
+        assert_eq!(conv["rate"], json!("18.0"));
+        assert_eq!(conv["grade"], "pinned");
+        // A bogus pinned rate is a validation error, not a cache miss.
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/fx_convert",
+                json!({"from": "USD", "to": "ZAR", "amount_minor": 10_000, "rate": "-1"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]
