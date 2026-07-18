@@ -9,6 +9,7 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="#download">Download</a> ·
   <a href="#features">Features</a> ·
   <a href="#screenshots">Screenshots</a> ·
   <a href="#how-it-works">How it works</a> ·
@@ -21,9 +22,9 @@
 <p align="center"><sub><a href="LICENSE">MIT license</a> · Rust 1.85+ · Tauri 2 · SQLite · offline-first</sub></p>
 
 <p align="center">
-  <img src="assets/screens/dashboard.png" alt="SlipScan dashboard — design direction" width="820">
+  <img src="assets/screens/dashboard.png" alt="SlipScan dashboard — the shipped desktop app showing balances, budget burn, nudges, and recent activity" width="820">
   <br>
-  <sub><em>Design direction — the visual target the desktop app is built toward (<a href="docs/SCREENSHOTS.md">notes</a>). Shots of the shipped app replace these as screens are finished.</em></sub>
+  <sub><em>The shipped desktop app — Dashboard with net balance, monthly spend, budget remaining, locally-computed nudges, and recent activity. All screenshots show demo data (<a href="docs/SCREENSHOTS.md">full tour</a>).</em></sub>
 </p>
 
 <table align="center">
@@ -85,23 +86,40 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
 
 ## Screenshots
 
-These are **design-direction previews** — the target UI the desktop app is being built toward. A few show concepts that aren't part of the product (workspaces, members, sign-in); the full annotated set is in [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md).
+These are the **shipped desktop app**, running with demo data. The full annotated set — every screen, plus light mode — is in [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md).
 
 <table>
   <tr>
-    <td width="50%"><img src="assets/screens/receipts.png" alt="Receipts"><br><sub><em>Receipts — capture, extraction status, review queue</em></sub></td>
-    <td width="50%"><img src="assets/screens/receipt-detail.png" alt="Receipt detail"><br><sub><em>Slip detail — line items, categories, VAT</em></sub></td>
+    <td width="50%"><img src="assets/screens/receipts.png" alt="Receipts"><br><sub><em>Receipts — every captured slip with extraction status (pending / extracted / reviewed / failed) and confidence</em></sub></td>
+    <td width="50%"><img src="assets/screens/receipt-detail.png" alt="Receipt detail"><br><sub><em>Slip detail — extracted line items with quantities, VAT, and discounts, inline in the list</em></sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="assets/screens/ledger.png" alt="Ledger"><br><sub><em>Double-entry ledger — journals and chart of accounts</em></sub></td>
-    <td width="50%"><img src="assets/screens/reconcile.png" alt="Reconcile"><br><sub><em>Reconciliation — suggested matches, one-click confirm</em></sub></td>
+    <td width="50%"><img src="assets/screens/ledger.png" alt="Ledger"><br><sub><em>Double-entry ledger — chart of accounts with per-account VAT treatment; journal and trial balance tabs</em></sub></td>
+    <td width="50%"><img src="assets/screens/reconcile.png" alt="Reconcile"><br><sub><em>Reconciliation — scored matches between bank transactions and slips; confirm or reject each</em></sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/screens/reports.png" alt="Reports"><br><sub><em>Reports — income vs expense, spending by category, tax summary (VAT201 here), CSV exports — all computed locally</em></sub></td>
+    <td width="50%"><img src="assets/screens/budgets.png" alt="Budgets"><br><sub><em>Budgets — per-category monthly limits with burn bars and remaining amounts</em></sub></td>
   </tr>
 </table>
 
 ## Quick start
 
-> [!IMPORTANT]
-> There are no binary releases or Docker images yet — you build from source. Prerequisites (Rust stable, Node 20+, Tauri system deps) are listed in [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md).
+### Download
+
+Installers for every desktop platform are on the [latest release](https://github.com/vul-os/slipscan/releases/latest):
+
+| Platform | Grab |
+|---|---|
+| macOS | `.dmg` |
+| Windows | `.msi` or `-setup.exe` |
+| Linux | `.AppImage` or `.deb` |
+
+Standalone CLI binaries ship alongside the installers in the same release. Builds are unsigned for now — first launch: macOS right-click → Open; Windows SmartScreen → "More info" → "Run anyway".
+
+### Build from source
+
+Prerequisites (Rust stable, Node 20+, Tauri system deps) are listed in [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md).
 
 ```sh
 git clone https://github.com/vul-os/slipscan
@@ -183,7 +201,7 @@ Settings live in SQLite, secrets live in the OS keychain, and there is no requir
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | Nudges and anonymous peer benchmarks: local DP, cohorts, honest limits |
 | [SELFHOST.md](docs/SELFHOST.md) | Running the core headless on a NAS / home server |
 | [THREAT-MODEL.md](docs/THREAT-MODEL.md) | What protects your credentials, what an attacker gets, residual risks |
-| [SCREENSHOTS.md](docs/SCREENSHOTS.md) | Visual tour: design direction and current state |
+| [SCREENSHOTS.md](docs/SCREENSHOTS.md) | Annotated tour of every screen in the shipped app |
 | [FAQ.md](docs/FAQ.md) | Straight answers to the questions everyone asks |
 
 Also: [ROADMAP.md](ROADMAP.md) (phases, with honest partial-status notes; parity matrices are planned there but not yet written), [SECURITY.md](SECURITY.md) (vulnerability reporting), [CHANGELOG.md](CHANGELOG.md).
