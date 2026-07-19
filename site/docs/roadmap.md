@@ -58,18 +58,30 @@ Vault22/22seven-class intelligence, decentralized (design in [docs/ARCHITECTURE.
 
 SlipScan is a worldwide product; countries are region profiles, not code (contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 
-- [ ] Region profiles: CoA seeds, tax config (rates + report labels/box mappings), bank CSV presets, and merchant packs as selectable data — SA becomes the first profile, generic profile for everywhere else
-- [ ] Generic tax-period summary in core; "VAT201" only as the SA profile's label
-- [ ] Remove every hardcoded currency/jurisdiction default from core, CLI, server, desktop
-- [ ] OpenRate client: user-configured endpoint, decimal-only rate math, local rate cache with `as_of` + quality grade, rate recorded per conversion
+- [x] Region profiles: CoA seeds, tax config (rates + report labels/box mappings), bank CSV presets, and merchant packs as selectable data — SA is the first profile (`za`), generic profile for everywhere else
+- [x] Generic tax-period summary in core; "VAT201" only as the SA profile's label
+- [x] Remove every hardcoded currency/jurisdiction default from core, CLI, server, desktop *(verified by a residual-jurisdiction audit)*
+- [x] OpenRate client: user-configured endpoint, decimal-only rate math, local rate cache with `as_of` + quality grade, rate recorded per conversion
 - [ ] Converted report views ("all activity in book currency, rated at booking time") with provenance shown
 
-## Phase 4.8 — Fold ShapePay ([TODO-FOLD-SHAPEPAY.md](TODO-FOLD-SHAPEPAY.md))
+## Phase 4.75 — Movable data folder & bring-your-own backup
 
-- [ ] Payment expectations (reference code, amount tolerance, expiry, one-shot/recurring)
-- [ ] Matcher inside the ingestion pipeline
-- [ ] Webhook dispatcher: vault-held secrets, HMAC-signed payloads, SQLite retry queue (fires when the box regains network), audited deliveries
-- [ ] CLI `slipscan pay`, server routes, desktop expectations + delivery-status screen
+Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Data location & backup".
+
+- [x] One data folder (SQLite + documents), pointer file in the fixed app-data dir, resolved identically by desktop/CLI/server
+- [x] Settings + CLI flow to move it: copy → verify (checksums, exclusive-lock WAL quiesce, open/migrate + integrity check) → fsync-durable atomic pointer switch → remove old
+- [x] Safety rails: no nested targets, permission checks, existing-database detection (open-instead), read-only during move, cross-process move refusal
+- [x] In-app + docs backup guidance: sync the folder with your own cloud (iCloud/Dropbox/Syncthing/Nextcloud/NAS) — **users back up their own data**; note the keychain KEK never travels with the folder
+
+## Phase 4.8 — ShapePay: email-driven payment webhooks ([TODO-FOLD-SHAPEPAY.md](TODO-FOLD-SHAPEPAY.md))
+
+Simple by design: connect your email, watch for reference codes, fire signed webhooks — a payment system on the transactions already in your inbox.
+
+- [x] Original ShapePay history folded into this repo
+- [ ] Watch codes (reference + optional amount)
+- [ ] Webhook endpoints: vault-held secrets, HMAC-signed payloads (timestamp + nonce), SQLite retry queue with backoff, audited deliveries
+- [ ] Detection hook on inbound transactions (email-ingested first; every source inherits)
+- [ ] `slipscan pay` CLI, server routes, desktop Payments panel
 
 ## Phase 5 — Self-host server mode
 
