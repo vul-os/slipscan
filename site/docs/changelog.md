@@ -9,9 +9,18 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-The 0.1.0 rewrite, in progress: SlipScan rebuilt from the ground up as a fully local, self-hosted product — Rust core, Tauri 2 desktop app, one SQLite file per book, zero default network calls. Architecture contract in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- Movable data folder + bring-your-own-backup guidance (Phase 4.75, in progress).
+
+---
+
+## [0.1.0] — 2026-07-19
+
+The rewrite: SlipScan rebuilt from the ground up as a fully local, self-hosted product — Rust core, Tauri 2 desktop app, embedded SQLite, zero default network calls. Architecture contract in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). First packaged release: installers for macOS (.dmg), Windows (.msi / setup.exe), Linux (.AppImage / .deb) plus standalone CLI binaries on the [releases page](https://github.com/vul-os/slipscan/releases).
 
 ### Added
+- **Global by default — region profiles.** Nothing country-specific is code: chart-of-accounts seeds, tax rate tables, and tax-report labels ship as selectable region profiles (`za` for South Africa — where the tax summary is labeled "VAT201" — and a `generic` profile with a configurable standard rate that works in any country). Bank statement presets are region-namespaced (five SA banks + eight generic international CSV conventions + a custom column mapper), and builtin packs include a global `intl-starter` merchant taxonomy alongside the SA packs.
+- **Multi-currency FX via [OpenRate](https://github.com/vul-os/openrate)** — strictly opt-in (no endpoint configured means zero FX network calls): decimal-only rate parsing (floats never touch money), exact 256-bit integer conversion with banker's rounding, a local rate cache with `as_of`/quality-grade/staleness provenance, every conversion recording the exact rate it used; surfaced on CLI (`slipscan fx`), server routes, and desktop Settings.
+- **Release packaging** — Tauri bundles for all three platforms and a tag-triggered CI release workflow (version-match guard, draft releases, commented signing hooks); Playwright screenshotter (`npm run screenshot`) keeps README/site/docs screenshots real.
 - **Rust workspace foundation** — `slipscan-core` (domain model, SQLite storage with embedded migrations, service layer: books, accounts, transactions, categories, budgets, documents, double-entry ledger, VAT, reconciliation, reports, append-only audit log), `slipscan-cli` (`init`, `import`, `extract`, `mail-sync`, `recon`, `report`, `pack`, `vault`, `serve`, `list` — CSV export lives on `report … --csv`, there is no separate `export` subcommand).
 - **Tauri 2 desktop app** scaffold (`apps/desktop`) — Svelte 5 + TypeScript + Vite + Tailwind v4; IPC commands as thin adapters over core services, with hand-maintained TypeScript payload mirrors.
 - **Credential vault** — OS-keychain-rooted secret storage (`keyring`-backed `SecretStore`), envelope-encryption design with write-only semantics: secrets can be set, replaced, revoked, and used — never viewed. Design: [docs/THREAT-MODEL.md](docs/THREAT-MODEL.md).
