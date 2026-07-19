@@ -1,11 +1,14 @@
 //! slip/scan desktop shell.
 //!
 //! IPC commands are thin adapters: parse → call slipscan-core services →
-//! serialize (see `commands.rs`). The SQLite database lives in the OS app
-//! data directory; the frontend's typed client falls back to mock data only
-//! when a command is not wired at all (plain `vite dev` in a browser).
+//! serialize (see `commands.rs`). All durable data (SQLite database +
+//! documents store) lives in ONE movable folder resolved through core's
+//! shared `datadir` pointer — the same one the CLI and server follow; the
+//! frontend's typed client falls back to mock data only when a command is
+//! not wired at all (plain `vite dev` in a browser).
 
 mod commands;
+mod datadir;
 mod dto;
 mod state;
 
@@ -35,13 +38,19 @@ fn health() -> Health {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
-            let state = AppState::open(data_dir).map_err(std::io::Error::other)?;
+            // Core's shared resolver: pointer in the fixed per-OS config
+            // dir, default data in the per-OS app-data dir — the exact
+            // folders the CLI and server resolve too.
+            let resolver =
+                slipscan_core::datadir::DataDirResolver::system().map_err(std::io::Error::other)?;
+            let state = AppState::open(resolver).map_err(std::io::Error::other)?;
             app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             health,
+            commands::data_status,
+            commands::data_move,
             commands::book_list,
             commands::account_list,
             commands::transaction_list,

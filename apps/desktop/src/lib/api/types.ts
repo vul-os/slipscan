@@ -34,6 +34,47 @@ export interface Book {
   created_at: string;
 }
 
+// ---------------------------------------------------------------------------
+// data folder (movable) — contract: "Data location & backup". One folder
+// holds everything durable; backup is the user's own cloud syncing it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors core's `datadir::DataStatus` — the exact payload the server's
+ * `GET /api/v1/data_status` serves — plus the desktop-only cloud-sync hint.
+ */
+export interface DataStatus {
+  /** The one folder holding everything durable (database + documents). */
+  data_dir: string;
+  db_path: string;
+  documents_dir: string;
+  /** The pointer file in the fixed per-OS config dir naming `data_dir`. */
+  pointer_path: string;
+  /** True when a pointer file names the folder; false on the default. */
+  pointer_set: boolean;
+  is_default_location: boolean;
+  db_exists: boolean;
+  db_size_bytes: number;
+  document_count: number;
+  documents_size_bytes: number;
+  /**
+   * Cloud-sync provider name when the folder is trivially inside a known
+   * synced tree ("iCloud Drive", "Dropbox", …). Absent when not detectable —
+   * absence never means "not synced".
+   */
+  cloud_sync_hint?: string;
+}
+
+export interface DataMoveRequest {
+  /** Target folder (absolute; a leading `~` expands to the home dir). */
+  target: string;
+  /**
+   * Adopt a folder that already contains a SlipScan database instead of
+   * copying into it ("open instead" — the current folder is left as-is).
+   */
+  use_existing?: boolean;
+}
+
 /** A selectable region profile (chart of accounts, tax config, labels). */
 export interface RegionInfo {
   id: string;

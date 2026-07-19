@@ -80,11 +80,9 @@ fn coa_names(service: &CoreService, book_id: &str) -> Result<HashMap<String, Str
 #[tauri::command]
 pub async fn book_list(state: State<'_, AppState>) -> Result<Vec<BookDto>, String> {
     let service = state.service()?;
+    let db_path = slipscan_core::datadir::db_path(&state.data_dir()?);
     let books = service.book_list().map_err(err)?;
-    Ok(books
-        .iter()
-        .map(|b| dto::book_dto(b, &state.db_path))
-        .collect())
+    Ok(books.iter().map(|b| dto::book_dto(b, &db_path)).collect())
 }
 
 #[derive(serde::Deserialize)]
@@ -119,6 +117,77 @@ pub async fn account_list(
         .iter()
         .map(|a| dto::account_dto(a, sums.get(a.id.as_str()).copied().unwrap_or(0)))
         .collect())
+}
+
+// ---------------------------------------------------------------------------
+// data folder — movable, per the "Data location & backup" contract. Backup is
+// the user's own cloud pointed at this folder; SlipScan ships no backup
+// service.
+// ---------------------------------------------------------------------------
+
+fn data_status_dto(state: &AppState) -> Result<DataStatusDto, String> {
+    // Core's shared resolver computes the status (the CLI and server read
+    // the same one); the desktop only adds the cloud-sync display hint.
+    let status = slipscan_core::datadir::status(&state.resolver).map_err(err)?;
+    let hint = crate::datadir::cloud_sync_hint(std::path::Path::new(&status.data_dir));
+    Ok(DataStatusDto {
+        cloud_sync_hint: hint.map(str::to_string),
+        status,
+    })
+}
+
+#[tauri::command]
+pub async fn data_status(state: State<'_, AppState>) -> Result<DataStatusDto, String> {
+    data_status_dto(&state)
+}
+
+#[derive(serde::Deserialize)]
+pub struct DataMoveRequest {
+    /// Target folder as a typed path (no dialog plugin is bundled — adding
+    /// tauri-plugin-dialog would enable a native picker later); a leading
+    /// `~` expands to the home dir.
+    pub target: String,
+    /// Adopt a folder that already contains a SlipScan database instead of
+    /// copying into it ("open instead" — the current folder is left as-is).
+    #[serde(default)]
+    pub use_existing: bool,
+}
+
+/// Move (or with `use_existing`, switch) the data folder. One await for the
+/// whole copy→verify→check→switch→cleanup sequence: the promise resolving IS
+/// the completion signal, and while it is pending the app is read-only —
+/// every other command blocks on the state locks held by the move.
+#[tauri::command]
+pub async fn data_move(
+    state: State<'_, AppState>,
+    query: DataMoveRequest,
+) -> Result<DataStatusDto, String> {
+    let target = expand_home(query.target.trim());
+    if target.as_os_str().is_empty() {
+        return Err("enter a destination folder".to_string());
+    }
+    if !target.is_absolute() {
+        return Err(format!(
+            "enter an absolute path (got \"{}\")",
+            target.display()
+        ));
+    }
+    // The copy is blocking filesystem work; hop off the async workers like
+    // fx_fetch_rate does.
+    tokio::task::block_in_place(|| state.move_data_dir(&target, query.use_existing))?;
+    data_status_dto(&state)
+}
+
+/// `~` / `~/…` → the user's home directory. Anything else passes through.
+fn expand_home(raw: &str) -> std::path::PathBuf {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    match (raw.strip_prefix("~"), home) {
+        (Some(""), Some(home)) => std::path::PathBuf::from(home),
+        (Some(rest), Some(home)) if rest.starts_with('/') || rest.starts_with('\\') => {
+            std::path::Path::new(&home).join(&rest[1..])
+        }
+        _ => std::path::PathBuf::from(raw),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -345,7 +414,8 @@ pub async fn document_import(
             }
         })
         .collect();
-    let dest = state.docs_dir.join(format!("{}-{safe_name}", new_id()));
+    let dest = slipscan_core::datadir::documents_dir(&state.data_dir()?)
+        .join(format!("{}-{safe_name}", new_id()));
     std::fs::write(&dest, &bytes).map_err(|e| format!("cannot store document: {e}"))?;
 
     let lower = query.file_name.to_lowercase();

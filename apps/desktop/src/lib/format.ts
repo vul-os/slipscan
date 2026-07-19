@@ -174,6 +174,20 @@ export function shiftMonth(month: string, n: number): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
+/** `2184192` → `2.1 MB` (SI units; whole numbers below 10 keep one decimal). */
+export function fmtBytes(bytes: number): string {
+  if (bytes < 1000) return `${bytes} B`;
+  const units = ["kB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = "B";
+  for (const next of units) {
+    if (value < 1000) break;
+    value /= 1000;
+    unit = next;
+  }
+  return `${value >= 10 ? Math.round(value) : Math.round(value * 10) / 10} ${unit}`;
+}
+
 export function greeting(now = new Date()): string {
   const h = now.getHours();
   if (h < 5) return "Working late";
