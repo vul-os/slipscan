@@ -10,6 +10,10 @@ description = "SlipScan domain model, SQLite storage, migrations, and core servi
 [dependencies]
 async-trait = { workspace = true }
 chacha20poly1305 = { workspace = true }
+# Per-OS well-known directories for the movable data folder: the fixed
+# app-config dir (pointer file) and the default app-data dir. Same crate the
+# Tauri shell resolves its paths through, so all surfaces agree.
+dirs = { workspace = true }
 keyring = { workspace = true }
 rusqlite = { workspace = true }
 rust_decimal = { workspace = true }
@@ -24,6 +28,8 @@ uuid = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+# Data-folder move tests need real directories on disk.
+tempfile = "3"
 # Executor for the async FX transport tests (mock transports only — the crate
 # itself performs no I/O).
 tokio = { workspace = true }

@@ -14,6 +14,7 @@ mod extractor;
 
 use anyhow::{anyhow, bail, Context};
 use clap::{Parser, Subcommand, ValueEnum};
+use slipscan_core::datadir::{self, DataDirResolver, MoveStep};
 use slipscan_core::domain::{
     Account, Book, BookKind, DocumentSource, NewBook, TransactionFilter, TransactionSource,
 };
@@ -47,9 +48,17 @@ const TOKEN_ENV: &str = "SLIPSCAN_API_TOKEN";
     about = "Self-hosted personal finance + accounting"
 )]
 struct Cli {
-    /// Path to the SlipScan SQLite database file.
-    #[arg(long, global = true, default_value = "slipscan.sqlite")]
-    db: PathBuf,
+    /// Path to a SlipScan SQLite database file. Overrides the managed data
+    /// folder (see `slipscan data status`), which is the default since it is
+    /// what the desktop app and server resolve too.
+    #[arg(long, global = true)]
+    db: Option<PathBuf>,
+
+    /// Override the fixed app-config directory holding the data-folder
+    /// pointer file (tests/containers; the default data folder becomes
+    /// `<dir>/data`). Normal use never needs this.
+    #[arg(long, global = true, hide = true)]
+    config_dir: Option<PathBuf>,
 
     /// Machine-readable JSON output instead of human text.
     #[arg(long, global = true)]
@@ -154,7 +163,8 @@ enum Command {
     },
     /// Poll the configured IMAP mailbox and import receipt documents.
     MailSync {
-        /// Where to store fetched attachments (default: `<db dir>/slipscan-documents`).
+        /// Where to store fetched attachments (default: the data folder's
+        /// `documents/` store, or `<db dir>/slipscan-documents` with --db).
         #[arg(long)]
         storage_dir: Option<PathBuf>,
     },
@@ -199,6 +209,12 @@ enum Command {
         #[command(subcommand)]
         action: VaultAction,
     },
+    /// The movable data folder: where the database and documents live, and
+    /// how to move it (your folder, your cloud, your responsibility).
+    Data {
+        #[command(subcommand)]
+        action: DataAction,
+    },
     /// Run the headless server (binds 127.0.0.1 unless --lan).
     Serve {
         /// Listen address, e.g. 127.0.0.1:7151.
@@ -218,6 +234,22 @@ enum Command {
     List {
         #[arg(value_enum)]
         what: ListTarget,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DataAction {
+    /// Show the current data folder, its sizes, and the pointer-file path.
+    Status,
+    /// Move the data folder (database + documents) to a new location:
+    /// copy, per-file checksum verify, open/migrate check on the copy,
+    /// atomic pointer swap — the old copy is only removed after the swap
+    /// is verified, so aborting at any point is safe.
+    Move {
+        /// Destination folder (created if missing). Refused when it is
+        /// inside the current folder, not writable, or already contains a
+        /// SlipScan database (open that one instead).
+        target: PathBuf,
     },
 }
 
@@ -330,7 +362,56 @@ fn main() -> anyhow::Result<()> {
     run(Cli::parse())
 }
 
+/// Where this invocation's data lives, resolved once per run.
+struct DataEnv {
+    /// The shared pointer resolver (`slipscan-core::datadir`) — the same one
+    /// the server and desktop use, so every surface agrees.
+    resolver: DataDirResolver,
+    /// Database the commands operate on. An explicit `--db` wins; otherwise
+    /// the managed data folder's `slipscan.db`.
+    db: PathBuf,
+    /// Documents store belonging to `db`: the managed folder's `documents/`,
+    /// or `<db dir>/slipscan-documents` beside an explicit `--db`.
+    docs_dir: PathBuf,
+    /// Whether `db` came from the resolver (no `--db` override).
+    managed: bool,
+}
+
+fn data_env(cli: &Cli) -> anyhow::Result<DataEnv> {
+    let resolver = match &cli.config_dir {
+        Some(dir) => DataDirResolver::new(dir.clone(), dir.join("data")),
+        None => DataDirResolver::system().context("locating the platform config directory")?,
+    };
+    Ok(match &cli.db {
+        Some(db) => DataEnv {
+            resolver,
+            docs_dir: default_storage_dir(db),
+            db: db.clone(),
+            managed: false,
+        },
+        None => {
+            let dir = resolver.resolve()?;
+            DataEnv {
+                db: datadir::db_path(&dir),
+                docs_dir: datadir::documents_dir(&dir),
+                resolver,
+                managed: true,
+            }
+        }
+    })
+}
+
+/// Create the database's parent directory (the data folder on first run).
+fn ensure_parent_dir(db: &Path) -> anyhow::Result<()> {
+    if let Some(parent) = db.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating data folder {}", parent.display()))?;
+    }
+    Ok(())
+}
+
 fn open_service(db: &Path) -> anyhow::Result<CoreService> {
+    ensure_parent_dir(db)?;
     CoreService::open(db).with_context(|| format!("opening database at {}", db.display()))
 }
 
@@ -381,6 +462,17 @@ fn fmt_minor(minor: i64) -> String {
     let sign = if minor < 0 { "-" } else { "" };
     let abs = minor.unsigned_abs();
     format!("{sign}{}.{:02}", abs / 100, abs % 100)
+}
+
+/// Byte counts in human units for `data status` / `data move` output.
+fn fmt_bytes(bytes: u64) -> String {
+    const KIB: u64 = 1024;
+    match bytes {
+        b if b < KIB => format!("{b} B"),
+        b if b < KIB * KIB => format!("{:.1} KiB", b as f64 / KIB as f64),
+        b if b < KIB * KIB * KIB => format!("{:.1} MiB", b as f64 / (KIB * KIB) as f64),
+        b => format!("{:.1} GiB", b as f64 / (KIB * KIB * KIB) as f64),
+    }
 }
 
 /// Rate staleness in human units — a stale weekend rate must say so.
@@ -512,6 +604,9 @@ fn default_storage_dir(db: &Path) -> PathBuf {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
+    // One resolution per run: pointer file (or `--db` override) decides where
+    // the database and documents live for every command below.
+    let env = data_env(&cli)?;
     match cli.command {
         Command::Init {
             ref name,
@@ -537,7 +632,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     }
                 });
             }
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             if seed_coa && name.is_none() {
                 bail!("--seed-coa needs --name (a book to seed)");
             }
@@ -562,7 +657,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 None => None,
             };
             let out = serde_json::json!({
-                "db": cli.db.display().to_string(),
+                "db": env.db.display().to_string(),
                 "book": book,
                 "coa_seeded": seed_coa,
             });
@@ -576,7 +671,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         println!("Seeded the region profile's chart of accounts.");
                     }
                 }
-                println!("Database ready at {}", cli.db.display());
+                println!("Database ready at {}", env.db.display());
             })
         }
 
@@ -598,7 +693,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     }
                 });
             }
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             let book = resolve_book(&svc, cli.book.as_deref())?;
             // With --preset, each CSV is parsed into transactions via the
             // preset's column mapping (in addition to being stored as a
@@ -683,7 +778,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Command::Account { ref action } => {
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             let book = resolve_book(&svc, cli.book.as_deref())?;
             match action {
                 AccountAction::Add {
@@ -715,7 +810,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Command::Tax { ref action } => {
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             let book = resolve_book(&svc, cli.book.as_deref())?;
             match action {
                 TaxAction::Rates => {
@@ -743,7 +838,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Command::Extract { limit } => {
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             let book = resolve_book(&svc, cli.book.as_deref())?;
             let Some(provider_name) = svc.settings_get(EXTRACT_PROVIDER_SETTING)? else {
                 bail!(
@@ -752,7 +847,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                      SlipScan never talks to anything you did not configure)"
                 );
             };
-            let provider = build_provider(&cli.db, &provider_name)?;
+            let provider = build_provider(&env.db, &provider_name)?;
             let outcome = runtime()?.block_on(extractor::run_extraction(
                 &svc,
                 provider.as_ref(),
@@ -773,7 +868,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Command::MailSync { ref storage_dir } => {
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             let book = resolve_book(&svc, cli.book.as_deref())?;
             let raw = svc.settings_get(MAIL_CONFIG_SETTING)?.ok_or_else(|| {
                 anyhow!(
@@ -784,7 +879,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             })?;
             let config: ImapConfig =
                 serde_json::from_str(&raw).context("parsing the stored IMAP config")?;
-            let vault = VaultHandle::open(&cli.db)?;
+            let vault = VaultHandle::open(&env.db)?;
             let password = vault
                 .use_with(&config.password_secret_ref, |secret| {
                     Ok(SecretString::new(secret.expose_secret()))
@@ -796,9 +891,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     )
                 })?;
             drop(vault);
-            let dir = storage_dir
-                .clone()
-                .unwrap_or_else(|| default_storage_dir(&cli.db));
+            // Default is the unified documents store: the managed folder's
+            // `documents/`, or `<db dir>/slipscan-documents` with `--db`.
+            let dir = storage_dir.clone().unwrap_or_else(|| env.docs_dir.clone());
 
             let rt = runtime()?;
             let (fetched, imported, duplicates) = rt.block_on(async {
@@ -833,7 +928,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Command::Recon { ref action } => {
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             match action {
                 ReconAction::Suggest => {
                     let book = resolve_book(&svc, cli.book.as_deref())?;
@@ -863,7 +958,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Command::Report { kind, csv } => {
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             let book = resolve_book(&svc, cli.book.as_deref())?;
             if csv && !matches!(kind, ReportKind::Tb) {
                 bail!("--csv is currently only supported for the trial balance (tb)");
@@ -978,7 +1073,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Command::Fx { ref action } => {
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             match action {
                 FxAction::Status => {
                     let status = svc.fx_status()?;
@@ -1079,7 +1174,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Command::Pack { ref action } => {
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             match action {
                 PackAction::Install {
                     manifest,
@@ -1156,8 +1251,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         Command::Vault { ref action } => {
-            let vault = VaultHandle::open(&cli.db)
-                .with_context(|| format!("opening vault in {}", cli.db.display()))?;
+            ensure_parent_dir(&env.db)?;
+            let vault = VaultHandle::open(&env.db)
+                .with_context(|| format!("opening vault in {}", env.db.display()))?;
             match action {
                 VaultAction::Set { name } => {
                     let secret = read_secret(&format!("Secret for {name} (not echoed): "))?;
@@ -1213,7 +1309,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             no_auth,
             reset_token,
         } => {
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             let addr = listen.unwrap_or(slipscan_server::DEFAULT_ADDR);
             // Mantra #3: non-loopback binds are an explicit user opt-in.
             if !addr.ip().is_loopback() && !lan {
@@ -1244,24 +1340,124 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 eprintln!("Warning: serving without authentication on {addr} (loopback only).");
             }
             eprintln!("Serving on http://{addr}");
-            let vault = VaultHandle::open(&cli.db)?;
+            let vault = VaultHandle::open(&env.db)?;
             // FX transport for the explicit fx_fetch_rate route: built per
             // fetch, only ever pointed at the user-configured OpenRate URL.
             let fx_transport: slipscan_server::FxTransportFactory = std::sync::Arc::new(|| {
                 Ok(Box::new(slipscan_ingest::fx::ReqwestFxTransport::new()?)
                     as Box<dyn slipscan_core::fx::FxTransport>)
             });
+            // The data_status route only makes sense when the served
+            // database *is* the managed folder's; with an explicit --db the
+            // route answers 503 instead of describing the wrong folder.
+            let data_dir = env.managed.then(|| env.resolver.clone());
             runtime()?.block_on(slipscan_server::serve(
                 svc,
                 Some(vault),
                 Some(fx_transport),
+                data_dir,
                 ServerConfig { addr, require_auth },
             ))?;
             Ok(())
         }
 
+        Command::Data { ref action } => match action {
+            DataAction::Status => {
+                let status = datadir::status(&env.resolver)?;
+                emit(cli.json, &status, || {
+                    let location = if status.pointer_set {
+                        "set by pointer"
+                    } else {
+                        "platform default"
+                    };
+                    println!("Data folder: {} ({location})", status.data_dir);
+                    println!(
+                        "Database:    {} ({})",
+                        status.db_path,
+                        if status.db_exists {
+                            fmt_bytes(status.db_size_bytes)
+                        } else {
+                            "not created yet".to_string()
+                        }
+                    );
+                    println!(
+                        "Documents:   {} ({} file(s), {})",
+                        status.documents_dir,
+                        status.document_count,
+                        fmt_bytes(status.documents_size_bytes)
+                    );
+                    println!("Pointer:     {}", status.pointer_path);
+                    if !env.managed {
+                        println!(
+                            "Note: --db {} overrides this folder for the other commands \
+                             of this invocation.",
+                            env.db.display()
+                        );
+                    }
+                    // The contract's in-app guidance, verbatim in spirit:
+                    // backup is the user's own cloud on this folder.
+                    println!(
+                        "Backup is yours: keep this folder inside a folder your own cloud \
+                         syncs (iCloud Drive, Dropbox, Syncthing, Nextcloud, a NAS) — \
+                         SlipScan ships no backup service. Credentials stay in the OS \
+                         keychain and are re-entered after a restore, by design."
+                    );
+                })
+            }
+            DataAction::Move { target } => {
+                if cli.db.is_some() {
+                    bail!(
+                        "`data move` moves the managed data folder (the one the pointer \
+                         file names); --db does not apply here"
+                    );
+                }
+                let json = cli.json;
+                let mut last_step: Option<MoveStep> = None;
+                let report = datadir::move_data_dir(&env.resolver, target, &mut |p| {
+                    if json {
+                        return;
+                    }
+                    if last_step != Some(p.step) {
+                        last_step = Some(p.step);
+                        let label = match p.step {
+                            MoveStep::Validate => "Validating target…",
+                            MoveStep::CopyDatabase => "Copying database…",
+                            MoveStep::CopyDocuments => "Copying documents…",
+                            MoveStep::VerifyCopy => {
+                                "Verifying the copy (open, migrate, integrity)…"
+                            }
+                            MoveStep::SwapPointer => "Switching the pointer…",
+                            MoveStep::RemoveOld => "Removing the old copy…",
+                        };
+                        eprintln!("{label}");
+                    }
+                    if p.step == MoveStep::CopyDocuments && p.total > 0 && p.done == p.total {
+                        eprintln!("  {} file(s) copied, each checksum-verified", p.total);
+                    }
+                })?;
+                emit(cli.json, &report, || {
+                    println!(
+                        "Moved the data folder: {} -> {} ({} file(s), {}, {} stored document \
+                         path(s) updated).",
+                        report.from,
+                        report.to,
+                        report.files_copied,
+                        fmt_bytes(report.bytes_copied),
+                        report.documents_rewritten
+                    );
+                    match &report.old_remove_error {
+                        None => println!("Old copy removed."),
+                        Some(err) => println!(
+                            "The new folder is active, but removing the old copy failed \
+                             ({err}); delete it manually."
+                        ),
+                    }
+                })
+            }
+        },
+
         Command::List { what } => {
-            let svc = open_service(&cli.db)?;
+            let svc = open_service(&env.db)?;
             match what {
                 ListTarget::Books => {
                     let books = svc.book_list()?;
@@ -1348,7 +1544,7 @@ mod tests {
             "--seed-coa",
         ])
         .unwrap();
-        assert_eq!(cli.db, PathBuf::from("/tmp/x.sqlite"));
+        assert_eq!(cli.db, Some(PathBuf::from("/tmp/x.sqlite")));
         match cli.command {
             Command::Init { name, seed_coa, .. } => {
                 assert_eq!(name.as_deref(), Some("Personal"));
@@ -1862,6 +2058,92 @@ mod tests {
         assert!(resolve_book(&svc, None).is_err()); // ambiguous now
         assert!(resolve_book(&svc, Some("nope")).is_err());
         assert_eq!(resolve_book(&svc, Some("Biz")).unwrap().name, "Biz");
+    }
+
+    #[test]
+    fn parses_data_actions() {
+        let cli = Cli::try_parse_from(["slipscan", "data", "status"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Data {
+                action: DataAction::Status
+            }
+        ));
+        let cli = Cli::try_parse_from(["slipscan", "data", "move", "/mnt/nas/slipscan"]).unwrap();
+        match cli.command {
+            Command::Data {
+                action: DataAction::Move { target },
+            } => assert_eq!(target, PathBuf::from("/mnt/nas/slipscan")),
+            other => panic!("unexpected {other:?}"),
+        }
+        // A target is mandatory.
+        assert!(Cli::try_parse_from(["slipscan", "data", "move"]).is_err());
+    }
+
+    #[test]
+    fn data_status_and_move_manage_the_pointer_folder_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config");
+        let config_arg = config.to_str().unwrap().to_string();
+        let run_cli = |args: &[&str]| {
+            // --config-dir keeps the pointer (and the default data folder,
+            // <config>/data) inside the tempdir — never the real user dirs.
+            let mut argv = vec!["slipscan", "--config-dir", &config_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+
+        // Status works before anything exists.
+        run_cli(&["data", "status"]).unwrap();
+
+        // No --db: init lands in the managed data folder.
+        run_cli(&["init", "--name", "Roaming"]).unwrap();
+        let default_db = config.join("data").join("slipscan.db");
+        assert!(default_db.is_file(), "db created in the managed folder");
+
+        // Move it; the pointer swaps and the database follows.
+        let target = dir.path().join("synced-cloud").join("slipscan");
+        run_cli(&["data", "move", target.to_str().unwrap()]).unwrap();
+        assert!(target.join("slipscan.db").is_file());
+        assert!(target.join("documents").is_dir());
+        assert!(!default_db.exists(), "old copy removed after the swap");
+
+        // Every later invocation resolves the moved folder via the pointer.
+        run_cli(&["list", "books"]).unwrap();
+        run_cli(&["data", "status"]).unwrap();
+
+        // Moving onto a folder that already has a SlipScan database is the
+        // distinct offer-open refusal.
+        let occupied = dir.path().join("occupied");
+        std::fs::create_dir_all(&occupied).unwrap();
+        std::fs::write(occupied.join("slipscan.db"), b"foreign books").unwrap();
+        let err = run_cli(&["data", "move", occupied.to_str().unwrap()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("open"), "{err}");
+
+        // `data move` refuses to mix with an explicit --db override.
+        let err = run(Cli::try_parse_from([
+            "slipscan",
+            "--config-dir",
+            &config_arg,
+            "--db",
+            "/tmp/elsewhere.sqlite",
+            "data",
+            "move",
+            "/tmp/nope",
+        ])
+        .unwrap())
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("--db"), "{err}");
+    }
+
+    #[test]
+    fn fmt_bytes_humanizes() {
+        assert_eq!(fmt_bytes(512), "512 B");
+        assert_eq!(fmt_bytes(2048), "2.0 KiB");
+        assert_eq!(fmt_bytes(5 * 1024 * 1024), "5.0 MiB");
     }
 
     #[test]

@@ -14,7 +14,7 @@ use serde_json::json;
 
 use slipscan_core::domain::*;
 use slipscan_core::region::RegionInfo;
-use slipscan_core::{fx, CoreError};
+use slipscan_core::{datadir, fx, CoreError};
 
 use slipscan_core::secrets::VaultSecretMeta;
 
@@ -76,6 +76,16 @@ impl ApiError {
         }
     }
 
+    fn data_dir_unavailable() -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "data_dir_unavailable",
+            message: "this server was started on an explicit database path, not the managed \
+                      data folder; run `slipscan data status` on the host instead"
+                .into(),
+        }
+    }
+
     fn fx_unavailable() -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
@@ -108,9 +118,18 @@ impl From<CoreError> for ApiError {
             CoreError::FxTransport(_) | CoreError::FxParse(_) => {
                 (StatusCode::BAD_GATEWAY, "fx_upstream")
             }
-            CoreError::Sqlite(_) | CoreError::Migration { .. } | CoreError::Secret(_) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal")
-            }
+            // Data folder: an occupied target is a conflict (the client may
+            // offer "open that instead"); refused/invalid moves are
+            // user-precondition failures. Neither is reachable over HTTP
+            // today (the move itself is local-only), but the mapping keeps
+            // the error surface total.
+            CoreError::DataMoveTargetHasDatabase { .. } => (StatusCode::CONFLICT, "conflict"),
+            CoreError::DataMove(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
+            CoreError::Sqlite(_)
+            | CoreError::Migration { .. }
+            | CoreError::Secret(_)
+            | CoreError::DataDir(_)
+            | CoreError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
         };
         Self {
             status,
@@ -737,6 +756,23 @@ async fn audit_list(
     ))
 }
 
+/// `GET`: where the data lives — folder, pointer path, sizes. Status only.
+///
+/// The data-folder **move** is deliberately not exposed over HTTP and stays
+/// local-only (CLI `slipscan data move`, desktop Settings), because a move
+/// is a physical operation on the server's own filesystem:
+/// * the target is a local path — remote clients cannot meaningfully name
+///   one, and accepting arbitrary filesystem paths from any bearer-token
+///   holder would let a leaked token redirect (and then delete) the data;
+/// * mid-move the process must be quiesced read-only, which an HTTP client
+///   cannot be trusted to coordinate;
+/// * moving deletes the old copy — an owner-present decision, per the
+///   contract's "your folder, your responsibility".
+async fn data_status(State(s): State<AppState>) -> ApiResult<datadir::DataStatus> {
+    let resolver = s.data_dir().ok_or_else(ApiError::data_dir_unavailable)?;
+    Ok(Json(datadir::status(resolver)?))
+}
+
 // ---------------------------------------------------------------------------
 // Auth middleware
 // ---------------------------------------------------------------------------
@@ -819,6 +855,9 @@ pub fn app(state: AppState) -> Router {
         .route("/pack_install", post(pack_install))
         .route("/pack_list", post(pack_list))
         .route("/audit_list", post(audit_list))
+        // Read-only data-folder status; the move op is local-only (see the
+        // handler's rationale), so this is a GET and no move route exists.
+        .route("/data_status", get(data_status))
         .route("/vault_list", post(vault_list))
         .route("/vault_revoke", post(vault_revoke))
         .layer(middleware::from_fn_with_state(
@@ -981,6 +1020,54 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn data_status_is_get_only_and_needs_the_managed_folder() {
+        // Without a resolver attached (explicit --db): 503, not a made-up
+        // answer about a folder this server is not serving.
+        let (status, body) = call(
+            &open_app(),
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/data_status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "data_dir_unavailable");
+
+        // With the managed folder attached: read-only status.
+        let tmp = tempfile::tempdir().unwrap();
+        let resolver = slipscan_core::datadir::DataDirResolver::new(
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+        );
+        let app = app(AppState::new(svc(), None).with_data_dir(resolver));
+        let (status, body) = call(
+            &app,
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/data_status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["data_dir"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("{}data", std::path::MAIN_SEPARATOR)));
+        assert_eq!(body["pointer_set"], false);
+        assert_eq!(body["db_exists"], false);
+
+        // No move route exists over HTTP — moving is local-only by design.
+        let (status, _) = call(&app, post_req("/api/v1/data_move", json!({}), None)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // And the status route is not accidentally a POST mutation surface.
+        let (status, _) = call(&app, post_req("/api/v1/data_status", json!({}), None)).await;
+        assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]

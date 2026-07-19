@@ -94,6 +94,10 @@ struct ReconCandidate {
 pub struct CoreService {
     db: Db,
     secrets: Box<dyn SecretStore>,
+    /// Caller-visible read-only flag (ARCHITECTURE.md "Safety rails").
+    /// Reporting flag only — enforcement is SQLite's own `PRAGMA query_only`
+    /// on the connection.
+    read_only: std::cell::Cell<bool>,
 }
 
 impl std::fmt::Debug for CoreService {
@@ -104,7 +108,31 @@ impl std::fmt::Debug for CoreService {
 
 impl CoreService {
     pub fn new(db: Db, secrets: Box<dyn SecretStore>) -> Self {
-        Self { db, secrets }
+        Self {
+            db,
+            secrets,
+            read_only: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Flag the service read-only (or lift the flag). Enforcement is
+    /// `PRAGMA query_only`, so **every** mutation on this connection fails
+    /// at the SQLite layer until the flag is lifted — no per-operation checks
+    /// to forget. Reads keep working throughout. (Note: a data-folder move
+    /// needs open handles **closed**, not merely read-only —
+    /// `crate::datadir::move_data_dir` holds SQLite's exclusive lock on the
+    /// source database and refuses while any connection is open.)
+    pub fn set_read_only(&self, read_only: bool) -> CoreResult<()> {
+        self.db
+            .conn()
+            .pragma_update(None, "query_only", read_only)?;
+        self.read_only.set(read_only);
+        Ok(())
+    }
+
+    /// Whether the service is currently flagged read-only (moving data).
+    pub fn is_read_only(&self) -> bool {
+        self.read_only.get()
     }
 
     /// Open a database file with the real OS-keychain secret store.

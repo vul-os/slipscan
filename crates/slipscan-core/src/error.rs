@@ -56,6 +56,21 @@ pub enum CoreError {
 
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+
+    #[error("data folder error: {0}")]
+    DataDir(String),
+
+    #[error("cannot move the data folder: {0}")]
+    DataMove(String),
+
+    #[error(
+        "the target folder already contains a SlipScan database ({path}) — \
+         open that database instead, or pick an empty folder"
+    )]
+    DataMoveTargetHasDatabase { path: String },
+
+    #[error("i/o error: {0}")]
+    Io(#[from] std::io::Error),
 }
 
 pub type CoreResult<T> = Result<T, CoreError>;
