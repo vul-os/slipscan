@@ -13,7 +13,7 @@ pub fn vat_from_inclusive(gross_minor: i64, rate_bps: i64) -> i64 {
     }
     div_round_half_away(
         i128::from(gross_minor) * i128::from(rate_bps),
-        i128::from(10_000 + rate_bps),
+        i128::from(10_000) + i128::from(rate_bps),
     )
 }
 
@@ -95,5 +95,20 @@ mod tests {
         let (net, vat) = split_inclusive(i64::MAX, 1500);
         assert_eq!(net + vat, i64::MAX);
         assert!(vat > 0);
+    }
+
+    #[test]
+    fn extreme_rate_bps_does_not_overflow_the_divisor() {
+        // The `10_000 + rate_bps` divisor must be formed in i128: a degenerate
+        // `rate_bps` near i64::MAX (reachable from an untrusted slip-v2 payload)
+        // would overflow i64 if the addition happened before widening. Must not
+        // panic (debug) or wrap to a negative divisor (release), and the split
+        // must still reconcile: net + vat == gross.
+        let (net, vat) = split_inclusive(100, i64::MAX);
+        assert_eq!(net + vat, 100);
+        assert!(vat > 0);
+        // A negative gross (credit note) at the same extreme rate is exact too.
+        let (net_neg, vat_neg) = split_inclusive(-100, i64::MAX);
+        assert_eq!(net_neg + vat_neg, -100);
     }
 }
