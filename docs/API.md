@@ -3,8 +3,8 @@
 SlipScan has **one service surface, two transports**. Every operation is a function on the core service layer (`crates/slipscan-core`); the Tauri desktop app calls it over IPC and `slipscan-server` exposes the same operations over HTTP. Full same-name/same-payload parity is the contract in [ARCHITECTURE.md](ARCHITECTURE.md#ipc--api-surface) — **and it is not met yet**:
 
 - The **HTTP server is the canonical, near-complete surface** — the operation tables below describe it.
-- The **desktop IPC currently exposes a UI-shaped subset** (32 commands) with display-oriented DTOs. Missing from IPC today: `book_create`/`book_get`, all account CRUD, `transaction_create`/`transaction_get`, `category_create`, `budget_status`, the document status-machine ops (`document_transition`, `document_record_extraction`, `document_current_extraction`), `journal_get`, `coa_seed`, `report_profit_loss`, `report_balance_sheet`, `audit_list`, and `pack_install`/`pack_list`.
-- Three names currently diverge where both surfaces exist: desktop `report_vat_summary` vs server `report_tax` (the server keeps `report_vat` as a deprecated route alias), desktop `ledger_account_list` vs server `coa_list`, and desktop `category_list` vs server `category_tree`. `settings_get`/`settings_set` share names across both, but the payloads diverge: the desktop carries a whole-settings UI blob, the server generic key/value pairs. The desktop additionally has `journal_list`, `budget_list`, `report_income_expense`, and `vault_set`/`vault_replace`, none of which are HTTP routes (vault writes are deliberately local-only — see below).
+- The **desktop IPC currently exposes a UI-shaped subset** (47 commands) with display-oriented DTOs. Missing from IPC today: `book_create`/`book_get`, all account CRUD, `transaction_create`/`transaction_get`, `category_create`, `budget_status`, the document status-machine ops (`document_transition`, `document_record_extraction`, `document_current_extraction`), `journal_get`, `coa_seed`, `report_profit_loss`, `report_balance_sheet`, `audit_list`, and `pack_install`/`pack_list`.
+- Three names currently diverge where both surfaces exist: desktop `report_vat_summary` vs server `report_tax` (the server keeps `report_vat` as a deprecated route alias), desktop `ledger_account_list` vs server `coa_list`, and desktop `category_list` vs server `category_tree`. `settings_get`/`settings_set` share names across both, but the payloads diverge: the desktop carries a whole-settings UI blob, the server generic key/value pairs. The desktop additionally has `journal_list`, `budget_list`, `report_income_expense`, `vault_set`/`vault_replace`, and `pay_deliver_due`, none of which are HTTP routes (vault writes are deliberately local-only — see below; the server flushes webhook deliveries with its own loop instead of a route — see [Payments](#payments-shapepay)).
 
 Closing this gap (one name, one payload, both transports) is tracked in [ROADMAP.md](../ROADMAP.md).
 
@@ -105,6 +105,18 @@ The opt-in OpenRate FX operations ([CONFIGURATION.md](CONFIGURATION.md#exchange-
 | `fx_convert` | Convert `amount_minor` between currencies **from the cache only** (a missing pair is an error, never a silent fetch); records the exact decimal rate used in the response and the audit log. With the optional `rate` field (a decimal string) the conversion instead **replays at that pinned rate** (core `fx_convert_at`, `slipscan fx convert --rate`) — how a booked conversion reproduces offline without ever being re-rated by cache refreshes |
 
 Rates are decimal strings end-to-end — never floats. The single FX setting (`fx.openrate_base_url`) can also be written through the generic `settings_set` route.
+
+### Payments (ShapePay)
+
+Watch reference codes on inbound transactions and fire signed webhooks to endpoints you registered — the full model, delivery semantics, and a receiver verification example are in [PAYMENTS.md](PAYMENTS.md). All `pay_*` operations exist under the same names on both transports, with the exceptions called out below:
+
+| Operation | Purpose |
+|---|---|
+| `pay_watch_add` / `pay_watch_list` / `pay_watch_remove` / `pay_watch_set_enabled` | Watch codes: a flat list of references to detect (whole-token, case-insensitive, inbound only), each optionally narrowed to one exact `expected_amount_minor` + `expected_currency`. Enabled/disabled is the only state |
+| `pay_endpoint_add` / `pay_endpoint_rotate_secret` | **Refused over HTTP** — the response carries the endpoint's signing secret exactly once, and secret material never transits HTTP. Add and rotate locally (CLI `slipscan pay endpoint …` / desktop Payments panel) |
+| `pay_endpoint_list` / `pay_endpoint_remove` / `pay_endpoint_set_enabled` | Endpoint metadata (URL, label, enabled — never secrets); removal drops the endpoint's queued deliveries and revokes its vault-held secret; disabling parks its queue without touching the rows |
+| `pay_match_list` / `pay_delivery_list` | Detected matches, and the SQLite delivery queue with state (`pending` / `delivered` / `failed`), attempts, `next_attempt_at`, and last status/error |
+| `pay_deliver_due` | POST every due pending delivery now — **desktop IPC only**. The server has no route for it: `slipscan serve` runs its own delivery loop (every 30 s, honoring each delivery's backoff), and `slipscan mail-sync` / `slipscan pay deliver` flush from the CLI |
 
 ### Health (HTTP only)
 

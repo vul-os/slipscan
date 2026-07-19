@@ -117,6 +117,15 @@ Multi-currency conversion comes from **[OpenRate](https://github.com/vul-os/open
 - **Provenance surfaces to the user.** OpenRate's quality grade and staleness (`age_sec`) are shown wherever a converted amount is; a stale weekend rate says so.
 - Refresh is user-triggered or an explicit schedule the user turns on — never a default background call.
 
+## Data location & backup — your folder, your cloud, your responsibility
+
+The user owns their data's location and its backup. SlipScan never operates backup infrastructure.
+
+- **Movable data folder.** All durable data (the SQLite database and the documents store) lives in ONE folder. It defaults to the OS app-data directory, and the user can move it anywhere — an external drive, `~/Documents`, a NAS mount — from desktop Settings and the CLI. The move flow copies, verifies integrity (checksums + a post-move open/migrate check), atomically switches a small pointer file kept in the fixed OS app-data dir, and only then removes the old copy. CLI, server, and desktop all resolve the same pointer, so every surface agrees on where the data is.
+- **Backup = the user's own cloud on that folder.** The documented and in-app guidance: point the data folder at (or sync it with) a folder your own cloud syncs — iCloud Drive, Dropbox, Syncthing, Nextcloud, a NAS. **We rely on the user to back up; SlipScan ships no backup service.** The Settings screen says this plainly next to the data-folder control, and shows the current folder so users can verify it is inside their synced tree.
+- **What moves and what doesn't.** The vault ciphertext moves with the folder, but the KEK stays in the OS keychain — a synced/backed-up folder alone still yields no secrets (by design; restoring onto a new machine means re-entering credentials). State that explicitly wherever backup is discussed.
+- **Safety rails.** Refuse to move into a subfolder of the current data folder, into a path without write permission, or onto a target that already contains a different SlipScan database (offer open-instead). While a move is in progress the app is read-only.
+
 ## Insights, nudges & anonymous peer benchmarks
 
 Target: the full Vault22/22seven experience — nudges, spending insights, peer comparison — without anyone learning who you are.

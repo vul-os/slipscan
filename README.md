@@ -196,6 +196,7 @@ Settings live in SQLite, secrets live in the OS keychain, and there is no requir
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Settings model, data locations, environment |
 | [API.md](docs/API.md) | One service surface, two transports — Tauri IPC and the `/api/v1` HTTP server |
 | [EMAIL.md](docs/EMAIL.md) | Email ingestion: IMAP IDLE, Gmail, Microsoft Graph, Proton Bridge — your accounts, no middleman |
+| [PAYMENTS.md](docs/PAYMENTS.md) | ShapePay: watch a payment reference, get a signed webhook when the EFT lands — setup, receiver verification, delivery and retry semantics |
 | [BANK-ADAPTERS.md](docs/BANK-ADAPTERS.md) | The local, open-source bank-scraper framework and how to write an adapter |
 | [PACKS.md](docs/PACKS.md) | Signed classification packs: format, signing, verification, distribution |
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | Nudges and anonymous peer benchmarks: local DP, cohorts, honest limits |

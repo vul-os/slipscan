@@ -9,6 +9,7 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- **ShapePay — email-driven payment webhooks (Phase 4.8).** Watch reference codes on inbound transactions (a flat list — whole-token matching, optional exact amount + currency) and fire HMAC-SHA256-signed webhooks (timestamp + nonce headers, receiver-verifiable, replay-safe) to endpoints you register. Signing secrets are generated locally, held write-only in the credential vault, and shown exactly once; deliveries queue in SQLite with exponential backoff (1m → daily, 20-attempt cap) and carry metadata only — never account numbers or raw bank descriptions. Surfaced as `slipscan pay` on the CLI, `pay_*` server routes (secret-bearing operations refused over HTTP), a serve-mode delivery loop, a `mail-sync` flush, and the desktop Payments panel. Guide with a receiver verification example: [docs/PAYMENTS.md](docs/PAYMENTS.md).
 - Movable data folder + bring-your-own-backup guidance (Phase 4.75, in progress).
 
 ---

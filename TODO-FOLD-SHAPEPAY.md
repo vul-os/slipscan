@@ -17,7 +17,7 @@ That's the whole product: inbox in, webhook out.
 ## Status
 
 - [x] Original ShapePay history folded into this repo (scrubbed, re-authored)
-- [ ] Watch codes (reference + optional amount) — simple list, CRUD on CLI/server/desktop
-- [ ] Webhook endpoints with vault-held secrets, HMAC-signed deliveries, retry queue
-- [ ] Detection hook on inbound transactions (email-ingested first, all sources inherit)
-- [ ] `docs/PAYMENTS.md` with a receiver verification example
+- [x] Watch codes (reference + optional amount) — simple list, CRUD on CLI/server/desktop
+- [x] Webhook endpoints with vault-held secrets, HMAC-signed deliveries, retry queue
+- [x] Detection hook on inbound transactions (all sources inherit — the hook runs inside `transaction_create`; bank-alert-email → transaction parsing itself is still open in [docs/EMAIL.md](docs/EMAIL.md))
+- [x] `docs/PAYMENTS.md` with a receiver verification example
