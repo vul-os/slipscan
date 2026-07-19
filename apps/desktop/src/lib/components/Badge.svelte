@@ -1,12 +1,19 @@
 <script lang="ts">
+  /**
+   * The one chip system: extraction confidence, recon states, delivery
+   * states, region/currency chips all render through this. Tones map to the
+   * theme-tuned semantic tokens (AA text on panel in both themes).
+   */
   let {
     tone = "neutral",
     label,
     dot = true,
+    size = "sm",
   }: {
     tone?: "neutral" | "success" | "warning" | "danger" | "accent";
     label: string;
     dot?: boolean;
+    size?: "sm" | "md";
   } = $props();
 
   const tones: Record<string, string> = {
@@ -25,11 +32,16 @@
     danger: "bg-danger",
     accent: "bg-accent-ring dark:bg-accent",
   };
+
+  const sizes: Record<string, string> = {
+    sm: "px-2 py-0.5 text-[11px]",
+    md: "px-2.5 py-1 text-[12px]",
+  };
 </script>
 
 <span
-  class="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap {tones[tone]}"
+  class="inline-flex items-center gap-1.5 rounded-full border font-medium whitespace-nowrap {sizes[size]} {tones[tone]}"
 >
-  {#if dot}<span class="size-1.5 rounded-full {dots[tone]}"></span>{/if}
+  {#if dot}<span class="size-1.5 shrink-0 rounded-full {dots[tone]}"></span>{/if}
   {label}
 </span>

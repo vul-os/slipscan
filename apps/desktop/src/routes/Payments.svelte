@@ -364,6 +364,17 @@
     if (d.state === "failed") return "danger";
     return d.attempts > 0 ? "warning" : "neutral";
   }
+
+  /** Attempts timeline: one dot per past attempt (capped — older ones fold
+   * into a "+n" count). Every attempt of an undelivered delivery failed; a
+   * delivered one succeeded on its last try. */
+  const DOTS_MAX = 6;
+  function attemptDots(d: PayDelivery): Array<"ok" | "fail"> {
+    const n = Math.min(d.attempts, DOTS_MAX);
+    return Array.from({ length: n }, (_, i) =>
+      d.state === "delivered" && i === n - 1 ? "ok" : "fail",
+    );
+  }
 </script>
 
 <PageHeader
@@ -565,10 +576,14 @@
       {/if}
 
       {#if revealed}
+        <!-- The one-time reveal: deliberate and calm — full secret in mono
+             (never truncated: hand-copy must stay possible), copy button,
+             and a plain note that dismissing it is forever. -->
         <div
-          class="mb-4 rounded-lg border border-accent-ring/40 bg-accent/[0.06] p-3"
+          class="animate-slide-up mb-4 rounded-lg border border-accent-ring/40 bg-accent/[0.06] p-3"
+          role="alert"
         >
-          <p class="mb-1 flex items-center gap-2 text-[12.5px] font-semibold">
+          <p class="mb-1 flex flex-wrap items-center gap-2 text-[12.5px] font-semibold">
             <Icon name="key" size={14} class="text-accent-ring dark:text-accent" />
             Signing secret for “{revealed.endpoint.label}”
             <Badge tone="warning" label="shown once" />
@@ -582,24 +597,26 @@
               rotated.
             {/if}
           </p>
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
             <code
-              class="min-w-0 flex-1 truncate rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-[11.5px]"
+              class="min-w-0 flex-1 basis-56 rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-[11.5px] break-all select-all"
             >
               {revealed.secret}
             </code>
-            <button class="btn h-7 shrink-0" onclick={copySecret}>
-              {#if secretCopied}
-                <Icon name="check" size={13} />
-                Copied
-              {:else}
-                <Icon name="copy" size={13} />
-                Copy
-              {/if}
-            </button>
-            <button class="btn btn-primary h-7 shrink-0" onclick={dismissReveal}>
-              Done — I've stored it
-            </button>
+            <div class="flex shrink-0 items-center gap-2">
+              <button class="btn h-7" onclick={copySecret}>
+                {#if secretCopied}
+                  <Icon name="check" size={13} />
+                  Copied
+                {:else}
+                  <Icon name="copy" size={13} />
+                  Copy
+                {/if}
+              </button>
+              <button class="btn btn-primary h-7" onclick={dismissReveal}>
+                Done — I've stored it
+              </button>
+            </div>
           </div>
         </div>
       {/if}
@@ -724,7 +741,10 @@
         </h2>
         <div class="flex items-center gap-1.5">
           {#if deliveredNote}
-            <span class="flex items-center gap-1.5 text-[12px] text-success">
+            <span
+              class="animate-fade-in flex items-center gap-1.5 text-[12px] text-success"
+              role="status"
+            >
               <Icon name="check" size={13} />
               {deliveredNote}
             </span>
@@ -781,19 +801,52 @@
                   {/if}
                   <span class="text-t2">→ {endpointLabel(d.endpoint_id)}</span>
                 </span>
-                <span class="block truncate font-mono text-[10.5px] text-t3">
-                  {d.attempts}
-                  {d.attempts === 1 ? "attempt" : "attempts"}
-                  {#if d.state === "pending"}
-                    · next retry {fmtUntil(d.next_attempt_at)}
-                  {/if}
-                  {#if d.last_status != null}
-                    · HTTP {d.last_status}
-                  {/if}
-                  {#if d.last_error && d.state !== "delivered"}
-                    · <span class="text-danger">{d.last_error}</span>
-                  {/if}
-                  · updated {fmtRelative(d.updated_at)}
+                <span class="mt-0.5 flex items-center gap-2">
+                  <!-- attempts timeline: filled dots = past attempts (red
+                       failed, green landed), hollow dot = the next scheduled
+                       try. Decorative — the text carries the same facts. -->
+                  <span
+                    class="flex shrink-0 items-center gap-1"
+                    aria-hidden="true"
+                  >
+                    {#if d.attempts > DOTS_MAX}
+                      <span class="font-mono text-[10px] leading-none text-t3">
+                        +{d.attempts - DOTS_MAX}
+                      </span>
+                    {/if}
+                    {#each attemptDots(d) as dot, i (i)}
+                      {#if i > 0 || d.attempts > DOTS_MAX}
+                        <span class="h-px w-1.5 bg-line-2"></span>
+                      {/if}
+                      <span
+                        class="size-[7px] rounded-full {dot === 'ok'
+                          ? 'bg-success'
+                          : 'bg-danger'}"
+                      ></span>
+                    {/each}
+                    {#if d.state === "pending"}
+                      {#if d.attempts > 0}
+                        <span class="h-px w-1.5 bg-line-2"></span>
+                      {/if}
+                      <span
+                        class="size-[7px] rounded-full border border-line-2"
+                      ></span>
+                    {/if}
+                  </span>
+                  <span class="truncate font-mono text-[10.5px] text-t3">
+                    {d.attempts}
+                    {d.attempts === 1 ? "attempt" : "attempts"}
+                    {#if d.state === "pending"}
+                      · next retry {fmtUntil(d.next_attempt_at)}
+                    {/if}
+                    {#if d.last_status != null}
+                      · HTTP {d.last_status}
+                    {/if}
+                    {#if d.last_error && d.state !== "delivered"}
+                      · <span class="text-danger">{d.last_error}</span>
+                    {/if}
+                    · updated {fmtRelative(d.updated_at)}
+                  </span>
                 </span>
               </span>
               <Badge tone={stateTone(d)} label={d.state} />

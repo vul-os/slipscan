@@ -1,12 +1,19 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
-  import { fmtDate, fmtMoney, localDate, parseMoneyInput } from "../lib/format";
+  import {
+    fmtDate,
+    fmtMoney,
+    localDate,
+    minorToInput,
+    parseMoneyInput,
+  } from "../lib/format";
   import { swrLoad } from "../lib/loadCache";
   import type { LedgerAccountType } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
   import Badge from "../lib/components/Badge.svelte";
+  import Money from "../lib/components/Money.svelte";
   import Icon from "../lib/components/Icon.svelte";
 
   type Tab = "accounts" | "journal" | "trial";
@@ -76,6 +83,8 @@
   const creditTotal = $derived(
     lines.reduce((s, l) => s + lineMinor(l.credit), 0),
   );
+  /** Signed imbalance — drives the live balanced/off-by indicator. */
+  const diff = $derived(debitTotal - creditTotal);
   /** Lines carrying an amount but no account: they would be dropped on
    * submit, so they block posting instead of silently disappearing. */
   const orphanLines = $derived(
@@ -146,10 +155,11 @@
     <button
       role="tab"
       aria-selected={tab === t.id}
-      class="-mb-px border-b-2 px-3 py-2 text-[13px] font-medium transition-colors
+      class="-mb-px border-b-2 px-3 py-2 text-[13px] font-medium
         {tab === t.id
         ? 'border-accent text-t1'
         : 'border-transparent text-t3 hover:text-t2'}"
+      style="transition: color var(--dur-quick) var(--ease-standard), border-color var(--dur-quick) var(--ease-standard);"
       onclick={() => (tab = t.id)}
     >
       {t.label}
@@ -164,9 +174,8 @@
     {#if d.accounts.length === 0}
       <div class="card">
         <EmptyState
-          icon="ledger"
-          title="No chart of accounts yet"
-          body="A chart of accounts is seeded from your region profile when a book is created. If this book has none, seed it from the CLI: slipscan init."
+          title="No chart of accounts"
+          body="A chart is seeded from your region profile when a book is created. This one has none — seed it from the CLI: slipscan init."
         />
       </div>
     {:else}
@@ -175,12 +184,21 @@
           {@const rows = d.accounts.filter((a) => a.type === type)}
           {#if rows.length > 0}
             <section>
-              <h2 class="eyebrow mb-2">{typeLabel[type]}</h2>
+              <!-- Group header pins to the top of the scrollport while its
+                   accounts scroll beneath — surface bg keeps rows behind it. -->
+              <h2
+                class="sticky top-0 z-10 flex items-baseline gap-2 bg-surface pt-1 pb-2"
+              >
+                <span class="eyebrow">{typeLabel[type]}</span>
+                <span class="num text-[10.5px] text-t3">{rows.length}</span>
+              </h2>
               <div class="card divide-y divide-line">
                 {#each rows as a (a.id)}
-                  <div class="group flex items-center gap-3 px-4 py-2.5">
+                  <div class="row-hover flex items-center gap-3 px-4 py-2.5">
                     <span class="num w-12 text-t3">{a.code}</span>
-                    <span class="flex-1 text-[13px] font-medium">{a.name}</span>
+                    <span class="flex-1 truncate text-[13px] font-medium"
+                      >{a.name}</span
+                    >
                     {#if a.vat_rate_bp}
                       <Badge
                         tone="neutral"
@@ -214,7 +232,7 @@
             {postError}
           </p>
         {/if}
-        <div class="mb-3 grid gap-3 sm:grid-cols-[10rem_1fr]">
+        <div class="mb-4 grid gap-3 sm:grid-cols-[10rem_1fr]">
           <label class="block">
             <span class="mb-1 block text-[11.5px] font-medium text-t2">Date</span>
             <input class="input font-mono" type="date" bind:value={entryDate} />
@@ -228,44 +246,87 @@
             />
           </label>
         </div>
-        <div class="space-y-2">
+        <!-- One grid for header, lines, and totals: debit/credit columns stay
+             perfectly aligned from the labels through the mono inputs to the
+             running totals underneath. -->
+        <div
+          class="grid grid-cols-[minmax(0,1fr)_7.5rem_7.5rem_2rem] items-center gap-x-2 gap-y-2"
+        >
+          <span
+            class="text-[10.5px] font-semibold tracking-[0.08em] text-t3 uppercase"
+            >Account</span
+          >
+          <span
+            class="pr-2.5 text-right text-[10.5px] font-semibold tracking-[0.08em] text-t3 uppercase"
+            >Debit</span
+          >
+          <span
+            class="pr-2.5 text-right text-[10.5px] font-semibold tracking-[0.08em] text-t3 uppercase"
+            >Credit</span
+          >
+          <span aria-hidden="true"></span>
           {#each lines as line, i (i)}
-            <div class="flex items-center gap-2">
-              <select
-                class="input h-8 flex-1"
-                aria-label="Ledger account"
-                bind:value={line.ledger_account_id}
-              >
-                <option value="" disabled>Account…</option>
-                {#each d.accounts.filter((a) => !a.archived) as a (a.id)}
-                  <option value={a.id}>{a.code} · {a.name}</option>
-                {/each}
-              </select>
-              <input
-                class="input h-8 w-32 text-right font-mono"
-                placeholder="Debit"
-                aria-label="Debit"
-                bind:value={line.debit}
-              />
-              <input
-                class="input h-8 w-32 text-right font-mono"
-                placeholder="Credit"
-                aria-label="Credit"
-                bind:value={line.credit}
-              />
-              <button
-                class="btn btn-ghost h-8 px-2"
-                type="button"
-                aria-label="Remove line"
-                disabled={lines.length <= 2}
-                onclick={() => (lines = lines.filter((_, j) => j !== i))}
-              >
-                <Icon name="x" size={13} />
-              </button>
-            </div>
+            <select
+              class="input h-8"
+              aria-label="Ledger account"
+              bind:value={line.ledger_account_id}
+            >
+              <option value="" disabled>Account…</option>
+              {#each d.accounts.filter((a) => !a.archived) as a (a.id)}
+                <option value={a.id}>{a.code} · {a.name}</option>
+              {/each}
+            </select>
+            <input
+              class="input h-8 text-right font-mono"
+              placeholder={minorToInput(0, bookCurrency)}
+              inputmode="decimal"
+              aria-label="Debit"
+              bind:value={line.debit}
+            />
+            <input
+              class="input h-8 text-right font-mono"
+              placeholder={minorToInput(0, bookCurrency)}
+              inputmode="decimal"
+              aria-label="Credit"
+              bind:value={line.credit}
+            />
+            <button
+              class="btn btn-ghost h-8 w-8 justify-center px-0"
+              type="button"
+              aria-label="Remove line"
+              disabled={lines.length <= 2}
+              onclick={() => (lines = lines.filter((_, j) => j !== i))}
+            >
+              <Icon name="x" size={13} />
+            </button>
           {/each}
+          <div class="col-span-full border-t border-line"></div>
+          <span
+            class="flex items-center justify-end gap-2 text-[11.5px] font-medium text-t2"
+          >
+            {#if orphanLines}
+              <Badge tone="warning" label="line needs an account" />
+            {:else if debitTotal === 0 && creditTotal === 0}
+              <Badge tone="neutral" dot={false} label="no amounts" />
+            {:else if diff === 0}
+              <Badge tone="success" label="balanced" />
+            {:else}
+              <Badge
+                tone="danger"
+                label="off by {fmtMoney(Math.abs(diff), bookCurrency)}"
+              />
+            {/if}
+            Totals
+          </span>
+          <span class="pr-2.5 text-right">
+            <Money amount={debitTotal} currency={bookCurrency} class="font-medium" />
+          </span>
+          <span class="pr-2.5 text-right">
+            <Money amount={creditTotal} currency={bookCurrency} class="font-medium" />
+          </span>
+          <span aria-hidden="true"></span>
         </div>
-        <div class="mt-3 flex items-center gap-2">
+        <div class="mt-3 flex flex-wrap items-center gap-2">
           <button
             class="btn h-7"
             type="button"
@@ -274,24 +335,11 @@
             <Icon name="plus" size={13} />
             Add line
           </button>
-          <span class="ml-auto text-[12px] text-t3">
-            Debit <span class="num">{fmtMoney(debitTotal, bookCurrency)}</span> · Credit
-            <span class="num">{fmtMoney(creditTotal, bookCurrency)}</span>
-          </span>
-          {#if orphanLines}
-            <Badge tone="warning" label="line needs an account" />
-          {:else if debitTotal === creditTotal && debitTotal > 0}
-            <Badge tone="success" label="balanced" />
-          {:else}
-            <Badge tone="warning" label="unbalanced" />
-          {/if}
+          <span class="ml-auto"></span>
           <button
             class="btn btn-primary h-7"
             type="submit"
-            disabled={posting ||
-              orphanLines ||
-              debitTotal !== creditTotal ||
-              debitTotal === 0}
+            disabled={posting || orphanLines || diff !== 0 || debitTotal === 0}
           >
             {posting ? "Posting…" : "Post entry"}
           </button>
@@ -308,9 +356,8 @@
     {#if d.journal.length === 0}
       <div class="card">
         <EmptyState
-          icon="ledger"
           title="No journal entries"
-          body="Entries appear here when you post them manually or confirm reconciled slips. Debits always equal credits — core enforces it."
+          body="Post one manually or confirm reconciled slips. Debits always equal credits — core enforces it."
         >
           {#snippet actions()}
             <button class="btn btn-primary" onclick={openForm}
@@ -328,22 +375,32 @@
               class="flex items-center gap-3 border-b border-line bg-sunken/60 px-4 py-2.5"
             >
               <span class="num text-t3">{fmtDate(e.entry_date)}</span>
-              <span class="flex-1 text-[13px] font-medium">{e.memo}</span>
-              <Badge tone="success" label="balanced" />
-              <span class="num text-t2">{fmtMoney(debit, bookCurrency)}</span>
+              <span class="flex-1 truncate text-[13px] font-medium">{e.memo}</span>
+              <span class="num hidden text-[11px] text-t3 sm:inline"
+                >{e.lines.length} lines</span
+              >
+              <Money amount={debit} currency={bookCurrency} class="text-t2" />
             </header>
             <table class="w-full text-[12.5px]">
               <tbody>
                 {#each e.lines as l (l.id)}
-                  <tr>
+                  <tr class="row-hover">
                     <td class="td border-t-0 pl-4 text-t2"
                       >{l.ledger_account_name}</td
                     >
-                    <td class="td num w-32 border-t-0 text-right">
-                      {l.debit_minor ? fmtMoney(l.debit_minor, bookCurrency) : ""}
+                    <td class="td w-32 border-t-0 text-right">
+                      {#if l.debit_minor}
+                        <Money amount={l.debit_minor} currency={bookCurrency} />
+                      {/if}
                     </td>
-                    <td class="td num w-32 border-t-0 text-right text-t2">
-                      {l.credit_minor ? fmtMoney(l.credit_minor, bookCurrency) : ""}
+                    <td class="td w-32 border-t-0 text-right">
+                      {#if l.credit_minor}
+                        <Money
+                          amount={l.credit_minor}
+                          currency={bookCurrency}
+                          class="text-t2"
+                        />
+                      {/if}
                     </td>
                   </tr>
                 {/each}
@@ -356,55 +413,70 @@
   {:else if d.trial.rows.every((r) => r.debit_minor === 0 && r.credit_minor === 0)}
     <div class="card">
       <EmptyState
-        icon="reports"
         title="Trial balance is empty"
-        body="Post journal entries and the running debit/credit totals per account will show here."
+        body="Post journal entries and the per-account debit and credit totals land here."
       />
     </div>
   {:else}
     <div class="card overflow-hidden">
-      <table class="w-full border-collapse text-[12.5px]">
-        <thead>
-          <tr class="bg-sunken/60">
-            <th class="th w-16">Code</th>
-            <th class="th">Account</th>
-            <th class="th w-36 text-right">Debit</th>
-            <th class="th w-36 text-right">Credit</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each d.trial.rows.filter((r) => r.debit_minor || r.credit_minor) as r (r.ledger_account_id)}
-            <tr class="hover:bg-sunken/50">
-              <td class="td num text-t3">{r.code}</td>
-              <td class="td font-medium">{r.name}</td>
-              <td class="td num text-right"
-                >{r.debit_minor ? fmtMoney(r.debit_minor, bookCurrency) : ""}</td
-              >
-              <td class="td num text-right"
-                >{r.credit_minor ? fmtMoney(r.credit_minor, bookCurrency) : ""}</td
-              >
+      <div class="table-wrap table-scroll">
+        <table class="w-full text-[12.5px]">
+          <thead>
+            <tr>
+              <th class="th w-16">Code</th>
+              <th class="th">Account</th>
+              <th class="th w-36 text-right">Debit</th>
+              <th class="th w-36 text-right">Credit</th>
             </tr>
-          {/each}
-          <tr class="bg-sunken/60 font-semibold">
-            <td class="td" colspan="2">
-              <span class="flex items-center gap-2">
-                Totals
-                {#if d.trial.total_debit_minor === d.trial.total_credit_minor}
-                  <Badge tone="success" label="in balance" />
-                {:else}
-                  <Badge tone="danger" label="out of balance" />
-                {/if}
-              </span>
-            </td>
-            <td class="td num text-right"
-              >{fmtMoney(d.trial.total_debit_minor, d.trial.currency)}</td
-            >
-            <td class="td num text-right"
-              >{fmtMoney(d.trial.total_credit_minor, d.trial.currency)}</td
-            >
-          </tr>
-        </tbody>
-      </table>
+          </thead>
+          <tbody class="[&>tr:first-child>td]:border-t-0">
+            {#each d.trial.rows.filter((r) => r.debit_minor || r.credit_minor) as r (r.ledger_account_id)}
+              <tr class="row-hover">
+                <td class="td num text-t3">{r.code}</td>
+                <td class="td font-medium">{r.name}</td>
+                <td class="td text-right">
+                  {#if r.debit_minor}
+                    <Money amount={r.debit_minor} currency={d.trial.currency} />
+                  {/if}
+                </td>
+                <td class="td text-right">
+                  {#if r.credit_minor}
+                    <Money amount={r.credit_minor} currency={d.trial.currency} />
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+          <tfoot>
+            <tr class="font-semibold">
+              <td class="td sticky bottom-0 bg-panel" colspan="2">
+                <span class="flex items-center gap-2">
+                  Totals
+                  {#if d.trial.total_debit_minor === d.trial.total_credit_minor}
+                    <Badge tone="success" label="in balance" />
+                  {:else}
+                    <Badge tone="danger" label="out of balance" />
+                  {/if}
+                </span>
+              </td>
+              <td class="td sticky bottom-0 bg-panel text-right">
+                <Money
+                  amount={d.trial.total_debit_minor}
+                  currency={d.trial.currency}
+                  class="font-semibold"
+                />
+              </td>
+              <td class="td sticky bottom-0 bg-panel text-right">
+                <Money
+                  amount={d.trial.total_credit_minor}
+                  currency={d.trial.currency}
+                  class="font-semibold"
+                />
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
     </div>
   {/if}
 {:catch err}

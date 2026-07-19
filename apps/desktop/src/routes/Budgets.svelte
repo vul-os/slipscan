@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { api } from "../lib/api/client";
   import {
     fmtMoney,
@@ -13,6 +14,7 @@
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
   import StatCard from "../lib/components/StatCard.svelte";
+  import Money from "../lib/components/Money.svelte";
   import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
 
@@ -47,6 +49,24 @@
   let formRollover = $state(false);
   let formBusy = $state(false);
   let formError = $state<string | null>(null);
+  let formCategorySelect = $state<HTMLSelectElement | null>(null);
+
+  function closeForm() {
+    showForm = false;
+    formError = null;
+  }
+
+  async function openForm() {
+    formError = null;
+    showForm = true;
+    await tick();
+    formCategorySelect?.focus();
+  }
+
+  function toggleForm() {
+    if (showForm) closeForm();
+    else openForm();
+  }
 
   async function saveBudget() {
     if (!book) return;
@@ -78,12 +98,18 @@
     }
   }
 
+  /** Meter ink: lime while under the limit; at/over it, the warn semantic —
+   * a flat tone switch, never a gradient. */
   function barTone(spent: number, amount: number): string {
-    if (amount === 0) return "bg-ink-400";
-    const r = spent / amount;
-    if (r >= 1) return "bg-danger";
-    if (r >= 0.8) return "bg-warning";
+    if (amount > 0 && spent >= amount) return "bg-warning";
     return "bg-accent-ring dark:bg-accent";
+  }
+
+  /** Fill width: capped at 100, with a visible tick as soon as anything is
+   * spent (a 0.1% sliver would otherwise render as nothing). */
+  function barWidth(spent: number, amount: number): number {
+    if (spent <= 0) return 0;
+    return Math.min(100, Math.max(1.5, (spent / Math.max(1, amount)) * 100));
   }
 </script>
 
@@ -101,7 +127,11 @@
       >
         <Icon name="chevron-left" size={13} />
       </button>
-      <span class="flex items-center gap-1.5 px-1.5 text-[12.5px] font-medium">
+      <!-- min-width keeps the chevrons from drifting as month names change -->
+      <span
+        class="flex min-w-[7.5rem] items-center justify-center gap-1.5 px-1.5 text-[12.5px] font-medium"
+        aria-live="polite"
+      >
         <Icon name="calendar" size={13} class="text-t3" />
         {fmtMonth(month)}
       </span>
@@ -124,7 +154,7 @@
         Today
       </button>
     {/if}
-    <button class="btn btn-primary" onclick={() => (showForm = !showForm)}>
+    <button class="btn btn-primary" onclick={toggleForm}>
       <Icon name="plus" size={14} />
       New budget
     </button>
@@ -132,11 +162,16 @@
 </PageHeader>
 
 {#if showForm}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
+       Escape-to-close only; interaction lives on the inputs/buttons. -->
   <form
-    class="card mb-4 p-4"
+    class="card animate-slide-up mb-4 p-4"
     onsubmit={(e) => {
       e.preventDefault();
       saveBudget();
+    }}
+    onkeydown={(e) => {
+      if (e.key === "Escape") closeForm();
     }}
   >
     <h2 class="mb-3 text-[13px] font-semibold">
@@ -153,7 +188,7 @@
     <div class="flex flex-wrap items-end gap-3">
       <label class="block min-w-52">
         <span class="mb-1 block text-[11.5px] font-medium text-t2">Category</span>
-        <select class="input" bind:value={formCategoryId}>
+        <select class="input" bind:this={formCategorySelect} bind:value={formCategoryId}>
           <option value="" disabled>Pick a category…</option>
           {#each categories.filter((c) => c.kind === "expense") as c (c.id)}
             <option value={c.id}>{c.icon ?? ""} {c.name}</option>
@@ -177,11 +212,7 @@
       <button class="btn btn-primary" type="submit" disabled={formBusy}>
         {formBusy ? "Saving…" : "Save budget"}
       </button>
-      <button
-        class="btn btn-ghost"
-        type="button"
-        onclick={() => (showForm = false)}
-      >
+      <button class="btn btn-ghost" type="button" onclick={closeForm}>
         Cancel
       </button>
     </div>
@@ -199,7 +230,7 @@
         body="Set a monthly limit on the categories you care about — groceries, eating out, fuel — and SlipScan tracks the burn as transactions come in."
       >
         {#snippet actions()}
-          <button class="btn btn-primary" onclick={() => (showForm = true)}>
+          <button class="btn btn-primary" onclick={openForm}>
             <Icon name="plus" size={14} />
             Create your first budget
           </button>
@@ -210,12 +241,12 @@
     {@const total = budgets.reduce((s, b) => s + b.amount_minor, 0)}
     {@const spent = budgets.reduce((s, b) => s + b.spent_minor, 0)}
     {@const cur = budgets[0].currency}
-    <div class="mb-4 grid grid-cols-3 gap-3">
+    <div class="mb-4 grid gap-3 sm:grid-cols-3">
       <StatCard label="Budgeted" value={fmtMoney(total, cur)} />
       <StatCard
         label="Spent so far"
         value={fmtMoney(spent, cur)}
-        tone={spent > total ? "danger" : "neutral"}
+        tone={spent > total ? "warning" : "neutral"}
       />
       <StatCard
         label="Remaining"
@@ -229,38 +260,42 @@
         {@const remaining = b.amount_minor - b.spent_minor}
         <div class="px-4 py-3.5">
           <div class="mb-1.5 flex items-baseline justify-between gap-3">
-            <span class="flex items-center gap-2 text-[13px] font-medium">
-              {b.category_name}
+            <span class="flex min-w-0 items-center gap-2 text-[13px] font-medium">
+              <span class="truncate">{b.category_name}</span>
               {#if b.rollover}
                 <Badge tone="neutral" dot={false} label="rollover" />
               {/if}
             </span>
-            <span class="num text-t2">
-              {fmtMoney(b.spent_minor, b.currency)}
-              <span class="text-t3">of {fmtMoney(b.amount_minor, b.currency)}</span>
+            <span class="num shrink-0 text-t2">
+              <Money amount={b.spent_minor} currency={b.currency} />
+              <span class="text-t3">
+                of <Money amount={b.amount_minor} currency={b.currency} />
+              </span>
             </span>
           </div>
           <div class="flex items-center gap-3">
-            <div class="h-2 flex-1 overflow-hidden rounded-full bg-sunken">
-              <div
-                class="h-full rounded-full transition-all {barTone(
+            <!-- The meter is a ruled hairline with a pen stroke of ink over
+                 it — numbers in the row carry the data; this is aria-hidden. -->
+            <div class="relative h-2 flex-1" aria-hidden="true">
+              <span
+                class="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-line"
+              ></span>
+              <span
+                class="absolute top-1/2 left-0 h-[3px] -translate-y-1/2 rounded-full {barTone(
                   b.spent_minor,
                   b.amount_minor,
                 )}"
-                style="width: {Math.min(
-                  100,
-                  (b.spent_minor / Math.max(1, b.amount_minor)) * 100,
-                )}%"
-              ></div>
+                style="width: {barWidth(b.spent_minor, b.amount_minor)}%;
+                  transition: width var(--dur-slow) var(--ease-standard);"
+              ></span>
             </div>
             <span
-              class="num w-28 text-right {remaining < 0
-                ? 'text-danger'
+              class="num w-28 shrink-0 text-right {remaining < 0
+                ? 'text-warning'
                 : 'text-t2'}"
             >
-              {remaining < 0
-                ? `${fmtMoney(-remaining, b.currency)} over`
-                : `${fmtMoney(remaining, b.currency)} left`}
+              <Money amount={Math.abs(remaining)} currency={b.currency} />
+              {remaining < 0 ? "over" : "left"}
             </span>
           </div>
         </div>
