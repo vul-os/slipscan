@@ -9,8 +9,11 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-07-19
+
 - **ShapePay — email-driven payment webhooks (Phase 4.8).** Watch reference codes on inbound transactions (a flat list — whole-token matching, optional exact amount + currency) and fire HMAC-SHA256-signed webhooks (timestamp + nonce headers, receiver-verifiable, replay-safe) to endpoints you register. Signing secrets are generated locally, held write-only in the credential vault, and shown exactly once; deliveries queue in SQLite with exponential backoff (1m → daily, 20-attempt cap) and carry metadata only — never account numbers or raw bank descriptions. Surfaced as `slipscan pay` on the CLI, `pay_*` server routes (secret-bearing operations refused over HTTP), a serve-mode delivery loop, a `mail-sync` flush, and the desktop Payments panel. Guide with a receiver verification example: [docs/PAYMENTS.md](docs/PAYMENTS.md).
-- Movable data folder + bring-your-own-backup guidance (Phase 4.75, in progress).
+- **Movable data folder + bring-your-own-backup (Phase 4.75).** One data folder (SQLite + documents) relocatable from desktop Settings and `slipscan data move` via a verified copy (exclusive-lock WAL quiesce, per-file SHA-256, open/migrate + integrity check, fsync-durable atomic pointer swap, old copy removed only after the verified swap), resolved identically by CLI/server/desktop; backup is the user's own cloud sync on that folder (no SlipScan backup service; the keychain KEK never travels with it).
+- **UI/UX pass.** Deep design-system layer (oklch elevation hairlines, grain overlay, motion tokens with a staggered route-enter reveal, branded focus-visible rings, display numeric scale, unified chips), per-screen polish across all routes with token-palette charts and semantic budget bars, responsive down to ~740px with a collapsing sidebar rail, and refreshed real-app screenshots.
 
 ---
 
