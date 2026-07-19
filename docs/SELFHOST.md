@@ -74,7 +74,13 @@ This is strictly optional and strictly yours: SlipScan does not ship with, defau
 
 Today the server's clients are anything that speaks HTTP — `curl`, scripts, your own tooling against the `/api/v1` surface ([API.md](API.md)). The desktop app **cannot yet connect to a remote server**: it always opens its local SQLite book, and there is no "Settings → Server → Connect" option. Desktop-as-client, multi-user households, and the Tauri mobile companion are Phase 5 ([ROADMAP.md](../ROADMAP.md)).
 
-Back up the server the same way as the desktop: copy the database file and documents directory ([CONFIGURATION.md](CONFIGURATION.md#data-locations)). Secrets stay in that box's keychain and are re-entered on restore — by design.
+## Data folder on the server box
+
+The server resolves the same movable data folder as every other surface — the pointer file in the box's app-config directory, platform default when unset ([CONFIGURATION.md](CONFIGURATION.md#data-locations)). `slipscan serve` without `--db` serves that folder; `GET /api/v1/data_status` reports it read-only (folder, sizes, pointer path — with an explicit `--db` the route answers 503, since the served database is not the managed folder's).
+
+**Moving the folder is deliberately local-only** (`slipscan data move` on the box, or desktop Settings) — there is no HTTP route for it, on purpose: a move takes a local filesystem path as its target and deletes the old copy afterwards, so exposing it would let any bearer-token holder redirect and then destroy your data over the network; and mid-move nothing may hold the database open, which a remote client cannot coordinate. **Stop the server before moving** — the move takes SQLite's exclusive lock on the database and refuses while any process (the server included) still has it open — then restart it; it picks up the new location from the pointer.
+
+Back up the server the same way as the desktop: sync the data folder (database + `documents/`) with your own cloud or copy it while the server is stopped. **SlipScan ships no backup service — the folder, its location, and its backup are yours.** Secrets stay in that box's keychain and are re-entered on restore — by design.
 
 ---
 
