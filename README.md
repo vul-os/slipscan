@@ -82,7 +82,7 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
 - Headless self-host server mode for an always-on box ([guide](docs/SELFHOST.md))
 
 > [!NOTE]
-> **Status: pre-0.1, under active development.** The Rust core, CLI, extraction, ingestion, packs, and server crates are implemented; bank adapters, nudges/benchmarks, and device sync are tracked phase-by-phase in [ROADMAP.md](ROADMAP.md).
+> **Status: 0.2.0, under active development.** The Rust core, CLI, extraction, ingestion, packs, and server crates are implemented; bank adapters, nudges/benchmarks, and device sync are tracked phase-by-phase in [ROADMAP.md](ROADMAP.md).
 
 ## Screenshots
 

@@ -48,7 +48,7 @@ The CLI covers headless use: `init` (create a book), `import` (files → documen
 
 A **book** is one ledgerable context — "Personal" or "My Business". Books live in a plain SQLite database file at a path you can see, back up, and move ([CONFIGURATION.md](CONFIGURATION.md#data-locations)).
 
-The desktop app seeds a **Personal (ZA)** book automatically on first run — chart of accounts, VAT rates, and a starter category set included. (There is no in-app "New book" flow yet; additional or business books are created from the CLI.) The kind decides which features matter — a personal book leads with budgets and spending; a business book adds the chart of accounts, journals, VAT, and reconciliation.
+The desktop app seeds a **Personal** book automatically on first run — on the neutral **generic** region profile (no jurisdiction is assumed), with its chart of accounts, one configurable tax rate, and a starter category set included. (There is no in-app "New book" flow yet; additional or business books are created from the CLI.) The kind decides which features matter — a personal book leads with budgets and spending; a business book adds the chart of accounts, journals, VAT, and reconciliation.
 
 From the CLI:
 

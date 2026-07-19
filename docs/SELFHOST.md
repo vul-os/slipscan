@@ -22,7 +22,7 @@ slipscan serve --listen 0.0.0.0:7151 --lan
 
 ```sh
 curl http://127.0.0.1:7151/health
-# {"status":"ok","version":"0.1.0"}
+# {"status":"ok","version":"0.2.0"}
 ```
 
 Non-negotiable #3 applies verbatim: localhost by default, no hosted SlipScan service of any kind, and the server only ever *listens* — today it makes no outbound calls at all (when connectors land in server mode, outbound calls will still go only to providers **you** configured).
