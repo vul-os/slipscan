@@ -10,6 +10,7 @@ export const ROUTES = [
   "budgets",
   "ledger",
   "reconcile",
+  "payments",
   "reports",
   "settings",
 ] as const;
