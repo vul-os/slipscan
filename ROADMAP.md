@@ -58,20 +58,20 @@ Vault22/22seven-class intelligence, decentralized (design in [docs/ARCHITECTURE.
 
 SlipScan is a worldwide product; countries are region profiles, not code (contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)).
 
-- [ ] Region profiles: CoA seeds, tax config (rates + report labels/box mappings), bank CSV presets, and merchant packs as selectable data — SA becomes the first profile, generic profile for everywhere else
-- [ ] Generic tax-period summary in core; "VAT201" only as the SA profile's label
-- [ ] Remove every hardcoded currency/jurisdiction default from core, CLI, server, desktop
-- [ ] OpenRate client: user-configured endpoint, decimal-only rate math, local rate cache with `as_of` + quality grade, rate recorded per conversion
+- [x] Region profiles: CoA seeds, tax config (rates + report labels/box mappings), bank CSV presets, and merchant packs as selectable data — SA is the first profile (`za`), generic profile for everywhere else
+- [x] Generic tax-period summary in core; "VAT201" only as the SA profile's label
+- [x] Remove every hardcoded currency/jurisdiction default from core, CLI, server, desktop *(verified by a residual-jurisdiction audit)*
+- [x] OpenRate client: user-configured endpoint, decimal-only rate math, local rate cache with `as_of` + quality grade, rate recorded per conversion
 - [ ] Converted report views ("all activity in book currency, rated at booking time") with provenance shown
 
 ## Phase 4.75 — Movable data folder & bring-your-own backup
 
 Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Data location & backup".
 
-- [ ] One data folder (SQLite + documents), pointer file in the fixed app-data dir, resolved identically by desktop/CLI/server
-- [ ] Settings + CLI flow to move it: copy → verify (checksums, open/migrate check) → atomic pointer switch → remove old
-- [ ] Safety rails: no nested targets, permission checks, existing-database detection (open-instead), read-only during move
-- [ ] In-app + docs backup guidance: sync the folder with your own cloud (iCloud/Dropbox/Syncthing/Nextcloud/NAS) — **users back up their own data**; note the keychain KEK never travels with the folder
+- [x] One data folder (SQLite + documents), pointer file in the fixed app-data dir, resolved identically by desktop/CLI/server
+- [x] Settings + CLI flow to move it: copy → verify (checksums, exclusive-lock WAL quiesce, open/migrate + integrity check) → fsync-durable atomic pointer switch → remove old
+- [x] Safety rails: no nested targets, permission checks, existing-database detection (open-instead), read-only during move, cross-process move refusal
+- [x] In-app + docs backup guidance: sync the folder with your own cloud (iCloud/Dropbox/Syncthing/Nextcloud/NAS) — **users back up their own data**; note the keychain KEK never travels with the folder
 
 ## Phase 4.8 — ShapePay: email-driven payment webhooks ([TODO-FOLD-SHAPEPAY.md](TODO-FOLD-SHAPEPAY.md))
 
