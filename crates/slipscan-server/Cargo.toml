@@ -24,6 +24,8 @@ uuid = { workspace = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 ed25519-dalek = { workspace = true }
+# data_status route tests need real directories on disk.
+tempfile = "3"
 tower = { workspace = true }
 
 [lints]

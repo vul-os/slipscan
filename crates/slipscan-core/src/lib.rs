@@ -9,6 +9,7 @@
 //! * every mutation lands in the append-only `audit_log`
 
 pub mod csv;
+pub mod datadir;
 pub mod db;
 pub mod domain;
 pub mod error;

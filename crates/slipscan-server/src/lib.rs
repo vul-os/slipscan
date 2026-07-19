@@ -17,6 +17,7 @@ use sha2::{Digest, Sha256};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use slipscan_core::datadir::DataDirResolver;
 use slipscan_core::fx::FxTransport;
 use slipscan_core::{CoreError, CoreService};
 
@@ -95,6 +96,10 @@ pub struct AppState {
     auth: Option<[u8; 32]>,
     vault: Option<Arc<Mutex<vault::VaultHandle>>>,
     fx_transport: Option<FxTransportFactory>,
+    /// Resolver for the managed (movable) data folder, when this server is
+    /// serving it. Powers the read-only `data_status` route; absent when the
+    /// caller opened an explicit database path instead.
+    data_dir: Option<Arc<DataDirResolver>>,
 }
 
 impl AppState {
@@ -106,6 +111,7 @@ impl AppState {
             auth,
             vault: None,
             fx_transport: None,
+            data_dir: None,
         }
     }
 
@@ -119,6 +125,15 @@ impl AppState {
     /// works. Without one the route answers 503; no other route needs it.
     pub fn with_fx_transport(mut self, factory: FxTransportFactory) -> Self {
         self.fx_transport = Some(factory);
+        self
+    }
+
+    /// Attach the managed data-folder resolver so `GET data_status` works.
+    /// Only attach it when the served database actually is the resolver's —
+    /// with an explicit database path the route answers 503 instead of
+    /// describing a folder this server is not serving.
+    pub fn with_data_dir(mut self, resolver: DataDirResolver) -> Self {
+        self.data_dir = Some(Arc::new(resolver));
         self
     }
 
@@ -136,6 +151,10 @@ impl AppState {
 
     pub(crate) fn fx_transport(&self) -> Option<FxTransportFactory> {
         self.fx_transport.clone()
+    }
+
+    pub(crate) fn data_dir(&self) -> Option<&DataDirResolver> {
+        self.data_dir.as_deref()
     }
 
     pub(crate) fn vault(&self) -> Result<MutexGuard<'_, vault::VaultHandle>, routes::ApiError> {
@@ -222,11 +241,16 @@ pub fn stored_token_hash(service: &CoreService) -> Result<Option<[u8; 32]>, Serv
 /// [`vault::VaultHandle`] on the same database so the metadata-only vault
 /// routes work; with `None` they answer 503. Pass an [`FxTransportFactory`]
 /// so the explicit `fx_fetch_rate` route works; with `None` it answers 503
-/// (all other FX routes are purely local).
+/// (all other FX routes are purely local). Pass the [`DataDirResolver`] when
+/// (and only when) the served database is the managed data folder's, so the
+/// read-only `GET data_status` route can describe it; with `None` it answers
+/// 503. The data-folder *move* is deliberately not served — see the route
+/// module's rationale.
 pub async fn serve(
     service: CoreService,
     vault: Option<vault::VaultHandle>,
     fx_transport: Option<FxTransportFactory>,
+    data_dir: Option<DataDirResolver>,
     config: ServerConfig,
 ) -> Result<(), ServerError> {
     let auth = if config.require_auth {
@@ -240,6 +264,9 @@ pub async fn serve(
     }
     if let Some(factory) = fx_transport {
         state = state.with_fx_transport(factory);
+    }
+    if let Some(resolver) = data_dir {
+        state = state.with_data_dir(resolver);
     }
     let listener = tokio::net::TcpListener::bind(config.addr)
         .await
@@ -371,7 +398,7 @@ mod tests {
             require_auth: true,
             ..ServerConfig::default()
         };
-        let err = serve(service, None, None, config).await.unwrap_err();
+        let err = serve(service, None, None, None, config).await.unwrap_err();
         assert!(matches!(err, ServerError::AuthNotInitialized));
     }
 }
