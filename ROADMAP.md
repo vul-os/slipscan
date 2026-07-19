@@ -73,12 +73,15 @@ Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Data location & backup".
 - [ ] Safety rails: no nested targets, permission checks, existing-database detection (open-instead), read-only during move
 - [ ] In-app + docs backup guidance: sync the folder with your own cloud (iCloud/Dropbox/Syncthing/Nextcloud/NAS) — **users back up their own data**; note the keychain KEK never travels with the folder
 
-## Phase 4.8 — Fold ShapePay ([TODO-FOLD-SHAPEPAY.md](TODO-FOLD-SHAPEPAY.md))
+## Phase 4.8 — ShapePay: email-driven payment webhooks ([TODO-FOLD-SHAPEPAY.md](TODO-FOLD-SHAPEPAY.md))
 
-- [ ] Payment expectations (reference code, amount tolerance, expiry, one-shot/recurring)
-- [ ] Matcher inside the ingestion pipeline
-- [ ] Webhook dispatcher: vault-held secrets, HMAC-signed payloads, SQLite retry queue (fires when the box regains network), audited deliveries
-- [ ] CLI `slipscan pay`, server routes, desktop expectations + delivery-status screen
+Simple by design: connect your email, watch for reference codes, fire signed webhooks — a payment system on the transactions already in your inbox.
+
+- [x] Original ShapePay history folded into this repo
+- [ ] Watch codes (reference + optional amount)
+- [ ] Webhook endpoints: vault-held secrets, HMAC-signed payloads (timestamp + nonce), SQLite retry queue with backoff, audited deliveries
+- [ ] Detection hook on inbound transactions (email-ingested first; every source inherits)
+- [ ] `slipscan pay` CLI, server routes, desktop Payments panel
 
 ## Phase 5 — Self-host server mode
 
