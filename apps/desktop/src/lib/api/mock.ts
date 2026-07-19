@@ -10,6 +10,8 @@ import type {
   BudgetUpsert,
   BudgetWithSpend,
   Category,
+  DataMoveRequest,
+  DataStatus,
   Document,
   DocumentImportRequest,
   DocumentReviewRequest,
@@ -472,6 +474,39 @@ let reconSuggestions: ReconSuggestion[] = documents
     };
   });
 
+/** Mock data folder — the platform default until "moved". */
+const DEFAULT_DATA_DIR = "~/Library/Application Support/org.vulos.slipscan";
+const dataState: DataStatus = {
+  data_dir: DEFAULT_DATA_DIR,
+  db_path: `${DEFAULT_DATA_DIR}/slipscan.db`,
+  documents_dir: `${DEFAULT_DATA_DIR}/documents`,
+  pointer_path: `${DEFAULT_DATA_DIR}/data_dir.json`,
+  pointer_set: false,
+  is_default_location: true,
+  db_exists: true,
+  db_size_bytes: 2_184_192,
+  document_count: documents.length,
+  documents_size_bytes: 14_386_002,
+};
+
+/** Mirrors the desktop shell's trivial path-component cloud detection. */
+function mockCloudHint(folder: string): string | undefined {
+  if (folder.includes("Mobile Documents") || folder.includes("com~apple~CloudDocs"))
+    return "iCloud Drive";
+  for (const vendor of [
+    "Dropbox",
+    "Google Drive",
+    "OneDrive",
+    "Nextcloud",
+    "Syncthing",
+    "Proton Drive",
+    "pCloud",
+  ]) {
+    if (folder.includes(vendor)) return vendor;
+  }
+  return undefined;
+}
+
 /** FX starts unconfigured — opt-in, exactly like the real core service. */
 const fxState: FxStatus = {
   configured: false,
@@ -571,6 +606,36 @@ export const mockApi = {
   }),
 
   book_list: async (): Promise<Book[]> => clone([book]),
+
+  data_status: async (): Promise<DataStatus> =>
+    clone({ ...dataState, cloud_sync_hint: mockCloudHint(dataState.data_dir) }),
+
+  data_move: async (q: DataMoveRequest): Promise<DataStatus> => {
+    const target = q.target.trim();
+    if (!target) throw new Error("enter a destination folder");
+    if (!target.startsWith("/") && !target.startsWith("~"))
+      throw new Error(`enter an absolute path (got "${target}")`);
+    if (target === dataState.data_dir)
+      throw new Error("the target is the current data folder");
+    if (target.startsWith(`${dataState.data_dir}/`))
+      throw new Error(
+        `the target ${target} is inside the current data folder ${dataState.data_dir} — pick a folder outside it`,
+      );
+    // Deterministic stand-in for the offer-open case (real detection is a
+    // slipscan.db in the target folder).
+    if (!q.use_existing && target.includes("existing"))
+      throw new Error(
+        `the target folder already contains a SlipScan database (${target}/slipscan.db) — open that database instead, or pick an empty folder`,
+      );
+    // The real move is a single long await (copy + verify + switch).
+    await new Promise((r) => setTimeout(r, 1200));
+    dataState.data_dir = target;
+    dataState.db_path = `${target}/slipscan.db`;
+    dataState.documents_dir = `${target}/documents`;
+    dataState.pointer_set = true;
+    dataState.is_default_location = false;
+    return clone({ ...dataState, cloud_sync_hint: mockCloudHint(target) });
+  },
 
   account_list: async (_q: { book_id: string }): Promise<Account[]> =>
     clone(accounts),

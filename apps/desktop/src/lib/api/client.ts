@@ -16,6 +16,8 @@ import type {
   BudgetUpsert,
   BudgetWithSpend,
   Category,
+  DataMoveRequest,
+  DataStatus,
   Document,
   DocumentImportRequest,
   FxConversion,
@@ -72,6 +74,18 @@ export const api = {
   health: (): Promise<Health> => call("health", {}, mockApi.health),
 
   bookList: (): Promise<Book[]> => call("book_list", {}, mockApi.book_list),
+
+  // -- data folder: one movable folder holds everything durable. Backup is
+  // the user's own cloud syncing that folder; SlipScan ships no backup
+  // service. --
+
+  dataStatus: (): Promise<DataStatus> =>
+    call("data_status", {}, mockApi.data_status),
+
+  /** Single await for the whole copy→verify→switch→cleanup sequence; while
+   * it is pending the app is read-only (other commands block on the move). */
+  dataMove: (q: DataMoveRequest): Promise<DataStatus> =>
+    call("data_move", { query: q }, () => mockApi.data_move(q)),
 
   accountList: (q: { book_id: string }): Promise<Account[]> =>
     call("account_list", { query: q }, () => mockApi.account_list(q)),

@@ -64,6 +64,24 @@ fn slugify(name: &str) -> String {
     out.trim_end_matches('-').to_string()
 }
 
+// ---------------------------------------------------------------------------
+// data folder (movable) — contract: "Data location & backup"
+// ---------------------------------------------------------------------------
+
+/// Where the user's data lives and how big it is. The payload is core's
+/// `datadir::DataStatus` exactly as the server's `GET /api/v1/data_status`
+/// serves it (surface parity), plus one desktop-only display nicety.
+#[derive(Debug, Serialize)]
+pub struct DataStatusDto {
+    #[serde(flatten)]
+    pub status: slipscan_core::datadir::DataStatus,
+    /// Cloud-sync provider name when the folder is trivially inside a known
+    /// synced tree ("iCloud Drive", "Dropbox", …). Omitted when not
+    /// detectable — absence never means "not synced".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_sync_hint: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountDto {
     pub id: String,
