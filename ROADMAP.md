@@ -78,10 +78,10 @@ Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Data location & backup".
 Simple by design: connect your email, watch for reference codes, fire signed webhooks — a payment system on the transactions already in your inbox.
 
 - [x] Original ShapePay history folded into this repo
-- [ ] Watch codes (reference + optional amount)
-- [ ] Webhook endpoints: vault-held secrets, HMAC-signed payloads (timestamp + nonce), SQLite retry queue with backoff, audited deliveries
-- [ ] Detection hook on inbound transactions (email-ingested first; every source inherits)
-- [ ] `slipscan pay` CLI, server routes, desktop Payments panel
+- [x] Watch codes (reference + optional amount)
+- [x] Webhook endpoints: vault-held secrets, HMAC-signed payloads (timestamp + nonce), SQLite retry queue with backoff, audited deliveries
+- [x] Detection hook on inbound transactions (every source inherits: the hook runs inside `transaction_create`) *(partial upstream: parsing bank-alert emails into transactions is not wired yet — see [docs/EMAIL.md](docs/EMAIL.md); statement imports and manual entries trigger detection today)*
+- [x] `slipscan pay` CLI, server routes, desktop Payments panel — guide with receiver verification example: [docs/PAYMENTS.md](docs/PAYMENTS.md)
 
 ## Phase 5 — Self-host server mode
 
