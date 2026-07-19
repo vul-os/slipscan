@@ -504,7 +504,7 @@
         <ul class="divide-y divide-line">
           {#each watches as w (w.id)}
             {@const hits = matchCount(w.id)}
-            <li class="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+            <li class="row-hover flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
               <span class="min-w-0 flex-1 leading-tight">
                 <span class="block text-[12.5px] font-medium">
                   <span class="font-mono">{w.code}</span>
@@ -684,7 +684,7 @@
       {:else}
         <ul class="divide-y divide-line">
           {#each endpoints as e (e.id)}
-            <li class="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+            <li class="row-hover flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
               <span
                 class="flex size-8 shrink-0 items-center justify-center rounded-md bg-sunken text-t3"
               >
@@ -790,7 +790,7 @@
         <ul class="divide-y divide-line">
           {#each sortedDeliveries as d (d.id)}
             {@const summary = payloadSummary(d)}
-            <li class="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+            <li class="row-hover flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
               <span class="min-w-0 flex-1 leading-tight">
                 <span class="block text-[12.5px] font-medium">
                   {#if summary}

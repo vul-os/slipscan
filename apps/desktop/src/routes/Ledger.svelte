@@ -291,7 +291,7 @@
               bind:value={line.credit}
             />
             <button
-              class="btn btn-ghost h-8 w-8 justify-center px-0"
+              class="btn btn-ghost h-8 w-8 justify-center px-0 disabled:pointer-events-none disabled:opacity-40"
               type="button"
               aria-label="Remove line"
               disabled={lines.length <= 2}
@@ -337,7 +337,7 @@
           </button>
           <span class="ml-auto"></span>
           <button
-            class="btn btn-primary h-7"
+            class="btn btn-primary h-7 disabled:pointer-events-none disabled:opacity-50"
             type="submit"
             disabled={posting || orphanLines || diff !== 0 || debitTotal === 0}
           >

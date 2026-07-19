@@ -92,7 +92,11 @@
   subtitle="SlipScan pairs slips with bank transactions by amount, date, and merchant. Confirm the good ones; reject the rest."
 >
   {#snippet actions()}
-    <button class="btn btn-primary" onclick={run} disabled={running}>
+    <button
+      class="btn btn-primary disabled:pointer-events-none disabled:opacity-50"
+      onclick={run}
+      disabled={running}
+    >
       <Icon name="reconcile" size={14} />
       {running ? "Matching…" : "Run matching"}
     </button>
@@ -178,14 +182,22 @@
                   class="mt-1 h-0.5 overflow-hidden rounded-full bg-line"
                   aria-hidden="true"
                 >
+                  <!-- Bar draws in on load with the entering easing; the
+                       global reduced-motion rule collapses it to one frame. -->
                   <div
                     class="h-full rounded-full bg-accent-text dark:bg-accent"
-                    style="width: {Math.min(100, s.score * 100)}%"
+                    style="width: {Math.min(
+                      100,
+                      s.score * 100,
+                    )}%; transition: width var(--dur-slow) var(--ease-decel);"
                   ></div>
                 </div>
               </div>
               <div class="flex items-center gap-1.5">
-                <button class="btn h-7" onclick={() => decide(s, true)}>
+                <button
+                  class="btn h-7 hover:border-success/40"
+                  onclick={() => decide(s, true)}
+                >
                   <Icon name="check" size={13} class="text-success" />
                   Confirm
                 </button>

@@ -3,12 +3,13 @@
   import { router } from "../lib/router.svelte";
   import { globalSearch } from "../lib/search.svelte";
   import { routeCache } from "../lib/loadCache";
-  import { fmtDate, fmtMoney } from "../lib/format";
+  import { fmtDate } from "../lib/format";
   import type { Account, Book, Category, Transaction } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
   import Money from "../lib/components/Money.svelte";
+  import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
 
   let search = $state(globalSearch.query);
@@ -149,36 +150,48 @@
 />
 
 <div class="mb-3 flex flex-wrap items-center gap-2">
-  <div class="relative w-64">
+  <div class="relative w-full sm:w-64">
     <Icon
       name="search"
       size={14}
       class="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-t3"
     />
     <input
-      class="input pl-8"
+      class="input pr-8 pl-8"
       placeholder="Filter by merchant or description…"
       bind:value={search}
     />
+    {#if search}
+      <button
+        type="button"
+        class="absolute top-1/2 right-1 flex size-6 -translate-y-1/2 items-center justify-center rounded text-t3 hover:text-t1"
+        style="transition: color var(--dur-quick) var(--ease-standard);"
+        aria-label="Clear search"
+        onclick={() => (search = "")}
+      >
+        <Icon name="x" size={13} />
+      </button>
+    {/if}
   </div>
-  <select class="input w-44" bind:value={accountFilter} aria-label="Account">
+  <select class="input w-full sm:w-44" bind:value={accountFilter} aria-label="Account">
     <option value="">All accounts</option>
     {#each accounts as a (a.id)}
       <option value={a.id}>{a.name}</option>
     {/each}
   </select>
-  <select class="input w-44" bind:value={categoryFilter} aria-label="Category">
+  <select class="input w-full sm:w-44" bind:value={categoryFilter} aria-label="Category">
     <option value="">All categories</option>
     <option value="none">Uncategorised</option>
     {#each categories as c (c.id)}
       <option value={c.id}>{c.name}</option>
     {/each}
   </select>
-  <span class="ml-auto text-[12px] text-t3">
-    {filtered.length} of {transactions.length}
+  <span class="ml-auto flex items-center gap-1.5 text-[12px] text-t3">
+    <span class="num tabular-nums">{filtered.length}</span> of
+    <span class="num tabular-nums">{transactions.length}</span>
     {#if book}
-      · outflow
-      <span class="num">{fmtMoney(outflow, book.currency)}</span>
+      <span aria-hidden="true" class="text-line-2">·</span> outflow
+      <Money amount={outflow} currency={book.currency} class="text-t2" />
     {/if}
   </span>
 </div>
@@ -224,58 +237,67 @@
       {/snippet}
     </EmptyState>
   {:else}
-    <table class="w-full border-collapse text-[12.5px]">
-      <thead>
-        <tr class="bg-sunken/60">
-          <th class="th w-28">Date</th>
-          <th class="th">Description</th>
-          <th class="th w-40">Account</th>
-          <th class="th w-40">Category</th>
-          <th class="th w-20">Source</th>
-          <th class="th w-32 text-right">Amount</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each filtered as tx (tx.id)}
-          <tr class="transition-colors hover:bg-sunken/50">
-            <td class="td num whitespace-nowrap text-t2"
-              >{fmtDate(tx.posted_at)}</td
-            >
-            <td class="td max-w-0">
-              <span class="block truncate font-medium"
-                >{tx.merchant ?? tx.description}</span
-              >
-              {#if tx.merchant}
-                <span class="block truncate text-[11px] text-t3"
-                  >{tx.description}</span
-                >
-              {/if}
-            </td>
-            <td class="td max-w-0 text-t2">
-              <span class="block truncate">{accountName(tx.account_id)}</span>
-            </td>
-            <td class="td">
-              <select
-                class="input h-7 w-full pl-1.5 text-[12px] {tx.category_id
-                  ? 'text-t2'
-                  : 'text-warning'}"
-                aria-label="Categorise transaction"
-                value={tx.category_id ?? ""}
-                onchange={(e) => categorize(tx, e.currentTarget.value)}
-              >
-                <option value="">Uncategorised</option>
-                {#each categories as c (c.id)}
-                  <option value={c.id}>{c.icon ?? ""} {c.name}</option>
-                {/each}
-              </select>
-            </td>
-            <td class="td text-[11px] text-t3">{sourceLabel[tx.source]}</td>
-            <td class="td text-right">
-              <Money amount={tx.amount_minor} currency={tx.currency} signed colored />
-            </td>
+    <div class="table-wrap table-scroll">
+      <table class="w-full text-[12.5px]">
+        <thead>
+          <tr>
+            <th class="th w-28">Date</th>
+            <th class="th">Description</th>
+            <th class="th w-40">Account</th>
+            <th class="th w-44">Category</th>
+            <th class="th w-24">Source</th>
+            <th class="th w-32 text-right">Amount</th>
           </tr>
-        {/each}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {#each filtered as tx (tx.id)}
+            <tr class="row-hover">
+              <td class="td num whitespace-nowrap text-t2"
+                >{fmtDate(tx.posted_at)}</td
+              >
+              <td class="td max-w-0">
+                <span class="block truncate font-medium"
+                  >{tx.merchant ?? tx.description}</span
+                >
+                {#if tx.merchant}
+                  <span class="block truncate text-[11px] text-t3"
+                    >{tx.description}</span
+                  >
+                {/if}
+              </td>
+              <td class="td max-w-0 text-t2">
+                <span class="block truncate">{accountName(tx.account_id)}</span>
+              </td>
+              <td class="td">
+                <select
+                  class="input h-7 w-full pl-1.5 text-[12px] {tx.category_id
+                    ? 'text-t2'
+                    : 'text-warning'}"
+                  aria-label="Categorise transaction"
+                  value={tx.category_id ?? ""}
+                  onchange={(e) => categorize(tx, e.currentTarget.value)}
+                >
+                  <option value="">Uncategorised</option>
+                  {#each categories as c (c.id)}
+                    <option value={c.id}>{c.icon ?? ""} {c.name}</option>
+                  {/each}
+                </select>
+              </td>
+              <td class="td">
+                <Badge tone="neutral" dot={false} label={sourceLabel[tx.source]} />
+              </td>
+              <td class="td text-right">
+                <Money
+                  amount={tx.amount_minor}
+                  currency={tx.currency}
+                  signed
+                  colored
+                />
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 </div>

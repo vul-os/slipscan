@@ -736,7 +736,7 @@
         <ul class="divide-y divide-line">
           {#each fx.cached_rates as r (`${r.from_currency}/${r.to_currency}`)}
             {@const pair = `${r.from_currency}/${r.to_currency}`}
-            <li class="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+            <li class="row-hover flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
               <span class="min-w-0 flex-1 leading-tight">
                 <span class="num block text-[12.5px] font-medium">
                   {pair} · {r.rate}
@@ -810,11 +810,13 @@
           />
         </label>
       </div>
-      <p class="mt-3 flex items-center gap-1.5 text-[11px] text-t3">
-        <Icon name="key" size={12} />
-        Store the API key in the Credential vault below (e.g. as
-        <span class="font-mono">llm.api_key</span>) — it is envelope-encrypted
-        and write-only, never in SQLite or config files.
+      <p class="mt-3 flex items-start gap-1.5 text-[11px] text-t3">
+        <Icon name="key" size={12} class="mt-0.5 shrink-0" />
+        <span>
+          Store the API key in the Credential vault below (e.g. as
+          <span class="font-mono">llm.api_key</span>) — it is
+          envelope-encrypted and write-only, never in SQLite or config files.
+        </span>
       </p>
       <p class="mt-1.5 text-[11px] text-t3">
         Extraction currently runs via the CLI (slipscan extract); in-app
@@ -888,7 +890,7 @@
       {:else}
         <ul class="divide-y divide-line">
           {#each s.scrapers as sc (sc.id)}
-            <li class="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+            <li class="row-hover flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
               <span
                 class="flex size-8 shrink-0 items-center justify-center rounded-md bg-sunken text-t3"
               >
@@ -1026,7 +1028,7 @@
       {:else}
         <ul class="divide-y divide-line">
           {#each credentials as c (c.name)}
-            <li class="py-2.5 first:pt-0 last:pb-0">
+            <li class="row-hover py-2.5 first:pt-0 last:pb-0">
               <div class="flex items-center gap-3">
                 <span
                   class="flex size-8 shrink-0 items-center justify-center rounded-md bg-sunken text-t3"
@@ -1120,7 +1122,7 @@
       {:else}
         <ul class="divide-y divide-line">
           {#each s.packs as p (p.id)}
-            <li class="flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
+            <li class="row-hover flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
               <span
                 class="flex size-8 items-center justify-center rounded-md bg-sunken text-t3"
               >

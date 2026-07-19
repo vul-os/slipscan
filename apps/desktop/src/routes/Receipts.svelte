@@ -1,13 +1,14 @@
 <script lang="ts">
   import { api } from "../lib/api/client";
   import { routeCache } from "../lib/loadCache";
-  import { fmtDate, fmtMoney, fmtPct } from "../lib/format";
+  import { fmtDate, fmtPct } from "../lib/format";
   import { csvMoney, downloadCsv, toCsv } from "../lib/csv";
   import type { Document, DocumentStatus } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
   import Badge from "../lib/components/Badge.svelte";
+  import Money from "../lib/components/Money.svelte";
   import Icon from "../lib/components/Icon.svelte";
 
   type Filter = "all" | DocumentStatus;
@@ -110,6 +111,14 @@
     reviewed: "success",
     failed: "danger",
   };
+
+  /** Extraction confidence → the one chip system. High is quiet success,
+   * the mid band earns the lime "review me" accent, low is a warning. */
+  function confidenceTone(c: number): "success" | "accent" | "warning" {
+    if (c >= 0.9) return "success";
+    if (c >= 0.7) return "accent";
+    return "warning";
+  }
 
   let fileInput = $state<HTMLInputElement | null>(null);
   let importError = $state<string | null>(null);
@@ -315,121 +324,184 @@
       {/snippet}
     </EmptyState>
   {:else}
-    <table class="w-full border-collapse text-[12.5px]">
-      <thead>
-        <tr class="bg-sunken/60">
-          <th class="th">Document</th>
-          <th class="th w-28">Date</th>
-          <th class="th w-32 text-right">Total</th>
-          <th class="th w-32">Status</th>
-          <th class="th w-28 text-right">Confidence</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each filtered as d (d.id)}
-          <tr
-            class="cursor-pointer transition-colors hover:bg-sunken/50 focus-visible:bg-sunken/50 focus-visible:outline-1 focus-visible:outline-accent-ring {selected?.id ===
-            d.id
-              ? 'bg-sunken/60'
-              : ''}"
-            role="button"
-            tabindex="0"
-            aria-expanded={selected?.id === d.id}
-            aria-label="Toggle details for {d.merchant ?? d.file_name}"
-            onclick={() => toggleDetail(d)}
-            onkeydown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                toggleDetail(d);
-              }
-            }}
-          >
-            <td class="td max-w-0">
-              <span class="flex items-center gap-2.5">
-                <span
-                  class="flex size-7 shrink-0 items-center justify-center rounded-md bg-sunken text-t3"
-                >
-                  <Icon name="receipt" size={14} />
-                </span>
-                <span class="min-w-0 leading-tight">
-                  <span class="block truncate font-medium">
-                    {d.merchant ?? "Awaiting extraction"}
-                  </span>
-                  <span class="block truncate font-mono text-[10.5px] text-t3">
-                    {d.file_name}
-                  </span>
-                </span>
-              </span>
-            </td>
-            <td class="td num whitespace-nowrap text-t2">
-              {d.issued_at ? fmtDate(d.issued_at) : "—"}
-            </td>
-            <td class="td num text-right">
-              {d.total_minor != null ? fmtMoney(d.total_minor, d.currency) : "—"}
-            </td>
-            <td class="td">
-              <Badge tone={statusTone[d.status]} label={d.status} />
-            </td>
-            <td class="td num text-right text-t2">
-              {d.extraction ? fmtPct(d.extraction.confidence) : "—"}
-            </td>
+    <div class="table-wrap table-scroll">
+      <table class="w-full text-[12.5px]">
+        <thead>
+          <tr>
+            <th class="th">Document</th>
+            <th class="th w-28">Date</th>
+            <th class="th w-32 text-right">Total</th>
+            <th class="th w-32">Status</th>
+            <th class="th w-36 text-right">Confidence</th>
           </tr>
-          {#if selected?.id === d.id}
-            <tr>
-              <td colspan="5" class="td bg-sunken/30">
-                {#if selected.extraction}
-                  {@const ex = selected.extraction}
-                  <div class="px-2 py-1.5">
-                    <div class="mb-2 flex items-baseline justify-between">
-                      <span class="text-[12.5px] font-semibold">
-                        {ex.merchant || selected.file_name}
-                        <span class="ml-2 text-[11px] font-normal text-t3">
-                          {fmtDate(ex.issued_at)} · {fmtPct(ex.confidence)} confidence
-                        </span>
-                      </span>
-                      <span class="num">{fmtMoney(ex.total_minor, ex.currency)}</span>
-                    </div>
-                    {#if ex.line_items.length > 0}
-                      <ul class="divide-y divide-line/60">
-                        {#each ex.line_items as li, i (i)}
-                          <li
-                            class="flex items-center gap-3 py-1 text-[12px]"
-                          >
-                            <span class="min-w-0 flex-1 truncate text-t2"
-                              >{li.description}</span
-                            >
-                            <span class="num w-14 text-right text-t3"
-                              >×{li.quantity}</span
-                            >
-                            <span class="num w-24 text-right"
-                              >{fmtMoney(li.total_minor, ex.currency)}</span
-                            >
-                          </li>
-                        {/each}
-                      </ul>
-                    {/if}
-                    <div
-                      class="mt-2 flex items-center gap-4 text-[11px] text-t3"
-                    >
-                      <span>VAT {fmtMoney(ex.vat_minor, ex.currency)}</span>
-                      {#if ex.discount_minor > 0}
-                        <span>Discounts −{fmtMoney(ex.discount_minor, ex.currency)}</span>
-                      {/if}
-                      <span class="num">{ex.currency}</span>
-                    </div>
-                  </div>
+        </thead>
+        <tbody>
+          {#each filtered as d (d.id)}
+            {@const open = selected?.id === d.id}
+            <tr
+              class="row-hover cursor-pointer {open ? 'bg-sunken/60' : ''}"
+              role="button"
+              tabindex="0"
+              aria-expanded={open}
+              aria-label="Toggle details for {d.merchant ?? d.file_name}"
+              onclick={() => toggleDetail(d)}
+              onkeydown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggleDetail(d);
+                }
+              }}
+            >
+              <td class="td max-w-0">
+                <span class="flex items-center gap-2.5">
+                  <span
+                    class="flex size-7 shrink-0 items-center justify-center rounded-md border border-line bg-sunken text-t3"
+                  >
+                    <Icon name="receipt" size={14} />
+                  </span>
+                  <span class="min-w-0 leading-tight">
+                    <span class="block truncate font-medium">
+                      {d.merchant ?? "Awaiting extraction"}
+                    </span>
+                    <span class="block truncate font-mono text-[10.5px] text-t3">
+                      {d.file_name}
+                    </span>
+                  </span>
+                </span>
+              </td>
+              <td class="td num whitespace-nowrap text-t2">
+                {d.issued_at ? fmtDate(d.issued_at) : "—"}
+              </td>
+              <td class="td text-right">
+                {#if d.total_minor != null}
+                  <Money amount={d.total_minor} currency={d.currency} />
                 {:else}
-                  <p class="px-2 py-2 text-[12px] text-t3">
-                    No extraction yet — this document is {selected.status}.
-                    Run extraction from the CLI (slipscan extract) with your
-                    configured LLM provider, or review it manually.
-                  </p>
+                  <span class="num text-t3">—</span>
                 {/if}
               </td>
+              <td class="td">
+                <Badge tone={statusTone[d.status]} label={d.status} />
+              </td>
+              <td class="td">
+                <span class="flex items-center justify-end gap-2">
+                  {#if d.extraction}
+                    <Badge
+                      tone={confidenceTone(d.extraction.confidence)}
+                      label={fmtPct(d.extraction.confidence)}
+                    />
+                  {:else}
+                    <span class="num text-t3">—</span>
+                  {/if}
+                  <Icon
+                    name="chevron-down"
+                    size={14}
+                    class="shrink-0 text-t3 {open ? 'rotate-180' : ''}"
+                  />
+                </span>
+              </td>
             </tr>
-          {/if}
-        {/each}
-      </tbody>
-    </table>
+            {#if open}
+              <tr>
+                <td colspan="5" class="!p-0">
+                  <div class="reveal border-t border-line bg-sunken/30">
+                    <div class="reveal-inner">
+                      {#if selected?.extraction}
+                        {@const ex = selected.extraction}
+                        <div class="px-4 py-3.5">
+                          <div
+                            class="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1"
+                          >
+                            <span class="text-[12.5px] font-semibold">
+                              {ex.merchant || selected.file_name}
+                              <span class="ml-1.5 text-[11px] font-normal text-t3">
+                                {fmtDate(ex.issued_at)}
+                              </span>
+                            </span>
+                            <Money
+                              amount={ex.total_minor}
+                              currency={ex.currency}
+                              class="font-medium"
+                            />
+                          </div>
+                          {#if ex.line_items.length > 0}
+                            <table class="w-full text-[12px]">
+                              <thead>
+                                <tr>
+                                  <th
+                                    class="px-0 pb-1 text-left text-[10px] font-semibold tracking-[0.08em] text-t3 uppercase"
+                                    >Item</th
+                                  >
+                                  <th
+                                    class="px-0 pb-1 text-right text-[10px] font-semibold tracking-[0.08em] text-t3 uppercase"
+                                    >Qty</th
+                                  >
+                                  <th
+                                    class="px-0 pb-1 text-right text-[10px] font-semibold tracking-[0.08em] text-t3 uppercase"
+                                    >Amount</th
+                                  >
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {#each ex.line_items as li, i (i)}
+                                  <tr class="border-t border-line/60">
+                                    <td class="max-w-0 py-1.5 pr-3 text-t2">
+                                      <span class="block truncate"
+                                        >{li.description}</span
+                                      >
+                                    </td>
+                                    <td
+                                      class="num w-16 py-1.5 text-right text-t3"
+                                      >×{li.quantity}</td
+                                    >
+                                    <td class="w-28 py-1.5 text-right">
+                                      <Money
+                                        amount={li.total_minor}
+                                        currency={ex.currency}
+                                      />
+                                    </td>
+                                  </tr>
+                                {/each}
+                              </tbody>
+                            </table>
+                          {/if}
+                          <div
+                            class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-line/60 pt-2.5 text-[11px] text-t3"
+                          >
+                            <span class="flex items-center gap-1"
+                              >VAT
+                              <Money
+                                amount={ex.vat_minor}
+                                currency={ex.currency}
+                                class="text-[11px] text-t2"
+                              /></span
+                            >
+                            {#if ex.discount_minor > 0}
+                              <span class="flex items-center gap-1"
+                                >Discount −<Money
+                                  amount={ex.discount_minor}
+                                  currency={ex.currency}
+                                  class="text-[11px] text-t2"
+                                /></span
+                              >
+                            {/if}
+                            <span class="num ml-auto">{ex.currency}</span>
+                          </div>
+                        </div>
+                      {:else}
+                        <p class="px-4 py-3 text-[12px] leading-relaxed text-t3">
+                          No extraction yet — this document is {selected?.status}.
+                          Run extraction from the CLI (slipscan extract) with your
+                          configured LLM provider, or review it manually.
+                        </p>
+                      {/if}
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            {/if}
+          {/each}
+        </tbody>
+      </table>
+    </div>
   {/if}
 </div>

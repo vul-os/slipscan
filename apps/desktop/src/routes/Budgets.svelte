@@ -98,10 +98,15 @@
     }
   }
 
-  /** Meter ink: lime while under the limit; at/over it, the warn semantic —
-   * a flat tone switch, never a gradient. */
+  /** Meter ink, semantic in three flat tones (never a gradient): lime while
+   * there's comfortable headroom, amber as spend approaches the limit (≥85%),
+   * red once it's met or breached — the same ok/warn/error logic the dashboard
+   * nudges use. */
   function barTone(spent: number, amount: number): string {
-    if (amount > 0 && spent >= amount) return "bg-warning";
+    if (amount <= 0) return "bg-accent-ring dark:bg-accent";
+    const ratio = spent / amount;
+    if (ratio >= 1) return "bg-danger";
+    if (ratio >= 0.85) return "bg-warning";
     return "bg-accent-ring dark:bg-accent";
   }
 
@@ -255,10 +260,20 @@
       />
     </div>
 
-    <div class="card divide-y divide-line">
+    <div class="card divide-y divide-line overflow-hidden">
       {#each budgets as b (b.id)}
         {@const remaining = b.amount_minor - b.spent_minor}
-        <div class="px-4 py-3.5">
+        {@const over = remaining < 0}
+        <div class="row-hover relative px-4 py-3.5">
+          {#if over}
+            <!-- Over-budget rows carry the error semantic on their left edge —
+                 a pen-stroke marker matching the dashboard's over-budget
+                 nudge, so a problem row is scannable at a glance. -->
+            <span
+              class="absolute inset-y-0 left-0 w-0.5 bg-danger"
+              aria-hidden="true"
+            ></span>
+          {/if}
           <div class="mb-1.5 flex items-baseline justify-between gap-3">
             <span class="flex min-w-0 items-center gap-2 text-[13px] font-medium">
               <span class="truncate">{b.category_name}</span>
@@ -289,13 +304,16 @@
                   transition: width var(--dur-slow) var(--ease-standard);"
               ></span>
             </div>
+            <!-- Fixed-width, no-wrap cell: the amount + its 'left/over' label
+                 always stay on one line and right-align across every row, so
+                 4-digit amounts never break the two-vs-one-line rhythm. -->
             <span
-              class="num w-28 shrink-0 text-right {remaining < 0
-                ? 'text-warning'
+              class="num w-32 shrink-0 text-right whitespace-nowrap {over
+                ? 'text-danger'
                 : 'text-t2'}"
             >
               <Money amount={Math.abs(remaining)} currency={b.currency} />
-              {remaining < 0 ? "over" : "left"}
+              {over ? "over" : "left"}
             </span>
           </div>
         </div>
