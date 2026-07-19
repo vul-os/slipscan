@@ -35,6 +35,7 @@ pub mod email;
 pub mod fx;
 pub mod http;
 pub mod import;
+pub mod pay;
 pub mod state;
 pub mod vault;
 pub mod watch;

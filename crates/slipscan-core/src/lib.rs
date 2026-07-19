@@ -14,6 +14,7 @@ pub mod db;
 pub mod domain;
 pub mod error;
 pub mod fx;
+pub mod pay;
 pub mod region;
 pub mod repo;
 pub mod secrets;

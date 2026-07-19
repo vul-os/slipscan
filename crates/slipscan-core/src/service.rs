@@ -456,6 +456,12 @@ impl CoreService {
             None,
             Some(serde_json::to_string(&txn)?),
         )?;
+        // ShapePay detection hook: every ingestion source (statement import,
+        // email, scraper, manual) flows through this path, so watch-code
+        // detection inherits all of them. Runs inside the same SQLite
+        // transaction — a failed insert enqueues nothing, and the dedupe
+        // rejections above mean a re-imported duplicate can never re-fire.
+        self.detect_payment_matches(&tx, &txn)?;
         tx.commit()?;
         Ok(txn)
     }
@@ -2485,6 +2491,496 @@ impl CoreService {
             Some(serde_json::to_string(&conversion)?),
         )?;
         Ok(conversion)
+    }
+
+    // -----------------------------------------------------------------------
+    // ShapePay — watch codes, webhook endpoints, delivery dispatch.
+    // Deliberately simple (TODO-FOLD-SHAPEPAY.md): watch codes are a flat
+    // list, detection lives in `transaction_create`, secrets live in the
+    // vault. Pure logic (matching, signing, backoff) is in `crate::pay`.
+    // -----------------------------------------------------------------------
+
+    /// The credential vault over this service's database + keychain.
+    fn vault(&self) -> crate::secrets::Vault<'_> {
+        crate::secrets::Vault::new(self.conn(), &*self.secrets)
+    }
+
+    /// Vault metadata for every stored secret — labels, versions,
+    /// fingerprints, timestamps. Never material (the vault has no read path
+    /// besides `use_with`).
+    pub fn vault_list(&self) -> CoreResult<Vec<crate::secrets::VaultSecretMeta>> {
+        self.vault().list_metadata()
+    }
+
+    /// Add a watch code: a reference to detect on inbound transactions,
+    /// optionally narrowed to one exact amount. No lifecycle — the list is
+    /// flat and `enabled` is the only state.
+    pub fn pay_watch_add(&self, new: NewPayWatch) -> CoreResult<PayWatch> {
+        self.book_get(&new.book_id)?;
+        let code = new.code.trim().to_string();
+        if code.is_empty() {
+            return Err(CoreError::Validation("watch code must not be empty".into()));
+        }
+        let expected_currency = match (new.expected_amount_minor, new.expected_currency) {
+            (Some(amount), currency) => {
+                if amount <= 0 || amount > MAX_LINE_AMOUNT_MINOR {
+                    return Err(CoreError::Validation(format!(
+                        "expected amount {amount} out of range: must be positive (only inbound \
+                         transactions match) and at most {MAX_LINE_AMOUNT_MINOR} minor units"
+                    )));
+                }
+                match currency {
+                    Some(raw) => Some(normalize_currency_code(&raw)?),
+                    None => {
+                        return Err(CoreError::Validation(
+                            "an exact expected amount needs a currency (e.g. \"ZAR\") — \
+                             the same number means different money in different currencies"
+                                .into(),
+                        ))
+                    }
+                }
+            }
+            (None, Some(raw)) => Some(normalize_currency_code(&raw)?),
+            (None, None) => None,
+        };
+        let watch = PayWatch {
+            id: new_id(),
+            book_id: new.book_id,
+            code,
+            label: new
+                .label
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty()),
+            expected_amount_minor: new.expected_amount_minor,
+            expected_currency,
+            enabled: true,
+            created_at: now_iso(),
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::pay::insert_watch(&tx, &watch)?;
+        self.emit_audit(
+            &tx,
+            Some(&watch.book_id),
+            "pay_watch",
+            Some(&watch.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&watch)?),
+        )?;
+        tx.commit()?;
+        Ok(watch)
+    }
+
+    pub fn pay_watch_list(&self, book_id: &str) -> CoreResult<Vec<PayWatch>> {
+        repo::pay::list_watches(self.conn(), book_id)
+    }
+
+    pub fn pay_watch_remove(&self, id: &str) -> CoreResult<()> {
+        let before = repo::pay::get_watch(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "pay_watch",
+            id: id.to_string(),
+        })?;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::pay::delete_watch(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "pay_watch",
+            Some(id),
+            "remove",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Flip a watch on/off — the only state a watch has.
+    pub fn pay_watch_set_enabled(&self, id: &str, enabled: bool) -> CoreResult<PayWatch> {
+        let before = repo::pay::get_watch(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "pay_watch",
+            id: id.to_string(),
+        })?;
+        let mut after = before.clone();
+        after.enabled = enabled;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::pay::set_watch_enabled(&tx, id, enabled)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "pay_watch",
+            Some(id),
+            "set_enabled",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Register a webhook endpoint. Generates the signing secret (32 random
+    /// bytes, hex) in core, stores it ONLY in the credential vault (under a
+    /// name derived from the endpoint id), and returns it **exactly once**
+    /// in [`PayEndpointWithSecret`] — the sanctioned single display, needed
+    /// so the receiver operator can configure verification. From then on the
+    /// vault's write-only contract applies: signing happens inside
+    /// `use_with`, and a lost secret means rotating it.
+    pub fn pay_endpoint_add(&self, new: NewPayEndpoint) -> CoreResult<PayEndpointWithSecret> {
+        self.book_get(&new.book_id)?;
+        let label = new.label.trim().to_string();
+        if label.is_empty() {
+            return Err(CoreError::Validation(
+                "endpoint label must not be empty".into(),
+            ));
+        }
+        let url = crate::pay::normalize_webhook_url(&new.url)?;
+        let endpoint = PayEndpoint {
+            id: new_id(),
+            book_id: new.book_id,
+            label,
+            url,
+            enabled: true,
+            created_at: now_iso(),
+        };
+        // Vault first (it runs its own transaction — SQLite transactions do
+        // not nest), then the endpoint row; if that fails, take the orphan
+        // secret back out so nothing dangles.
+        let secret = crate::pay::generate_secret_hex();
+        let secret_name = crate::pay::endpoint_secret_name(&endpoint.id);
+        self.vault()
+            .set(&secret_name, SecretString::new(secret.as_str()))?;
+        let stored: CoreResult<()> = (|| {
+            let tx = self.conn().unchecked_transaction()?;
+            repo::pay::insert_endpoint(&tx, &endpoint)?;
+            self.emit_audit(
+                &tx,
+                Some(&endpoint.book_id),
+                "pay_endpoint",
+                Some(&endpoint.id),
+                "create",
+                None,
+                Some(serde_json::to_string(&endpoint)?),
+            )?;
+            tx.commit()?;
+            Ok(())
+        })();
+        if let Err(e) = stored {
+            let _ = self.vault().revoke(&secret_name);
+            return Err(e);
+        }
+        Ok(PayEndpointWithSecret { endpoint, secret })
+    }
+
+    pub fn pay_endpoint_list(&self, book_id: &str) -> CoreResult<Vec<PayEndpoint>> {
+        repo::pay::list_endpoints(self.conn(), book_id)
+    }
+
+    /// Rotate an endpoint's signing secret: the vault ciphertext is
+    /// overwritten (old material destroyed) and the new secret is returned
+    /// **exactly once** — same single-display contract as
+    /// [`Self::pay_endpoint_add`].
+    pub fn pay_endpoint_rotate_secret(&self, id: &str) -> CoreResult<PayEndpointWithSecret> {
+        let endpoint =
+            repo::pay::get_endpoint(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+                entity: "pay_endpoint",
+                id: id.to_string(),
+            })?;
+        let secret = crate::pay::generate_secret_hex();
+        self.vault().replace(
+            &crate::pay::endpoint_secret_name(id),
+            SecretString::new(secret.as_str()),
+        )?;
+        self.emit_audit(
+            self.conn(),
+            Some(&endpoint.book_id),
+            "pay_endpoint",
+            Some(id),
+            "rotate_secret",
+            None,
+            None,
+        )?;
+        Ok(PayEndpointWithSecret { endpoint, secret })
+    }
+
+    /// Remove an endpoint: deletes the row (queued deliveries cascade) and
+    /// revokes its vault-held signing secret.
+    pub fn pay_endpoint_remove(&self, id: &str) -> CoreResult<()> {
+        let before =
+            repo::pay::get_endpoint(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+                entity: "pay_endpoint",
+                id: id.to_string(),
+            })?;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::pay::delete_endpoint(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "pay_endpoint",
+            Some(id),
+            "remove",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        // Revoke the secret after the row is gone; a missing vault entry is
+        // fine (already revoked), anything else surfaces.
+        match self.vault().revoke(&crate::pay::endpoint_secret_name(id)) {
+            Ok(()) | Err(CoreError::NotFound { .. }) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn pay_endpoint_set_enabled(&self, id: &str, enabled: bool) -> CoreResult<PayEndpoint> {
+        let before =
+            repo::pay::get_endpoint(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+                entity: "pay_endpoint",
+                id: id.to_string(),
+            })?;
+        let mut after = before.clone();
+        after.enabled = enabled;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::pay::set_endpoint_enabled(&tx, id, enabled)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "pay_endpoint",
+            Some(id),
+            "set_enabled",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    pub fn pay_match_list(&self, book_id: &str) -> CoreResult<Vec<PayMatch>> {
+        repo::pay::list_matches(self.conn(), book_id)
+    }
+
+    pub fn pay_delivery_list(&self, book_id: &str) -> CoreResult<Vec<PayDelivery>> {
+        repo::pay::list_deliveries(self.conn(), book_id)
+    }
+
+    /// Detection hook, called from `transaction_create` inside its SQLite
+    /// transaction. When a new INBOUND (positive) transaction's text carries
+    /// an enabled watch code as a whole token (and the optional exact
+    /// amount/currency match), writes a match row, enqueues one delivery per
+    /// enabled endpoint, and audits — metadata only, never the description.
+    fn detect_payment_matches(&self, conn: &Connection, txn: &Transaction) -> CoreResult<()> {
+        if txn.amount_minor <= 0 {
+            return Ok(()); // Outflows never match: ShapePay watches money IN.
+        }
+        let watches = repo::pay::list_enabled_watches(conn, &txn.book_id)?;
+        if watches.is_empty() {
+            return Ok(());
+        }
+        let endpoints = repo::pay::list_enabled_endpoints(conn, &txn.book_id)?;
+        for watch in &watches {
+            if let Some(expected) = watch.expected_amount_minor {
+                if txn.amount_minor != expected {
+                    continue;
+                }
+            }
+            if let Some(expected) = watch.expected_currency.as_deref() {
+                if txn.currency != expected {
+                    continue;
+                }
+            }
+            if !crate::pay::transaction_carries_code(txn, &watch.code) {
+                continue;
+            }
+            let matched_at = now_iso();
+            let m = PayMatch {
+                id: new_id(),
+                book_id: txn.book_id.clone(),
+                watch_id: watch.id.clone(),
+                transaction_id: txn.id.clone(),
+                matched_at,
+            };
+            repo::pay::insert_match(conn, &m)?;
+            let payload = crate::pay::build_payload(watch, txn, &m.matched_at);
+            for endpoint in &endpoints {
+                repo::pay::insert_delivery(
+                    conn,
+                    &PayDelivery {
+                        id: new_id(),
+                        book_id: txn.book_id.clone(),
+                        endpoint_id: endpoint.id.clone(),
+                        match_id: m.id.clone(),
+                        payload: payload.clone(),
+                        state: PayDeliveryState::Pending,
+                        attempts: 0,
+                        next_attempt_at: m.matched_at.clone(), // due immediately
+                        last_status: None,
+                        last_error: None,
+                        created_at: m.matched_at.clone(),
+                        updated_at: m.matched_at.clone(),
+                    },
+                )?;
+            }
+            // Metadata only: ids and a count — no reference text, no bank
+            // description, no amounts beyond what the payload itself holds.
+            self.emit_audit(
+                conn,
+                Some(&txn.book_id),
+                "pay_match",
+                Some(&m.id),
+                "match",
+                None,
+                Some(
+                    serde_json::json!({
+                        "watch_id": m.watch_id,
+                        "transaction_id": m.transaction_id,
+                        "deliveries_enqueued": endpoints.len(),
+                    })
+                    .to_string(),
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Dispatch every due pending delivery over `transport`: POST the stored
+    /// payload with HMAC-SHA256 signature headers
+    /// (`X-SlipScan-Signature` / `-Timestamp` / `-Nonce`), the signature
+    /// computed **inside** the vault's `use_with` closure so secret material
+    /// never leaves it. Returns the deliveries it acted on, updated.
+    ///
+    /// Outcomes: 2xx → `delivered`; 4xx → `failed` immediately (the receiver
+    /// rejected a well-formed request — retrying cannot help); 5xx, transport
+    /// errors, and per-delivery signing failures (e.g. a revoked vault
+    /// secret) → retried with exponential backoff (1m, 5m, 30m, 2h, 12h,
+    /// then daily) up to [`crate::pay::MAX_DELIVERY_ATTEMPTS`]. A failure on
+    /// one delivery never aborts the pass for the others.
+    ///
+    /// At-least-once: the outcome is written **after** the POST, so a crash
+    /// between the two redelivers on the next run — the stable per-delivery
+    /// nonce lets receivers deduplicate. `now` (RFC 3339) drives both the
+    /// due-check and the signature timestamp, keeping runs reproducible.
+    pub async fn pay_deliver_due(
+        &self,
+        transport: &dyn crate::pay::WebhookTransport,
+        now: &str,
+    ) -> CoreResult<Vec<PayDelivery>> {
+        use time::format_description::well_known::Rfc3339;
+        let now_dt = time::OffsetDateTime::parse(now, &Rfc3339)
+            .map_err(|e| CoreError::Validation(format!("invalid now {now:?}: {e}")))?;
+        let timestamp = now_dt.unix_timestamp().to_string();
+        let due = repo::pay::list_due(self.conn(), now)?;
+        let mut out = Vec::with_capacity(due.len());
+        for item in due {
+            let delivery = item.delivery;
+            // Sign inside the vault: the closure sees the secret, the
+            // dispatcher only ever holds the resulting hex signature. A
+            // signing failure (secret revoked from the vault, a database
+            // restored onto a machine without its keychain KEK, …) is scoped
+            // to THIS delivery: it flows into the same failure handling as a
+            // transport error below — recorded, retried with backoff,
+            // abandoned at the cap — so one broken endpoint never stalls the
+            // rest of the pass.
+            let result = match self.vault().use_with(
+                &crate::pay::endpoint_secret_name(&item.endpoint_id),
+                |secret| {
+                    Ok(crate::pay::sign_webhook(
+                        secret.expose_secret(),
+                        &timestamp,
+                        &delivery.id,
+                        delivery.payload.as_bytes(),
+                    ))
+                },
+            ) {
+                Ok(signature) => {
+                    let headers = vec![
+                        ("Content-Type".to_string(), "application/json".to_string()),
+                        (crate::pay::HEADER_SIGNATURE.to_string(), signature),
+                        (crate::pay::HEADER_TIMESTAMP.to_string(), timestamp.clone()),
+                        (crate::pay::HEADER_NONCE.to_string(), delivery.id.clone()),
+                    ];
+                    transport
+                        .post(&item.url, &headers, delivery.payload.as_bytes())
+                        .await
+                }
+                Err(e) => Err(e),
+            };
+
+            // The POST has happened; record the outcome (at-least-once: a
+            // crash before this write redelivers, the nonce dedupes).
+            let mut updated = delivery;
+            updated.attempts += 1;
+            updated.updated_at = now.to_string();
+            // Response bodies are receiver-controlled: only the status is
+            // ever recorded, never echoed content (same posture as FX).
+            let action = match &result {
+                Ok(resp) if (200..300).contains(&resp.status) => {
+                    updated.state = PayDeliveryState::Delivered;
+                    updated.last_status = Some(i64::from(resp.status));
+                    updated.last_error = None;
+                    "delivered"
+                }
+                Ok(resp) if (400..500).contains(&resp.status) => {
+                    // The receiver understood us and said no — fail fast.
+                    updated.state = PayDeliveryState::Failed;
+                    updated.last_status = Some(i64::from(resp.status));
+                    updated.last_error = Some(format!("HTTP {}", resp.status));
+                    "failed"
+                }
+                Ok(resp) => {
+                    updated.last_status = Some(i64::from(resp.status));
+                    Self::schedule_retry(&mut updated, now_dt, format!("HTTP {}", resp.status))
+                }
+                Err(e) => {
+                    updated.last_status = None;
+                    Self::schedule_retry(&mut updated, now_dt, e.to_string())
+                }
+            };
+            // Outcome + audit commit atomically — a crash must never leave a
+            // state transition without its append-only audit record. (The
+            // POST itself stays outside any transaction: at-least-once.)
+            let tx = self.conn().unchecked_transaction()?;
+            repo::pay::update_delivery_outcome(&tx, &updated)?;
+            self.emit_audit(
+                &tx,
+                Some(&updated.book_id),
+                "pay_delivery",
+                Some(&updated.id),
+                action,
+                None,
+                Some(
+                    serde_json::json!({
+                        "endpoint_id": updated.endpoint_id,
+                        "state": updated.state.as_str(),
+                        "attempts": updated.attempts,
+                        "last_status": updated.last_status,
+                    })
+                    .to_string(),
+                ),
+            )?;
+            tx.commit()?;
+            out.push(updated);
+        }
+        Ok(out)
+    }
+
+    /// Mark a retryable failure on `updated` (attempts already bumped):
+    /// schedule the next attempt with exponential backoff, or abandon at the
+    /// cap. Returns the audit action.
+    fn schedule_retry(
+        updated: &mut PayDelivery,
+        now_dt: time::OffsetDateTime,
+        error: String,
+    ) -> &'static str {
+        use time::format_description::well_known::Rfc3339;
+        updated.last_error = Some(error);
+        if updated.attempts >= crate::pay::MAX_DELIVERY_ATTEMPTS {
+            updated.state = PayDeliveryState::Failed;
+            "failed"
+        } else {
+            let delay = crate::pay::backoff_delay_secs(updated.attempts);
+            updated.next_attempt_at = (now_dt + time::Duration::seconds(delay))
+                .format(&Rfc3339)
+                .expect("RFC 3339 formatting of a valid instant cannot fail");
+            "retry_scheduled"
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -5608,5 +6104,130 @@ mod tests {
         assert_eq!(budgets.len(), 1);
         assert!(budgets[0].rollover);
         assert!(!budgets[0].created_at.is_empty());
+    }
+
+    // -- pay delivery resilience --------------------------------------------
+    // (The main ShapePay service tests live in `crate::pay::tests`; this one
+    // needs the private `vault()` handle to simulate a revoked secret.)
+
+    #[tokio::test]
+    async fn pay_deliver_due_isolates_a_delivery_whose_secret_is_gone() {
+        // Regression: a vault `use_with` failure for ONE delivery (e.g. the
+        // user ran `slipscan vault revoke pay.endpoint.<id>`) aborted the
+        // whole pass with `?` — healthy endpoints were never POSTed and the
+        // broken delivery sat at 0 attempts forever. Signing failures must
+        // behave like transport failures: recorded on that delivery, retried
+        // with backoff, abandoned at the cap, pass continues.
+        use crate::pay::testutil::MockWebhookTransport;
+
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        svc.pay_watch_add(NewPayWatch {
+            book_id: book.id.clone(),
+            code: "INV-1".into(),
+            label: None,
+            expected_amount_minor: None,
+            expected_currency: None,
+        })
+        .unwrap();
+        let broken = svc
+            .pay_endpoint_add(NewPayEndpoint {
+                book_id: book.id.clone(),
+                label: "Broken".into(),
+                url: "https://broken.example.org/hook".into(),
+            })
+            .unwrap();
+        let healthy = svc
+            .pay_endpoint_add(NewPayEndpoint {
+                book_id: book.id.clone(),
+                label: "Healthy".into(),
+                url: "https://healthy.example.org/hook".into(),
+            })
+            .unwrap();
+        svc.transaction_create(NewTransaction {
+            book_id: book.id.clone(),
+            account_id: account.id.clone(),
+            source: TransactionSource::Email,
+            provider_txn_id: None,
+            posted_date: "2026-07-01".into(),
+            amount_minor: 50_000,
+            currency: "ZAR".into(),
+            merchant: None,
+            description: Some("EFT REF INV-1".into()),
+            notes: None,
+            category_id: None,
+            document_id: None,
+            dedupe_occurrence: 0,
+        })
+        .unwrap();
+        // Revoke ONE endpoint's signing secret out from under its pending
+        // delivery — the endpoint row (and its queue) remains.
+        svc.vault()
+            .revoke(&crate::pay::endpoint_secret_name(&broken.endpoint.id))
+            .unwrap();
+
+        // One scripted 200: only the healthy endpoint may POST.
+        let transport = MockWebhookTransport::new().respond(200);
+        let updated = svc
+            .pay_deliver_due(&transport, "2027-01-01T12:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(updated.len(), 2, "both due deliveries are acted on");
+        assert_eq!(transport.sent_count(), 1, "no POST for the unsigned one");
+        assert_eq!(
+            transport.sent.borrow()[0].url,
+            "https://healthy.example.org/hook"
+        );
+        let delivered = updated
+            .iter()
+            .find(|d| d.endpoint_id == healthy.endpoint.id)
+            .unwrap();
+        assert_eq!(delivered.state, PayDeliveryState::Delivered);
+        assert_eq!(delivered.attempts, 1);
+        let stalled = updated
+            .iter()
+            .find(|d| d.endpoint_id == broken.endpoint.id)
+            .unwrap();
+        assert_eq!(stalled.state, PayDeliveryState::Pending);
+        assert_eq!(stalled.attempts, 1, "the signing failure counts");
+        assert_eq!(stalled.last_status, None);
+        assert!(
+            stalled.last_error.as_deref().unwrap().contains("not found"),
+            "last_error records the vault failure: {:?}",
+            stalled.last_error
+        );
+        assert_eq!(
+            stalled.next_attempt_at, "2027-01-01T12:01:00Z",
+            "normal backoff applies"
+        );
+
+        // Persistent signing failure ages out at the attempt cap instead of
+        // stalling forever — and never attempts a POST.
+        let mut now = time::macros::datetime!(2027-01-01 12:01:00 UTC);
+        let mut last = Vec::new();
+        for _ in 1..crate::pay::MAX_DELIVERY_ATTEMPTS {
+            let now_s = now
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap();
+            let idle = MockWebhookTransport::new(); // unscripted: POST would error
+            last = svc.pay_deliver_due(&idle, &now_s).await.unwrap();
+            assert_eq!(last.len(), 1);
+            assert_eq!(idle.sent_count(), 0);
+            now += time::Duration::days(2);
+        }
+        assert_eq!(last[0].attempts, crate::pay::MAX_DELIVERY_ATTEMPTS);
+        assert_eq!(last[0].state, PayDeliveryState::Failed);
+
+        // Every outcome carries its audit record (metadata only).
+        let audits = svc.audit_list(Some(&book.id), 100).unwrap();
+        for action in ["delivered", "retry_scheduled", "failed"] {
+            assert!(
+                audits
+                    .iter()
+                    .any(|a| a.entity_type == "pay_delivery" && a.action == action),
+                "missing pay_delivery audit {action}"
+            );
+        }
     }
 }

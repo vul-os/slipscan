@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use slipscan_core::datadir::DataDirResolver;
 use slipscan_core::fx::FxTransport;
+use slipscan_core::pay::WebhookTransport;
 use slipscan_core::{CoreError, CoreService};
 
 pub mod ops;
@@ -85,6 +86,66 @@ impl Default for ServerConfig {
 /// OpenRate base URL — the server never fetches rates on its own.
 pub type FxTransportFactory =
     Arc<dyn Fn() -> Result<Box<dyn FxTransport>, CoreError> + Send + Sync>;
+
+/// Builds a [`WebhookTransport`] for one ShapePay delivery pass. Same shape
+/// and rationale as [`FxTransportFactory`]: the factory is `Send + Sync`, the
+/// `?Send` transport it builds lives and dies on the thread that called it.
+///
+/// Mantra: the transport only ever POSTs to webhook endpoint URLs the user
+/// registered (`pay_endpoint_add` validates them), and only when a queued
+/// delivery is actually due — an empty queue means zero network activity.
+pub type PayTransportFactory =
+    Arc<dyn Fn() -> Result<Box<dyn WebhookTransport>, CoreError> + Send + Sync>;
+
+/// How often serve mode's delivery loop checks the queue. The queue itself
+/// honors each delivery's `next_attempt_at` (backoff is core's schedule);
+/// this cadence only bounds the extra latency on top of it.
+pub const PAY_DELIVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// One ShapePay delivery pass: POST every due pending delivery. Blocking —
+/// core's `?Send` dispatch future is driven on a self-contained
+/// current-thread runtime, exactly like the FX fetch route. Returns how many
+/// deliveries were acted on. The service mutex is held for the whole pass
+/// (same trade-off as `fx_fetch_rate`); passes are short unless receivers
+/// are slow, and the transport's timeouts bound each POST.
+fn pay_delivery_pass(
+    service: &Arc<Mutex<CoreService>>,
+    factory: &PayTransportFactory,
+) -> Result<usize, String> {
+    let transport = factory().map_err(|e| e.to_string())?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("pay delivery runtime: {e}"))?;
+    let service = service.lock().map_err(|_| "service state poisoned")?;
+    let now = slipscan_core::util::now_iso();
+    let updated = rt
+        .block_on(service.pay_deliver_due(transport.as_ref(), &now))
+        .map_err(|e| e.to_string())?;
+    Ok(updated.len())
+}
+
+/// Serve mode's delivery loop: every [`PAY_DELIVERY_INTERVAL`], flush due
+/// deliveries on a blocking thread. Errors are logged and the loop keeps
+/// going — the queue's own backoff state is the source of truth, so a failed
+/// pass loses nothing.
+async fn pay_delivery_loop(service: Arc<Mutex<CoreService>>, factory: PayTransportFactory) {
+    let mut ticker = tokio::time::interval(PAY_DELIVERY_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticker.tick().await;
+        let service = Arc::clone(&service);
+        let factory = Arc::clone(&factory);
+        match tokio::task::spawn_blocking(move || pay_delivery_pass(&service, &factory)).await {
+            Ok(Ok(_)) => {}
+            // Metadata only, never payloads or URLs beyond what the error
+            // string itself carries (transport errors name the endpoint URL
+            // the user registered, nothing more).
+            Ok(Err(e)) => eprintln!("pay delivery pass failed: {e}"),
+            Err(e) => eprintln!("pay delivery task failed: {e}"),
+        }
+    }
+}
 
 /// Shared router state: one core service behind a mutex (SQLite connections
 /// are `Send` but not `Sync`), the optional expected token hash, the
@@ -241,15 +302,20 @@ pub fn stored_token_hash(service: &CoreService) -> Result<Option<[u8; 32]>, Serv
 /// [`vault::VaultHandle`] on the same database so the metadata-only vault
 /// routes work; with `None` they answer 503. Pass an [`FxTransportFactory`]
 /// so the explicit `fx_fetch_rate` route works; with `None` it answers 503
-/// (all other FX routes are purely local). Pass the [`DataDirResolver`] when
-/// (and only when) the served database is the managed data folder's, so the
-/// read-only `GET data_status` route can describe it; with `None` it answers
-/// 503. The data-folder *move* is deliberately not served — see the route
-/// module's rationale.
+/// (all other FX routes are purely local). Pass a [`PayTransportFactory`] to
+/// run the ShapePay delivery loop (due webhook deliveries flushed every
+/// [`PAY_DELIVERY_INTERVAL`], honoring each delivery's `next_attempt_at`);
+/// with `None` the queue only moves when a local `slipscan pay deliver` /
+/// `mail-sync` flushes it. Pass the [`DataDirResolver`] when (and only when)
+/// the served database is the managed data folder's, so the read-only
+/// `GET data_status` route can describe it; with `None` it answers 503. The
+/// data-folder *move* is deliberately not served — see the route module's
+/// rationale.
 pub async fn serve(
     service: CoreService,
     vault: Option<vault::VaultHandle>,
     fx_transport: Option<FxTransportFactory>,
+    pay_transport: Option<PayTransportFactory>,
     data_dir: Option<DataDirResolver>,
     config: ServerConfig,
 ) -> Result<(), ServerError> {
@@ -267,6 +333,9 @@ pub async fn serve(
     }
     if let Some(resolver) = data_dir {
         state = state.with_data_dir(resolver);
+    }
+    if let Some(factory) = pay_transport {
+        tokio::spawn(pay_delivery_loop(state.service_owned(), factory));
     }
     let listener = tokio::net::TcpListener::bind(config.addr)
         .await
@@ -391,6 +460,112 @@ mod tests {
         );
     }
 
+    /// Always answers the scripted status; never touches any network.
+    struct ScriptedWebhook {
+        status: u16,
+        sent: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait::async_trait(?Send)]
+    impl WebhookTransport for ScriptedWebhook {
+        async fn post(
+            &self,
+            _url: &str,
+            _headers: &[(String, String)],
+            _body: &[u8],
+        ) -> Result<slipscan_core::pay::WebhookResponse, CoreError> {
+            *self.sent.lock().unwrap() += 1;
+            Ok(slipscan_core::pay::WebhookResponse {
+                status: self.status,
+            })
+        }
+    }
+
+    /// The loop's per-tick pass: flushes the due queue via the factory's
+    /// transport and marks outcomes — the same path serve mode drives on its
+    /// interval (`next_attempt_at` gating itself is covered by core's tests).
+    #[test]
+    fn pay_delivery_pass_flushes_the_due_queue() {
+        use slipscan_core::domain::*;
+        let service = svc();
+        let book = service
+            .book_create(NewBook {
+                name: "Pay".into(),
+                kind: BookKind::Personal,
+                currency: Some("ZAR".into()),
+                country: None,
+                region: None,
+            })
+            .unwrap();
+        let account = service
+            .account_create(NewAccount {
+                book_id: book.id.clone(),
+                name: "Cheque".into(),
+                kind: AccountKind::Bank,
+                currency: "ZAR".into(),
+                institution: None,
+                account_number_masked: None,
+                opening_balance_minor: None,
+            })
+            .unwrap();
+        service
+            .pay_watch_add(NewPayWatch {
+                book_id: book.id.clone(),
+                code: "INV-7031".into(),
+                label: None,
+                expected_amount_minor: None,
+                expected_currency: None,
+            })
+            .unwrap();
+        service
+            .pay_endpoint_add(NewPayEndpoint {
+                book_id: book.id.clone(),
+                label: "Shop".into(),
+                url: "https://hooks.example.org/pay".into(),
+            })
+            .unwrap();
+        service
+            .transaction_create(NewTransaction {
+                book_id: book.id.clone(),
+                account_id: account.id,
+                source: TransactionSource::Email,
+                provider_txn_id: None,
+                posted_date: "2026-07-01".into(),
+                amount_minor: 50_000,
+                currency: "ZAR".into(),
+                merchant: None,
+                description: Some("EFT REF INV-7031".into()),
+                notes: None,
+                category_id: None,
+                document_id: None,
+                dedupe_occurrence: 0,
+            })
+            .unwrap();
+
+        let service = Arc::new(Mutex::new(service));
+        let sent = Arc::new(Mutex::new(0usize));
+        let sent_in_factory = Arc::clone(&sent);
+        let factory: PayTransportFactory = Arc::new(move || {
+            Ok(Box::new(ScriptedWebhook {
+                status: 200,
+                sent: Arc::clone(&sent_in_factory),
+            }) as Box<dyn WebhookTransport>)
+        });
+
+        assert_eq!(pay_delivery_pass(&service, &factory).unwrap(), 1);
+        assert_eq!(*sent.lock().unwrap(), 1);
+        let deliveries = service.lock().unwrap().pay_delivery_list(&book.id).unwrap();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(
+            deliveries[0].state,
+            slipscan_core::domain::PayDeliveryState::Delivered
+        );
+
+        // Nothing due on the next pass — the transport is never invoked.
+        assert_eq!(pay_delivery_pass(&service, &factory).unwrap(), 0);
+        assert_eq!(*sent.lock().unwrap(), 1);
+    }
+
     #[tokio::test]
     async fn serve_with_auth_requires_initialized_token() {
         let service = svc();
@@ -398,7 +573,9 @@ mod tests {
             require_auth: true,
             ..ServerConfig::default()
         };
-        let err = serve(service, None, None, None, config).await.unwrap_err();
+        let err = serve(service, None, None, None, None, config)
+            .await
+            .unwrap_err();
         assert!(matches!(err, ServerError::AuthNotInitialized));
     }
 }

@@ -54,6 +54,9 @@ pub enum CoreError {
     #[error("fx response parse error: {0}")]
     FxParse(String),
 
+    #[error("webhook transport error: {0}")]
+    PayTransport(String),
+
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
 
