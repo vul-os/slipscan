@@ -513,6 +513,98 @@ export interface VaultReplaceRequest {
 }
 
 // ---------------------------------------------------------------------------
+// ShapePay — watch reference codes on inbound transactions, fire signed
+// webhooks. Deliberately simple: watch codes are a flat list (`enabled` is
+// the only state, an optional exact amount the only filter), endpoint signing
+// secrets are vault-held (shown exactly once at creation/rotation), and
+// deliveries retry with backoff.
+// ---------------------------------------------------------------------------
+
+export interface PayWatch {
+  id: string;
+  book_id: string;
+  /** Matched case-insensitively as a whole token within the transaction
+   * description/merchant (INV1 never matches INV11). */
+  code: string;
+  label: string | null;
+  /** When set, only a transaction of exactly this amount (in
+   * `expected_currency`) matches. */
+  expected_amount_minor: number | null;
+  expected_currency: string | null;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface NewPayWatch {
+  book_id: string;
+  code: string;
+  label?: string;
+  /** Optional exact-amount filter; requires `expected_currency`. */
+  expected_amount_minor?: number;
+  expected_currency?: string;
+}
+
+/** A webhook receiver. The signing secret is vault-held (write-only) under a
+ * name derived from `id` — never a field here. */
+export interface PayEndpoint {
+  id: string;
+  book_id: string;
+  label: string;
+  url: string;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface NewPayEndpoint {
+  book_id: string;
+  label: string;
+  url: string;
+}
+
+/**
+ * Returned by endpoint add/rotate ONLY — the single sanctioned display of a
+ * signing secret, exactly once, so the receiver operator can configure
+ * verification. After this response the secret exists solely in the vault
+ * (write-only): losing it means rotating it.
+ */
+export interface PayEndpointWithSecret {
+  endpoint: PayEndpoint;
+  /** 32 random bytes, hex-encoded (64 chars). Shown here once, then
+   * reachable only by core's signer at delivery time. */
+  secret: string;
+}
+
+/** One detection: watch `watch_id` matched transaction `transaction_id`. */
+export interface PayMatch {
+  id: string;
+  book_id: string;
+  watch_id: string;
+  transaction_id: string;
+  matched_at: string;
+}
+
+/** `pending` retries with backoff; `delivered` and `failed` are terminal. */
+export type PayDeliveryState = "pending" | "delivered" | "failed";
+
+/** One queued webhook delivery. `payload` is the exact JSON body POSTed and
+ * signed — metadata only (reference, amount/currency/date, matched_at),
+ * never account numbers or the raw bank description. */
+export interface PayDelivery {
+  id: string;
+  book_id: string;
+  endpoint_id: string;
+  match_id: string;
+  payload: string;
+  state: PayDeliveryState;
+  attempts: number;
+  next_attempt_at: string;
+  last_status: number | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
 // FX (OpenRate) — opt-in exchange rates. Rates are decimal STRINGS, never
 // floats; money stays integer minor units end-to-end.
 // ---------------------------------------------------------------------------

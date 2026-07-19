@@ -3,7 +3,12 @@
 //! Command names match the contract in docs/ARCHITECTURE.md and the typed
 //! client in `src/lib/api/client.ts` (`book_list`, `transaction_categorize`,
 //! `document_import`, `recon_confirm`, …). Errors cross IPC as plain strings;
-//! secret material never crosses IPC in any response.
+//! secret material never crosses IPC in any response — with exactly one
+//! sanctioned exception: `pay_endpoint_add` / `pay_endpoint_rotate_secret`
+//! return the just-generated webhook signing secret once (core's
+//! [`slipscan_core::domain::PayEndpointWithSecret`] single-display contract,
+//! needed so the receiver operator can configure verification), after which
+//! it exists only in the vault.
 
 use std::collections::HashMap;
 
@@ -893,6 +898,168 @@ pub async fn fx_convert(
             .fx_convert(&query.from, &query.to, query.amount_minor)
             .map_err(err),
     }
+}
+
+// ---------------------------------------------------------------------------
+// ShapePay — watch codes, webhook endpoints, deliveries. Deliberately simple
+// (TODO-FOLD-SHAPEPAY.md): watch codes are a flat list, detection happens in
+// core's transaction_create, signing secrets are vault-only. Core's domain
+// types serialize straight across IPC (same pattern as vat rates / FX).
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn pay_watch_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::PayWatch>, String> {
+    state.service()?.pay_watch_list(&query.book_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn pay_watch_add(
+    state: State<'_, AppState>,
+    query: core::NewPayWatch,
+) -> Result<core::PayWatch, String> {
+    state.service()?.pay_watch_add(query).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct PayWatchIdQuery {
+    pub watch_id: String,
+}
+
+#[tauri::command]
+pub async fn pay_watch_remove(
+    state: State<'_, AppState>,
+    query: PayWatchIdQuery,
+) -> Result<(), String> {
+    state.service()?.pay_watch_remove(&query.watch_id).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct PayWatchSetEnabledQuery {
+    pub watch_id: String,
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub async fn pay_watch_set_enabled(
+    state: State<'_, AppState>,
+    query: PayWatchSetEnabledQuery,
+) -> Result<core::PayWatch, String> {
+    state
+        .service()?
+        .pay_watch_set_enabled(&query.watch_id, query.enabled)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn pay_endpoint_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::PayEndpoint>, String> {
+    state
+        .service()?
+        .pay_endpoint_list(&query.book_id)
+        .map_err(err)
+}
+
+/// The response carries the generated signing secret — the one sanctioned
+/// display, exactly once (see the module docs). The frontend shows it in a
+/// copy-once reveal and drops it.
+#[tauri::command]
+pub async fn pay_endpoint_add(
+    state: State<'_, AppState>,
+    query: core::NewPayEndpoint,
+) -> Result<core::PayEndpointWithSecret, String> {
+    state.service()?.pay_endpoint_add(query).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct PayEndpointIdQuery {
+    pub endpoint_id: String,
+}
+
+/// Same single-display contract as [`pay_endpoint_add`]; the old vault
+/// ciphertext is overwritten, so the previous secret is gone.
+#[tauri::command]
+pub async fn pay_endpoint_rotate_secret(
+    state: State<'_, AppState>,
+    query: PayEndpointIdQuery,
+) -> Result<core::PayEndpointWithSecret, String> {
+    state
+        .service()?
+        .pay_endpoint_rotate_secret(&query.endpoint_id)
+        .map_err(err)
+}
+
+/// Removes the endpoint (queued deliveries cascade) and revokes its
+/// vault-held signing secret.
+#[tauri::command]
+pub async fn pay_endpoint_remove(
+    state: State<'_, AppState>,
+    query: PayEndpointIdQuery,
+) -> Result<(), String> {
+    state
+        .service()?
+        .pay_endpoint_remove(&query.endpoint_id)
+        .map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct PayEndpointSetEnabledQuery {
+    pub endpoint_id: String,
+    pub enabled: bool,
+}
+
+#[tauri::command]
+pub async fn pay_endpoint_set_enabled(
+    state: State<'_, AppState>,
+    query: PayEndpointSetEnabledQuery,
+) -> Result<core::PayEndpoint, String> {
+    state
+        .service()?
+        .pay_endpoint_set_enabled(&query.endpoint_id, query.enabled)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn pay_match_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::PayMatch>, String> {
+    state.service()?.pay_match_list(&query.book_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn pay_delivery_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::PayDelivery>, String> {
+    state
+        .service()?
+        .pay_delivery_list(&query.book_id)
+        .map_err(err)
+}
+
+/// POST every due pending delivery now. Network happens only here, only on
+/// an explicit user action, and only to endpoint URLs the user registered;
+/// signing runs inside the vault's `use_with` closure in core. Same
+/// `?Send`-future bridge as `fx_fetch_rate`.
+#[tauri::command]
+pub async fn pay_deliver_due(
+    state: State<'_, AppState>,
+) -> Result<Vec<core::PayDelivery>, String> {
+    tokio::task::block_in_place(|| {
+        let transport = slipscan_ingest::pay::ReqwestWebhookTransport::new().map_err(err)?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("pay runtime: {e}"))?;
+        let service = state.service()?;
+        rt.block_on(service.pay_deliver_due(&transport, &now_iso()))
+            .map_err(err)
+    })
 }
 
 // ---------------------------------------------------------------------------

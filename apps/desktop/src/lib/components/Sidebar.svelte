@@ -23,6 +23,7 @@
     { route: "budgets", label: "Budgets", icon: "budgets", key: "B" },
     { route: "ledger", label: "Ledger", icon: "ledger", key: "L" },
     { route: "reconcile", label: "Reconcile", icon: "reconcile", key: "C" },
+    { route: "payments", label: "Payments", icon: "zap", key: "Y" },
     { route: "reports", label: "Reports", icon: "reports", key: "P" },
     { route: "settings", label: "Settings", icon: "settings", key: "S" },
   ];

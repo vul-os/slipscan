@@ -24,6 +24,13 @@ import type {
   JournalEntry,
   JournalPostRequest,
   LedgerAccount,
+  NewPayEndpoint,
+  NewPayWatch,
+  PayDelivery,
+  PayEndpoint,
+  PayEndpointWithSecret,
+  PayMatch,
+  PayWatch,
   ReconConfirmRequest,
   ReconSuggestion,
   RegionInfo,
@@ -473,6 +480,144 @@ let reconSuggestions: ReconSuggestion[] = documents
       created_at: "2026-07-16T06:00:00Z",
     };
   });
+
+// ---------------------------------------------------------------------------
+// ShapePay mock — watch codes, endpoints, matches, deliveries. Mirrors the
+// core contract: flat watch list, vault-only endpoint secrets (generated
+// here, returned once, never stored), backoff-retried deliveries.
+// ---------------------------------------------------------------------------
+
+const payWatches: PayWatch[] = [
+  {
+    id: id("pw00"),
+    book_id: BOOK_ID,
+    code: "RENT-12B",
+    label: "Garden flat rent",
+    expected_amount_minor: null,
+    expected_currency: null,
+    enabled: true,
+    created_at: "2026-06-28T07:00:00Z",
+  },
+  {
+    id: id("pw00"),
+    book_id: BOOK_ID,
+    code: "INV-2041",
+    label: "Deck repair invoice",
+    expected_amount_minor: 450_000,
+    expected_currency: "ZAR",
+    enabled: true,
+    created_at: "2026-07-10T15:30:00Z",
+  },
+];
+
+const payEndpoints: PayEndpoint[] = [
+  {
+    id: id("pe00"),
+    book_id: BOOK_ID,
+    label: "Shop backend",
+    url: "https://shop.example.co.za/hooks/slipscan",
+    enabled: true,
+    created_at: "2026-06-28T07:05:00Z",
+  },
+  {
+    id: id("pe00"),
+    book_id: BOOK_ID,
+    label: "Staging receiver",
+    url: "http://192.168.1.40:8787/webhook",
+    enabled: true,
+    created_at: "2026-07-01T18:00:00Z",
+  },
+];
+
+// The RENT-12B watch matched the inbound interest-day credit in the seed set.
+const payMatches: PayMatch[] = [
+  {
+    id: id("pm00"),
+    book_id: BOOK_ID,
+    watch_id: payWatches[0]!.id,
+    transaction_id: transactions[17]!.id,
+    matched_at: "2026-07-02T04:10:00Z",
+  },
+];
+
+const payDeliveries: PayDelivery[] = [
+  {
+    id: id("pd00"),
+    book_id: BOOK_ID,
+    endpoint_id: payEndpoints[0]!.id,
+    match_id: payMatches[0]!.id,
+    payload: JSON.stringify({
+      event: "payment.matched",
+      reference: "RENT-12B",
+      watch_label: "Garden flat rent",
+      amount_minor: 12_384,
+      currency: "ZAR",
+      posted_date: "2026-07-02",
+      matched_at: "2026-07-02T04:10:00Z",
+    }),
+    state: "delivered",
+    attempts: 1,
+    next_attempt_at: "2026-07-02T04:10:00Z",
+    last_status: 200,
+    last_error: null,
+    created_at: "2026-07-02T04:10:00Z",
+    updated_at: "2026-07-02T04:11:00Z",
+  },
+  {
+    id: id("pd00"),
+    book_id: BOOK_ID,
+    endpoint_id: payEndpoints[1]!.id,
+    match_id: payMatches[0]!.id,
+    payload: JSON.stringify({
+      event: "payment.matched",
+      reference: "RENT-12B",
+      watch_label: "Garden flat rent",
+      amount_minor: 12_384,
+      currency: "ZAR",
+      posted_date: "2026-07-02",
+      matched_at: "2026-07-02T04:10:00Z",
+    }),
+    state: "pending",
+    attempts: 3,
+    next_attempt_at: "2026-07-02T06:41:00Z", // past — due for "Deliver now"
+    last_status: 503,
+    last_error: "HTTP 503",
+    created_at: "2026-07-02T04:10:00Z",
+    updated_at: "2026-07-02T04:41:00Z",
+  },
+];
+
+/** Mock stand-in for core's 32-random-bytes-hex signing secret. */
+function mockPaySecret(): string {
+  let s = "";
+  for (let i = 0; i < 64; i += 1) {
+    s += Math.floor(Math.random() * 16).toString(16);
+  }
+  return s;
+}
+
+/** Mirrors core's webhook URL validation posture (never echoes credentials). */
+function mockValidateWebhookUrl(raw: string): string {
+  const url = raw.trim();
+  // Like core's normalize_webhook_url: input carrying '@' may embed
+  // credentials (user:pass@host) and is NEVER echoed into an error message,
+  // whichever check fires; the credential check runs before the generic one.
+  const shown = url.includes("@")
+    ? "<url withheld: it contains '@' and may embed credentials>"
+    : `"${url}"`;
+  const invalid = () =>
+    new Error(
+      `invalid webhook URL ${shown} (expected http(s)://host[:port][/path])`,
+    );
+  const sep = url.indexOf("://");
+  const rest = sep >= 0 ? url.slice(sep + 3) : "";
+  if ((rest.split(/[/?#]/)[0] ?? "").includes("@"))
+    throw new Error(
+      "webhook URL must not embed credentials — deliveries are authenticated by the HMAC signature",
+    );
+  if (!/^https?:\/\/\S+$/i.test(url)) throw invalid();
+  return url;
+}
 
 /** Mock data folder — the platform default until "moved". */
 const DEFAULT_DATA_DIR = "~/Library/Application Support/org.vulos.slipscan";
@@ -1047,6 +1192,136 @@ export const mockApi = {
       fetched_at: cached.fetched_at,
       age_secs: cached.age_secs,
     };
+  },
+
+  // -- ShapePay: same semantics as core — flat watch list, secrets returned
+  // exactly once and never stored, 4xx fails fast / others retry --
+
+  pay_watch_list: async (q: { book_id: string }): Promise<PayWatch[]> =>
+    clone(payWatches.filter((w) => w.book_id === q.book_id)),
+
+  pay_watch_add: async (q: NewPayWatch): Promise<PayWatch> => {
+    const code = q.code.trim();
+    if (!code) throw new Error("watch code must not be empty");
+    if (q.expected_amount_minor != null) {
+      if (q.expected_amount_minor <= 0)
+        throw new Error(
+          `expected amount ${q.expected_amount_minor} out of range: must be positive (only inbound transactions match)`,
+        );
+      if (!q.expected_currency)
+        throw new Error(
+          'an exact expected amount needs a currency (e.g. "ZAR")',
+        );
+    }
+    const watch: PayWatch = {
+      id: id("pw00"),
+      book_id: q.book_id,
+      code,
+      label: q.label?.trim() || null,
+      expected_amount_minor: q.expected_amount_minor ?? null,
+      expected_currency: q.expected_currency?.toUpperCase() ?? null,
+      enabled: true,
+      created_at: new Date().toISOString(),
+    };
+    payWatches.push(watch);
+    return clone(watch);
+  },
+
+  pay_watch_remove: async (q: { watch_id: string }): Promise<null> => {
+    const i = payWatches.findIndex((w) => w.id === q.watch_id);
+    if (i === -1) throw new Error(`pay_watch ${q.watch_id} not found`);
+    payWatches.splice(i, 1);
+    return null;
+  },
+
+  pay_watch_set_enabled: async (q: {
+    watch_id: string;
+    enabled: boolean;
+  }): Promise<PayWatch> => {
+    const watch = payWatches.find((w) => w.id === q.watch_id);
+    if (!watch) throw new Error(`pay_watch ${q.watch_id} not found`);
+    watch.enabled = q.enabled;
+    return clone(watch);
+  },
+
+  pay_endpoint_list: async (q: { book_id: string }): Promise<PayEndpoint[]> =>
+    clone(payEndpoints.filter((e) => e.book_id === q.book_id)),
+
+  pay_endpoint_add: async (
+    q: NewPayEndpoint,
+  ): Promise<PayEndpointWithSecret> => {
+    const label = q.label.trim();
+    if (!label) throw new Error("endpoint label must not be empty");
+    const endpoint: PayEndpoint = {
+      id: id("pe00"),
+      book_id: q.book_id,
+      label,
+      url: mockValidateWebhookUrl(q.url),
+      enabled: true,
+      created_at: new Date().toISOString(),
+    };
+    payEndpoints.push(endpoint);
+    // The secret is returned once and forgotten — write-only, like the vault.
+    return { endpoint: clone(endpoint), secret: mockPaySecret() };
+  },
+
+  pay_endpoint_rotate_secret: async (q: {
+    endpoint_id: string;
+  }): Promise<PayEndpointWithSecret> => {
+    const endpoint = payEndpoints.find((e) => e.id === q.endpoint_id);
+    if (!endpoint) throw new Error(`pay_endpoint ${q.endpoint_id} not found`);
+    return { endpoint: clone(endpoint), secret: mockPaySecret() };
+  },
+
+  pay_endpoint_remove: async (q: { endpoint_id: string }): Promise<null> => {
+    const i = payEndpoints.findIndex((e) => e.id === q.endpoint_id);
+    if (i === -1) throw new Error(`pay_endpoint ${q.endpoint_id} not found`);
+    payEndpoints.splice(i, 1);
+    // Queued deliveries cascade with the endpoint, exactly like core.
+    for (let d = payDeliveries.length - 1; d >= 0; d -= 1) {
+      if (payDeliveries[d]!.endpoint_id === q.endpoint_id)
+        payDeliveries.splice(d, 1);
+    }
+    return null;
+  },
+
+  pay_endpoint_set_enabled: async (q: {
+    endpoint_id: string;
+    enabled: boolean;
+  }): Promise<PayEndpoint> => {
+    const endpoint = payEndpoints.find((e) => e.id === q.endpoint_id);
+    if (!endpoint) throw new Error(`pay_endpoint ${q.endpoint_id} not found`);
+    endpoint.enabled = q.enabled;
+    return clone(endpoint);
+  },
+
+  pay_match_list: async (q: { book_id: string }): Promise<PayMatch[]> =>
+    clone(payMatches.filter((m) => m.book_id === q.book_id)),
+
+  pay_delivery_list: async (q: { book_id: string }): Promise<PayDelivery[]> =>
+    clone(payDeliveries.filter((d) => d.book_id === q.book_id)),
+
+  pay_deliver_due: async (): Promise<PayDelivery[]> => {
+    const now = new Date().toISOString();
+    const acted: PayDelivery[] = [];
+    for (const d of payDeliveries) {
+      const endpoint = payEndpoints.find((e) => e.id === d.endpoint_id);
+      if (
+        d.state !== "pending" ||
+        d.next_attempt_at > now ||
+        !endpoint?.enabled
+      )
+        continue;
+      // The mock receiver always answers 200 — retry/backoff arithmetic
+      // lives in core, exercised by its own tests.
+      d.state = "delivered";
+      d.attempts += 1;
+      d.last_status = 200;
+      d.last_error = null;
+      d.updated_at = now;
+      acted.push(d);
+    }
+    return clone(acted);
   },
 
   settings_get: async (): Promise<Settings> => clone(settings),

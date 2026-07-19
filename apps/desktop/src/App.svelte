@@ -8,6 +8,7 @@
   import Budgets from "./routes/Budgets.svelte";
   import Ledger from "./routes/Ledger.svelte";
   import Reconcile from "./routes/Reconcile.svelte";
+  import Payments from "./routes/Payments.svelte";
   import Reports from "./routes/Reports.svelte";
   import Settings from "./routes/Settings.svelte";
 
@@ -18,6 +19,7 @@
     budgets: Budgets,
     ledger: Ledger,
     reconcile: Reconcile,
+    payments: Payments,
     reports: Reports,
     settings: Settings,
   };
@@ -32,6 +34,7 @@
     b: "budgets",
     l: "ledger",
     c: "reconcile",
+    y: "payments",
     p: "reports",
     s: "settings",
   };

@@ -28,6 +28,13 @@ import type {
   JournalEntry,
   JournalPostRequest,
   LedgerAccount,
+  NewPayEndpoint,
+  NewPayWatch,
+  PayDelivery,
+  PayEndpoint,
+  PayEndpointWithSecret,
+  PayMatch,
+  PayWatch,
   ReconConfirmRequest,
   ReconSuggestion,
   RegionInfo,
@@ -200,6 +207,70 @@ export const api = {
     rate?: string;
   }): Promise<FxConversion> =>
     call("fx_convert", { query: q }, () => mockApi.fx_convert(q)),
+
+  // -- ShapePay: watch reference codes on inbound transactions, fire signed
+  // webhooks. Only payDeliverDue touches the network — on explicit user
+  // action, and only to endpoints the user registered. --
+
+  payWatchList: (q: { book_id: string }): Promise<PayWatch[]> =>
+    call("pay_watch_list", { query: q }, () => mockApi.pay_watch_list(q)),
+
+  payWatchAdd: (q: NewPayWatch): Promise<PayWatch> =>
+    call("pay_watch_add", { query: q }, () => mockApi.pay_watch_add(q)),
+
+  payWatchRemove: (q: { watch_id: string }): Promise<null> =>
+    call("pay_watch_remove", { query: q }, () => mockApi.pay_watch_remove(q)),
+
+  payWatchSetEnabled: (q: {
+    watch_id: string;
+    enabled: boolean;
+  }): Promise<PayWatch> =>
+    call("pay_watch_set_enabled", { query: q }, () =>
+      mockApi.pay_watch_set_enabled(q),
+    ),
+
+  payEndpointList: (q: { book_id: string }): Promise<PayEndpoint[]> =>
+    call("pay_endpoint_list", { query: q }, () => mockApi.pay_endpoint_list(q)),
+
+  /** The response carries the signing secret EXACTLY ONCE — show it, let the
+   * user copy it, then drop it from state. It can never be read back. */
+  payEndpointAdd: (q: NewPayEndpoint): Promise<PayEndpointWithSecret> =>
+    call("pay_endpoint_add", { query: q }, () => mockApi.pay_endpoint_add(q)),
+
+  /** Same single-display contract as payEndpointAdd; the old secret is
+   * destroyed. */
+  payEndpointRotateSecret: (q: {
+    endpoint_id: string;
+  }): Promise<PayEndpointWithSecret> =>
+    call("pay_endpoint_rotate_secret", { query: q }, () =>
+      mockApi.pay_endpoint_rotate_secret(q),
+    ),
+
+  /** Removes the endpoint (queued deliveries cascade) and revokes its
+   * vault-held signing secret. */
+  payEndpointRemove: (q: { endpoint_id: string }): Promise<null> =>
+    call("pay_endpoint_remove", { query: q }, () =>
+      mockApi.pay_endpoint_remove(q),
+    ),
+
+  payEndpointSetEnabled: (q: {
+    endpoint_id: string;
+    enabled: boolean;
+  }): Promise<PayEndpoint> =>
+    call("pay_endpoint_set_enabled", { query: q }, () =>
+      mockApi.pay_endpoint_set_enabled(q),
+    ),
+
+  payMatchList: (q: { book_id: string }): Promise<PayMatch[]> =>
+    call("pay_match_list", { query: q }, () => mockApi.pay_match_list(q)),
+
+  payDeliveryList: (q: { book_id: string }): Promise<PayDelivery[]> =>
+    call("pay_delivery_list", { query: q }, () => mockApi.pay_delivery_list(q)),
+
+  /** POST every due pending delivery now (signed in core's vault); returns
+   * the deliveries acted on, updated. */
+  payDeliverDue: (): Promise<PayDelivery[]> =>
+    call("pay_deliver_due", {}, mockApi.pay_deliver_due),
 
   settingsGet: (): Promise<Settings> =>
     call("settings_get", {}, mockApi.settings_get),

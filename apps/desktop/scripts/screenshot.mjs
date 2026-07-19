@@ -37,6 +37,7 @@ const ROUTES = [
   "budgets",
   "ledger",
   "reconcile",
+  "payments",
   "reports",
   "settings",
 ];
