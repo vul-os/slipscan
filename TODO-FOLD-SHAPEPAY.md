@@ -1,26 +1,23 @@
-# TODO: Fold ShapePay into SlipScan
+# TODO: ShapePay — email-driven payment webhooks
 
 > [!IMPORTANT]
-> **We must fold ShapePay into this project: users configure webhook details, and SlipScan fires those webhooks when it detects incoming transactions that match a code on a bank account — an EFT-style, decentralized payment-provider capability. As long as your box has network, this works. No central infrastructure, ever.**
+> **ShapePay is simple: connect your email, and when a payment transaction is detected in it — an EFT carrying a reference code you care about — SlipScan fires your webhooks. A payment system built on the transactions already flowing through your own inbox. As long as your box has network, it works. No central infrastructure, ever.**
 
-## The idea
+The original ShapePay repos live in this repo's early git history (`shapepay-frontend/`, `shapepay-supabase/`) — that heritage is preserved; this phase is the simple rebuild on SlipScan's sovereignty terms.
 
-SlipScan already watches bank accounts (statement imports today; live adapters and email alerts on the roadmap). That means it can act as a **payment detector**: a merchant/freelancer gives a customer a unique reference code, the customer pays by EFT with that code, and the moment SlipScan sees the matching incoming transaction it **fires a webhook** to whatever the user wired up — an order system, an invoicing tool, a Telegram bot, anything with a URL.
+## What it is
 
-That is the useful core of ShapePay, rebuilt on SlipScan's sovereignty terms: your bank session, your box, your webhook endpoints — a decentralized alternative to hosted payment-notification providers.
+1. **You connect your email** — the mailbox ingestion SlipScan already has. Bank alert / payment notification emails arrive there.
+2. **You tell SlipScan what to watch** — reference codes (e.g. the EFT reference you gave a customer), optionally with an amount.
+3. **You add webhook endpoints** — a URL + a signing secret (vault-held, write-only, shown once at creation).
+4. **When a matching inbound transaction is detected** — from email-ingested statements/alerts or any other ingestion source — SlipScan POSTs a signed webhook to your endpoints. HMAC-SHA256, timestamp + nonce, replay-safe. Delivery retries with backoff until your box and the receiver can talk.
 
-## What to build
-
-- **Payment expectations** — first-class records: reference code (exact or pattern), expected amount (optional tolerance), account to watch, expiry, one-shot vs recurring.
-- **Matcher** — runs inside the existing ingestion pipeline (statement import, and later live adapters / email alerts): when a new inbound transaction's reference/description matches an open expectation, mark it paid and enqueue events.
-- **Webhook dispatcher** — per-user endpoints with:
-  - secrets stored in the **credential vault** (write-only, like everything else)
-  - **HMAC-signed payloads** (timestamp + nonce, replay-safe) so receivers can verify
-  - at-least-once delivery with retry/backoff queue persisted in SQLite — if the box is offline, deliveries fire when network returns ("as long as your box has network this works")
-  - delivery log in the audit trail (never payload secrets)
-- **Surfaces** — CLI (`slipscan pay expect / list / cancel`), server routes, desktop screen for expectations + delivery status.
-- **Mantra compliance** — outbound-only, user-configured URLs, no ShapePay cloud, no callback relay. A self-hosted box with `slipscan serve` is the always-on deployment shape.
+That's the whole product: inbox in, webhook out.
 
 ## Status
 
-- [ ] Not started — this file is the commitment. Fold into ROADMAP as its own phase when the globalization wave lands.
+- [x] Original ShapePay history folded into this repo (scrubbed, re-authored)
+- [ ] Watch codes (reference + optional amount) — simple list, CRUD on CLI/server/desktop
+- [ ] Webhook endpoints with vault-held secrets, HMAC-signed deliveries, retry queue
+- [ ] Detection hook on inbound transactions (email-ingested first, all sources inherit)
+- [ ] `docs/PAYMENTS.md` with a receiver verification example
