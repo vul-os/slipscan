@@ -118,6 +118,9 @@ impl From<CoreError> for ApiError {
             CoreError::FxTransport(_) | CoreError::FxParse(_) => {
                 (StatusCode::BAD_GATEWAY, "fx_upstream")
             }
+            // ShapePay: a webhook receiver being unreachable is an upstream
+            // problem, same posture as FX transport failures.
+            CoreError::PayTransport(_) => (StatusCode::BAD_GATEWAY, "pay_upstream"),
             // Data folder: an occupied target is a conflict (the client may
             // offer "open that instead"); refused/invalid moves are
             // user-precondition failures. Neither is reachable over HTTP
@@ -291,6 +294,12 @@ struct PackInstallReq {
 #[derive(Debug, Deserialize)]
 struct VaultNameReq {
     name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetEnabledReq {
+    id: String,
+    enabled: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -726,6 +735,102 @@ async fn vault_revoke(
     Ok(Json(OK))
 }
 
+// -- ShapePay (Phase 4.8): watch codes, webhook endpoints, matches and the
+// delivery queue. Deliberately simple — watches are a flat list, `enabled`
+// the only state. Everything served here is configuration/metadata;
+// detection runs inside `transaction_create` (already routed above), and the
+// delivery loop lives in serve mode (`crate::serve`), not behind a route.
+
+async fn pay_watch_add(
+    State(s): State<AppState>,
+    Json(req): Json<NewPayWatch>,
+) -> ApiResult<PayWatch> {
+    Ok(Json(s.service()?.pay_watch_add(req)?))
+}
+
+async fn pay_watch_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<PayWatch>> {
+    Ok(Json(s.service()?.pay_watch_list(&req.book_id)?))
+}
+
+async fn pay_watch_remove(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
+    s.service()?.pay_watch_remove(&req.id)?;
+    Ok(Json(OK))
+}
+
+async fn pay_watch_set_enabled(
+    State(s): State<AppState>,
+    Json(req): Json<SetEnabledReq>,
+) -> ApiResult<PayWatch> {
+    Ok(Json(
+        s.service()?.pay_watch_set_enabled(&req.id, req.enabled)?,
+    ))
+}
+
+/// Adding a webhook endpoint is **local-only** (CLI `slipscan pay endpoint
+/// add` / desktop IPC), refused here by design: creation returns the signing
+/// secret exactly once, this server does no TLS, and secret material never
+/// transits HTTP in either direction — the same contract as vault writes and
+/// secret settings. Endpoint *configuration* (list / enable / remove) is
+/// served below; nothing that carries secret material is.
+async fn pay_endpoint_add() -> ApiError {
+    ApiError::forbidden(
+        "webhook endpoints are added locally (CLI `slipscan pay endpoint add` / desktop app): \
+         creation displays the signing secret exactly once, and secret material never transits \
+         HTTP",
+    )
+}
+
+/// Rotation is local-only for the same reason as [`pay_endpoint_add`]: the
+/// new secret's single display must never ride plaintext HTTP.
+async fn pay_endpoint_rotate_secret() -> ApiError {
+    ApiError::forbidden(
+        "webhook endpoint secrets are rotated locally (CLI `slipscan pay endpoint rotate` / \
+         desktop app): the new signing secret is displayed exactly once and never transits HTTP",
+    )
+}
+
+async fn pay_endpoint_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<PayEndpoint>> {
+    Ok(Json(s.service()?.pay_endpoint_list(&req.book_id)?))
+}
+
+async fn pay_endpoint_remove(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<OkResp> {
+    s.service()?.pay_endpoint_remove(&req.id)?;
+    Ok(Json(OK))
+}
+
+async fn pay_endpoint_set_enabled(
+    State(s): State<AppState>,
+    Json(req): Json<SetEnabledReq>,
+) -> ApiResult<PayEndpoint> {
+    Ok(Json(
+        s.service()?
+            .pay_endpoint_set_enabled(&req.id, req.enabled)?,
+    ))
+}
+
+async fn pay_match_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<PayMatch>> {
+    Ok(Json(s.service()?.pay_match_list(&req.book_id)?))
+}
+
+async fn pay_delivery_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<PayDelivery>> {
+    Ok(Json(s.service()?.pay_delivery_list(&req.book_id)?))
+}
+
 async fn pack_install(
     State(s): State<AppState>,
     Json(req): Json<PackInstallReq>,
@@ -852,6 +957,22 @@ pub fn app(state: AppState) -> Router {
         .route("/fx_convert", post(fx_convert))
         .route("/settings_set", post(settings_set))
         .route("/settings_get", post(settings_get))
+        .route("/pay_watch_add", post(pay_watch_add))
+        .route("/pay_watch_list", post(pay_watch_list))
+        .route("/pay_watch_remove", post(pay_watch_remove))
+        .route("/pay_watch_set_enabled", post(pay_watch_set_enabled))
+        // Add/rotate are refused with the rationale in their handlers:
+        // secret material never transits HTTP.
+        .route("/pay_endpoint_add", post(pay_endpoint_add))
+        .route(
+            "/pay_endpoint_rotate_secret",
+            post(pay_endpoint_rotate_secret),
+        )
+        .route("/pay_endpoint_list", post(pay_endpoint_list))
+        .route("/pay_endpoint_remove", post(pay_endpoint_remove))
+        .route("/pay_endpoint_set_enabled", post(pay_endpoint_set_enabled))
+        .route("/pay_match_list", post(pay_match_list))
+        .route("/pay_delivery_list", post(pay_delivery_list))
         .route("/pack_install", post(pack_install))
         .route("/pack_list", post(pack_list))
         .route("/audit_list", post(audit_list))
@@ -1530,6 +1651,296 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn pay_watch_crud_round_trip_over_http() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Pay", "kind": "personal", "currency": "ZAR"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let (status, watch) = call(
+            &app,
+            post_req(
+                "/api/v1/pay_watch_add",
+                json!({
+                    "book_id": book_id,
+                    "code": "INV-7031",
+                    "label": "Rent",
+                    "expected_amount_minor": 50_000,
+                    "expected_currency": "zar"
+                }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{watch}");
+        assert_eq!(watch["code"], "INV-7031");
+        assert_eq!(watch["expected_currency"], "ZAR", "normalized");
+        assert_eq!(watch["enabled"], true);
+        let watch_id = watch["id"].as_str().unwrap().to_string();
+
+        // Validation flows through core: an exact amount needs a currency.
+        let (status, body) = call(
+            &app,
+            post_req(
+                "/api/v1/pay_watch_add",
+                json!({"book_id": book_id, "code": "X1", "expected_amount_minor": 500}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+        let (status, listed) = call(
+            &app,
+            post_req("/api/v1/pay_watch_list", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+
+        let (status, toggled) = call(
+            &app,
+            post_req(
+                "/api/v1/pay_watch_set_enabled",
+                json!({"id": watch_id, "enabled": false}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{toggled}");
+        assert_eq!(toggled["enabled"], false);
+
+        let (status, _) = call(
+            &app,
+            post_req("/api/v1/pay_watch_remove", json!({"id": watch_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, listed) = call(
+            &app,
+            post_req("/api/v1/pay_watch_list", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert!(listed.as_array().unwrap().is_empty());
+        let (status, _) = call(
+            &app,
+            post_req("/api/v1/pay_watch_remove", json!({"id": watch_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn pay_endpoint_add_and_rotate_are_refused_and_never_carry_secrets() {
+        // Endpoint creation/rotation display a signing secret exactly once —
+        // that display must never ride plaintext HTTP, so both routes refuse
+        // outright (same posture as vault writes / secret settings).
+        let state = AppState::new(svc(), None);
+        let app = app(state.clone());
+        for route in [
+            "/api/v1/pay_endpoint_add",
+            "/api/v1/pay_endpoint_rotate_secret",
+        ] {
+            let (status, body) = call(
+                &app,
+                post_req(
+                    route,
+                    json!({"book_id": "b", "label": "Shop", "url": "https://x.example.org/h"}),
+                    None,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{route}: {body}");
+            assert_eq!(body["error"]["code"], "forbidden");
+            assert!(
+                body["error"]["message"].as_str().unwrap().contains("local"),
+                "refusal must point at the local flow: {body}"
+            );
+            assert!(
+                body.get("secret").is_none(),
+                "no secret field may ever appear: {body}"
+            );
+        }
+
+        // An endpoint added locally is served as metadata: list / disable /
+        // remove work over HTTP and no response ever carries the secret.
+        let (book_id, endpoint_id, secret) = {
+            let service = state.service().unwrap();
+            let book = service
+                .book_create(NewBook {
+                    name: "Pay".into(),
+                    kind: BookKind::Personal,
+                    currency: Some("ZAR".into()),
+                    country: None,
+                    region: None,
+                })
+                .unwrap();
+            let created = service
+                .pay_endpoint_add(NewPayEndpoint {
+                    book_id: book.id.clone(),
+                    label: "Shop".into(),
+                    url: "https://hooks.example.org/pay".into(),
+                })
+                .unwrap();
+            (book.id, created.endpoint.id, created.secret)
+        };
+
+        let (status, listed) = call(
+            &app,
+            post_req(
+                "/api/v1/pay_endpoint_list",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{listed}");
+        assert_eq!(listed[0]["url"], "https://hooks.example.org/pay");
+        assert!(
+            !listed.to_string().contains(&secret),
+            "endpoint listing leaked the signing secret"
+        );
+
+        let (status, toggled) = call(
+            &app,
+            post_req(
+                "/api/v1/pay_endpoint_set_enabled",
+                json!({"id": endpoint_id, "enabled": false}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{toggled}");
+        assert_eq!(toggled["enabled"], false);
+        assert!(!toggled.to_string().contains(&secret));
+
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/pay_endpoint_remove",
+                json!({"id": endpoint_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, listed) = call(
+            &app,
+            post_req(
+                "/api/v1/pay_endpoint_list",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert!(listed.as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn transaction_create_over_http_detects_matches_and_queues_deliveries() {
+        // The detection hook lives in core's transaction_create, so a
+        // transaction posted over HTTP inherits it like every other source.
+        let state = AppState::new(svc(), None);
+        let app = app(state.clone());
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Pay", "kind": "personal", "currency": "ZAR"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+        let (_, account) = call(
+            &app,
+            post_req(
+                "/api/v1/account_create",
+                json!({"book_id": book_id, "name": "Cheque", "kind": "bank", "currency": "ZAR"}),
+                None,
+            ),
+        )
+        .await;
+        let account_id = account["id"].as_str().unwrap().to_string();
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/pay_watch_add",
+                json!({"book_id": book_id, "code": "INV-7031", "label": "Rent"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // The endpoint (and its vault-held secret) is created locally.
+        let secret = state
+            .service()
+            .unwrap()
+            .pay_endpoint_add(NewPayEndpoint {
+                book_id: book_id.clone(),
+                label: "Shop".into(),
+                url: "https://hooks.example.org/pay".into(),
+            })
+            .unwrap()
+            .secret;
+
+        let (status, txn) = call(
+            &app,
+            post_req(
+                "/api/v1/transaction_create",
+                json!({
+                    "book_id": book_id,
+                    "account_id": account_id,
+                    "source": "email",
+                    "posted_date": "2026-07-01",
+                    "amount_minor": 50_000,
+                    "currency": "ZAR",
+                    "description": "EFT CREDIT REF INV-7031 FROM ACC 62001234567",
+                    "dedupe_occurrence": 0
+                }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{txn}");
+
+        let (status, matches) = call(
+            &app,
+            post_req("/api/v1/pay_match_list", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{matches}");
+        assert_eq!(matches.as_array().unwrap().len(), 1);
+        assert_eq!(matches[0]["transaction_id"], txn["id"]);
+
+        let (status, deliveries) = call(
+            &app,
+            post_req(
+                "/api/v1/pay_delivery_list",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{deliveries}");
+        assert_eq!(deliveries.as_array().unwrap().len(), 1);
+        assert_eq!(deliveries[0]["state"], "pending");
+        let rendered = deliveries.to_string();
+        // Queue rows carry the metadata-only payload, never bank data or
+        // secret material.
+        assert!(!rendered.contains("62001234567"), "{rendered}");
+        assert!(!rendered.contains("EFT CREDIT"), "{rendered}");
+        assert!(!rendered.contains(&secret), "secret leaked to deliveries");
     }
 
     #[tokio::test]

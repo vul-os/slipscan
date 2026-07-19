@@ -726,6 +726,115 @@ pub struct TaxPeriodSummary {
 pub type Vat201Summary = TaxPeriodSummary;
 
 // ---------------------------------------------------------------------------
+// ShapePay — watch codes, webhook endpoints, matches, deliveries
+// ---------------------------------------------------------------------------
+
+str_enum!(
+    /// Delivery queue state. `pending` retries with backoff; `delivered` and
+    /// `failed` are terminal.
+    PayDeliveryState {
+        Pending => "pending",
+        Delivered => "delivered",
+        Failed => "failed",
+    }
+);
+
+/// A reference code being watched on inbound transactions. Deliberately a
+/// flat list: no expiry, no recurrence, no lifecycle — `enabled` is the only
+/// state, and an optional exact amount is the only filter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PayWatch {
+    pub id: String,
+    pub book_id: String,
+    /// Stored verbatim; matched case-insensitively as a whole token within
+    /// the transaction description/merchant (INV1 never matches INV11).
+    pub code: String,
+    pub label: Option<String>,
+    /// When set, only a transaction of exactly this amount (in
+    /// `expected_currency`) matches.
+    pub expected_amount_minor: Option<i64>,
+    pub expected_currency: Option<String>,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewPayWatch {
+    pub book_id: String,
+    pub code: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Optional exact-amount filter; requires `expected_currency`.
+    #[serde(default)]
+    pub expected_amount_minor: Option<i64>,
+    #[serde(default)]
+    pub expected_currency: Option<String>,
+}
+
+/// A webhook receiver. The signing secret is vault-held (write-only) under a
+/// name derived from `id` — never a field here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PayEndpoint {
+    pub id: String,
+    pub book_id: String,
+    pub label: String,
+    pub url: String,
+    pub enabled: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewPayEndpoint {
+    pub book_id: String,
+    pub label: String,
+    pub url: String,
+}
+
+/// Return type of `pay_endpoint_add` / `pay_endpoint_rotate_secret` — the
+/// **only** sanctioned display of a signing secret, exactly once.
+///
+/// Why once: the receiver operator has to copy the secret into their own
+/// system to verify signatures, so a single handover at creation/rotation is
+/// unavoidable. After that the vault's write-only contract applies — there is
+/// no `get`-for-display, and losing the secret means rotating it.
+#[derive(Debug, Clone, Serialize)]
+pub struct PayEndpointWithSecret {
+    pub endpoint: PayEndpoint,
+    /// 32 random bytes, hex-encoded (64 chars). Shown here once, then
+    /// reachable only via the vault's `use_with` at signing time.
+    pub secret: String,
+}
+
+/// One detection: watch `watch_id` matched transaction `transaction_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PayMatch {
+    pub id: String,
+    pub book_id: String,
+    pub watch_id: String,
+    pub transaction_id: String,
+    pub matched_at: String,
+}
+
+/// One queued webhook delivery. `payload` is the exact JSON body POSTed and
+/// signed — metadata only (watch label + reference, amount/currency/date,
+/// matched_at), never account numbers or the raw bank description.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PayDelivery {
+    pub id: String,
+    pub book_id: String,
+    pub endpoint_id: String,
+    pub match_id: String,
+    pub payload: String,
+    pub state: PayDeliveryState,
+    pub attempts: i64,
+    pub next_attempt_at: String,
+    pub last_status: Option<i64>,
+    pub last_error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+// ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------
 

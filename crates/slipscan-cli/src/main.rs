@@ -16,7 +16,8 @@ use anyhow::{anyhow, bail, Context};
 use clap::{Parser, Subcommand, ValueEnum};
 use slipscan_core::datadir::{self, DataDirResolver, MoveStep};
 use slipscan_core::domain::{
-    Account, Book, BookKind, DocumentSource, NewBook, TransactionFilter, TransactionSource,
+    Account, Book, BookKind, DocumentSource, NewBook, NewPayEndpoint, NewPayWatch,
+    PayDeliveryState, PayEndpointWithSecret, TransactionFilter, TransactionSource,
 };
 use slipscan_core::secrets::SecretString;
 use slipscan_core::CoreService;
@@ -203,6 +204,12 @@ enum Command {
         #[command(subcommand)]
         action: PackAction,
     },
+    /// ShapePay: watch reference codes on inbound transactions and fire
+    /// signed webhooks to your endpoints (email in -> webhook out).
+    Pay {
+        #[command(subcommand)]
+        action: PayAction,
+    },
     /// Credential vault: set/replace/revoke/list. Secrets are read from a
     /// no-echo prompt (or stdin when piped) and are never displayed.
     Vault {
@@ -341,6 +348,66 @@ enum PackAction {
     },
     /// List installed packs.
     List,
+}
+
+#[derive(Debug, Subcommand)]
+enum PayAction {
+    /// Watch a reference code: when an inbound transaction carries it (as a
+    /// whole token, case-insensitive), your webhook endpoints are notified.
+    Watch {
+        /// The reference code, e.g. the EFT reference you gave a customer.
+        reference: String,
+        /// Only match this exact amount, in minor units (e.g. cents).
+        /// Requires --currency.
+        #[arg(long)]
+        amount: Option<i64>,
+        /// ISO-4217 currency for --amount, e.g. ZAR.
+        #[arg(long)]
+        currency: Option<String>,
+        /// Label carried in the webhook payload (e.g. "Rent July").
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// List watch codes.
+    Watches,
+    /// Stop watching a code by id.
+    Unwatch { id: String },
+    /// Webhook endpoints (add prints the signing secret exactly once).
+    Endpoint {
+        #[command(subcommand)]
+        action: PayEndpointAction,
+    },
+    /// List webhook endpoints (metadata only — never secrets).
+    Endpoints,
+    /// List webhook deliveries: queued, delivered and failed.
+    Deliveries {
+        /// Only failed (abandoned) deliveries.
+        #[arg(long)]
+        failed: bool,
+    },
+    /// POST every due pending delivery to its endpoint now. Retries follow
+    /// the backoff schedule; `serve` mode flushes automatically.
+    Deliver,
+}
+
+#[derive(Debug, Subcommand)]
+enum PayEndpointAction {
+    /// Register a webhook receiver. The signing secret is generated here,
+    /// stored write-only in the vault, and printed exactly once.
+    Add {
+        /// Receiver URL, http(s); no embedded credentials — deliveries are
+        /// authenticated by the HMAC signature.
+        url: String,
+        /// Display label, e.g. "Shop backend".
+        #[arg(long)]
+        label: String,
+    },
+    /// Rotate an endpoint's signing secret (the new one prints exactly
+    /// once; the old one stops signing immediately).
+    Rotate { id: String },
+    /// Remove an endpoint: its queued deliveries are dropped and its
+    /// vault-held signing secret is revoked.
+    Remove { id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -913,17 +980,40 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             })?;
             drop(password);
 
+            // Email in -> webhook out in one command: flush any due ShapePay
+            // deliveries the sync's ingestion enqueued (or that were already
+            // waiting on their backoff). With nothing due this POSTs nowhere
+            // — and when it does POST, only to the webhook endpoint URLs the
+            // user registered.
+            let webhook_transport = slipscan_ingest::pay::ReqwestWebhookTransport::new()?;
+            let webhooks = rt.block_on(
+                svc.pay_deliver_due(&webhook_transport, &slipscan_core::util::now_iso()),
+            )?;
+            let webhooks_delivered = webhooks
+                .iter()
+                .filter(|d| d.state == PayDeliveryState::Delivered)
+                .count();
+
             let out = serde_json::json!({
                 "messages": fetched,
                 "documents_imported": imported,
                 "duplicates": duplicates,
                 "storage_dir": dir.display().to_string(),
+                "webhooks_attempted": webhooks.len(),
+                "webhooks_delivered": webhooks_delivered,
             });
             emit(cli.json, &out, || {
                 println!(
                     "Fetched {fetched} message(s): {imported} document(s) imported, \
                      {duplicates} duplicate(s)."
                 );
+                if !webhooks.is_empty() {
+                    println!(
+                        "Webhooks: {webhooks_delivered} of {} due delivery(ies) delivered \
+                         (the rest follow the retry schedule; see `slipscan pay deliveries`).",
+                        webhooks.len()
+                    );
+                }
             })
         }
 
@@ -1250,6 +1340,178 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
+        Command::Pay { ref action } => {
+            let svc = open_service(&env.db)?;
+            match action {
+                PayAction::Watch {
+                    reference,
+                    amount,
+                    currency,
+                    label,
+                } => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let watch = svc.pay_watch_add(NewPayWatch {
+                        book_id: book.id.clone(),
+                        code: reference.clone(),
+                        label: label.clone(),
+                        expected_amount_minor: *amount,
+                        expected_currency: currency.clone(),
+                    })?;
+                    emit(cli.json, &watch, || {
+                        let filter = match (&watch.expected_amount_minor, &watch.expected_currency)
+                        {
+                            (Some(minor), Some(cur)) => {
+                                format!(" for exactly {} {cur}", fmt_minor(*minor))
+                            }
+                            _ => String::new(),
+                        };
+                        println!(
+                            "Watching {}{filter} (id {}) — a matching inbound transaction \
+                             fires your webhook endpoints.",
+                            watch.code, watch.id
+                        );
+                    })
+                }
+                PayAction::Watches => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let watches = svc.pay_watch_list(&book.id)?;
+                    emit(cli.json, &watches, || {
+                        if watches.is_empty() {
+                            println!("No watch codes. Add one with `slipscan pay watch <ref>`.");
+                        }
+                        for w in &watches {
+                            let amount = match (&w.expected_amount_minor, &w.expected_currency) {
+                                (Some(minor), Some(cur)) => format!("{} {cur}", fmt_minor(*minor)),
+                                _ => "any amount".to_string(),
+                            };
+                            println!(
+                                "{}\t{}\t{}\t{}\t{}",
+                                w.id,
+                                w.code,
+                                w.label.as_deref().unwrap_or("-"),
+                                amount,
+                                if w.enabled { "enabled" } else { "disabled" }
+                            );
+                        }
+                    })
+                }
+                PayAction::Unwatch { id } => {
+                    svc.pay_watch_remove(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Stopped watching (removed {id}).");
+                    })
+                }
+                PayAction::Endpoint {
+                    action: PayEndpointAction::Add { url, label },
+                } => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let created = svc.pay_endpoint_add(NewPayEndpoint {
+                        book_id: book.id.clone(),
+                        label: label.clone(),
+                        url: url.clone(),
+                    })?;
+                    // The one sanctioned display of the signing secret: the
+                    // JSON body in --json mode, print_endpoint_secret's
+                    // stdout line otherwise. Never stored displayable again.
+                    emit(cli.json, &created, || print_endpoint_secret(&created))
+                }
+                PayAction::Endpoint {
+                    action: PayEndpointAction::Rotate { id },
+                } => {
+                    let rotated = svc.pay_endpoint_rotate_secret(id)?;
+                    emit(cli.json, &rotated, || {
+                        eprintln!("Rotated the signing secret; the old one no longer signs.");
+                        print_endpoint_secret(&rotated);
+                    })
+                }
+                PayAction::Endpoint {
+                    action: PayEndpointAction::Remove { id },
+                } => {
+                    svc.pay_endpoint_remove(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!(
+                            "Removed endpoint {id}: queued deliveries dropped, signing \
+                             secret revoked."
+                        );
+                    })
+                }
+                PayAction::Endpoints => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let endpoints = svc.pay_endpoint_list(&book.id)?;
+                    emit(cli.json, &endpoints, || {
+                        if endpoints.is_empty() {
+                            println!(
+                                "No webhook endpoints. Add one with \
+                                 `slipscan pay endpoint add <url> --label <label>`."
+                            );
+                        }
+                        for e in &endpoints {
+                            println!(
+                                "{}\t{}\t{}\t{}",
+                                e.id,
+                                e.label,
+                                e.url,
+                                if e.enabled { "enabled" } else { "disabled" }
+                            );
+                        }
+                    })
+                }
+                PayAction::Deliveries { failed } => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let mut deliveries = svc.pay_delivery_list(&book.id)?;
+                    if *failed {
+                        deliveries.retain(|d| d.state == PayDeliveryState::Failed);
+                    }
+                    emit(cli.json, &deliveries, || {
+                        if deliveries.is_empty() {
+                            println!("No deliveries.");
+                        }
+                        for d in &deliveries {
+                            println!(
+                                "{}\t{}\tattempts {}\tendpoint {}\tnext {}\t{}",
+                                d.id,
+                                d.state,
+                                d.attempts,
+                                d.endpoint_id,
+                                d.next_attempt_at,
+                                d.last_status
+                                    .map(|s| format!("HTTP {s}"))
+                                    .or_else(|| d.last_error.clone())
+                                    .unwrap_or_else(|| "-".into())
+                            );
+                        }
+                    })
+                }
+                PayAction::Deliver => {
+                    // The explicit flush: POSTs go only to the webhook
+                    // endpoint URLs the user registered, nowhere else.
+                    let transport = slipscan_ingest::pay::ReqwestWebhookTransport::new()?;
+                    let now = slipscan_core::util::now_iso();
+                    let updated = runtime()?.block_on(svc.pay_deliver_due(&transport, &now))?;
+                    emit(cli.json, &updated, || {
+                        if updated.is_empty() {
+                            println!("Nothing due.");
+                            return;
+                        }
+                        let delivered = updated
+                            .iter()
+                            .filter(|d| d.state == PayDeliveryState::Delivered)
+                            .count();
+                        let failed = updated
+                            .iter()
+                            .filter(|d| d.state == PayDeliveryState::Failed)
+                            .count();
+                        println!(
+                            "Attempted {}: {delivered} delivered, {} pending retry, \
+                             {failed} failed.",
+                            updated.len(),
+                            updated.len() - delivered - failed
+                        );
+                    })
+                }
+            }
+        }
+
         Command::Vault { ref action } => {
             ensure_parent_dir(&env.db)?;
             let vault = VaultHandle::open(&env.db)
@@ -1347,6 +1609,16 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(Box::new(slipscan_ingest::fx::ReqwestFxTransport::new()?)
                     as Box<dyn slipscan_core::fx::FxTransport>)
             });
+            // ShapePay delivery loop: serve mode flushes due webhook
+            // deliveries on an interval — POSTs only ever go to the
+            // endpoint URLs the user registered, and an empty queue means
+            // zero network activity.
+            let pay_transport: slipscan_server::PayTransportFactory = std::sync::Arc::new(|| {
+                Ok(
+                    Box::new(slipscan_ingest::pay::ReqwestWebhookTransport::new()?)
+                        as Box<dyn slipscan_core::pay::WebhookTransport>,
+                )
+            });
             // The data_status route only makes sense when the served
             // database *is* the managed folder's; with an explicit --db the
             // route answers 503 instead of describing the wrong folder.
@@ -1355,6 +1627,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 svc,
                 Some(vault),
                 Some(fx_transport),
+                Some(pay_transport),
                 data_dir,
                 ServerConfig { addr, require_auth },
             ))?;
@@ -1520,6 +1793,27 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 fn print_token(token: &str) {
     eprintln!("Generated API token — shown once, only its SHA-256 is stored:");
     println!("{token}");
+}
+
+/// The sanctioned single display of a webhook signing secret (add/rotate).
+/// Same split as [`print_token`]: the secret goes to stdout so it can be
+/// captured; everything else goes to stderr. In `--json` mode the emitted
+/// `PayEndpointWithSecret` carries it instead — still exactly once.
+fn print_endpoint_secret(created: &PayEndpointWithSecret) {
+    eprintln!(
+        "Endpoint {} ({}) -> {}",
+        created.endpoint.label, created.endpoint.id, created.endpoint.url
+    );
+    eprintln!(
+        "Signing secret — shown once, then held write-only in the vault \
+         (lost means rotate):"
+    );
+    println!("{}", created.secret);
+    eprintln!(
+        "Receivers verify: hex(HMAC-SHA256(secret, \"{{timestamp}}.{{nonce}}.\" + body)) \
+         == X-SlipScan-Signature, with the timestamp/nonce from the \
+         X-SlipScan-Timestamp / X-SlipScan-Nonce headers."
+    );
 }
 
 #[cfg(test)]
@@ -1951,6 +2245,321 @@ mod tests {
         assert!(Cli::try_parse_from(["slipscan", "vault", "replace", "name", "s3cret"]).is_err());
         assert!(Cli::try_parse_from(["slipscan", "vault", "list"]).is_ok());
         assert!(Cli::try_parse_from(["slipscan", "vault", "revoke", "name"]).is_ok());
+    }
+
+    #[test]
+    fn parses_pay_actions() {
+        let cli = Cli::try_parse_from([
+            "slipscan",
+            "pay",
+            "watch",
+            "INV-7031",
+            "--amount",
+            "50000",
+            "--currency",
+            "ZAR",
+            "--label",
+            "Rent",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Pay {
+                action:
+                    PayAction::Watch {
+                        reference,
+                        amount,
+                        currency,
+                        label,
+                    },
+            } => {
+                assert_eq!(reference, "INV-7031");
+                assert_eq!(amount, Some(50_000));
+                assert_eq!(currency.as_deref(), Some("ZAR"));
+                assert_eq!(label.as_deref(), Some("Rent"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // Flags are optional; the reference is not.
+        assert!(Cli::try_parse_from(["slipscan", "pay", "watch", "X"]).is_ok());
+        assert!(Cli::try_parse_from(["slipscan", "pay", "watch"]).is_err());
+        assert!(Cli::try_parse_from(["slipscan", "pay", "watches"]).is_ok());
+        assert!(Cli::try_parse_from(["slipscan", "pay", "unwatch", "w-1"]).is_ok());
+        assert!(Cli::try_parse_from(["slipscan", "pay", "unwatch"]).is_err());
+
+        // Endpoint add takes the URL positionally and requires --label.
+        let cli = Cli::try_parse_from([
+            "slipscan",
+            "pay",
+            "endpoint",
+            "add",
+            "https://hooks.example.org/pay",
+            "--label",
+            "Shop",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Pay {
+                action:
+                    PayAction::Endpoint {
+                        action: PayEndpointAction::Add { url, label },
+                    },
+            } => {
+                assert_eq!(url, "https://hooks.example.org/pay");
+                assert_eq!(label, "Shop");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from(["slipscan", "pay", "endpoint", "add", "https://x.org/h"]).is_err(),
+            "--label is mandatory"
+        );
+        assert!(Cli::try_parse_from(["slipscan", "pay", "endpoint", "rotate", "e-1"]).is_ok());
+        assert!(Cli::try_parse_from(["slipscan", "pay", "endpoint", "remove", "e-1"]).is_ok());
+        assert!(Cli::try_parse_from(["slipscan", "pay", "endpoints"]).is_ok());
+        assert!(Cli::try_parse_from(["slipscan", "pay", "deliver"]).is_ok());
+        let cli = Cli::try_parse_from(["slipscan", "pay", "deliveries", "--failed"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Pay {
+                action: PayAction::Deliveries { failed: true }
+            }
+        ));
+    }
+
+    /// What the scratch receiver saw: (lowercased-name) headers and the body.
+    type ReceivedWebhook = (Vec<(String, String)>, Vec<u8>);
+
+    /// One HTTP exchange on a loopback scratch socket: accept a single
+    /// connection, read one request (headers + Content-Length body), answer
+    /// `status`, and hand back the (lowercased-name) headers and body.
+    /// Hermetic — nothing leaves 127.0.0.1.
+    fn scratch_receiver(
+        listener: std::net::TcpListener,
+        status: u16,
+    ) -> std::thread::JoinHandle<ReceivedWebhook> {
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().expect("accept webhook POST");
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let header_end = loop {
+                if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+                let n = stream.read(&mut chunk).expect("read request");
+                assert!(n > 0, "connection closed before headers completed");
+                buf.extend_from_slice(&chunk[..n]);
+            };
+            let head = String::from_utf8_lossy(&buf[..header_end]).to_string();
+            let headers: Vec<(String, String)> = head
+                .lines()
+                .skip(1) // request line
+                .filter_map(|l| l.split_once(':'))
+                .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+                .collect();
+            let content_length: usize = headers
+                .iter()
+                .find(|(k, _)| k == "content-length")
+                .expect("content-length header")
+                .1
+                .parse()
+                .unwrap();
+            let mut body = buf[header_end..].to_vec();
+            while body.len() < content_length {
+                let n = stream.read(&mut chunk).expect("read body");
+                assert!(n > 0, "connection closed before body completed");
+                body.extend_from_slice(&chunk[..n]);
+            }
+            let response =
+                format!("HTTP/1.1 {status} X\r\ncontent-length: 0\r\nconnection: close\r\n\r\n");
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            (headers, body)
+        })
+    }
+
+    /// The whole ShapePay flow, hermetically: watch a code (CLI) -> import a
+    /// matching statement line (CLI) -> match + enqueue -> deliver over the
+    /// real reqwest transport to a 127.0.0.1 scratch listener -> delivered,
+    /// and the signature verifies with the secret displayed at add time.
+    ///
+    /// The endpoint add + deliver steps run through a `CoreService` with an
+    /// in-memory secret store (they touch the vault; the CLI's own path uses
+    /// the OS keychain, which tests must never do) — the same service code
+    /// `run()` calls, one constructor apart.
+    #[test]
+    fn pay_end_to_end_import_matches_and_delivers_a_verifiable_webhook() {
+        use slipscan_core::secrets::MemorySecretStore;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let hook_url = format!("http://{}/hook", listener.local_addr().unwrap());
+        let receiver = scratch_receiver(listener, 200);
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("pay.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let run_cli = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_cli(&["init", "--name", "Shop", "--currency", "zar"]).unwrap();
+        run_cli(&["account", "add", "Cheque"]).unwrap();
+        // Watch narrowed to the exact expected amount.
+        run_cli(&[
+            "pay",
+            "watch",
+            "INV-7031",
+            "--label",
+            "Rent",
+            "--amount",
+            "234567",
+            "--currency",
+            "zar",
+        ])
+        .unwrap();
+
+        // Register the endpoint BEFORE the money arrives (vault-backed, so
+        // via the memory-store service) and keep the once-displayed secret
+        // like a receiver operator would.
+        let svc = CoreService::new(
+            slipscan_core::Db::open(&db).unwrap(),
+            Box::new(MemorySecretStore::new()),
+        );
+        let book_id = svc.book_list().unwrap().remove(0).id;
+        let created = svc
+            .pay_endpoint_add(slipscan_core::domain::NewPayEndpoint {
+                book_id: book_id.clone(),
+                label: "Shop backend".into(),
+                url: hook_url.clone(),
+            })
+            .unwrap();
+        let secret = created.secret;
+
+        // The bank statement lands (the same import path email-fetched CSVs
+        // go through): the detection hook inside transaction_create matches
+        // and enqueues one delivery.
+        let csv_path = dir.path().join("statement.csv");
+        std::fs::write(
+            &csv_path,
+            "Date,Description,Amount\n06/15/2026,EFT CREDIT REF INV-7031 ACC 62001234567,\"2,345.67\"\n",
+        )
+        .unwrap();
+        run_cli(&[
+            "import",
+            csv_path.to_str().unwrap(),
+            "--preset",
+            "generic-mdy",
+            "--account",
+            "Cheque",
+        ])
+        .unwrap();
+        assert_eq!(svc.pay_match_list(&book_id).unwrap().len(), 1);
+        let queued = svc.pay_delivery_list(&book_id).unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(
+            queued[0].state,
+            slipscan_core::domain::PayDeliveryState::Pending
+        );
+
+        // Flush the queue over the real reqwest transport — the exact code
+        // `slipscan pay deliver` and `mail-sync` run.
+        let transport = slipscan_ingest::pay::ReqwestWebhookTransport::new().unwrap();
+        let updated = runtime()
+            .unwrap()
+            .block_on(svc.pay_deliver_due(&transport, &slipscan_core::util::now_iso()))
+            .unwrap();
+        assert_eq!(updated.len(), 1);
+        assert_eq!(
+            updated[0].state,
+            slipscan_core::domain::PayDeliveryState::Delivered
+        );
+        assert_eq!(updated[0].last_status, Some(200));
+
+        // The receiver's view: signed headers + metadata-only JSON body.
+        let (headers, body) = receiver.join().unwrap();
+        let header = |name: &str| {
+            headers
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.as_str())
+                .unwrap_or_else(|| panic!("missing header {name}: {headers:?}"))
+        };
+        let timestamp = header("x-slipscan-timestamp");
+        let nonce = header("x-slipscan-nonce");
+        let signature = header("x-slipscan-signature");
+        assert_eq!(nonce, updated[0].id, "nonce is the stable delivery id");
+        assert!(
+            slipscan_core::pay::verify_webhook_signature(
+                &secret, timestamp, nonce, &body, signature
+            ),
+            "the documented receiver-side verification must pass"
+        );
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["event"], "payment.matched");
+        assert_eq!(payload["reference"], "INV-7031");
+        assert_eq!(payload["watch_label"], "Rent");
+        assert_eq!(payload["amount_minor"], 234_567);
+        assert_eq!(payload["currency"], "ZAR");
+        assert_eq!(payload["posted_date"], "2026-06-15");
+        let rendered = String::from_utf8_lossy(&body);
+        assert!(
+            !rendered.contains("62001234567") && !rendered.contains("EFT CREDIT"),
+            "webhook bodies carry metadata only, never bank text: {rendered}"
+        );
+
+        // Nothing due afterwards — a second flush POSTs nowhere (the scratch
+        // listener is gone; any attempt would error loudly).
+        let again = runtime()
+            .unwrap()
+            .block_on(svc.pay_deliver_due(&transport, &slipscan_core::util::now_iso()))
+            .unwrap();
+        assert!(again.is_empty());
+
+        // CLI listings see the same state.
+        run_cli(&["pay", "watches"]).unwrap();
+        run_cli(&["pay", "deliveries"]).unwrap();
+        run_cli(&["pay", "deliveries", "--failed"]).unwrap();
+    }
+
+    /// Watch/unwatch and endpoint listing round-trip through the CLI; the
+    /// vault-free surfaces run through `run()` itself.
+    #[test]
+    fn pay_watch_and_unwatch_round_trip_via_cli() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("w.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let run_cli = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_cli(&["init", "--name", "Shop"]).unwrap();
+        run_cli(&["pay", "watch", "INV-1", "--label", "One"]).unwrap();
+        run_cli(&["pay", "watches"]).unwrap();
+
+        // An exact amount without a currency is rejected by core with
+        // guidance, surfaced as a CLI error.
+        let err = run_cli(&["pay", "watch", "INV-2", "--amount", "500"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("currency"), "{err}");
+
+        let svc = CoreService::open(&db).unwrap();
+        let book_id = svc.book_list().unwrap().remove(0).id;
+        let watches = svc.pay_watch_list(&book_id).unwrap();
+        assert_eq!(watches.len(), 1);
+        assert_eq!(watches[0].code, "INV-1");
+        let id = watches[0].id.clone();
+        drop(svc);
+
+        run_cli(&["pay", "unwatch", &id]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        assert!(svc.pay_watch_list(&book_id).unwrap().is_empty());
+        // Unknown ids surface as errors.
+        assert!(run_cli(&["pay", "unwatch", "nope"]).is_err());
+        // Endpoint listing works with none registered.
+        run_cli(&["pay", "endpoints"]).unwrap();
     }
 
     #[test]
