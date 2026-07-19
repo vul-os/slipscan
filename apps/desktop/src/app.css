@@ -191,6 +191,36 @@
   }
 }
 
+/* Detail reveal (expanded table rows, inline panels): smooth height +
+ * fade using the grid-rows 0fr→1fr trick so the row grows into place.
+ * The inner wrapper owns overflow:hidden; the outer animates the track. */
+@keyframes detail-reveal {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+}
+
+.reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+
+.reveal-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .reveal {
+    animation: detail-reveal var(--dur-slow) var(--ease-decel);
+  }
+}
+
 @layer base {
   html,
   body {
