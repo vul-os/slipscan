@@ -3,11 +3,13 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * slip/scan design system — from docs/ARCHITECTURE.md (binding contract):
- *   - ink 0–950 neutral scale (zinc-like)
- *   - electric lime #C8FF00 accent, used sparingly
- *   - success / warning / danger
- *   - Inter for UI, Geist Mono for numbers & amounts
+ * slip/scan design system — "precision ledger" (binding contract, see
+ * docs/ARCHITECTURE.md):
+ *   - ink 0–950 neutral scale (zinc-like), brutally clean surfaces
+ *   - electric lime #C8FF00 accent, used sparingly and sharply — pen ink,
+ *     never glow
+ *   - success / warning / danger, tuned per theme for AA
+ *   - Inter for UI, Geist Mono for every number
  *   - dark AND light, dark first-class
  */
 @theme {
@@ -33,15 +35,14 @@
    * --color-accent when retheming. */
   --color-accent-text: #5c7500;
 
-  --color-success: #16a34a;
-  --color-warning: #d97706;
-  --color-danger: #dc2626;
-
   --font-sans:
     "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     sans-serif;
   --font-mono:
     "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Below `rail:` the sidebar collapses to an icon rail; content tightens. */
+  --breakpoint-rail: 56.25rem;
 
   --ease-out-cubic: cubic-bezier(0.22, 1, 0.36, 1);
 
@@ -77,29 +78,66 @@
   }
 }
 
-/* Semantic surfaces — one set of names, two themes. */
+/*
+ * Semantic surfaces & depth — one set of names, two themes.
+ * Elevation scale: surface (app bg) → panel (raised card) → overlay
+ * (popover/menu). Dark gets depth from 1px inner hairlines (oklch alpha),
+ * light from soft, tight shadows — never drop-shadow soup.
+ */
 :root {
-  --ss-surface: #fafafa;
-  --ss-panel: #ffffff;
-  --ss-sunken: #f4f4f5;
-  --ss-line: #e4e4e7;
-  --ss-line-2: #d4d4d8;
-  --ss-t1: #18181b;
-  --ss-t2: #52525b;
-  --ss-t3: #a1a1aa;
+  --ss-surface: #fafafa; /* app background */
+  --ss-panel: #ffffff; /* raised card surface */
+  --ss-overlay: #ffffff; /* topmost surface: menus, popovers, dialogs */
+  --ss-sunken: #f4f4f5; /* recessed wells: inputs, kbd, icon chips */
+  --ss-line: #e4e4e7; /* default hairline border */
+  --ss-line-2: #d4d4d8; /* stronger hairline (hover, emphasis) */
+  --ss-hairline: oklch(0 0 0 / 0.07); /* inner-edge hairline for elevation */
+  --ss-t1: #18181b; /* primary text */
+  --ss-t2: #52525b; /* secondary text */
+  --ss-t3: #a1a1aa; /* tertiary text / placeholders */
+  --ss-focus: #5c7500; /* focus ring — lime family, ≥3:1 on this theme */
+  --ss-accent-ui: #5c7500; /* native control accent (checkbox/radio) */
+  --ss-ok: #15803d; /* semantic ok text, AA on panel */
+  --ss-warn: #b45309; /* semantic warn text, AA on panel */
+  --ss-err: #dc2626; /* semantic error text, AA on panel */
+  --shadow-raised: 0 1px 2px oklch(0.21 0.01 285 / 0.05),
+    0 2px 6px -2px oklch(0.21 0.01 285 / 0.05); /* card lift, light theme */
+  --shadow-overlay: 0 4px 12px -2px oklch(0.21 0.01 285 / 0.08),
+    0 16px 40px -12px oklch(0.21 0.01 285 / 0.16); /* overlay lift, light */
+  --grain-opacity: 0.015; /* film-grain strength over the app background */
   color-scheme: light;
 }
 
 .dark {
   --ss-surface: #09090b;
   --ss-panel: #121214;
+  --ss-overlay: #1b1b1f;
   --ss-sunken: #1a1a1d;
   --ss-line: #26262a;
   --ss-line-2: #3a3a40;
+  --ss-hairline: oklch(1 0 0 / 0.045);
   --ss-t1: #fafafa;
   --ss-t2: #a1a1aa;
   --ss-t3: #6e6e77;
+  --ss-focus: #c8ff00;
+  --ss-accent-ui: #c8ff00;
+  --ss-ok: oklch(0.72 0.17 152);
+  --ss-warn: oklch(0.78 0.14 75);
+  --ss-err: oklch(0.7 0.18 25);
+  --shadow-raised: inset 0 1px 0 0 var(--ss-hairline); /* hairline, not glow */
+  --shadow-overlay: inset 0 1px 0 0 oklch(1 0 0 / 0.06),
+    0 16px 40px -12px oklch(0 0 0 / 0.55);
+  --grain-opacity: 0.028;
   color-scheme: dark;
+}
+
+/* Motion — three durations, two easings; everything animated uses these. */
+:root {
+  --dur-quick: 120ms; /* hovers, presses, small state flips */
+  --dur-base: 200ms; /* most transitions */
+  --dur-slow: 320ms; /* reveals, route enters */
+  --ease-standard: cubic-bezier(0.2, 0, 0.2, 1); /* in-place changes */
+  --ease-decel: cubic-bezier(0.05, 0.7, 0.1, 1); /* things entering */
 }
 
 /*
@@ -128,12 +166,29 @@
 @theme inline {
   --color-surface: var(--ss-surface);
   --color-panel: var(--ss-panel);
+  --color-overlay: var(--ss-overlay);
   --color-sunken: var(--ss-sunken);
   --color-line: var(--ss-line);
   --color-line-2: var(--ss-line-2);
   --color-t1: var(--ss-t1);
   --color-t2: var(--ss-t2);
   --color-t3: var(--ss-t3);
+  /* Semantic status colors resolve per theme (AA text on panel in both). */
+  --color-success: var(--ss-ok);
+  --color-warning: var(--ss-warn);
+  --color-danger: var(--ss-err);
+}
+
+/* Route-enter reveal: staggered rise of the screen's top-level blocks. */
+@keyframes route-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 @layer base {
@@ -145,8 +200,24 @@
   body {
     @apply bg-surface font-sans text-[13.5px] leading-normal text-t1 antialiased;
     text-rendering: optimizeLegibility;
+    /* Ledger discipline: digits align everywhere, even in prose. */
+    font-variant-numeric: tabular-nums;
   }
 
+  /* Atmosphere: static film grain so large flat surfaces don't read dead.
+   * CSS-only data-URI, ~2–3% opacity, no animation (reduced-motion safe). */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    pointer-events: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+    background-size: 140px 140px;
+    opacity: var(--grain-opacity);
+  }
+
+  /* Selection reads as a lime highlighter stroke. */
   ::selection {
     background: color-mix(in srgb, var(--color-accent) 45%, transparent);
     color: var(--color-ink-950);
@@ -156,9 +227,20 @@
     color: var(--color-ink-0);
   }
 
+  /* Branded focus ring: crisp 2px lime-family stroke, offset, ≥3:1 both
+   * themes. Every focusable element gets it via :focus-visible. */
   *:focus-visible {
-    outline: 2px solid var(--color-accent-ring);
-    outline-offset: 1px;
+    outline: 2px solid var(--ss-focus);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Native controls pick up the theme-safe accent. */
+  input[type="checkbox"],
+  input[type="radio"],
+  input[type="range"],
+  progress {
+    accent-color: var(--ss-accent-ui);
   }
 
   ::-webkit-scrollbar {
@@ -166,22 +248,62 @@
     height: 10px;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--ss-line-2);
+    background-color: var(--ss-line-2);
     border-radius: 5px;
-    border: 2px solid var(--ss-surface);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--ss-t3);
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Reduced motion: collapse all animation/transition to a single frame. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
 @layer components {
+  /* --- elevation ------------------------------------------------------ */
+
+  /* Raised card: hairline border + theme-appropriate lift. */
   .card {
     @apply rounded-xl border border-line bg-panel;
+    box-shadow: var(--shadow-raised);
   }
 
+  /* Topmost surface (menus, popovers, dialogs): one step above .card. */
+  .elev-overlay {
+    @apply rounded-xl border border-line bg-overlay;
+    box-shadow: var(--shadow-overlay);
+  }
+
+  /* --- controls ------------------------------------------------------- */
+
   .btn {
-    @apply inline-flex h-8 cursor-default items-center gap-1.5 rounded-md border border-line bg-panel px-3 text-[13px] font-medium text-t1 transition-colors select-none hover:border-line-2 hover:bg-sunken active:translate-y-px;
+    @apply inline-flex h-8 cursor-default items-center gap-1.5 rounded-md border border-line bg-panel px-3 text-[13px] font-medium text-t1 select-none hover:border-line-2 hover:bg-sunken;
+    transition:
+      background-color var(--dur-quick) var(--ease-standard),
+      border-color var(--dur-quick) var(--ease-standard),
+      color var(--dur-quick) var(--ease-standard),
+      transform var(--dur-quick) var(--ease-standard);
+  }
+  /* Press: the whole control drops exactly 1px, like a machined key. */
+  .btn:active {
+    transform: translateY(1px);
   }
 
   .btn-primary {
@@ -197,12 +319,41 @@
   }
 
   .input {
-    @apply h-8 w-full rounded-md border border-line bg-panel px-2.5 text-[13px] text-t1 transition-colors outline-none placeholder:text-t3 focus:border-accent-ring;
+    @apply h-8 w-full rounded-md border border-line bg-panel px-2.5 text-[13px] text-t1 outline-none placeholder:text-t3;
+    transition:
+      border-color var(--dur-quick) var(--ease-standard),
+      box-shadow var(--dur-quick) var(--ease-standard);
+  }
+  .input:hover {
+    border-color: var(--ss-line-2);
+  }
+  /* Field focus: the border itself becomes the pen stroke — no halo. */
+  .input:focus,
+  .input:focus-visible {
+    outline: none;
+    border-color: var(--ss-focus);
+    box-shadow: 0 0 0 1px var(--ss-focus);
+  }
+
+  /* Custom chevron so <select> matches the system in both themes. */
+  select.input {
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 14px 14px;
+    padding-right: 1.75rem;
+    text-overflow: ellipsis;
+  }
+  .dark select.input {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9.5 6 6 6-6'/%3E%3C/svg%3E");
   }
 
   .kbd {
     @apply inline-flex h-[18px] min-w-[18px] items-center justify-center rounded border border-line bg-sunken px-1 font-mono text-[10px] leading-none text-t3;
   }
+
+  /* --- tables --------------------------------------------------------- */
 
   .th {
     @apply px-3 py-2 text-left text-[10.5px] font-semibold tracking-[0.08em] text-t3 uppercase;
@@ -212,13 +363,125 @@
     @apply border-t border-line px-3 py-2.5 align-middle;
   }
 
+  /* Horizontal containment: wide tables scroll inside this, never the page. */
+  .table-wrap {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+  .table-wrap table {
+    min-width: 40rem;
+    border-collapse: separate;
+    border-spacing: 0;
+  }
+  /* Sticky header (needs a vertical scroll context: add .table-scroll). */
+  .table-wrap thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--ss-panel);
+    box-shadow: inset 0 -1px 0 var(--ss-line);
+  }
+  /* Capped-height variant: header sticks while rows scroll beneath it. */
+  .table-scroll {
+    max-height: min(70vh, 42rem);
+    overflow-y: auto;
+  }
+  /* The sticky header draws its own bottom hairline; blank the first body
+   * row's top border so the two never stack into a 2px line. (Extends the
+   * base table system — no per-route overrides needed.) */
+  .table-wrap tbody tr:first-child > .td {
+    border-top-color: transparent;
+  }
+
+  /* Interactive row: tint + a top hairline "lift" on hover, no jitter. */
+  .row-hover {
+    transition: background-color var(--dur-quick) var(--ease-standard);
+  }
+  .row-hover:hover {
+    background-color: color-mix(in srgb, var(--ss-sunken) 60%, transparent);
+    box-shadow: inset 0 1px 0 0 var(--ss-hairline);
+  }
+
+  /* --- numerals ------------------------------------------------------- */
+
+  /* Every number in the product: Geist Mono, tabular. */
   .num {
     @apply font-mono text-[12.5px] tabular-nums;
+  }
+
+  /* Hero amounts: display scale, tighter tracking, clamps with the window. */
+  .num-display {
+    font-family: var(--font-mono);
+    font-weight: 500;
+    font-size: clamp(1.25rem, 0.95rem + 1.1vw, 1.65rem);
+    letter-spacing: -0.03em;
+    line-height: 1.05;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Cents: quietly de-emphasized; near-invisible at display scale. */
+  .money-frac {
+    opacity: 0.7;
+  }
+  .num-display .money-frac {
+    font-size: 0.62em;
+    opacity: 0.5;
   }
 
   .eyebrow {
     @apply text-[10.5px] font-semibold tracking-[0.14em] text-t3 uppercase;
   }
+
+  /* --- character ------------------------------------------------------ */
+
+  /* The brand slash — the one lime mark empty states are allowed. */
+  .slash-mark {
+    font-family: var(--font-mono);
+    font-size: 30px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--color-accent-text);
+  }
+  .dark .slash-mark {
+    color: var(--color-accent);
+  }
+
+  /* Imperceptible radial lime tint behind hero numbers (StatCard accent). */
+  .hero-tint::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(
+      120% 90% at 12% 0%,
+      color-mix(in oklab, var(--color-accent) 7%, transparent),
+      transparent 55%
+    );
+  }
+
+  /* --- motion --------------------------------------------------------- */
+
+  /* Route enter: the screen's top-level blocks rise in, 30ms apart,
+   * ~370ms total. Applied to the keyed screen wrapper in App.svelte. */
+  @media (prefers-reduced-motion: no-preference) {
+    .route-enter > * {
+      animation: route-in 250ms var(--ease-decel) both;
+    }
+    .route-enter > :nth-child(2) {
+      animation-delay: 30ms;
+    }
+    .route-enter > :nth-child(3) {
+      animation-delay: 60ms;
+    }
+    .route-enter > :nth-child(4) {
+      animation-delay: 90ms;
+    }
+    .route-enter > :nth-child(n + 5) {
+      animation-delay: 120ms;
+    }
+  }
+
+  /* --- loading -------------------------------------------------------- */
 
   .skeleton {
     @apply rounded bg-sunken;
@@ -230,5 +493,30 @@
     );
     background-size: 200% 100%;
     animation: var(--animate-shimmer);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton {
+      animation: none;
+    }
+  }
+
+  /* --- a11y ----------------------------------------------------------- */
+
+  /* Hidden until keyboard-focused, then drops in over the top-left. */
+  .skip-link {
+    position: fixed;
+    top: 0.5rem;
+    left: 0.5rem;
+    z-index: 100;
+    padding: 0.375rem 0.75rem;
+    border-radius: 0.375rem;
+    background: var(--color-accent);
+    color: var(--color-accent-fg);
+    font-size: 12px;
+    font-weight: 600;
+    transform: translateY(-250%);
+  }
+  .skip-link:focus-visible {
+    transform: none;
   }
 }

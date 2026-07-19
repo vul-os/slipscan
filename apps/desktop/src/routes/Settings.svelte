@@ -330,7 +330,10 @@
 >
   {#snippet actions()}
     {#if savedAt}
-      <span class="flex items-center gap-1.5 text-[12px] text-success">
+      <span
+        class="animate-fade-in flex items-center gap-1.5 text-[12px] text-success"
+        role="status"
+      >
         <Icon name="check" size={13} />
         Saved
       </span>
@@ -368,7 +371,10 @@
   <div class="space-y-4">
     <!-- appearance -->
     <section class="card p-4">
-      <h2 class="mb-1 text-[13px] font-semibold">Appearance</h2>
+      <h2 class="mb-1 flex items-center gap-2 text-[13px] font-semibold">
+        <Icon name="monitor" size={15} class="text-t3" />
+        Appearance
+      </h2>
       <p class="mb-3 text-[12px] text-t3">
         Dark is first-class; the app follows your OS unless you override it.
       </p>
@@ -399,7 +405,10 @@
 
     <!-- book -->
     <section class="card p-4">
-      <h2 class="mb-3 text-[13px] font-semibold">Book</h2>
+      <h2 class="mb-3 flex items-center gap-2 text-[13px] font-semibold">
+        <Icon name="ledger" size={15} class="text-t3" />
+        Book
+      </h2>
       {#if book}
         <dl class="grid grid-cols-[9rem_1fr] gap-y-2 text-[12.5px]">
           <dt class="text-t3">Name</dt>
@@ -418,7 +427,7 @@
           <dt class="text-t3">Tax report</dt>
           <dd>{book.tax_report_name}</dd>
           <dt class="text-t3">Database file</dt>
-          <dd class="num text-t2">{book.file_path}</dd>
+          <dd class="num break-all text-t2">{book.file_path}</dd>
         </dl>
         <p class="mt-3 text-[11px] text-t3">
           Regions are data, not code: the region profile picked at book
@@ -438,7 +447,10 @@
         </h2>
         <div class="flex items-center gap-1.5">
           {#if movedAt}
-            <span class="flex items-center gap-1.5 text-[12px] text-success">
+            <span
+              class="animate-fade-in flex items-center gap-1.5 text-[12px] text-success"
+              role="status"
+            >
               <Icon name="check" size={13} />
               Moved
             </span>
@@ -642,7 +654,10 @@
     <!-- exchange rates (OpenRate) -->
     <section class="card p-4">
       <div class="mb-1 flex items-center justify-between">
-        <h2 class="text-[13px] font-semibold">Exchange rates (OpenRate)</h2>
+        <h2 class="flex items-center gap-2 text-[13px] font-semibold">
+          <Icon name="transactions" size={15} class="text-t3" />
+          Exchange rates (OpenRate)
+        </h2>
         <Badge
           tone={fx?.configured ? "accent" : "neutral"}
           label={fx?.configured ? "on" : "off"}
@@ -665,14 +680,14 @@
       {/if}
 
       <form
-        class="mb-3 flex items-center gap-2"
+        class="mb-3 flex flex-wrap items-center gap-2"
         onsubmit={(e) => {
           e.preventDefault();
           saveFxUrl();
         }}
       >
         <input
-          class="input flex-1 font-mono"
+          class="input min-w-48 flex-1 font-mono"
           placeholder="https://your-openrate-instance — leave empty to keep FX off"
           bind:value={fxUrl}
         />
@@ -755,7 +770,10 @@
     <!-- llm provider -->
     <section class="card p-4">
       <div class="mb-3 flex items-center justify-between">
-        <h2 class="text-[13px] font-semibold">Receipt extraction (LLM)</h2>
+        <h2 class="flex items-center gap-2 text-[13px] font-semibold">
+          <Icon name="sparkle" size={15} class="text-t3" />
+          Receipt extraction (LLM)
+        </h2>
         <Badge
           tone={s.llm.provider === "none" ? "neutral" : "accent"}
           label={s.llm.provider === "none" ? "off" : s.llm.provider}
@@ -807,7 +825,10 @@
     <!-- mailbox -->
     <section class="card p-4">
       <div class="mb-3 flex items-center justify-between">
-        <h2 class="text-[13px] font-semibold">Email ingest (IMAP)</h2>
+        <h2 class="flex items-center gap-2 text-[13px] font-semibold">
+          <Icon name="mail" size={15} class="text-t3" />
+          Email ingest (IMAP)
+        </h2>
         <label class="flex items-center gap-2 text-[12px] text-t2">
           <input type="checkbox" bind:checked={s.mailbox.enabled} />
           Enabled
@@ -850,7 +871,10 @@
 
     <!-- bank connections (scraper adapters) -->
     <section class="card p-4">
-      <h2 class="mb-1 text-[13px] font-semibold">Bank connections</h2>
+      <h2 class="mb-1 flex items-center gap-2 text-[13px] font-semibold">
+        <Icon name="bank" size={15} class="text-t3" />
+        Bank connections
+      </h2>
       <p class="mb-3 text-[12px] text-t3">
         Scraper adapters run bank sessions on this machine. Credentials live in
         the vault; only status metadata is shown here.
@@ -1083,9 +1107,10 @@
 
     <!-- packs -->
     <section class="card p-4">
-      <div class="mb-3 flex items-center justify-between">
-        <h2 class="text-[13px] font-semibold">Classification packs</h2>
-      </div>
+      <h2 class="mb-3 flex items-center gap-2 text-[13px] font-semibold">
+        <Icon name="package" size={15} class="text-t3" />
+        Classification packs
+      </h2>
       {#if s.packs.length === 0}
         <EmptyState
           icon="package"

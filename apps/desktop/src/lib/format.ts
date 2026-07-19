@@ -55,6 +55,46 @@ export function fmtMoney(
   return abs;
 }
 
+/** `fmtMoney` split for typographic control (Money.svelte de-emphasizes
+ * the fractional part). `pre` + `frac` + `post` reassemble the exact
+ * locale-formatted string; `frac` is the decimal separator + minor digits. */
+export interface MoneyParts {
+  /** `−`, `+`, or empty — always rendered outside the locale string. */
+  sign: string;
+  /** Everything before the decimal separator (symbol, whole units…). */
+  pre: string;
+  /** Decimal separator + fraction digits (empty for JPY-class). */
+  frac: string;
+  /** Anything after the fraction (e.g. trailing ` €` in fr/de locales). */
+  post: string;
+}
+
+export function fmtMoneyParts(
+  minor: number,
+  currency: string,
+  opts: { signed?: boolean } = {},
+): MoneyParts {
+  const parts = moneyFmt(currency).formatToParts(
+    Math.abs(minor) / minorFactor(currency),
+  );
+  let pre = "";
+  let frac = "";
+  let post = "";
+  let seen = false;
+  for (const p of parts) {
+    if (p.type === "decimal" || p.type === "fraction") {
+      frac += p.value;
+      seen = true;
+    } else if (seen) {
+      post += p.value;
+    } else {
+      pre += p.value;
+    }
+  }
+  const sign = minor < 0 ? "−" : opts.signed && minor > 0 ? "+" : "";
+  return { sign, pre, frac, post };
+}
+
 const dateFmt = new Intl.DateTimeFormat(undefined, {
   day: "numeric",
   month: "short",

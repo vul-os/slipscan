@@ -57,22 +57,30 @@
   );
 </script>
 
+<!-- Below the `rail` breakpoint (~900px) this collapses to an icon rail:
+     labels/search/book hide, nav shows icon-only with title tooltips. -->
 <aside
-  class="flex w-60 shrink-0 flex-col border-r border-line bg-panel"
+  class="flex w-14 shrink-0 flex-col border-r border-line bg-panel rail:w-60"
   aria-label="Primary"
 >
   <!-- brand -->
-  <div class="flex items-center gap-2.5 px-4 pt-4 pb-3">
-    <span class="inline-flex size-8 shrink-0 rounded-[7px] ring-1 ring-line dark:ring-ink-700 [&>svg]:size-8">
+  <div
+    class="flex items-center justify-center gap-2.5 px-0 pt-4 pb-3 rail:justify-start rail:px-4"
+  >
+    <span
+      class="inline-flex size-8 shrink-0 rounded-[7px] ring-1 ring-line dark:ring-ink-700 [&>svg]:size-8"
+    >
       {@html logoMark}
     </span>
-    <span class="text-[15px] font-semibold tracking-tight">
+    <span class="hidden text-[15px] font-semibold tracking-tight rail:inline">
       slip<span class="text-accent-ring dark:text-accent">/</span>scan
     </span>
   </div>
 
   <!-- book -->
-  <div class="mx-3 mb-3 flex items-center gap-2.5 rounded-lg border border-line px-2.5 py-2">
+  <div
+    class="mx-3 mb-3 hidden items-center gap-2.5 rounded-lg border border-line px-2.5 py-2 rail:flex"
+  >
     <span
       class="flex size-7 shrink-0 items-center justify-center rounded-full bg-sunken text-[11px] font-semibold text-t2"
     >
@@ -89,7 +97,7 @@
   </div>
 
   <!-- search -->
-  <div class="relative mx-3 mb-3">
+  <div class="relative mx-3 mb-3 hidden rail:block">
     <Icon
       name="search"
       size={14}
@@ -112,13 +120,17 @@
   </div>
 
   <!-- nav -->
-  <nav class="flex-1 space-y-0.5 overflow-y-auto px-3" aria-label="Sections">
+  <nav
+    class="flex-1 space-y-0.5 overflow-x-hidden overflow-y-auto px-2 rail:px-3"
+    aria-label="Sections"
+  >
     {#each nav as item (item.route)}
       {@const active = router.current === item.route}
       <a
         href="#/{item.route}"
+        title={item.label}
         aria-current={active ? "page" : undefined}
-        class="group flex items-center gap-2.5 rounded-md px-2.5 py-[7px] text-[13px] font-medium transition-colors
+        class="group flex items-center justify-center gap-0 rounded-md px-0 py-[7px] text-[13px] font-medium transition-colors rail:justify-start rail:gap-2.5 rail:px-2.5
           {active
           ? 'bg-ink-900 text-ink-50 dark:bg-ink-100 dark:text-ink-900'
           : 'text-t2 hover:bg-sunken hover:text-t1'}"
@@ -128,12 +140,12 @@
           size={16}
           class={active ? "" : "text-t3 group-hover:text-t2"}
         />
-        <span class="flex-1">{item.label}</span>
+        <span class="hidden min-w-0 flex-1 truncate rail:inline">{item.label}</span>
         {#if active}
-          <span class="size-1.5 rounded-full bg-accent"></span>
+          <span class="hidden size-1.5 rounded-full bg-accent rail:inline"></span>
         {:else}
           <span
-            class="kbd opacity-0 transition-opacity group-hover:opacity-100"
+            class="kbd hidden opacity-0 transition-opacity group-hover:opacity-100 rail:inline-flex"
             title="Press G then {item.key}">{item.key}</span
           >
         {/if}
@@ -142,19 +154,22 @@
   </nav>
 
   <!-- footer -->
-  <div class="space-y-3 px-3 pt-3 pb-4">
+  <div class="space-y-3 px-2 pt-3 pb-4 rail:px-3">
     <button
       type="button"
-      class="btn btn-primary h-9 w-full justify-center text-[13px]"
+      title="Import receipt"
+      class="btn btn-primary h-9 w-full justify-center px-0 text-[13px] rail:px-3"
       onclick={() => router.go("receipts")}
     >
       <Icon name="upload" size={15} />
-      Import receipt
+      <span class="hidden rail:inline">Import receipt</span>
     </button>
 
-    <div class="flex items-center justify-between">
+    <div
+      class="flex flex-col items-center gap-2 rail:flex-row rail:justify-between"
+    >
       <div
-        class="flex items-center gap-0.5 rounded-md border border-line p-0.5"
+        class="flex flex-col items-center gap-0.5 rounded-md border border-line p-0.5 rail:flex-row"
         role="group"
         aria-label="Theme"
       >
@@ -174,7 +189,7 @@
         {/each}
       </div>
       <span
-        class="flex items-center gap-1.5 text-[10.5px] text-t3"
+        class="hidden items-center gap-1.5 text-[10.5px] text-t3 rail:flex"
         title={!isTauri
           ? "Browser dev — mock data"
           : apiStatus.usedMockFallback

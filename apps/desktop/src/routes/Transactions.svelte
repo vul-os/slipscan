@@ -256,7 +256,7 @@
             </td>
             <td class="td">
               <select
-                class="input h-7 w-full px-1.5 text-[12px] {tx.category_id
+                class="input h-7 w-full pl-1.5 text-[12px] {tx.category_id
                   ? 'text-t2'
                   : 'text-warning'}"
                 aria-label="Categorise transaction"

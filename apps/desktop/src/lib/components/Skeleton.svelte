@@ -5,7 +5,12 @@
   }: { rows?: number; class?: string } = $props();
 </script>
 
-<div class="space-y-2.5 p-4 {cls}" aria-busy="true">
+<div
+  class="space-y-2.5 p-4 {cls}"
+  aria-busy="true"
+  role="status"
+  aria-label="Loading"
+>
   {#each Array.from({ length: rows }, (_, i) => i) as i (i)}
     <div class="flex items-center gap-3">
       <div class="skeleton size-7 rounded-md"></div>

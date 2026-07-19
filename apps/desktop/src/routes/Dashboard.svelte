@@ -70,7 +70,27 @@
 </script>
 
 {#await data}
-  <div class="card"><Skeleton rows={8} /></div>
+  <!-- Loading mirrors the loaded layout so nothing jumps on arrival. -->
+  <div aria-busy="true">
+    <div class="mb-6">
+      <div class="skeleton h-2.5 w-32"></div>
+      <div class="skeleton mt-2.5 h-7 w-64 max-w-full"></div>
+      <div class="skeleton mt-2 h-3 w-80 max-w-full"></div>
+    </div>
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {#each Array.from({ length: 4 }, (_, i) => i) as i (i)}
+        <div class="card p-4">
+          <div class="skeleton h-2.5 w-20"></div>
+          <div class="skeleton mt-3 h-6 w-28"></div>
+          <div class="skeleton mt-3 h-2.5 w-24"></div>
+        </div>
+      {/each}
+    </div>
+    <div class="mt-4 grid gap-4 lg:grid-cols-5">
+      <div class="card lg:col-span-2"><Skeleton rows={5} /></div>
+      <div class="card lg:col-span-3"><Skeleton rows={7} /></div>
+    </div>
+  </div>
 {:then d}
   {@const netMinor = d.accounts.reduce((s, a) => s + a.balance_minor, 0)}
   {@const budgetLeft = d.budgets.reduce(
@@ -98,21 +118,24 @@
     {/snippet}
   </PageHeader>
 
-  <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
+  <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
     <StatCard
       label="Net balance"
-      value={fmtMoney(netMinor, d.book.currency)}
+      amount={netMinor}
+      currency={d.book.currency}
       sub="{d.accounts.length} accounts"
       tone="accent"
     />
     <StatCard
       label="Spent · {fmtMonth(month)}"
-      value={fmtMoney(d.spending.total_spent_minor, d.spending.currency)}
+      amount={d.spending.total_spent_minor}
+      currency={d.spending.currency}
       sub="across {d.spending.by_category.length} categories"
     />
     <StatCard
       label="Budget remaining"
-      value={fmtMoney(budgetLeft, d.book.currency)}
+      amount={budgetLeft}
+      currency={d.book.currency}
       sub="{d.budgets.length} category budgets"
     />
     <StatCard
@@ -125,7 +148,12 @@
 
   <!-- nudges: 100% local rules + stats over your own data -->
   {#if d.nudges.length > 0}
-    <section class="card mt-4">
+    <section class="card relative mt-4 overflow-hidden">
+      <!-- The lime pen-stroke rule: quiet card, one crisp mark. -->
+      <span
+        class="absolute inset-y-0 left-0 w-0.5 bg-accent"
+        aria-hidden="true"
+      ></span>
       <header class="flex items-center justify-between px-4 pt-4">
         <h2 class="flex items-center gap-2 text-[13px] font-semibold">
           <Icon name="sparkle" size={15} class="text-accent-ring dark:text-accent" />
@@ -170,14 +198,19 @@
       </header>
       {#if d.spending.by_category.length === 0}
         <EmptyState
-          icon="budgets"
           title="Nothing spent yet"
-          body="Once transactions land, the month's category breakdown shows up here."
+          body="When transactions land, the month breaks down here."
         />
       {:else}
         <ul class="space-y-3 p-4">
           {#each d.spending.by_category.slice(0, 6) as row (row.category_id)}
-            <li>
+            <li
+              class="group"
+              title="{row.category_name}: {fmtMoney(
+                row.amount_minor,
+                d.spending.currency,
+              )} ({fmtPct(row.share)})"
+            >
               <div class="mb-1 flex items-baseline justify-between gap-2">
                 <span class="truncate text-[12.5px] text-t2"
                   >{row.category_name}</span
@@ -187,9 +220,11 @@
                   <span class="text-t3">· {fmtPct(row.share)}</span></span
                 >
               </div>
+              <!-- Single-series ranked bar: one hue, square baseline,
+                   rounded data-end. -->
               <div class="h-1.5 overflow-hidden rounded-full bg-sunken">
                 <div
-                  class="h-full rounded-full bg-ink-900 dark:bg-ink-200"
+                  class="h-full rounded-r-full bg-(--chart-1) opacity-90 transition-opacity duration-(--dur-quick) ease-(--ease-standard) group-hover:opacity-100"
                   style="width: {Math.max(2, row.share * 100)}%"
                 ></div>
               </div>

@@ -80,11 +80,24 @@
 
 <svelte:window onkeydown={onKeydown} />
 
+<!-- Button, not an anchor: the hash belongs to the router (`#/<route>`). -->
+<button
+  type="button"
+  class="skip-link"
+  onclick={() => document.getElementById("main")?.focus()}
+>
+  Skip to content
+</button>
+
 <div class="flex h-screen overflow-hidden">
   <Sidebar />
-  <main class="min-w-0 flex-1 overflow-y-auto bg-surface" id="main">
+  <main
+    class="min-w-0 flex-1 overflow-y-auto bg-surface"
+    id="main"
+    tabindex="-1"
+  >
     {#key router.current}
-      <div class="animate-slide-up mx-auto max-w-[1060px] px-8 py-7">
+      <div class="route-enter mx-auto max-w-[1060px] px-5 py-6 rail:px-8 rail:py-7">
         <Screen />
       </div>
     {/key}
