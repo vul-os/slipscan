@@ -168,7 +168,7 @@
       <ul class="mt-2 pb-2">
         {#each d.nudges as n (n.id)}
           <li
-            class="flex items-start gap-3 border-t border-line px-4 py-2.5 first:border-t-0"
+            class="row-hover flex items-start gap-3 border-t border-line px-4 py-2.5 first:border-t-0"
           >
             <span class="mt-0.5 shrink-0">
               <Badge tone={nudgeTone[n.severity]} label={nudgeLabel[n.severity]} />
@@ -220,11 +220,11 @@
                   <span class="text-t3">· {fmtPct(row.share)}</span></span
                 >
               </div>
-              <!-- Single-series ranked bar: one hue, square baseline,
-                   rounded data-end. -->
-              <div class="h-1.5 overflow-hidden rounded-full bg-sunken">
+              <!-- Single-series ranked bar — the shared .meter system, so
+                   the spending hue (chart-1) stays identical to Reports. -->
+              <div class="meter">
                 <div
-                  class="h-full rounded-r-full bg-(--chart-1) opacity-90 transition-opacity duration-(--dur-quick) ease-(--ease-standard) group-hover:opacity-100"
+                  class="meter-fill group-hover:opacity-100"
                   style="width: {Math.max(2, row.share * 100)}%"
                 ></div>
               </div>
@@ -257,7 +257,7 @@
         <ul class="mt-2 pb-2">
           {#each d.recent as tx (tx.id)}
             <li
-              class="flex items-center gap-3 border-t border-line px-4 py-2.5 first:border-t-0"
+              class="row-hover flex items-center gap-3 border-t border-line px-4 py-2.5 first:border-t-0"
             >
               <span
                 class="flex size-7 shrink-0 items-center justify-center rounded-md bg-sunken text-t3"

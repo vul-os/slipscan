@@ -34,6 +34,10 @@
   const shortMonth = (m: string) =>
     new Date(`${m}-01T12:00:00Z`).toLocaleString(undefined, { month: "short" });
 
+  // Income-vs-expense: which month column the pointer is over (null = none).
+  // Drives the header read-out and dims the sibling columns for focus.
+  let hoveredMonth = $state<number | null>(null);
+
   // -- CSV exports: computed locally, downloaded as Blob object-URLs ---------
 
   let exportError = $state<string | null>(null);
@@ -175,21 +179,44 @@
 {#await data}
   <div class="card"><Skeleton rows={8} /></div>
 {:then d}
+  {@const active =
+    hoveredMonth !== null ? d.incomeExpense.months[hoveredMonth] : null}
   <div class="grid gap-4 lg:grid-cols-2">
     <!-- income vs expense -->
     <section class="card p-4">
-      <header class="mb-4 flex items-baseline justify-between">
-        <h2 class="text-[13px] font-semibold">Income vs expense</h2>
-        <span class="flex items-center gap-3 text-[11px] text-t3">
-          <span class="flex items-center gap-1.5">
-            <span class="size-2 rounded-[3px] bg-ink-900 dark:bg-ink-200"
-            ></span> income
+      <header class="mb-4 flex h-5 items-baseline justify-between gap-3">
+        <h2 class="shrink-0 text-[13px] font-semibold">Income vs expense</h2>
+        {#if active}
+          <!-- Hovered month: exact figures in Geist Mono, live read-out. -->
+          <span class="flex items-center gap-3 text-[11px] whitespace-nowrap">
+            <span class="text-t3">{shortMonth(active.month)}</span>
+            <span class="flex items-center gap-1.5">
+              <span class="size-2 shrink-0 rounded-[3px] bg-ink-900 dark:bg-ink-200"
+              ></span>
+              <span class="num text-t1"
+                >{fmtMoney(active.income_minor, d.incomeExpense.currency)}</span
+              >
+            </span>
+            <span class="flex items-center gap-1.5">
+              <span class="size-2 shrink-0 rounded-[3px] bg-accent-ring dark:bg-accent"
+              ></span>
+              <span class="num text-t1"
+                >{fmtMoney(active.expense_minor, d.incomeExpense.currency)}</span
+              >
+            </span>
           </span>
-          <span class="flex items-center gap-1.5">
-            <span class="size-2 rounded-[3px] bg-accent-ring dark:bg-accent"
-            ></span> expense
+        {:else}
+          <span class="flex items-center gap-3 text-[11px] text-t3">
+            <span class="flex items-center gap-1.5">
+              <span class="size-2 rounded-[3px] bg-ink-900 dark:bg-ink-200"
+              ></span> income
+            </span>
+            <span class="flex items-center gap-1.5">
+              <span class="size-2 rounded-[3px] bg-accent-ring dark:bg-accent"
+              ></span> expense
+            </span>
           </span>
-        </span>
+        {/if}
       </header>
       {#if d.incomeExpense.months.length === 0}
         <EmptyState
@@ -203,23 +230,45 @@
             Math.max(m.income_minor, m.expense_minor),
           ),
         )}
-        <div class="flex h-40 items-end gap-3">
-          {#each d.incomeExpense.months as m (m.month)}
-            <div class="flex flex-1 flex-col items-center gap-1.5">
-              <div class="flex h-32 w-full items-end justify-center gap-1">
+        <!-- Peak caption anchors the vertical scale; the baseline hairline
+             gives the columns a zero to stand on. -->
+        <div class="mb-1 flex justify-end">
+          <span class="axis-label">{fmtMoney(max, d.incomeExpense.currency)}</span>
+        </div>
+        <div
+          class="flex h-36 items-end gap-3 border-b border-line pb-1.5"
+          role="img"
+          aria-label="Monthly income versus expense, {d.incomeExpense.months
+            .length} months"
+        >
+          {#each d.incomeExpense.months as m, i (m.month)}
+            <!-- Decorative to AT (the chart wrapper carries role="img" + a
+                 label); the hover only drives the sighted read-out. -->
+            <div
+              class="flex flex-1 flex-col items-center gap-1.5 transition-opacity duration-(--dur-quick) ease-(--ease-standard)"
+              class:opacity-40={hoveredMonth !== null && hoveredMonth !== i}
+              role="presentation"
+              onmouseenter={() => (hoveredMonth = i)}
+              onmouseleave={() => (hoveredMonth = null)}
+            >
+              <div class="flex h-28 w-full items-end justify-center gap-1">
                 <div
-                  class="w-3.5 rounded-t-[3px] bg-ink-900 dark:bg-ink-200"
+                  class="col-bar bg-ink-900 dark:bg-ink-200"
                   style="height: {Math.max(2, (m.income_minor / max) * 100)}%"
                   title="Income {fmtMoney(m.income_minor, d.incomeExpense.currency)}"
                 ></div>
                 <div
-                  class="w-3.5 rounded-t-[3px] bg-accent-ring dark:bg-accent"
+                  class="col-bar bg-accent-ring dark:bg-accent"
                   style="height: {Math.max(2, (m.expense_minor / max) * 100)}%"
                   title="Expense {fmtMoney(m.expense_minor, d.incomeExpense.currency)}"
                 ></div>
               </div>
-              <span class="text-[10.5px] text-t3">{shortMonth(m.month)}</span>
             </div>
+          {/each}
+        </div>
+        <div class="mt-1.5 flex gap-3">
+          {#each d.incomeExpense.months as m (m.month)}
+            <span class="axis-label flex-1 text-center">{shortMonth(m.month)}</span>
           {/each}
         </div>
       {/if}
@@ -244,13 +293,19 @@
       {:else}
         <ul class="space-y-2.5">
           {#each d.spending.by_category.slice(0, 7) as row (row.category_id)}
-            <li class="flex items-center gap-3">
+            <li
+              class="group flex items-center gap-3"
+              title="{row.category_name}: {fmtMoney(
+                row.amount_minor,
+                d.spending.currency,
+              )} ({fmtPct(row.share)})"
+            >
               <span class="w-32 truncate text-[12px] text-t2"
                 >{row.category_name}</span
               >
-              <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-sunken">
+              <div class="meter flex-1">
                 <div
-                  class="h-full rounded-full bg-ink-900 dark:bg-ink-200"
+                  class="meter-fill group-hover:opacity-100"
                   style="width: {Math.max(2, row.share * 100)}%"
                 ></div>
               </div>

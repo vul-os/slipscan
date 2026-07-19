@@ -402,6 +402,32 @@
     box-shadow: inset 0 1px 0 0 var(--ss-hairline);
   }
 
+  /* --- charts (dashboard + reports) ----------------------------------- */
+
+  /* Meter: a sunken track holding one single-hue fill. The ranked
+   * category-spend bars on both the dashboard and reports read through it,
+   * so the "spending" hue (chart-1) stays identical across screens. */
+  .meter {
+    @apply h-1.5 overflow-hidden rounded-full bg-sunken;
+  }
+  .meter-fill {
+    @apply h-full rounded-full opacity-90;
+    background-color: var(--chart-1);
+    transition: opacity var(--dur-quick) var(--ease-standard);
+  }
+
+  /* Axis / peak captions on the column chart: 11px, tertiary, tabular. */
+  .axis-label {
+    @apply text-[11px] text-t3;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Income-vs-expense columns: paired bars per month; the shared width and
+   * radius keep both series identical. */
+  .col-bar {
+    @apply w-3.5 rounded-t-[3px];
+  }
+
   /* --- numerals ------------------------------------------------------- */
 
   /* Every number in the product: Geist Mono, tabular. */
