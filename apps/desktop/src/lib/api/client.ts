@@ -28,6 +28,12 @@ import type {
   JournalEntry,
   JournalPostRequest,
   LedgerAccount,
+  Member,
+  MemberAmountRow,
+  MemberCategoryRow,
+  MemberPatch,
+  MemberSettleRow,
+  NewMember,
   NewPayEndpoint,
   NewPayWatch,
   PayDelivery,
@@ -40,8 +46,10 @@ import type {
   RegionInfo,
   Settings,
   SpendingReport,
+  SplitShare,
   Transaction,
   TransactionListQuery,
+  TransactionSplit,
   TrialBalance,
   VatRate,
   VatSummary,
@@ -110,6 +118,81 @@ export const api = {
 
   categoryList: (q: { book_id: string }): Promise<Category[]> =>
     call("category_list", { query: q }, () => mockApi.category_list(q)),
+
+  // -- household members & per-person attribution: local data, never a
+  // login. A book with zero members works unchanged. --
+
+  memberList: (q: { book_id: string }): Promise<Member[]> =>
+    call("member_list", { query: q }, () => mockApi.member_list(q)),
+
+  memberAdd: (q: NewMember): Promise<Member> =>
+    call("member_add", { query: q }, () => mockApi.member_add(q)),
+
+  memberUpdate: (q: MemberPatch): Promise<Member> =>
+    call("member_update", { query: q }, () => mockApi.member_update(q)),
+
+  memberRemove: (q: { id: string; reassign_to?: string }): Promise<null> =>
+    call("member_remove", { query: q }, () => mockApi.member_remove(q)),
+
+  /** Override (or clear, with `member_id: null`) a transaction's
+   * attribution — metadata only, never touches amount/currency/category. */
+  transactionAttribute: (q: {
+    transaction_id: string;
+    member_id: string | null;
+  }): Promise<Transaction> =>
+    call("transaction_attribute", { query: q }, () =>
+      mockApi.transaction_attribute(q),
+    ),
+
+  transactionSplitsList: (q: {
+    transaction_id: string;
+  }): Promise<TransactionSplit[]> =>
+    call("transaction_splits_list", { query: q }, () =>
+      mockApi.transaction_splits_list(q),
+    ),
+
+  /** Replace a transaction's split set; an empty `shares` array clears it. */
+  transactionSplitSet: (q: {
+    transaction_id: string;
+    shares: SplitShare[];
+  }): Promise<TransactionSplit[]> =>
+    call("transaction_split_set", { query: q }, () =>
+      mockApi.transaction_split_set(q),
+    ),
+
+  reportMemberExpense: (q: {
+    book_id: string;
+    from: string;
+    to: string;
+  }): Promise<MemberAmountRow[]> =>
+    call("report_member_expense", { query: q }, () =>
+      mockApi.report_member_expense(q),
+    ),
+
+  reportMemberContribution: (q: {
+    book_id: string;
+    from: string;
+    to: string;
+  }): Promise<MemberAmountRow[]> =>
+    call("report_member_contribution", { query: q }, () =>
+      mockApi.report_member_contribution(q),
+    ),
+
+  reportMemberCategory: (q: {
+    book_id: string;
+    from: string;
+    to: string;
+  }): Promise<MemberCategoryRow[]> =>
+    call("report_member_category", { query: q }, () =>
+      mockApi.report_member_category(q),
+    ),
+
+  reportSettleUp: (q: {
+    book_id: string;
+    from: string;
+    to: string;
+  }): Promise<MemberSettleRow[]> =>
+    call("report_settle_up", { query: q }, () => mockApi.report_settle_up(q)),
 
   budgetList: (q: {
     book_id: string;

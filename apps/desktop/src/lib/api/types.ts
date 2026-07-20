@@ -141,6 +141,14 @@ export interface Transaction {
   provider_txn_id: string | null;
   /** Fallback dedupe hash of (account, date, amount, description). */
   hash: string;
+  /**
+   * Who actually incurred this transaction — metadata only, orthogonal to
+   * the ledger; never changes amount/currency/category. `null` =
+   * unattributed. When the transaction is split across members (see
+   * `TransactionSplit`), reports distribute by the split shares instead of
+   * this single field.
+   */
+  attributed_member_id: string | null;
   created_at: string;
 }
 
@@ -154,6 +162,104 @@ export interface TransactionListQuery {
   to?: string;
   limit?: number;
   offset?: number;
+}
+
+// ---------------------------------------------------------------------------
+// household members & per-person attribution (ARCHITECTURE.md "Household
+// members & per-person attribution"). Members are local data, not logins —
+// no auth anywhere; attribution is metadata that never changes debits/
+// credits. A book with zero members works exactly as before (backward
+// compatible): every attribution field is simply absent/null.
+// ---------------------------------------------------------------------------
+
+/** A person in the household sharing this book. */
+export interface Member {
+  id: string;
+  book_id: string;
+  label: string;
+  /** Short display initial (e.g. "A") for tight UI spots like avatars. */
+  initial: string;
+  /** Cosmetic hex colour swatch; never interpreted beyond display. */
+  colour: string;
+  /** The account this member owns by default — new transactions on it
+   * attribute here unless overridden. `null` = no default owner. */
+  default_account_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewMember {
+  book_id: string;
+  label: string;
+  /** Defaults to the label's first letter, uppercased, when omitted. */
+  initial?: string;
+  /** Defaults to a built-in colour rotation when omitted. */
+  colour?: string;
+  default_account_id?: string;
+}
+
+/**
+ * Selective update. Omitted fields are left untouched.
+ * `clear_default_account: true` explicitly clears the default account;
+ * otherwise `default_account_id` (if present) sets a new one and omitting
+ * it leaves the current value as-is.
+ */
+export interface MemberPatch {
+  id: string;
+  label?: string;
+  initial?: string;
+  colour?: string;
+  clear_default_account?: boolean;
+  default_account_id?: string;
+}
+
+/** One `(member, share)` row of a split transaction, as stored. `share_minor`
+ * is always a positive portion of the transaction's absolute amount. */
+export interface TransactionSplit {
+  id: string;
+  transaction_id: string;
+  member_id: string;
+  share_minor: number;
+  created_at: string;
+}
+
+/** Input to `transactionSplitSet`: pairs must sum to the transaction's
+ * absolute amount. An empty array clears the split. */
+export interface SplitShare {
+  member_id: string;
+  share_minor: number;
+}
+
+/** One member's outflow (expense) or inflow (contribution) total over a
+ * period, in the book's base currency. `member_id: null` is the
+ * "Unattributed" bucket. */
+export interface MemberAmountRow {
+  member_id: string | null;
+  member_label: string;
+  currency: string;
+  total_minor: number;
+}
+
+/** One member's share of one category's spend over a period (outflows only). */
+export interface MemberCategoryRow {
+  member_id: string | null;
+  member_label: string;
+  category_id: string | null;
+  category_name: string;
+  currency: string;
+  total_minor: number;
+}
+
+/** One member's net position over a period: contributions minus attributed
+ * expenses — "who owes whom". Positive = net contributor; negative = net
+ * consumer. Every current member appears, plus a trailing "Unattributed" row. */
+export interface MemberSettleRow {
+  member_id: string | null;
+  member_label: string;
+  currency: string;
+  contributions_minor: number;
+  expenses_minor: number;
+  net_minor: number;
 }
 
 // ---------------------------------------------------------------------------

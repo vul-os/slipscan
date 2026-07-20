@@ -24,6 +24,12 @@ import type {
   JournalEntry,
   JournalPostRequest,
   LedgerAccount,
+  Member,
+  MemberAmountRow,
+  MemberCategoryRow,
+  MemberPatch,
+  MemberSettleRow,
+  NewMember,
   NewPayEndpoint,
   NewPayWatch,
   PayDelivery,
@@ -36,8 +42,10 @@ import type {
   RegionInfo,
   Settings,
   SpendingReport,
+  SplitShare,
   Transaction,
   TransactionListQuery,
+  TransactionSplit,
   TrialBalance,
   VatRate,
   VatSummary,
@@ -196,6 +204,44 @@ const catId = (name: string): string =>
 const acctId = (name: string): string =>
   accounts.find((a) => a.name === name)!.id;
 
+// ---------------------------------------------------------------------------
+// household members — a small two-person demo household (ARCHITECTURE.md
+// "Household members & per-person attribution"). Alex owns the cheque
+// account, Sam owns the credit card; TymeBank and Cash stay joint (no
+// default owner), exactly the shape core supports.
+// ---------------------------------------------------------------------------
+
+interface MemberSeed {
+  label: string;
+  initial: string;
+  colour: string;
+  account: string | null;
+}
+
+const memberSeeds: MemberSeed[] = [
+  { label: "Alex", initial: "A", colour: "#6f9200", account: "FNB Cheque" },
+  { label: "Sam", initial: "S", colour: "#6a6fbf", account: "Discovery Credit Card" },
+];
+
+let members: Member[] = memberSeeds.map((m) => ({
+  id: id("mb00"),
+  book_id: BOOK_ID,
+  label: m.label,
+  initial: m.initial,
+  colour: m.colour,
+  default_account_id: m.account ? acctId(m.account) : null,
+  created_at: "2026-01-05T08:00:00Z",
+  updated_at: "2026-01-05T08:00:00Z",
+}));
+
+const memberId = (label: string): string =>
+  members.find((m) => m.label === label)!.id;
+
+/** account id → the member who defaults transactions on it to themselves. */
+function accountOwnerId(accountId: string): string | null {
+  return members.find((m) => m.default_account_id === accountId)?.id ?? null;
+}
+
 interface TxSeed {
   d: string;
   desc: string;
@@ -204,11 +250,14 @@ interface TxSeed {
   cat: string | null;
   acct: string;
   source: Transaction["source"];
+  /** Attribution override: a member label, `null` to force unattributed, or
+   * omitted to default to the account's owning member (core's own rule). */
+  member?: string | null;
 }
 
 const txSeeds: TxSeed[] = [
   { d: "2026-07-16", desc: "WOOLWORTHS 178 CLAREMONT", merchant: "Woolworths", amount: -84_235, cat: "Groceries", acct: "FNB Cheque", source: "scraper" },
-  { d: "2026-07-16", desc: "UBER *TRIP HELP.UBER.COM", merchant: "Uber", amount: -11_650, cat: "Transport & fuel", acct: "Discovery Credit Card", source: "scraper" },
+  { d: "2026-07-16", desc: "UBER *TRIP HELP.UBER.COM", merchant: "Uber", amount: -11_650, cat: "Transport & fuel", acct: "Discovery Credit Card", source: "scraper", member: "Alex" },
   { d: "2026-07-15", desc: "CHECKERS SIXTY60 RONDEBOSCH", merchant: "Checkers Sixty60", amount: -63_780, cat: "Groceries", acct: "Discovery Credit Card", source: "scraper" },
   { d: "2026-07-15", desc: "VIDA E CAFFE KLOOF ST", merchant: "Vida e Caffè", amount: -6_850, cat: "Eating out", acct: "Discovery Credit Card", source: "scraper" },
   { d: "2026-07-14", desc: "ESKOM PREPAID ELEC", merchant: "Eskom", amount: -95_000, cat: "Utilities", acct: "FNB Cheque", source: "scraper" },
@@ -247,8 +296,36 @@ const transactions: Transaction[] = txSeeds.map((s, i) => ({
   source: s.source,
   provider_txn_id: s.source === "scraper" ? `prov-${1000 + i}` : null,
   hash: `h${(2000 + i).toString(16)}`,
+  // Default attribution follows the account's owning member (core's own
+  // rule); a seed may explicitly override it or force unattributed.
+  attributed_member_id:
+    s.member !== undefined
+      ? s.member === null
+        ? null
+        : memberId(s.member)
+      : accountOwnerId(acctId(s.acct)),
   created_at: `${s.d}T04:00:00Z`,
 }));
+
+// One split example: the big Woolworths shop, 60/40 between Alex and Sam —
+// the shares must sum to exactly the transaction's absolute amount, just
+// like core's `transaction_split_set` invariant.
+let transactionSplits: TransactionSplit[] = [
+  {
+    id: id("ts00"),
+    transaction_id: transactions[0]!.id,
+    member_id: memberId("Alex"),
+    share_minor: 50_541,
+    created_at: "2026-07-16T09:00:00Z",
+  },
+  {
+    id: id("ts00"),
+    transaction_id: transactions[0]!.id,
+    member_id: memberId("Sam"),
+    share_minor: 33_694,
+    created_at: "2026-07-16T09:00:00Z",
+  },
+];
 
 interface DocSeed {
   merchant: string;
@@ -738,6 +815,130 @@ function mockFingerprint(name: string, secret: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// household member reports — mirrors core's repo/report.rs member_amount /
+// member_category / settle_up: split shares are distributed, singly-
+// attributed transactions count in full, and everything else rolls into the
+// "Unattributed" (member_id: null) bucket. All scoped to the book's base
+// currency (ZAR here), exactly like every other report.
+// ---------------------------------------------------------------------------
+
+const memberLabel = (memberId2: string | null): string =>
+  (memberId2 && members.find((m) => m.id === memberId2)?.label) || "Unattributed";
+
+/** `(member, share)` rows for one transaction: its splits if any, otherwise
+ * a single row for its `attributed_member_id` (possibly unattributed). */
+function attributionRows(
+  t: Transaction,
+  signedShare: (minor: number) => number,
+): Array<[string | null, number]> {
+  const splits = transactionSplits.filter((s) => s.transaction_id === t.id);
+  if (splits.length > 0)
+    return splits.map((s) => [s.member_id, signedShare(s.share_minor)]);
+  return [[t.attributed_member_id, signedShare(Math.abs(t.amount_minor))]];
+}
+
+function memberAmount(from: string, to: string, expense: boolean): MemberAmountRow[] {
+  const currency = "ZAR";
+  const totals = new Map<string | null, number>();
+  const inRange = transactions.filter(
+    (t) =>
+      t.currency === currency &&
+      t.posted_at.slice(0, 10) >= from &&
+      t.posted_at.slice(0, 10) <= to &&
+      (expense ? t.amount_minor < 0 : t.amount_minor > 0),
+  );
+  for (const t of inRange) {
+    for (const [memberId2, share] of attributionRows(t, (m) => m)) {
+      totals.set(memberId2, (totals.get(memberId2) ?? 0) + share);
+    }
+  }
+  return [...totals.entries()]
+    .map(([member_id, total_minor]) => ({
+      member_id,
+      member_label: memberLabel(member_id),
+      currency,
+      total_minor,
+    }))
+    .sort((a, b) => b.total_minor - a.total_minor);
+}
+
+function memberCategoryReport(from: string, to: string): MemberCategoryRow[] {
+  const currency = "ZAR";
+  const rows = new Map<string, MemberCategoryRow>();
+  const inRange = transactions.filter(
+    (t) =>
+      t.currency === currency &&
+      t.amount_minor < 0 &&
+      t.posted_at.slice(0, 10) >= from &&
+      t.posted_at.slice(0, 10) <= to,
+  );
+  for (const t of inRange) {
+    for (const [memberId2, share] of attributionRows(t, (m) => m)) {
+      const key = `${memberId2 ?? "none"}::${t.category_id ?? "none"}`;
+      const row = rows.get(key) ?? {
+        member_id: memberId2,
+        member_label: memberLabel(memberId2),
+        category_id: t.category_id,
+        category_name: categories.find((c) => c.id === t.category_id)?.name ?? "Uncategorized",
+        currency,
+        total_minor: 0,
+      };
+      row.total_minor += share;
+      rows.set(key, row);
+    }
+  }
+  return [...rows.values()].sort(
+    (a, b) => a.member_label.localeCompare(b.member_label) || b.total_minor - a.total_minor,
+  );
+}
+
+function settleUp(from: string, to: string): MemberSettleRow[] {
+  const currency = "ZAR";
+  const rows = new Map<string | null, MemberSettleRow>();
+  // Every current member appears, even at zero.
+  for (const m of members) {
+    rows.set(m.id, {
+      member_id: m.id,
+      member_label: m.label,
+      currency,
+      contributions_minor: 0,
+      expenses_minor: 0,
+      net_minor: 0,
+    });
+  }
+  for (const row of memberAmount(from, to, false)) {
+    const r = rows.get(row.member_id) ?? {
+      member_id: row.member_id,
+      member_label: row.member_label,
+      currency,
+      contributions_minor: 0,
+      expenses_minor: 0,
+      net_minor: 0,
+    };
+    r.contributions_minor += row.total_minor;
+    rows.set(row.member_id, r);
+  }
+  for (const row of memberAmount(from, to, true)) {
+    const r = rows.get(row.member_id) ?? {
+      member_id: row.member_id,
+      member_label: row.member_label,
+      currency,
+      contributions_minor: 0,
+      expenses_minor: 0,
+      net_minor: 0,
+    };
+    r.expenses_minor += row.total_minor;
+    rows.set(row.member_id, r);
+  }
+  const out = [...rows.values()];
+  for (const r of out) r.net_minor = r.contributions_minor - r.expenses_minor;
+  // Members first (creation order), the trailing "Unattributed" row last —
+  // mirrors core's settle_up ordering.
+  out.sort((a, b) => (a.member_id === null ? 1 : b.member_id === null ? -1 : 0));
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // mock service surface — same names/shapes as the core services
 // ---------------------------------------------------------------------------
 
@@ -816,6 +1017,183 @@ export const mockApi = {
 
   category_list: async (_q: { book_id: string }): Promise<Category[]> =>
     clone(categories),
+
+  // -- household members & per-person attribution: local data, never a
+  // login (ARCHITECTURE.md "Household members & per-person attribution") --
+
+  member_list: async (_q: { book_id: string }): Promise<Member[]> =>
+    clone(members),
+
+  member_add: async (q: NewMember): Promise<Member> => {
+    const label = q.label.trim();
+    if (!label) throw new Error("member label must not be empty");
+    if (members.some((m) => m.book_id === q.book_id && m.label === label))
+      throw new Error(`a member named "${label}" already exists in this book`);
+    if (q.default_account_id && !accounts.some((a) => a.id === q.default_account_id))
+      throw new Error(`account not found: ${q.default_account_id}`);
+    const palette = ["#6f9200", "#6a6fbf", "#007fa3", "#b0761f", "#b1524e"];
+    const now = new Date().toISOString();
+    const member: Member = {
+      id: id("mb00"),
+      book_id: q.book_id,
+      label,
+      initial: (q.initial?.trim() || label.charAt(0)).toUpperCase(),
+      colour: q.colour?.trim() || palette[members.length % palette.length]!,
+      default_account_id: q.default_account_id ?? null,
+      created_at: now,
+      updated_at: now,
+    };
+    members.push(member);
+    return clone(member);
+  },
+
+  member_update: async (q: MemberPatch): Promise<Member> => {
+    const m = members.find((x) => x.id === q.id);
+    if (!m) throw new Error(`member not found: ${q.id}`);
+    if (q.label !== undefined) {
+      const label = q.label.trim();
+      if (!label) throw new Error("member label must not be empty");
+      m.label = label;
+    }
+    if (q.initial !== undefined) {
+      const initial = q.initial.trim();
+      if (!initial) throw new Error("member initial must not be empty");
+      m.initial = initial;
+    }
+    if (q.colour !== undefined) {
+      const colour = q.colour.trim();
+      if (!colour) throw new Error("member colour must not be empty");
+      m.colour = colour;
+    }
+    if (q.clear_default_account) {
+      m.default_account_id = null;
+    } else if (q.default_account_id !== undefined) {
+      if (!accounts.some((a) => a.id === q.default_account_id))
+        throw new Error(`account not found: ${q.default_account_id}`);
+      m.default_account_id = q.default_account_id;
+    }
+    m.updated_at = new Date().toISOString();
+    return clone(m);
+  },
+
+  member_remove: async (q: { id: string; reassign_to?: string }): Promise<null> => {
+    const idx = members.findIndex((m) => m.id === q.id);
+    if (idx === -1) throw new Error(`member not found: ${q.id}`);
+    const attributed =
+      transactions.some((t) => t.attributed_member_id === q.id) ||
+      transactionSplits.some((s) => s.member_id === q.id);
+    if (attributed) {
+      if (!q.reassign_to)
+        throw new Error(
+          `member ${q.id} still has attributed transactions or splits — pass a ` +
+            "reassign-target member to move them first, or clear the attributions/splits before removing",
+        );
+      if (q.reassign_to === q.id)
+        throw new Error("cannot reassign a member's attributions to themselves");
+      const target = members.find((m) => m.id === q.reassign_to);
+      if (!target) throw new Error(`member not found: ${q.reassign_to}`);
+      for (const t of transactions) {
+        if (t.attributed_member_id === q.id) t.attributed_member_id = target.id;
+      }
+      for (const s of transactionSplits) {
+        if (s.member_id === q.id) s.member_id = target.id;
+      }
+      // Merge duplicate (transaction, member) split rows on conflict, same
+      // as core's `repo::member::reassign_attributions`.
+      const merged = new Map<string, TransactionSplit>();
+      const next: TransactionSplit[] = [];
+      for (const s of transactionSplits) {
+        const key = `${s.transaction_id}:${s.member_id}`;
+        const existing = merged.get(key);
+        if (existing) {
+          existing.share_minor += s.share_minor;
+        } else {
+          merged.set(key, s);
+          next.push(s);
+        }
+      }
+      transactionSplits = next;
+    }
+    members.splice(idx, 1);
+    return null;
+  },
+
+  transaction_attribute: async (q: {
+    transaction_id: string;
+    member_id: string | null;
+  }): Promise<Transaction> => {
+    const tx = transactions.find((t) => t.id === q.transaction_id);
+    if (!tx) throw new Error(`transaction not found: ${q.transaction_id}`);
+    if (q.member_id && !members.some((m) => m.id === q.member_id))
+      throw new Error(`member not found: ${q.member_id}`);
+    tx.attributed_member_id = q.member_id;
+    return clone(tx);
+  },
+
+  transaction_splits_list: async (q: {
+    transaction_id: string;
+  }): Promise<TransactionSplit[]> =>
+    clone(transactionSplits.filter((s) => s.transaction_id === q.transaction_id)),
+
+  transaction_split_set: async (q: {
+    transaction_id: string;
+    shares: SplitShare[];
+  }): Promise<TransactionSplit[]> => {
+    const tx = transactions.find((t) => t.id === q.transaction_id);
+    if (!tx) throw new Error(`transaction not found: ${q.transaction_id}`);
+    const target = Math.abs(tx.amount_minor);
+    const seen = new Set<string>();
+    let sum = 0;
+    for (const share of q.shares) {
+      if (seen.has(share.member_id))
+        throw new Error(`member ${share.member_id} appears more than once in the split`);
+      seen.add(share.member_id);
+      if (share.share_minor <= 0) throw new Error("split shares must be positive");
+      if (!members.some((m) => m.id === share.member_id))
+        throw new Error(`member not found: ${share.member_id}`);
+      sum += share.share_minor;
+    }
+    if (q.shares.length > 0 && sum !== target)
+      throw new Error(
+        `split shares must sum to the transaction's absolute amount (${target} minor units), got ${sum}`,
+      );
+    transactionSplits = transactionSplits.filter((s) => s.transaction_id !== q.transaction_id);
+    const now = new Date().toISOString();
+    for (const share of q.shares) {
+      transactionSplits.push({
+        id: id("ts00"),
+        transaction_id: q.transaction_id,
+        member_id: share.member_id,
+        share_minor: share.share_minor,
+        created_at: now,
+      });
+    }
+    return clone(transactionSplits.filter((s) => s.transaction_id === q.transaction_id));
+  },
+
+  report_member_expense: async (q: {
+    book_id: string;
+    from: string;
+    to: string;
+  }): Promise<MemberAmountRow[]> => clone(memberAmount(q.from, q.to, true)),
+
+  report_member_contribution: async (q: {
+    book_id: string;
+    from: string;
+    to: string;
+  }): Promise<MemberAmountRow[]> => clone(memberAmount(q.from, q.to, false)),
+
+  report_member_category: async (q: {
+    book_id: string;
+    from: string;
+    to: string;
+  }): Promise<MemberCategoryRow[]> => clone(memberCategoryReport(q.from, q.to)),
+
+  report_settle_up: async (q: {
+    book_id: string;
+    from: string;
+    to: string;
+  }): Promise<MemberSettleRow[]> => clone(settleUp(q.from, q.to)),
 
   budget_list: async (q: {
     book_id: string;

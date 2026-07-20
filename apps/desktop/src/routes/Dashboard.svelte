@@ -12,6 +12,7 @@
   import { swrLoad } from "../lib/loadCache";
   import { computeNudges, type NudgeSeverity } from "../lib/nudges";
   import { router } from "../lib/router.svelte";
+  import type { Member, MemberAmountRow } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import StatCard from "../lib/components/StatCard.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
@@ -19,25 +20,71 @@
   import Money from "../lib/components/Money.svelte";
   import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
+  import MemberAvatar from "../lib/components/MemberAvatar.svelte";
 
   const month = localMonth();
+
+  /** Per-person spend + contribution for the period, joined by member —
+   * every current member appears, even at zero. */
+  interface HouseholdRow {
+    member: Member | null;
+    label: string;
+    spentMinor: number;
+    contributedMinor: number;
+  }
+
+  function joinHousehold(
+    members: Member[],
+    expense: MemberAmountRow[],
+    contribution: MemberAmountRow[],
+  ): HouseholdRow[] {
+    const spent = new Map(expense.map((r) => [r.member_id, r.total_minor]));
+    const contributed = new Map(contribution.map((r) => [r.member_id, r.total_minor]));
+    const rows: HouseholdRow[] = members.map((m) => ({
+      member: m,
+      label: m.label,
+      spentMinor: spent.get(m.id) ?? 0,
+      contributedMinor: contributed.get(m.id) ?? 0,
+    }));
+    const unattributedSpent = spent.get(null) ?? 0;
+    const unattributedContributed = contributed.get(null) ?? 0;
+    if (unattributedSpent !== 0 || unattributedContributed !== 0) {
+      rows.push({
+        member: null,
+        label: "Unattributed",
+        spentMinor: unattributedSpent,
+        contributedMinor: unattributedContributed,
+      });
+    }
+    return rows;
+  }
 
   async function load() {
     const [book] = await api.bookList();
     if (!book) throw new Error("no book configured");
-    const [accounts, categories, transactions, docs, budgets, spending] =
-      await Promise.all([
-        api.accountList({ book_id: book.id }),
-        api.categoryList({ book_id: book.id }),
-        api.transactionList({ book_id: book.id }),
-        api.documentList({ book_id: book.id }),
-        api.budgetList({ book_id: book.id, month }),
-        api.reportSpending({
-          book_id: book.id,
-          from: `${month}-01`,
-          to: monthEnd(month),
-        }),
-      ]);
+    const from = `${month}-01`;
+    const to = monthEnd(month);
+    const [
+      accounts,
+      categories,
+      members,
+      transactions,
+      docs,
+      budgets,
+      spending,
+      memberExpense,
+      memberContribution,
+    ] = await Promise.all([
+      api.accountList({ book_id: book.id }),
+      api.categoryList({ book_id: book.id }),
+      api.memberList({ book_id: book.id }),
+      api.transactionList({ book_id: book.id }),
+      api.documentList({ book_id: book.id }),
+      api.budgetList({ book_id: book.id, month }),
+      api.reportSpending({ book_id: book.id, from, to }),
+      api.reportMemberExpense({ book_id: book.id, from, to }),
+      api.reportMemberContribution({ book_id: book.id, from, to }),
+    ]);
     // Nudges are computed right here, on-device, from the stats above.
     const nudges = computeNudges({ transactions, budgets, categories, month });
     return {
@@ -49,6 +96,8 @@
       budgets,
       spending,
       nudges,
+      members,
+      household: joinHousehold(members, memberExpense, memberContribution),
     };
   }
 
@@ -282,6 +331,58 @@
       {/if}
     </section>
   </div>
+
+  <!-- household: per-person spend + contribution for the period, computed
+       locally like every other report (ARCHITECTURE.md "Household members
+       & per-person attribution") -->
+  {#if d.members.length > 0}
+    <section class="card mt-4">
+      <header class="flex items-center justify-between px-4 pt-4">
+        <h2 class="text-[13px] font-semibold">
+          Household · {fmtMonth(month)}
+        </h2>
+        <button
+          class="btn btn-ghost h-6 px-1.5 text-[11.5px] text-t3"
+          onclick={() => router.go("settings")}
+        >
+          Manage
+          <Icon name="arrow-right" size={12} />
+        </button>
+      </header>
+      <ul class="mt-2 pb-2">
+        {#each d.household as row (row.member?.id ?? "unattributed")}
+          <li
+            class="row-hover flex items-center gap-3 border-t border-line px-4 py-2.5 first:border-t-0"
+          >
+            <MemberAvatar member={row.member} size={26} />
+            <span class="min-w-0 flex-1 leading-tight">
+              <span class="block truncate text-[12.5px] font-medium">{row.label}</span>
+              <span class="block truncate text-[11px] text-t3">
+                {row.member?.default_account_id
+                  ? "owns an account"
+                  : row.member
+                    ? "joint / shared"
+                    : "no member set"}
+              </span>
+            </span>
+            <span class="text-right leading-tight">
+              <span class="block text-[11px] text-t3">Spent</span>
+              <Money amount={-row.spentMinor} currency={d.book.currency} class="text-t1" />
+            </span>
+            <span class="text-right leading-tight">
+              <span class="block text-[11px] text-t3">Contributed</span>
+              <Money
+                amount={row.contributedMinor}
+                currency={d.book.currency}
+                signed
+                colored
+              />
+            </span>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
 {:catch err}
   <div class="card">
     <EmptyState

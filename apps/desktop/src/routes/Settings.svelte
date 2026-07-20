@@ -3,10 +3,12 @@
   import { api } from "../lib/api/client";
   import { theme, type ThemeMode } from "../lib/theme.svelte";
   import type {
+    Account,
     Book,
     DataStatus,
     FxCachedRate,
     FxStatus,
+    Member,
     Settings,
     VaultCredentialMeta,
   } from "../lib/api/types";
@@ -16,6 +18,7 @@
   import Skeleton from "../lib/components/Skeleton.svelte";
   import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
+  import MemberAvatar from "../lib/components/MemberAvatar.svelte";
 
   let s = $state<Settings | null>(null);
   let book = $state<Book | null>(null);
@@ -61,6 +64,178 @@
       credentials = [];
       vaultLoadError = String(err);
     }
+  }
+
+  // -- household members & per-person attribution: local data, never a
+  // login (ARCHITECTURE.md "Household members & per-person attribution").
+  // A book with zero members works exactly as before.
+  const memberSwatches = [
+    "#6f9200", "#007fa3", "#b0761f", "#6a6fbf",
+    "#b1524e", "#16a34a", "#d97706", "#dc2626",
+  ];
+  // Human names for the colour-swatch buttons' accessible names — a raw hex
+  // string ("#6a6fbf") reads poorly to screen readers.
+  const memberSwatchNames: Record<string, string> = {
+    "#6f9200": "Olive",
+    "#007fa3": "Teal",
+    "#b0761f": "Ochre",
+    "#6a6fbf": "Periwinkle",
+    "#b1524e": "Clay",
+    "#16a34a": "Green",
+    "#d97706": "Amber",
+    "#dc2626": "Red",
+  };
+  let members = $state<Member[]>([]);
+  let accounts = $state<Account[]>([]);
+  let membersLoadError = $state<string | null>(null);
+  let membersError = $state<string | null>(null);
+  let showMemberForm = $state(false);
+  let memberLabel = $state("");
+  let memberInitial = $state("");
+  let memberColour = $state(memberSwatches[0]!);
+  let memberDefaultAccount = $state("");
+  let memberBusy = $state(false);
+  let memberLabelInput = $state<HTMLInputElement | null>(null);
+
+  /** Id of the member being edited inline, if any. */
+  let editingMemberId = $state<string | null>(null);
+  let editLabel = $state("");
+  let editInitial = $state("");
+  let editColour = $state("");
+  let editDefaultAccount = $state("");
+  let editBusy = $state(false);
+
+  /** Two-step remove (same pattern as the vault's revoke). A refusal because
+   * the member still has attributed transactions/splits switches to an
+   * inline reassign picker instead of a bare error. */
+  let removeArmed = $state<string | null>(null);
+  let removeTimer: ReturnType<typeof setTimeout> | undefined;
+  let removeBusy = $state<string | null>(null);
+  let reassignFor = $state<string | null>(null);
+  let reassignTarget = $state("");
+
+  function disarmMemberRemove(id?: string) {
+    if (id === undefined || removeArmed === id) {
+      removeArmed = null;
+      clearTimeout(removeTimer);
+    }
+  }
+
+  async function loadMembers(bookId: string) {
+    membersLoadError = null;
+    try {
+      [members, accounts] = await Promise.all([
+        api.memberList({ book_id: bookId }),
+        api.accountList({ book_id: bookId }),
+      ]);
+    } catch (err) {
+      members = [];
+      membersLoadError = String(err);
+    }
+  }
+
+  const accountName = (accountId: string): string =>
+    accounts.find((a) => a.id === accountId)?.name ?? "—";
+
+  function closeMemberForm() {
+    showMemberForm = false;
+    memberLabel = "";
+    memberInitial = "";
+    memberColour = memberSwatches[0]!;
+    memberDefaultAccount = "";
+  }
+
+  async function toggleMemberForm() {
+    membersError = null;
+    if (showMemberForm) {
+      closeMemberForm();
+      return;
+    }
+    showMemberForm = true;
+    await tick();
+    memberLabelInput?.focus();
+  }
+
+  async function addMember() {
+    if (!book) return;
+    membersError = null;
+    memberBusy = true;
+    try {
+      const created = await api.memberAdd({
+        book_id: book.id,
+        label: memberLabel.trim(),
+        initial: memberInitial.trim() || undefined,
+        colour: memberColour,
+        default_account_id: memberDefaultAccount || undefined,
+      });
+      members = [...members, created];
+      closeMemberForm();
+    } catch (err) {
+      membersError = String(err);
+    } finally {
+      memberBusy = false;
+    }
+  }
+
+  function startEditMember(m: Member) {
+    membersError = null;
+    editingMemberId = editingMemberId === m.id ? null : m.id;
+    editLabel = m.label;
+    editInitial = m.initial;
+    editColour = m.colour;
+    editDefaultAccount = m.default_account_id ?? "";
+  }
+
+  async function saveMember(m: Member) {
+    membersError = null;
+    editBusy = true;
+    try {
+      const updated = await api.memberUpdate({
+        id: m.id,
+        label: editLabel.trim(),
+        initial: editInitial.trim(),
+        colour: editColour,
+        clear_default_account: editDefaultAccount === "",
+        default_account_id: editDefaultAccount || undefined,
+      });
+      members = members.map((x) => (x.id === updated.id ? updated : x));
+      editingMemberId = null;
+    } catch (err) {
+      membersError = String(err);
+    } finally {
+      editBusy = false;
+    }
+  }
+
+  async function attemptRemoveMember(m: Member, reassignTo?: string) {
+    membersError = null;
+    removeBusy = m.id;
+    try {
+      await api.memberRemove({ id: m.id, reassign_to: reassignTo });
+      members = members.filter((x) => x.id !== m.id);
+      if (reassignFor === m.id) reassignFor = null;
+    } catch (err) {
+      const msg = String(err);
+      if (!reassignTo && msg.includes("attributed transactions or splits")) {
+        reassignFor = m.id;
+        reassignTarget = members.find((x) => x.id !== m.id)?.id ?? "";
+      } else {
+        membersError = msg;
+      }
+    } finally {
+      removeBusy = null;
+    }
+  }
+
+  async function removeMember(m: Member) {
+    if (removeArmed !== m.id) {
+      disarmMemberRemove();
+      removeArmed = m.id;
+      removeTimer = setTimeout(() => disarmMemberRemove(m.id), 5000);
+      return;
+    }
+    disarmMemberRemove();
+    await attemptRemoveMember(m);
   }
 
   // -- data & backup: the one movable folder holding everything durable.
@@ -213,7 +388,12 @@
       loadError = String(err);
       return;
     }
-    await Promise.all([loadVault(), loadFx(), loadDataStatus()]);
+    await Promise.all([
+      loadVault(),
+      loadFx(),
+      loadDataStatus(),
+      book ? loadMembers(book.id) : Promise.resolve(),
+    ]);
   }
   load();
 
@@ -435,6 +615,266 @@
         </p>
       {:else}
         <p class="text-[12.5px] text-t3">No book configured.</p>
+      {/if}
+    </section>
+
+    <!-- household members & per-person attribution -->
+    <section class="card p-4">
+      <div class="mb-1 flex items-center justify-between">
+        <h2 class="flex items-center gap-2 text-[13px] font-semibold">
+          <Icon name="wallet" size={15} class="text-t3" />
+          Household
+        </h2>
+        <button class="btn h-7" onclick={toggleMemberForm}>
+          <Icon name="plus" size={13} />
+          Add member
+        </button>
+      </div>
+      <p class="mb-3 text-[12px] text-t3">
+        Members are local data, never logins — SlipScan has no
+        authentication. They describe whose money it is: attribute
+        transactions per person, split shared expenses, and see who owes
+        whom, all inside this one shared book.
+      </p>
+
+      {#if membersError}
+        <p
+          class="mb-3 flex items-center gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+        >
+          <Icon name="alert-circle" size={13} />
+          {membersError}
+        </p>
+      {/if}
+
+      {#if showMemberForm}
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
+             Escape-to-close only; interaction lives on the inputs/buttons. -->
+        <form
+          class="mb-4 grid gap-3 rounded-lg border border-line bg-sunken/40 p-3 sm:grid-cols-2"
+          onsubmit={(e) => {
+            e.preventDefault();
+            addMember();
+          }}
+          onkeydown={(e) => {
+            if (e.key === "Escape") closeMemberForm();
+          }}
+        >
+          <label class="block">
+            <span class="mb-1 block text-[11.5px] font-medium text-t2">Name</span>
+            <input
+              class="input"
+              placeholder="Alex"
+              bind:this={memberLabelInput}
+              bind:value={memberLabel}
+              required
+            />
+          </label>
+          <label class="block">
+            <span class="mb-1 block text-[11.5px] font-medium text-t2"
+              >Initial (optional)</span
+            >
+            <input
+              class="input"
+              maxlength={2}
+              placeholder={memberLabel.charAt(0).toUpperCase() || "A"}
+              bind:value={memberInitial}
+            />
+          </label>
+          <div class="block sm:col-span-2">
+            <span class="mb-1 block text-[11.5px] font-medium text-t2">Colour</span>
+            <div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Colour">
+              {#each memberSwatches as swatch (swatch)}
+                <button
+                  type="button"
+                  class="size-6 rounded-full ring-offset-2 ring-offset-panel transition-shadow {memberColour ===
+                  swatch
+                    ? 'ring-2 ring-t1'
+                    : 'hover:ring-2 hover:ring-line-2'}"
+                  style="background-color: {swatch};"
+                  aria-pressed={memberColour === swatch}
+                  aria-label={memberSwatchNames[swatch] ?? swatch}
+                  onclick={() => (memberColour = swatch)}
+                ></button>
+              {/each}
+            </div>
+          </div>
+          <label class="block sm:col-span-2">
+            <span class="mb-1 block text-[11.5px] font-medium text-t2"
+              >Default account (optional) — new transactions on it attribute
+              here unless overridden</span
+            >
+            <select class="input" bind:value={memberDefaultAccount}>
+              <option value="">No default — joint / shared</option>
+              {#each accounts as a (a.id)}
+                <option value={a.id}>{a.name}</option>
+              {/each}
+            </select>
+          </label>
+          <div class="flex items-center gap-2 sm:col-span-2">
+            <button
+              class="btn btn-primary h-7"
+              type="submit"
+              disabled={memberBusy || !memberLabel.trim()}
+            >
+              {memberBusy ? "Adding…" : "Add member"}
+            </button>
+            <button class="btn btn-ghost h-7" type="button" onclick={closeMemberForm}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      {/if}
+
+      {#if membersLoadError}
+        <EmptyState
+          icon="alert-circle"
+          title="Could not load household members"
+          body={membersLoadError}
+        >
+          {#snippet actions()}
+            <button class="btn" onclick={() => book && loadMembers(book.id)}>
+              Retry
+            </button>
+          {/snippet}
+        </EmptyState>
+      {:else if members.length === 0}
+        <EmptyState
+          icon="wallet"
+          title="No household members yet"
+          body="Add the people sharing this book to attribute spend and contributions per person — a private per-person dashboard, computed locally."
+        />
+      {:else}
+        <ul class="divide-y divide-line">
+          {#each members as m (m.id)}
+            <li class="row-hover py-2.5 first:pt-0 last:pb-0">
+              <div class="flex items-center gap-3">
+                <MemberAvatar member={m} size={28} />
+                <span class="min-w-0 flex-1 leading-tight">
+                  <span class="block text-[12.5px] font-medium">{m.label}</span>
+                  <span class="block truncate text-[10.5px] text-t3">
+                    {m.default_account_id
+                      ? `Owns ${accountName(m.default_account_id)}`
+                      : "No default account — joint / shared"}
+                  </span>
+                </span>
+                <div class="flex shrink-0 items-center gap-1.5">
+                  <button class="btn h-7" onclick={() => startEditMember(m)}>
+                    <Icon name="pencil" size={13} />
+                    {editingMemberId === m.id ? "Close" : "Edit"}
+                  </button>
+                  <button
+                    class="btn btn-danger h-7"
+                    disabled={removeBusy === m.id}
+                    onclick={() => removeMember(m)}
+                    onmouseleave={() => disarmMemberRemove(m.id)}
+                    onblur={() => disarmMemberRemove(m.id)}
+                    onkeydown={(e) => {
+                      if (e.key === "Escape") disarmMemberRemove(m.id);
+                    }}
+                  >
+                    <Icon name="trash" size={13} />
+                    {removeArmed === m.id ? "Really remove?" : "Remove"}
+                  </button>
+                </div>
+              </div>
+
+              {#if reassignFor === m.id}
+                <div
+                  class="mt-2 flex flex-wrap items-center gap-2 rounded-lg border border-warning/25 bg-warning/10 p-2.5 pl-2.5"
+                >
+                  <Icon name="alert-circle" size={13} class="shrink-0 text-warning" />
+                  <span class="text-[11.5px] text-warning"
+                    >Has attributed transactions or splits — move them to:</span
+                  >
+                  <select class="input h-7 w-40" bind:value={reassignTarget}>
+                    {#each members.filter((x) => x.id !== m.id) as other (other.id)}
+                      <option value={other.id}>{other.label}</option>
+                    {/each}
+                  </select>
+                  <button
+                    class="btn btn-primary h-7"
+                    disabled={!reassignTarget || removeBusy === m.id}
+                    onclick={() => attemptRemoveMember(m, reassignTarget)}
+                  >
+                    Reassign &amp; remove
+                  </button>
+                  <button class="btn btn-ghost h-7" onclick={() => (reassignFor = null)}>
+                    Cancel
+                  </button>
+                </div>
+              {/if}
+
+              {#if editingMemberId === m.id}
+                <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
+                     Escape-to-close only; interaction lives on the inputs/buttons. -->
+                <form
+                  class="mt-2 grid gap-3 rounded-lg border border-line bg-sunken/40 p-3 pl-11 sm:grid-cols-2"
+                  onsubmit={(e) => {
+                    e.preventDefault();
+                    saveMember(m);
+                  }}
+                  onkeydown={(e) => {
+                    if (e.key === "Escape") editingMemberId = null;
+                  }}
+                >
+                  <label class="block">
+                    <span class="mb-1 block text-[11.5px] font-medium text-t2">Name</span>
+                    <input class="input" bind:value={editLabel} required />
+                  </label>
+                  <label class="block">
+                    <span class="mb-1 block text-[11.5px] font-medium text-t2">Initial</span>
+                    <input class="input" maxlength={2} bind:value={editInitial} required />
+                  </label>
+                  <div class="block sm:col-span-2">
+                    <span class="mb-1 block text-[11.5px] font-medium text-t2">Colour</span>
+                    <div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Colour">
+                      {#each memberSwatches as swatch (swatch)}
+                        <button
+                          type="button"
+                          class="size-6 rounded-full ring-offset-2 ring-offset-panel transition-shadow {editColour ===
+                          swatch
+                            ? 'ring-2 ring-t1'
+                            : 'hover:ring-2 hover:ring-line-2'}"
+                          style="background-color: {swatch};"
+                          aria-pressed={editColour === swatch}
+                          aria-label={memberSwatchNames[swatch] ?? swatch}
+                          onclick={() => (editColour = swatch)}
+                        ></button>
+                      {/each}
+                    </div>
+                  </div>
+                  <label class="block sm:col-span-2">
+                    <span class="mb-1 block text-[11.5px] font-medium text-t2"
+                      >Default account</span
+                    >
+                    <select class="input" bind:value={editDefaultAccount}>
+                      <option value="">No default — joint / shared</option>
+                      {#each accounts as a (a.id)}
+                        <option value={a.id}>{a.name}</option>
+                      {/each}
+                    </select>
+                  </label>
+                  <div class="flex items-center gap-2 sm:col-span-2">
+                    <button
+                      class="btn btn-primary h-7"
+                      type="submit"
+                      disabled={editBusy || !editLabel.trim() || !editInitial.trim()}
+                    >
+                      {editBusy ? "Saving…" : "Save"}
+                    </button>
+                    <button
+                      class="btn btn-ghost h-7"
+                      type="button"
+                      onclick={() => (editingMemberId = null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              {/if}
+            </li>
+          {/each}
+        </ul>
       {/if}
     </section>
 

@@ -126,6 +126,13 @@ pub struct TransactionDto {
     pub source: String,
     pub provider_txn_id: Option<String>,
     pub hash: String,
+    /// Who actually incurred this transaction — metadata only, never
+    /// influences amount/currency/category (ARCHITECTURE.md "Household
+    /// members & per-person attribution"). `None` = unattributed. When the
+    /// transaction is split across members, this field still reflects
+    /// whatever single attribution it carries underneath, but reports
+    /// distribute by the split shares instead — see `transaction_splits_list`.
+    pub attributed_member_id: Option<String>,
     pub created_at: String,
 }
 
@@ -147,6 +154,7 @@ pub fn transaction_dto(txn: &core::Transaction) -> TransactionDto {
         source: txn.source.as_str().to_string(),
         provider_txn_id: txn.provider_txn_id.clone(),
         hash: txn.dedupe_hash.clone(),
+        attributed_member_id: txn.attributed_member_id.clone(),
         created_at: txn.created_at.clone(),
     }
 }
@@ -174,6 +182,79 @@ pub struct TransactionListQuery {
 pub struct CategorizeQuery {
     pub transaction_id: String,
     pub category_id: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// household members & per-person attribution — see ARCHITECTURE.md
+// "Household members & per-person attribution". Members are local data, not
+// logins; attribution is metadata that never touches debits/credits.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemberUpdateRequest {
+    pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub initial: Option<String>,
+    #[serde(default)]
+    pub colour: Option<String>,
+    /// Plain JSON can't tell "field absent" from "field explicitly null"
+    /// inside a nested `Option<Option<T>>`, so the clear intent travels as
+    /// its own flag instead of `default_account_id: null`: `true` clears the
+    /// default account; otherwise `default_account_id` (if present) sets a
+    /// new one and omitting it leaves the current value untouched.
+    #[serde(default)]
+    pub clear_default_account: bool,
+    #[serde(default)]
+    pub default_account_id: Option<String>,
+}
+
+impl MemberUpdateRequest {
+    pub fn into_patch(self) -> core::MemberPatch {
+        core::MemberPatch {
+            label: self.label,
+            initial: self.initial,
+            colour: self.colour,
+            default_account_id: if self.clear_default_account {
+                Some(None)
+            } else {
+                self.default_account_id.map(Some)
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemberRemoveRequest {
+    pub id: String,
+    #[serde(default)]
+    pub reassign_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TransactionIdQuery {
+    pub transaction_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TransactionAttributeRequest {
+    pub transaction_id: String,
+    #[serde(default)]
+    pub member_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TransactionSplitSetRequest {
+    pub transaction_id: String,
+    pub shares: Vec<core::SplitShare>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemberReportQuery {
+    pub book_id: String,
+    pub from: String,
+    pub to: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -832,6 +913,28 @@ mod tests {
         assert_eq!(dto.line_items.len(), 1);
         assert_eq!(dto.line_items[0].unit_minor, 3_499);
         assert!(dto.confidence > 0.9);
+    }
+
+    #[test]
+    fn member_update_request_maps_clear_set_and_leave_default_account() {
+        // Omitted entirely: leave the default account untouched.
+        let leave: MemberUpdateRequest =
+            serde_json::from_str(r#"{"id":"m1","label":"Alexis"}"#).unwrap();
+        assert_eq!(leave.clone().into_patch().default_account_id, None);
+        assert_eq!(leave.into_patch().label, Some("Alexis".to_string()));
+
+        // Explicit clear flag, no plain JSON `null` involved.
+        let clear: MemberUpdateRequest =
+            serde_json::from_str(r#"{"id":"m1","clear_default_account":true}"#).unwrap();
+        assert_eq!(clear.into_patch().default_account_id, Some(None));
+
+        // A new account id sets it.
+        let set: MemberUpdateRequest =
+            serde_json::from_str(r#"{"id":"m1","default_account_id":"acc-1"}"#).unwrap();
+        assert_eq!(
+            set.into_patch().default_account_id,
+            Some(Some("acc-1".to_string()))
+        );
     }
 
     #[test]

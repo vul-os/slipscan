@@ -8,28 +8,36 @@
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
   import Icon from "../lib/components/Icon.svelte";
+  import MemberAvatar from "../lib/components/MemberAvatar.svelte";
 
   const month = localMonth();
 
   async function load() {
     const [book] = await api.bookList();
     if (!book) throw new Error("no book configured");
-    const [spending, incomeExpense, vat] = await Promise.all([
-      api.reportSpending({
-        book_id: book.id,
-        from: `${month}-01`,
-        to: monthEnd(month),
-      }),
-      api.reportIncomeExpense({ book_id: book.id }),
-      api.reportVatSummary({ book_id: book.id, period: month }),
-    ]);
-    return { book, spending, incomeExpense, vat };
+    const from = `${month}-01`;
+    const to = monthEnd(month);
+    const [spending, incomeExpense, vat, members, settleUp, memberCategory] =
+      await Promise.all([
+        api.reportSpending({ book_id: book.id, from, to }),
+        api.reportIncomeExpense({ book_id: book.id }),
+        api.reportVatSummary({ book_id: book.id, period: month }),
+        api.memberList({ book_id: book.id }),
+        api.reportSettleUp({ book_id: book.id, from, to }),
+        api.reportMemberCategory({ book_id: book.id, from, to }),
+      ]);
+    return { book, spending, incomeExpense, vat, members, settleUp, memberCategory };
   }
 
   type Data = Awaited<ReturnType<typeof load>>;
   const reload = (fresh = false) =>
     swrLoad<Data>("reports", load, (v) => (data = v), { fresh });
   let data = $state(reload());
+
+  // -- household: a member filter over the settle-up + category breakdown
+  // (ARCHITECTURE.md "Household members & per-person attribution"). "" =
+  // all members; "none" = the Unattributed bucket.
+  let memberFilter = $state("");
 
   const shortMonth = (m: string) =>
     new Date(`${m}-01T12:00:00Z`).toLocaleString(undefined, { month: "short" });
@@ -396,6 +404,112 @@
       </p>
     </section>
   </div>
+
+  <!-- household: settle-up ("who owes whom") + a per-member category filter
+       (ARCHITECTURE.md "Household members & per-person attribution") -->
+  {#if d.members.length > 0}
+    <section class="card mt-4 p-4">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <h2 class="text-[13px] font-semibold">Household · {fmtMonth(month)}</h2>
+        <label class="flex items-center gap-2 text-[11.5px] text-t3">
+          Member
+          <select
+            class="input h-7 w-40"
+            bind:value={memberFilter}
+            aria-label="Filter by member"
+          >
+            <option value="">All members</option>
+            {#each d.members as m (m.id)}
+              <option value={m.id}>{m.label}</option>
+            {/each}
+            <option value="none">Unattributed</option>
+          </select>
+        </label>
+      </div>
+
+      <!-- settle-up: net position per member over the period -->
+      <div class="table-wrap mb-4">
+        <table class="w-full text-[12.5px]">
+          <thead>
+            <tr>
+              <th class="th">Member</th>
+              <th class="th text-right">Contributed</th>
+              <th class="th text-right">Spent</th>
+              <th class="th text-right">Net</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each d.settleUp.filter((r) => !memberFilter || (memberFilter === "none" ? r.member_id === null : r.member_id === memberFilter)) as row (row.member_id ?? "unattributed")}
+              <tr class="row-hover">
+                <td class="td">
+                  <span class="flex items-center gap-2">
+                    <MemberAvatar
+                      member={row.member_id
+                        ? (d.members.find((m) => m.id === row.member_id) ?? null)
+                        : null}
+                      size={18}
+                    />
+                    {row.member_label}
+                  </span>
+                </td>
+                <td class="td num text-right"
+                  >{fmtMoney(row.contributions_minor, row.currency)}</td
+                >
+                <td class="td num text-right"
+                  >{fmtMoney(row.expenses_minor, row.currency)}</td
+                >
+                <td
+                  class="td num text-right {row.net_minor > 0
+                    ? 'text-success'
+                    : row.net_minor < 0
+                      ? 'text-danger'
+                      : ''}"
+                >
+                  {fmtMoney(row.net_minor, row.currency, { signed: true })}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <p class="mb-4 text-[11px] text-t3">
+        Net = contributions minus attributed expenses. Positive means the
+        household owes them; negative means they owe the household.
+      </p>
+
+      <!-- category breakdown for the filtered member -->
+      {#if memberFilter}
+        {@const rows = d.memberCategory.filter((r) =>
+          memberFilter === "none" ? r.member_id === null : r.member_id === memberFilter,
+        )}
+        {@const total = rows.reduce((s, r) => s + r.total_minor, 0)}
+        {#if rows.length === 0}
+          <p class="text-[12px] text-t3">No spend this period for this member.</p>
+        {:else}
+          <ul class="space-y-2">
+            {#each rows as row (row.category_id ?? "uncategorized")}
+              <li class="flex items-center gap-3">
+                <span class="w-32 truncate text-[12px] text-t2">{row.category_name}</span>
+                <div class="meter flex-1">
+                  <div
+                    class="meter-fill"
+                    style="width: {total === 0
+                      ? 0
+                      : Math.max(2, (row.total_minor / total) * 100)}%"
+                  ></div>
+                </div>
+                <span class="num w-24 text-right">{fmtMoney(row.total_minor, row.currency)}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {:else}
+        <p class="text-[11.5px] text-t3">
+          Select a member above to see their share of each category.
+        </p>
+      {/if}
+    </section>
+  {/if}
 {:catch err}
   <div class="card">
     <EmptyState

@@ -268,6 +268,92 @@ pub async fn category_list(
 }
 
 // ---------------------------------------------------------------------------
+// household members & per-person attribution — see ARCHITECTURE.md
+// "Household members & per-person attribution". Members are local data, not
+// logins; attribution is metadata that never touches debits/credits. Core's
+// domain types serialize straight across IPC (same pattern as vat rates / FX
+// / ShapePay) — the only translation needed is `MemberUpdateRequest`'s
+// clear-flag, because plain JSON can't express nested-Option "explicit null".
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn member_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::Member>, String> {
+    state.service()?.member_list(&query.book_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn member_add(
+    state: State<'_, AppState>,
+    query: core::NewMember,
+) -> Result<core::Member, String> {
+    state.service()?.member_add(query).map_err(err)
+}
+
+#[tauri::command]
+pub async fn member_update(
+    state: State<'_, AppState>,
+    query: MemberUpdateRequest,
+) -> Result<core::Member, String> {
+    let id = query.id.clone();
+    state
+        .service()?
+        .member_update(&id, query.into_patch())
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn member_remove(
+    state: State<'_, AppState>,
+    query: MemberRemoveRequest,
+) -> Result<(), String> {
+    state
+        .service()?
+        .member_remove(&query.id, query.reassign_to.as_deref())
+        .map_err(err)
+}
+
+/// Override (or clear, with `member_id: null`) a transaction's attribution.
+/// Metadata only — never touches amount/currency/category.
+#[tauri::command]
+pub async fn transaction_attribute(
+    state: State<'_, AppState>,
+    query: TransactionAttributeRequest,
+) -> Result<TransactionDto, String> {
+    let service = state.service()?;
+    let txn = service
+        .transaction_attribute(&query.transaction_id, query.member_id.as_deref())
+        .map_err(err)?;
+    Ok(dto::transaction_dto(&txn))
+}
+
+#[tauri::command]
+pub async fn transaction_splits_list(
+    state: State<'_, AppState>,
+    query: TransactionIdQuery,
+) -> Result<Vec<core::TransactionSplit>, String> {
+    state
+        .service()?
+        .transaction_splits_list(&query.transaction_id)
+        .map_err(err)
+}
+
+/// Replace a transaction's split set; an empty `shares` list clears the
+/// split (back to single-member attribution / unattributed).
+#[tauri::command]
+pub async fn transaction_split_set(
+    state: State<'_, AppState>,
+    query: TransactionSplitSetRequest,
+) -> Result<Vec<core::TransactionSplit>, String> {
+    state
+        .service()?
+        .transaction_split_set(&query.transaction_id, query.shares)
+        .map_err(err)
+}
+
+// ---------------------------------------------------------------------------
 // budgets
 // ---------------------------------------------------------------------------
 
@@ -774,6 +860,58 @@ pub async fn report_trial_balance(
         total_credit_minor: rows.iter().map(|r| r.credit_minor).sum(),
         rows,
     })
+}
+
+/// Per-member outflow (expense) totals over the period, in the book's base
+/// currency. Split shares are distributed; unattributed spend rolls into an
+/// "Unattributed" row.
+#[tauri::command]
+pub async fn report_member_expense(
+    state: State<'_, AppState>,
+    query: MemberReportQuery,
+) -> Result<Vec<core::MemberAmountRow>, String> {
+    state
+        .service()?
+        .report_member_expense(&query.book_id, &query.from, &query.to)
+        .map_err(err)
+}
+
+/// Per-member inflow (contribution) totals over the period — mirrors
+/// [`report_member_expense`] for money coming in.
+#[tauri::command]
+pub async fn report_member_contribution(
+    state: State<'_, AppState>,
+    query: MemberReportQuery,
+) -> Result<Vec<core::MemberAmountRow>, String> {
+    state
+        .service()?
+        .report_member_contribution(&query.book_id, &query.from, &query.to)
+        .map_err(err)
+}
+
+/// Each member's share of each category's spend over the period.
+#[tauri::command]
+pub async fn report_member_category(
+    state: State<'_, AppState>,
+    query: MemberReportQuery,
+) -> Result<Vec<core::MemberCategoryRow>, String> {
+    state
+        .service()?
+        .report_member_category(&query.book_id, &query.from, &query.to)
+        .map_err(err)
+}
+
+/// Net position per member over the period (contributions minus attributed
+/// expenses) — "who owes whom".
+#[tauri::command]
+pub async fn report_settle_up(
+    state: State<'_, AppState>,
+    query: MemberReportQuery,
+) -> Result<Vec<core::MemberSettleRow>, String> {
+    state
+        .service()?
+        .report_settle_up(&query.book_id, &query.from, &query.to)
+        .map_err(err)
 }
 
 // ---------------------------------------------------------------------------

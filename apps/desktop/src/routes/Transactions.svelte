@@ -3,14 +3,22 @@
   import { router } from "../lib/router.svelte";
   import { globalSearch } from "../lib/search.svelte";
   import { routeCache } from "../lib/loadCache";
-  import { fmtDate } from "../lib/format";
-  import type { Account, Book, Category, Transaction } from "../lib/api/types";
+  import { fmtDate, fmtMoney, minorToInput, parseMoneyInput } from "../lib/format";
+  import type {
+    Account,
+    Book,
+    Category,
+    Member,
+    SplitShare,
+    Transaction,
+  } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
   import Money from "../lib/components/Money.svelte";
   import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
+  import MemberAvatar from "../lib/components/MemberAvatar.svelte";
 
   let search = $state(globalSearch.query);
   let accountFilter = $state("");
@@ -24,6 +32,7 @@
   let book = $state<Book | null>(null);
   let accounts = $state<Account[]>([]);
   let categories = $state<Category[]>([]);
+  let members = $state<Member[]>([]);
   let transactions = $state<Transaction[]>([]);
   let loading = $state(true);
   let loadError = $state<string | null>(null);
@@ -32,6 +41,7 @@
     book: Book;
     accounts: Account[];
     categories: Category[];
+    members: Member[];
     transactions: Transaction[];
   }
 
@@ -42,15 +52,17 @@
       const [b] = await api.bookList();
       if (!b) throw new Error("no book configured");
       book = b;
-      [accounts, categories, transactions] = await Promise.all([
+      [accounts, categories, members, transactions] = await Promise.all([
         api.accountList({ book_id: b.id }),
         api.categoryList({ book_id: b.id }),
+        api.memberList({ book_id: b.id }),
         api.transactionList({ book_id: b.id }),
       ]);
       routeCache.set<Snapshot>("transactions", {
         book: b,
         accounts: $state.snapshot(accounts) as Account[],
         categories: $state.snapshot(categories) as Category[],
+        members: $state.snapshot(members) as Member[],
         transactions: $state.snapshot(transactions) as Transaction[],
       });
     } catch (err) {
@@ -67,11 +79,22 @@
       book = cached.book;
       accounts = cached.accounts;
       categories = cached.categories;
+      members = cached.members;
       transactions = cached.transactions;
       loading = false;
       load(true);
     } else {
       load();
+    }
+  }
+
+  function syncTransactionsCache() {
+    const cached = routeCache.get<Snapshot>("transactions");
+    if (cached) {
+      routeCache.set<Snapshot>("transactions", {
+        ...cached,
+        transactions: $state.snapshot(transactions) as Transaction[],
+      });
     }
   }
 
@@ -117,16 +140,143 @@
         category_id: next,
       });
       transactions = transactions.map((t) => (t.id === tx.id ? updated : t));
-      const cached = routeCache.get<Snapshot>("transactions");
-      if (cached) {
-        routeCache.set<Snapshot>("transactions", {
-          ...cached,
-          transactions: $state.snapshot(transactions) as Transaction[],
-        });
-      }
+      syncTransactionsCache();
     } catch (err) {
       categorizeError = String(err);
     }
+  }
+
+  // -- attribution & splits: metadata only, never touches amount/currency/
+  // category (ARCHITECTURE.md "Household members & per-person attribution").
+
+  const memberOf = (memberId: string | null): Member | null =>
+    members.find((m) => m.id === memberId) ?? null;
+
+  /** Id of the transaction whose picker/split panel is expanded, if any. */
+  let expandedFor = $state<string | null>(null);
+  let panelMode = $state<"pick" | "split">("pick");
+  let attributeBusy = $state<string | null>(null);
+  let attributeError = $state<string | null>(null);
+
+  function toggleExpand(tx: Transaction) {
+    if (expandedFor === tx.id) {
+      expandedFor = null;
+      return;
+    }
+    expandedFor = tx.id;
+    panelMode = "pick";
+    attributeError = null;
+  }
+
+  async function attribute(tx: Transaction, memberId: string | null) {
+    attributeError = null;
+    attributeBusy = tx.id;
+    try {
+      const updated = await api.transactionAttribute({
+        transaction_id: tx.id,
+        member_id: memberId,
+      });
+      transactions = transactions.map((t) => (t.id === tx.id ? updated : t));
+      syncTransactionsCache();
+      expandedFor = null;
+    } catch (err) {
+      attributeError = String(err);
+    } finally {
+      attributeBusy = null;
+    }
+  }
+
+  // -- split editor: a set of (member, share) rows that must sum to the
+  // transaction's absolute amount; an empty set clears the split.
+  let splitTargetTx = $state<Transaction | null>(null);
+  let splitRows = $state<Array<{ member_id: string; amount: string }>>([]);
+  let splitBusy = $state(false);
+  let splitError = $state<string | null>(null);
+
+  async function openSplitEditor(tx: Transaction) {
+    panelMode = "split";
+    splitTargetTx = tx;
+    splitError = null;
+    splitBusy = false;
+    splitRows = [];
+    try {
+      const existing = await api.transactionSplitsList({ transaction_id: tx.id });
+      if (existing.length > 0) {
+        splitRows = existing.map((s) => ({
+          member_id: s.member_id,
+          amount: minorToInput(s.share_minor, tx.currency),
+        }));
+      } else {
+        const starter = tx.attributed_member_id ?? members[0]?.id;
+        if (starter) {
+          splitRows = [
+            {
+              member_id: starter,
+              amount: minorToInput(Math.abs(tx.amount_minor), tx.currency),
+            },
+          ];
+        }
+      }
+    } catch (err) {
+      splitError = String(err);
+    }
+  }
+
+  function addSplitRow() {
+    const used = new Set(splitRows.map((r) => r.member_id));
+    const next = members.find((m) => !used.has(m.id));
+    if (!next) return;
+    splitRows = [...splitRows, { member_id: next.id, amount: "" }];
+  }
+
+  function removeSplitRow(index: number) {
+    splitRows = splitRows.filter((_, i) => i !== index);
+  }
+
+  const splitTargetMinor = $derived(
+    splitTargetTx ? Math.abs(splitTargetTx.amount_minor) : 0,
+  );
+  const splitSumMinor = $derived(
+    splitTargetTx
+      ? splitRows.reduce(
+          (sum, r) => sum + (parseMoneyInput(r.amount, splitTargetTx!.currency) ?? 0),
+          0,
+        )
+      : 0,
+  );
+
+  async function saveSplit() {
+    if (!splitTargetTx) return;
+    const tx = splitTargetTx;
+    splitError = null;
+    const shares: SplitShare[] = [];
+    for (const row of splitRows) {
+      const parsed = parseMoneyInput(row.amount, tx.currency);
+      if (parsed === null || parsed <= 0) {
+        splitError = `enter a positive amount for ${memberOf(row.member_id)?.label ?? "each member"}`;
+        return;
+      }
+      shares.push({ member_id: row.member_id, share_minor: parsed });
+    }
+    if (shares.length > 0 && splitSumMinor !== splitTargetMinor) {
+      splitError = `shares must sum to ${fmtMoney(splitTargetMinor, tx.currency)} (currently ${fmtMoney(splitSumMinor, tx.currency)})`;
+      return;
+    }
+    splitBusy = true;
+    try {
+      await api.transactionSplitSet({ transaction_id: tx.id, shares });
+      expandedFor = null;
+      splitTargetTx = null;
+    } catch (err) {
+      splitError = String(err);
+    } finally {
+      splitBusy = false;
+    }
+  }
+
+  async function clearSplit() {
+    splitRows = [];
+    await saveSplit();
   }
 
   function clearFilters() {
@@ -245,6 +395,9 @@
             <th class="th">Description</th>
             <th class="th w-40">Account</th>
             <th class="th w-44">Category</th>
+            {#if members.length > 0}
+              <th class="th w-32">Member</th>
+            {/if}
             <th class="th w-24">Source</th>
             <th class="th w-32 text-right">Amount</th>
           </tr>
@@ -283,6 +436,24 @@
                   {/each}
                 </select>
               </td>
+              {#if members.length > 0}
+                <td class="td">
+                  <button
+                    type="button"
+                    class="btn h-7 w-full justify-start gap-1.5 px-1.5"
+                    aria-expanded={expandedFor === tx.id}
+                    aria-label="Attribute to a household member"
+                    disabled={attributeBusy === tx.id}
+                    onclick={() => toggleExpand(tx)}
+                  >
+                    <MemberAvatar member={memberOf(tx.attributed_member_id)} size={17} />
+                    <span class="min-w-0 flex-1 truncate text-left text-[11.5px] text-t2">
+                      {memberOf(tx.attributed_member_id)?.label ?? "Unattributed"}
+                    </span>
+                    <Icon name="chevron-down" size={11} class="shrink-0 text-t3" />
+                  </button>
+                </td>
+              {/if}
               <td class="td">
                 <Badge tone="neutral" dot={false} label={sourceLabel[tx.source]} />
               </td>
@@ -295,6 +466,149 @@
                 />
               </td>
             </tr>
+            {#if expandedFor === tx.id}
+              <tr>
+                <td class="td bg-sunken/40 p-0" colspan={members.length > 0 ? 7 : 6}>
+                  <div class="reveal">
+                    <div class="reveal-inner px-3 py-2.5">
+                      {#if panelMode === "pick"}
+                        <div class="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            class="btn h-7 gap-1.5 {tx.attributed_member_id === null
+                              ? 'border-accent-ring/50 bg-accent/10'
+                              : ''}"
+                            disabled={attributeBusy === tx.id}
+                            onclick={() => attribute(tx, null)}
+                          >
+                            <MemberAvatar member={null} size={15} />
+                            Unattributed
+                          </button>
+                          {#each members as m (m.id)}
+                            <button
+                              type="button"
+                              class="btn h-7 gap-1.5 {tx.attributed_member_id === m.id
+                                ? 'border-accent-ring/50 bg-accent/10'
+                                : ''}"
+                              disabled={attributeBusy === tx.id}
+                              onclick={() => attribute(tx, m.id)}
+                            >
+                              <MemberAvatar member={m} size={15} />
+                              {m.label}
+                            </button>
+                          {/each}
+                          <button
+                            type="button"
+                            class="btn btn-ghost h-7"
+                            onclick={() => openSplitEditor(tx)}
+                          >
+                            <Icon name="reconcile" size={13} />
+                            Split…
+                          </button>
+                          {#if attributeError}
+                            <span class="flex items-center gap-1.5 text-[11.5px] text-danger">
+                              <Icon name="alert-circle" size={12} />
+                              {attributeError}
+                            </span>
+                          {/if}
+                        </div>
+                      {:else if splitTargetTx?.id === tx.id}
+                        <div class="space-y-2">
+                          <p class="text-[11.5px] text-t3">
+                            Split this {fmtMoney(
+                              Math.abs(tx.amount_minor),
+                              tx.currency,
+                            )} transaction across members — shares must sum to
+                            the full amount.
+                          </p>
+                          {#each splitRows as row, i (i)}
+                            <div class="flex items-center gap-2">
+                              <MemberAvatar member={memberOf(row.member_id)} size={16} />
+                              <select
+                                class="input h-7 w-36"
+                                aria-label="Member"
+                                bind:value={row.member_id}
+                              >
+                                {#each members as m (m.id)}
+                                  <option value={m.id}>{m.label}</option>
+                                {/each}
+                              </select>
+                              <input
+                                class="input h-7 w-28 font-mono"
+                                aria-label="Share amount"
+                                inputmode="decimal"
+                                placeholder="0.00"
+                                bind:value={row.amount}
+                              />
+                              <button
+                                type="button"
+                                class="btn btn-ghost h-7 w-7 px-0"
+                                aria-label="Remove this split row"
+                                onclick={() => removeSplitRow(i)}
+                              >
+                                <Icon name="x" size={13} />
+                              </button>
+                            </div>
+                          {/each}
+                          <div class="flex flex-wrap items-center gap-2">
+                            <button
+                              class="btn h-7"
+                              type="button"
+                              disabled={splitRows.length >= members.length}
+                              onclick={addSplitRow}
+                            >
+                              <Icon name="plus" size={12} />
+                              Add member
+                            </button>
+                            <span
+                              class="num text-[11.5px] {splitSumMinor === splitTargetMinor
+                                ? 'text-success'
+                                : 'text-t3'}"
+                            >
+                              {fmtMoney(splitSumMinor, tx.currency)} of {fmtMoney(
+                                splitTargetMinor,
+                                tx.currency,
+                              )}
+                            </span>
+                          </div>
+                          {#if splitError}
+                            <p class="flex items-center gap-1.5 text-[11.5px] text-danger">
+                              <Icon name="alert-circle" size={12} />
+                              {splitError}
+                            </p>
+                          {/if}
+                          <div class="flex items-center gap-2 pt-1">
+                            <button
+                              class="btn btn-primary h-7"
+                              type="button"
+                              disabled={splitBusy || splitRows.length === 0}
+                              onclick={saveSplit}
+                            >
+                              {splitBusy ? "Saving…" : "Save split"}
+                            </button>
+                            <button
+                              class="btn h-7"
+                              type="button"
+                              disabled={splitBusy}
+                              onclick={clearSplit}
+                            >
+                              Clear split
+                            </button>
+                            <button
+                              class="btn btn-ghost h-7"
+                              type="button"
+                              onclick={() => (expandedFor = null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            {/if}
           {/each}
         </tbody>
       </table>
