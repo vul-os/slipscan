@@ -83,6 +83,9 @@ The surface, grouped by domain module. It mirrors the `pub fn`s on the core serv
 | `report_spending` | Spending breakdowns by category/period |
 | `report_trial_balance` | Trial balance for business books |
 | `report_profit_loss` / `report_balance_sheet` / `report_tax` | Income statement, balance sheet, and the tax-period summary (base-currency) — labeled from the book's region profile ("VAT201" is the `za` profile's name for it). `report_vat` remains as a deprecated alias of `report_tax` |
+| `report_member_expense` / `report_member_contribution` | Per-member expense and contribution rollups over a period ([Household members](ARCHITECTURE.md#household-members--per-person-attribution)) |
+| `report_member_category` | Share-of-category per member. Server + desktop only — no CLI equivalent yet (`slipscan report` supports `tb`/`pl`/`bs`/`tax`/`members`/`settle-up`, not this one) |
+| `report_settle_up` | Net "who owes whom" position per member over a period; desktop and CLI (`slipscan report settle-up`) both call it |
 
 ### Settings, packs, audit
 
