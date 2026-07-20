@@ -57,6 +57,7 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
         <li>Transaction categorisation with local corrections and merchant mappings — the learning loop never leaves your machine; community pack <em>rules</em> install today but are not yet consulted during categorisation (<a href="docs/PACKS.md">status</a>)</li>
         <li>Per-category monthly budgets, spending breakdowns and income/expense reports (a rollover flag is stored per budget, but rollover is not yet applied to the numbers)</li>
         <li>Receipt/slip capture with LLM/OCR extraction (line items, discounts, VAT) — bring your own key or run a local model</li>
+        <li>Household members &amp; per-person attribution — split spend across the people sharing a book, with per-member expense/contribution reports and a "who owes whom" settle-up view; members are local data, not logins</li>
         <li>Local nudge engine and anonymous peer benchmarks — designed, in progress (<a href="docs/BENCHMARKS.md">how it stays private</a>)</li>
       </ul>
     </td>
@@ -74,7 +75,8 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
 
 **Infrastructure you can trust**
 
-- Your books in one plain SQLite file, at a path you can see, back up, and move
+- **Get paid by reference (ShapePay)** — watch an EFT reference code, and when the matching payment lands in your books (from any source) SlipScan fires an HMAC-signed webhook to endpoints you register. Signing secrets are vault-held and shown exactly once; payloads carry the reference and amount, never account numbers; deliveries retry until your box has network. Inbox in, webhook out, no central infrastructure ([guide](docs/PAYMENTS.md))
+- **Movable data folder, your own backup** — your books and documents live in one folder you can see, relocate from Settings or `slipscan data move` (verified copy + atomic switch), and back up by syncing it with your own cloud (iCloud / Dropbox / Syncthing / NAS). SlipScan ships no backup service, and the keychain key never travels with the folder ([data &amp; backup](docs/CONFIGURATION.md))
 - Ingestion from your own mailbox — always your accounts, [never our infrastructure](docs/EMAIL.md); generic IMAP polling works today, Gmail/Graph connectors and push are built but not yet wired to a surface
 - Open-source, local bank-scraper framework — adapters run in your session, first adapters in progress ([framework](docs/BANK-ADAPTERS.md))
 - Write-only credential vault rooted in the OS keychain — secrets can be set, rotated, revoked, and used, never viewed ([threat model](docs/THREAT-MODEL.md))
@@ -99,7 +101,11 @@ These are the **shipped desktop app**, running with demo data. The full annotate
   </tr>
   <tr>
     <td width="50%"><img src="assets/screens/reports.png" alt="Reports"><br><sub><em>Reports — income vs expense, spending by category, tax summary (VAT201 here), CSV exports — all computed locally</em></sub></td>
-    <td width="50%"><img src="assets/screens/budgets.png" alt="Budgets"><br><sub><em>Budgets — per-category monthly limits with burn bars and remaining amounts</em></sub></td>
+    <td width="50%"><img src="assets/screens/budgets.png" alt="Budgets"><br><sub><em>Budgets — per-category monthly limits with burn bars, remaining amounts, and warn colours as they fill</em></sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/screens/payments.png" alt="Payments"><br><sub><em>Payments (ShapePay) — watch codes, webhook endpoints with rotate-once secrets, and the signed-delivery queue with retry status</em></sub></td>
+    <td width="50%"><img src="assets/screens/transactions.png" alt="Transactions"><br><sub><em>Transactions — inline categorisation and per-person attribution (member avatars) for households sharing a book</em></sub></td>
   </tr>
 </table>
 
