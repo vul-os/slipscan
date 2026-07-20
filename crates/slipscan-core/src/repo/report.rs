@@ -2,8 +2,9 @@ use rusqlite::{params, Connection};
 
 use super::col_enum;
 use crate::domain::{
-    BalanceSheet, BalanceSheetRow, CoaKind, IncomeStatement, IncomeStatementRow,
-    MonthlySpendingRow, SpendingRow, TaxPeriodSummary, TaxSummaryRow, TrialBalanceRow, VatRole,
+    BalanceSheet, BalanceSheetRow, CoaKind, IncomeStatement, IncomeStatementRow, MemberAmountRow,
+    MemberCategoryRow, MemberSettleRow, MonthlySpendingRow, SpendingRow, TaxPeriodSummary,
+    TaxSummaryRow, TrialBalanceRow, VatRole,
 };
 use crate::error::CoreResult;
 
@@ -381,6 +382,247 @@ pub fn trial_balance(
                 currency: row.get("currency")?,
                 debit_minor: row.get("debit_minor")?,
                 credit_minor: row.get("credit_minor")?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+// ---------------------------------------------------------------------------
+// Household members: per-person expense / contribution / category / settle-up.
+//
+// Every one of these unions two sources of "who this money belongs to":
+//   * split transactions — one row per (member, share_minor) in
+//     transaction_splits, share_minor already a positive portion of the
+//     transaction's absolute amount;
+//   * everything else — the transaction's own attributed_member_id (possibly
+//     NULL), contributing its full amount.
+// A transaction never appears in both: `NOT EXISTS` on transaction_splits
+// keeps the two sources disjoint. `member_id IS NULL` (surfaced as
+// "Unattributed") is a legitimate group, exactly like `category_id IS NULL`
+// on the plain spending report.
+// ---------------------------------------------------------------------------
+
+/// Per-member outflow (expense) totals over an inclusive date range, in
+/// `currency` (the book's base currency). Split shares are distributed;
+/// singly-attributed transactions count in full; unattributed transactions
+/// roll into the `None` / "Unattributed" row.
+pub fn member_expense(
+    conn: &Connection,
+    book_id: &str,
+    from_date: &str,
+    to_date: &str,
+    currency: &str,
+) -> CoreResult<Vec<MemberAmountRow>> {
+    member_amount(conn, book_id, from_date, to_date, currency, true)
+}
+
+/// Per-member inflow (contribution) totals over an inclusive date range, in
+/// `currency` (the book's base currency). Same distribution rules as
+/// [`member_expense`], mirrored for positive (inbound) amounts.
+pub fn member_contribution(
+    conn: &Connection,
+    book_id: &str,
+    from_date: &str,
+    to_date: &str,
+    currency: &str,
+) -> CoreResult<Vec<MemberAmountRow>> {
+    member_amount(conn, book_id, from_date, to_date, currency, false)
+}
+
+fn member_amount(
+    conn: &Connection,
+    book_id: &str,
+    from_date: &str,
+    to_date: &str,
+    currency: &str,
+    expense: bool,
+) -> CoreResult<Vec<MemberAmountRow>> {
+    let sql = if expense {
+        "WITH per_member AS (
+            SELECT s.member_id AS member_id, s.share_minor AS share_minor
+            FROM transaction_splits s
+            JOIN transactions t ON t.id = s.transaction_id
+            WHERE t.book_id = ?1 AND t.currency = ?4 AND t.status <> 'rejected'
+              AND t.posted_date >= ?2 AND t.posted_date <= ?3
+              AND t.amount_minor < 0
+            UNION ALL
+            SELECT t.attributed_member_id AS member_id, -t.amount_minor AS share_minor
+            FROM transactions t
+            WHERE t.book_id = ?1 AND t.currency = ?4 AND t.status <> 'rejected'
+              AND t.posted_date >= ?2 AND t.posted_date <= ?3
+              AND t.amount_minor < 0
+              AND NOT EXISTS (SELECT 1 FROM transaction_splits s2 WHERE s2.transaction_id = t.id)
+         )
+         SELECT per_member.member_id AS member_id,
+                COALESCE(m.label, 'Unattributed') AS member_label,
+                SUM(per_member.share_minor) AS total_minor
+         FROM per_member
+         LEFT JOIN members m ON m.id = per_member.member_id
+         GROUP BY per_member.member_id, member_label
+         ORDER BY total_minor DESC"
+    } else {
+        "WITH per_member AS (
+            SELECT s.member_id AS member_id, s.share_minor AS share_minor
+            FROM transaction_splits s
+            JOIN transactions t ON t.id = s.transaction_id
+            WHERE t.book_id = ?1 AND t.currency = ?4 AND t.status <> 'rejected'
+              AND t.posted_date >= ?2 AND t.posted_date <= ?3
+              AND t.amount_minor > 0
+            UNION ALL
+            SELECT t.attributed_member_id AS member_id, t.amount_minor AS share_minor
+            FROM transactions t
+            WHERE t.book_id = ?1 AND t.currency = ?4 AND t.status <> 'rejected'
+              AND t.posted_date >= ?2 AND t.posted_date <= ?3
+              AND t.amount_minor > 0
+              AND NOT EXISTS (SELECT 1 FROM transaction_splits s2 WHERE s2.transaction_id = t.id)
+         )
+         SELECT per_member.member_id AS member_id,
+                COALESCE(m.label, 'Unattributed') AS member_label,
+                SUM(per_member.share_minor) AS total_minor
+         FROM per_member
+         LEFT JOIN members m ON m.id = per_member.member_id
+         GROUP BY per_member.member_id, member_label
+         ORDER BY total_minor DESC"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt
+        .query_map(params![book_id, from_date, to_date, currency], |row| {
+            Ok(MemberAmountRow {
+                member_id: row.get("member_id")?,
+                member_label: row.get("member_label")?,
+                currency: currency.to_string(),
+                total_minor: row.get("total_minor")?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Per-(member, category) outflow totals over an inclusive date range, in
+/// `currency` (the book's base currency) — "share of each category per
+/// person". Same split-distribution and unattributed-bucket rules as
+/// [`member_expense`]; category grouping matches [`spending`]
+/// (`COALESCE(name, 'Uncategorized')`).
+pub fn member_category(
+    conn: &Connection,
+    book_id: &str,
+    from_date: &str,
+    to_date: &str,
+    currency: &str,
+) -> CoreResult<Vec<MemberCategoryRow>> {
+    let mut stmt = conn.prepare(
+        "WITH per_member AS (
+            SELECT s.member_id AS member_id, t.category_id AS category_id,
+                   s.share_minor AS share_minor
+            FROM transaction_splits s
+            JOIN transactions t ON t.id = s.transaction_id
+            WHERE t.book_id = ?1 AND t.currency = ?4 AND t.status <> 'rejected'
+              AND t.posted_date >= ?2 AND t.posted_date <= ?3
+              AND t.amount_minor < 0
+            UNION ALL
+            SELECT t.attributed_member_id AS member_id, t.category_id AS category_id,
+                   -t.amount_minor AS share_minor
+            FROM transactions t
+            WHERE t.book_id = ?1 AND t.currency = ?4 AND t.status <> 'rejected'
+              AND t.posted_date >= ?2 AND t.posted_date <= ?3
+              AND t.amount_minor < 0
+              AND NOT EXISTS (SELECT 1 FROM transaction_splits s2 WHERE s2.transaction_id = t.id)
+         )
+         SELECT per_member.member_id AS member_id,
+                COALESCE(m.label, 'Unattributed') AS member_label,
+                per_member.category_id AS category_id,
+                COALESCE(c.name, 'Uncategorized') AS category_name,
+                SUM(per_member.share_minor) AS total_minor
+         FROM per_member
+         LEFT JOIN members m ON m.id = per_member.member_id
+         LEFT JOIN categories c ON c.id = per_member.category_id
+         GROUP BY per_member.member_id, member_label, per_member.category_id, category_name
+         ORDER BY member_label, total_minor DESC",
+    )?;
+    let rows = stmt
+        .query_map(params![book_id, from_date, to_date, currency], |row| {
+            Ok(MemberCategoryRow {
+                member_id: row.get("member_id")?,
+                member_label: row.get("member_label")?,
+                category_id: row.get("category_id")?,
+                category_name: row.get("category_name")?,
+                currency: currency.to_string(),
+                total_minor: row.get("total_minor")?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Net position per member over an inclusive date range, in `currency` (the
+/// book's base currency): contributions minus attributed expenses — "who
+/// owes whom". Every current member of the book appears (even at zero),
+/// plus a trailing "Unattributed" row for activity with no member at all.
+pub fn settle_up(
+    conn: &Connection,
+    book_id: &str,
+    from_date: &str,
+    to_date: &str,
+    currency: &str,
+) -> CoreResult<Vec<MemberSettleRow>> {
+    let mut stmt = conn.prepare(
+        "WITH contribution AS (
+            SELECT member_id, SUM(share_minor) AS total_minor FROM (
+                SELECT s.member_id AS member_id, s.share_minor AS share_minor
+                FROM transaction_splits s
+                JOIN transactions t ON t.id = s.transaction_id
+                WHERE t.book_id = ?1 AND t.currency = ?4 AND t.status <> 'rejected'
+                  AND t.posted_date >= ?2 AND t.posted_date <= ?3 AND t.amount_minor > 0
+                UNION ALL
+                SELECT t.attributed_member_id AS member_id, t.amount_minor AS share_minor
+                FROM transactions t
+                WHERE t.book_id = ?1 AND t.currency = ?4 AND t.status <> 'rejected'
+                  AND t.posted_date >= ?2 AND t.posted_date <= ?3 AND t.amount_minor > 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM transaction_splits s2 WHERE s2.transaction_id = t.id)
+            ) GROUP BY member_id
+         ),
+         expense AS (
+            SELECT member_id, SUM(share_minor) AS total_minor FROM (
+                SELECT s.member_id AS member_id, s.share_minor AS share_minor
+                FROM transaction_splits s
+                JOIN transactions t ON t.id = s.transaction_id
+                WHERE t.book_id = ?1 AND t.currency = ?4 AND t.status <> 'rejected'
+                  AND t.posted_date >= ?2 AND t.posted_date <= ?3 AND t.amount_minor < 0
+                UNION ALL
+                SELECT t.attributed_member_id AS member_id, -t.amount_minor AS share_minor
+                FROM transactions t
+                WHERE t.book_id = ?1 AND t.currency = ?4 AND t.status <> 'rejected'
+                  AND t.posted_date >= ?2 AND t.posted_date <= ?3 AND t.amount_minor < 0
+                  AND NOT EXISTS (
+                      SELECT 1 FROM transaction_splits s2 WHERE s2.transaction_id = t.id)
+            ) GROUP BY member_id
+         )
+         SELECT m.id AS member_id, m.label AS member_label,
+                COALESCE(c.total_minor, 0) AS contributions_minor,
+                COALESCE(e.total_minor, 0) AS expenses_minor
+         FROM members m
+         LEFT JOIN contribution c ON c.member_id = m.id
+         LEFT JOIN expense e ON e.member_id = m.id
+         WHERE m.book_id = ?1
+         UNION ALL
+         SELECT NULL AS member_id, 'Unattributed' AS member_label,
+                COALESCE((SELECT total_minor FROM contribution WHERE member_id IS NULL), 0),
+                COALESCE((SELECT total_minor FROM expense WHERE member_id IS NULL), 0)
+         ORDER BY member_label",
+    )?;
+    let rows = stmt
+        .query_map(params![book_id, from_date, to_date, currency], |row| {
+            let contributions_minor: i64 = row.get("contributions_minor")?;
+            let expenses_minor: i64 = row.get("expenses_minor")?;
+            Ok(MemberSettleRow {
+                member_id: row.get("member_id")?,
+                member_label: row.get("member_label")?,
+                currency: currency.to_string(),
+                contributions_minor,
+                expenses_minor,
+                net_minor: contributions_minor - expenses_minor,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

@@ -39,6 +39,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0400_shapepay",
         include_str!("migrations/0400_shapepay.sql"),
     ),
+    (
+        500,
+        "0500_members",
+        include_str!("migrations/0500_members.sql"),
+    ),
 ];
 
 /// A configured, migrated SQLite database handle.
@@ -135,13 +140,13 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 100, 101, 200, 201, 300, 301, 400]
+            vec![1, 100, 101, 200, 201, 300, 301, 400, 500]
         );
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 100, 101, 200, 201, 300, 301, 400]
+            vec![1, 100, 101, 200, 201, 300, 301, 400, 500]
         );
     }
 
@@ -251,6 +256,7 @@ mod tests {
             "fx_rates",
             "journal_lines",
             "journals",
+            "members",
             "merchant_mappings",
             "pay_deliveries",
             "pay_endpoints",
@@ -259,6 +265,7 @@ mod tests {
             "recon_matches",
             "schema_migrations",
             "settings",
+            "transaction_splits",
             "transactions",
             "vat_rates",
             "vault_keys",

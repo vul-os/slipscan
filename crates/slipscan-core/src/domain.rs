@@ -241,6 +241,13 @@ pub struct Transaction {
     pub description: Option<String>,
     pub notes: Option<String>,
     pub status: TransactionStatus,
+    /// Who actually incurred this transaction — metadata, orthogonal to the
+    /// ledger; never influences debits/credits. `None` = unattributed.
+    /// Defaults from the account's owning member at creation
+    /// (`transaction_create`), overridable via `transaction_attribute`. When
+    /// the transaction is split across members (`transaction_splits`),
+    /// reports distribute by share instead of using this single field.
+    pub attributed_member_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -832,6 +839,116 @@ pub struct PayDelivery {
     pub last_error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// Household members & per-person attribution
+// ---------------------------------------------------------------------------
+
+/// A person in the household sharing this book — local data, never a login.
+/// See ARCHITECTURE.md "Household members & per-person attribution".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Member {
+    pub id: String,
+    pub book_id: String,
+    pub label: String,
+    /// Short display initial (e.g. "A"), for tight UI spots (avatars, table
+    /// cells) where the full label would crowd.
+    pub initial: String,
+    /// Cosmetic hex colour swatch; core stores it verbatim and never
+    /// interprets it.
+    pub colour: String,
+    /// The account this member owns by default. New transactions on it
+    /// attribute to this member unless overridden (`transaction_attribute`).
+    /// `None` = no default owner.
+    pub default_account_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewMember {
+    pub book_id: String,
+    pub label: String,
+    /// Defaults to the label's first alphanumeric character, uppercased.
+    #[serde(default)]
+    pub initial: Option<String>,
+    /// Defaults to one of a small built-in rotation when omitted.
+    #[serde(default)]
+    pub colour: Option<String>,
+    #[serde(default)]
+    pub default_account_id: Option<String>,
+}
+
+/// Selective update; `None` fields are left untouched.
+/// `default_account_id: Some(None)` explicitly clears the default account
+/// (as opposed to `None`, which leaves it as-is).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MemberPatch {
+    pub label: Option<String>,
+    pub initial: Option<String>,
+    pub colour: Option<String>,
+    #[serde(default)]
+    pub default_account_id: Option<Option<String>>,
+}
+
+/// One `(member, share)` row of a split transaction, as stored. `share_minor`
+/// is always a positive portion of the transaction's absolute amount.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransactionSplit {
+    pub id: String,
+    pub transaction_id: String,
+    pub member_id: String,
+    pub share_minor: i64,
+    pub created_at: String,
+}
+
+/// Input to `transaction_split_set`: the `(member, share)` pairs must sum to
+/// the transaction's absolute amount. An empty list clears the split (the
+/// transaction reverts to single-member attribution / unattributed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SplitShare {
+    pub member_id: String,
+    pub share_minor: i64,
+}
+
+/// One member's outflow (expense) or inflow (contribution) total over a
+/// period, in the book's base currency. `member_id = None` is the
+/// "Unattributed" bucket: transactions with no split and no
+/// `attributed_member_id`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberAmountRow {
+    pub member_id: Option<String>,
+    pub member_label: String,
+    pub currency: String,
+    pub total_minor: i64,
+}
+
+/// One member's share of one category's spend over a period (outflows
+/// only), in the book's base currency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberCategoryRow {
+    pub member_id: Option<String>,
+    pub member_label: String,
+    pub category_id: Option<String>,
+    pub category_name: String,
+    pub currency: String,
+    pub total_minor: i64,
+}
+
+/// One member's net position over a period: contributions (inflow) minus
+/// attributed expenses (outflow), in the book's base currency. Positive =
+/// net contributor (is owed by the household); negative = net consumer
+/// (owes the household). Every current member appears, plus an
+/// "Unattributed" row for activity with no member at all.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberSettleRow {
+    pub member_id: Option<String>,
+    pub member_label: String,
+    pub currency: String,
+    pub contributions_minor: i64,
+    pub expenses_minor: i64,
+    pub net_minor: i64,
 }
 
 // ---------------------------------------------------------------------------

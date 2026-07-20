@@ -249,6 +249,54 @@ struct ReportSpendingReq {
     to_date: String,
 }
 
+/// Shared by every per-member report — same `(book_id, from_date, to_date)`
+/// shape as `ReportSpendingReq`, kept as its own type since the two are
+/// conceptually distinct report families.
+#[derive(Debug, Deserialize)]
+struct MemberReportReq {
+    book_id: String,
+    from_date: String,
+    to_date: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MemberUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: MemberPatch,
+}
+
+#[derive(Debug, Deserialize)]
+struct MemberRemoveReq {
+    id: String,
+    /// Another member in the same book to move this member's attributions
+    /// and splits onto first. Omit only when the member has no attribution
+    /// history — `member_remove` refuses otherwise (see core service docs).
+    #[serde(default)]
+    reassign_to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransactionIdReq {
+    transaction_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransactionAttributeReq {
+    transaction_id: String,
+    /// `None` clears the attribution back to unattributed.
+    #[serde(default)]
+    member_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TransactionSplitSetReq {
+    transaction_id: String,
+    /// Empty clears the split, reverting to single-member attribution /
+    /// unattributed.
+    shares: Vec<SplitShare>,
+}
+
 #[derive(Debug, Deserialize)]
 struct SettingsSetReq {
     key: String,
@@ -446,6 +494,72 @@ async fn transaction_categorize(
     )?))
 }
 
+/// Override (or clear, with `member_id: null`) a transaction's attributed
+/// member. Metadata only — never touches amount/currency/category/journals.
+async fn transaction_attribute(
+    State(s): State<AppState>,
+    Json(req): Json<TransactionAttributeReq>,
+) -> ApiResult<Transaction> {
+    Ok(Json(s.service()?.transaction_attribute(
+        &req.transaction_id,
+        req.member_id.as_deref(),
+    )?))
+}
+
+async fn transaction_splits_list(
+    State(s): State<AppState>,
+    Json(req): Json<TransactionIdReq>,
+) -> ApiResult<Vec<TransactionSplit>> {
+    Ok(Json(
+        s.service()?.transaction_splits_list(&req.transaction_id)?,
+    ))
+}
+
+async fn transaction_split_set(
+    State(s): State<AppState>,
+    Json(req): Json<TransactionSplitSetReq>,
+) -> ApiResult<Vec<TransactionSplit>> {
+    Ok(Json(
+        s.service()?
+            .transaction_split_set(&req.transaction_id, req.shares)?,
+    ))
+}
+
+// -- Household members (ARCHITECTURE.md "Household members & per-person
+// attribution"). Local data, never logins — no auth concept lives here, just
+// CRUD over the book like categories.
+
+async fn member_add(State(s): State<AppState>, Json(req): Json<NewMember>) -> ApiResult<Member> {
+    Ok(Json(s.service()?.member_add(req)?))
+}
+
+async fn member_get(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<Member> {
+    Ok(Json(s.service()?.member_get(&req.id)?))
+}
+
+async fn member_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<Member>> {
+    Ok(Json(s.service()?.member_list(&req.book_id)?))
+}
+
+async fn member_update(
+    State(s): State<AppState>,
+    Json(req): Json<MemberUpdateReq>,
+) -> ApiResult<Member> {
+    Ok(Json(s.service()?.member_update(&req.id, req.patch)?))
+}
+
+async fn member_remove(
+    State(s): State<AppState>,
+    Json(req): Json<MemberRemoveReq>,
+) -> ApiResult<OkResp> {
+    s.service()?
+        .member_remove(&req.id, req.reassign_to.as_deref())?;
+    Ok(Json(OK))
+}
+
 async fn category_create(
     State(s): State<AppState>,
     Json(req): Json<NewCategory>,
@@ -594,6 +708,54 @@ async fn report_spending(
     Json(req): Json<ReportSpendingReq>,
 ) -> ApiResult<Vec<SpendingRow>> {
     Ok(Json(s.service()?.report_spending(
+        &req.book_id,
+        &req.from_date,
+        &req.to_date,
+    )?))
+}
+
+// -- Per-member reports (household attribution): expense/contribution
+// rollups, category share, and "who owes whom" settle-up, all in the book's
+// base currency, mirroring `repo::report::member_*` one-to-one.
+
+async fn report_member_expense(
+    State(s): State<AppState>,
+    Json(req): Json<MemberReportReq>,
+) -> ApiResult<Vec<MemberAmountRow>> {
+    Ok(Json(s.service()?.report_member_expense(
+        &req.book_id,
+        &req.from_date,
+        &req.to_date,
+    )?))
+}
+
+async fn report_member_contribution(
+    State(s): State<AppState>,
+    Json(req): Json<MemberReportReq>,
+) -> ApiResult<Vec<MemberAmountRow>> {
+    Ok(Json(s.service()?.report_member_contribution(
+        &req.book_id,
+        &req.from_date,
+        &req.to_date,
+    )?))
+}
+
+async fn report_member_category(
+    State(s): State<AppState>,
+    Json(req): Json<MemberReportReq>,
+) -> ApiResult<Vec<MemberCategoryRow>> {
+    Ok(Json(s.service()?.report_member_category(
+        &req.book_id,
+        &req.from_date,
+        &req.to_date,
+    )?))
+}
+
+async fn report_settle_up(
+    State(s): State<AppState>,
+    Json(req): Json<MemberReportReq>,
+) -> ApiResult<Vec<MemberSettleRow>> {
+    Ok(Json(s.service()?.report_settle_up(
         &req.book_id,
         &req.from_date,
         &req.to_date,
@@ -918,6 +1080,14 @@ pub fn app(state: AppState) -> Router {
         .route("/transaction_get", post(transaction_get))
         .route("/transaction_list", post(transaction_list))
         .route("/transaction_categorize", post(transaction_categorize))
+        .route("/transaction_attribute", post(transaction_attribute))
+        .route("/transaction_splits_list", post(transaction_splits_list))
+        .route("/transaction_split_set", post(transaction_split_set))
+        .route("/member_add", post(member_add))
+        .route("/member_get", post(member_get))
+        .route("/member_list", post(member_list))
+        .route("/member_update", post(member_update))
+        .route("/member_remove", post(member_remove))
         .route("/category_create", post(category_create))
         .route("/category_tree", post(category_tree))
         .route("/budget_upsert", post(budget_upsert))
@@ -943,6 +1113,13 @@ pub fn app(state: AppState) -> Router {
         .route("/recon_suggest", post(recon_suggest))
         .route("/recon_confirm", post(recon_confirm))
         .route("/report_spending", post(report_spending))
+        .route("/report_member_expense", post(report_member_expense))
+        .route(
+            "/report_member_contribution",
+            post(report_member_contribution),
+        )
+        .route("/report_member_category", post(report_member_category))
+        .route("/report_settle_up", post(report_settle_up))
         .route("/report_trial_balance", post(report_trial_balance))
         // Generic name first; `/report_vat` stays as a compatibility alias
         // ("VAT" wording belongs to region profiles, not the API).
@@ -1941,6 +2118,284 @@ mod tests {
         assert!(!rendered.contains("62001234567"), "{rendered}");
         assert!(!rendered.contains("EFT CREDIT"), "{rendered}");
         assert!(!rendered.contains(&secret), "secret leaked to deliveries");
+    }
+
+    #[tokio::test]
+    async fn member_routes_require_bearer_auth() {
+        let token = "correct-horse-battery";
+        let app = app(AppState::new(svc(), Some(token_hash(token))));
+        for (path, body) in [
+            ("/api/v1/member_add", json!({"book_id": "x", "label": "A"})),
+            ("/api/v1/member_list", json!({"book_id": "x"})),
+            (
+                "/api/v1/transaction_attribute",
+                json!({"transaction_id": "x", "member_id": null}),
+            ),
+            (
+                "/api/v1/report_settle_up",
+                json!({"book_id": "x", "from_date": "2026-01-01", "to_date": "2026-12-31"}),
+            ),
+        ] {
+            let (status, _) = call(&app, post_req(path, body, None)).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
+        }
+    }
+
+    /// End-to-end household flow over HTTP: members CRUD, default-owner
+    /// attribution on transaction_create, an explicit override, a split, and
+    /// the settle-up report — mirrors ARCHITECTURE.md "Household members &
+    /// per-person attribution".
+    #[tokio::test]
+    async fn member_crud_attribution_and_settle_up_report_round_trip() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Household", "kind": "personal", "currency": "ZAR"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        // Two members; Alex owns the cheque account by default.
+        let (status, alex) = call(
+            &app,
+            post_req(
+                "/api/v1/member_add",
+                json!({"book_id": book_id, "label": "Alex"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{alex}");
+        let alex_id = alex["id"].as_str().unwrap().to_string();
+        assert_eq!(alex["initial"], "A");
+
+        let (status, bailey) = call(
+            &app,
+            post_req(
+                "/api/v1/member_add",
+                json!({"book_id": book_id, "label": "Bailey"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{bailey}");
+        let bailey_id = bailey["id"].as_str().unwrap().to_string();
+
+        let (_, account) = call(
+            &app,
+            post_req(
+                "/api/v1/account_create",
+                json!({"book_id": book_id, "name": "Cheque", "kind": "bank", "currency": "ZAR"}),
+                None,
+            ),
+        )
+        .await;
+        let account_id = account["id"].as_str().unwrap().to_string();
+
+        // Set Alex as the account's default owner via member_update.
+        let (status, updated_alex) = call(
+            &app,
+            post_req(
+                "/api/v1/member_update",
+                json!({"id": alex_id, "default_account_id": account_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{updated_alex}");
+        assert_eq!(updated_alex["default_account_id"], account_id);
+
+        // member_get and member_list both reflect the change.
+        let (status, fetched) = call(
+            &app,
+            post_req("/api/v1/member_get", json!({"id": alex_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(fetched["default_account_id"], account_id);
+        let (status, listed) = call(
+            &app,
+            post_req("/api/v1/member_list", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed.as_array().unwrap().len(), 2);
+
+        // A new transaction on Alex's account defaults its attribution.
+        let (status, txn) = call(
+            &app,
+            post_req(
+                "/api/v1/transaction_create",
+                json!({
+                    "book_id": book_id,
+                    "account_id": account_id,
+                    "source": "manual",
+                    "posted_date": "2026-07-01",
+                    "amount_minor": -20_000,
+                    "currency": "ZAR",
+                    "description": "Groceries",
+                    "dedupe_occurrence": 0
+                }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{txn}");
+        let txn_id = txn["id"].as_str().unwrap().to_string();
+        assert_eq!(
+            txn["attributed_member_id"], alex_id,
+            "defaults from the account's owning member"
+        );
+
+        // Override the attribution to Bailey, metadata only — amount and
+        // currency are untouched.
+        let (status, overridden) = call(
+            &app,
+            post_req(
+                "/api/v1/transaction_attribute",
+                json!({"transaction_id": txn_id, "member_id": bailey_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{overridden}");
+        assert_eq!(overridden["attributed_member_id"], bailey_id);
+        assert_eq!(overridden["amount_minor"], -20_000);
+        assert_eq!(overridden["currency"], "ZAR");
+
+        // Split the same transaction across both members.
+        let (status, splits) = call(
+            &app,
+            post_req(
+                "/api/v1/transaction_split_set",
+                json!({
+                    "transaction_id": txn_id,
+                    "shares": [
+                        {"member_id": alex_id, "share_minor": 12_000},
+                        {"member_id": bailey_id, "share_minor": 8_000},
+                    ]
+                }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{splits}");
+        assert_eq!(splits.as_array().unwrap().len(), 2);
+        let (status, listed_splits) = call(
+            &app,
+            post_req(
+                "/api/v1/transaction_splits_list",
+                json!({"transaction_id": txn_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed_splits.as_array().unwrap().len(), 2);
+
+        // A contribution, singly attributed to Bailey (unsplit).
+        let (status, income) = call(
+            &app,
+            post_req(
+                "/api/v1/transaction_create",
+                json!({
+                    "book_id": book_id,
+                    "account_id": account_id,
+                    "source": "manual",
+                    "posted_date": "2026-07-05",
+                    "amount_minor": 100_000,
+                    "currency": "ZAR",
+                    "description": "Salary",
+                    "dedupe_occurrence": 0
+                }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{income}");
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/transaction_attribute",
+                json!({"transaction_id": income["id"], "member_id": bailey_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Reports: expense/contribution/category rollups and settle-up.
+        let period =
+            json!({"book_id": book_id, "from_date": "2026-07-01", "to_date": "2026-07-31"});
+        let (status, expense) = call(
+            &app,
+            post_req("/api/v1/report_member_expense", period.clone(), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{expense}");
+        let expense_total: i64 = expense
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["total_minor"].as_i64().unwrap())
+            .sum();
+        assert_eq!(expense_total, 20_000);
+
+        let (status, contribution) = call(
+            &app,
+            post_req("/api/v1/report_member_contribution", period.clone(), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{contribution}");
+
+        let (status, category) = call(
+            &app,
+            post_req("/api/v1/report_member_category", period.clone(), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{category}");
+
+        let (status, settle) = call(&app, post_req("/api/v1/report_settle_up", period, None)).await;
+        assert_eq!(status, StatusCode::OK, "{settle}");
+        let bailey_row = settle
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["member_id"] == bailey_id)
+            .expect("bailey row present");
+        assert_eq!(bailey_row["contributions_minor"], 100_000);
+        // Bailey's expense share = the 8,000 split + nothing else.
+        assert_eq!(bailey_row["expenses_minor"], 8_000);
+        assert_eq!(bailey_row["net_minor"], 92_000);
+
+        // member_remove refuses while attribution exists...
+        let (status, refused) = call(
+            &app,
+            post_req("/api/v1/member_remove", json!({"id": alex_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+        // ...but succeeds once reassigned to the other member.
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/member_remove",
+                json!({"id": alex_id, "reassign_to": bailey_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, gone) = call(
+            &app,
+            post_req("/api/v1/member_get", json!({"id": alex_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{gone}");
     }
 
     #[tokio::test]

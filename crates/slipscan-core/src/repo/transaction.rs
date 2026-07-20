@@ -23,6 +23,7 @@ fn map_transaction(row: &Row<'_>) -> rusqlite::Result<Transaction> {
         description: row.get("description")?,
         notes: row.get("notes")?,
         status: col_enum(row, "status")?,
+        attributed_member_id: row.get("attributed_member_id")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -33,8 +34,10 @@ pub fn insert(conn: &Connection, txn: &Transaction) -> CoreResult<()> {
         "INSERT INTO transactions (id, book_id, account_id, category_id, document_id,
                                    source, provider_txn_id, dedupe_hash, posted_date,
                                    amount_minor, currency, merchant, merchant_normalized,
-                                   description, notes, status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                                   description, notes, status, attributed_member_id,
+                                   created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                 ?18, ?19)",
         params![
             txn.id,
             txn.book_id,
@@ -52,6 +55,7 @@ pub fn insert(conn: &Connection, txn: &Transaction) -> CoreResult<()> {
             txn.description,
             txn.notes,
             txn.status.as_str(),
+            txn.attributed_member_id,
             txn.created_at,
             txn.updated_at,
         ],
@@ -152,6 +156,21 @@ pub fn set_category(
     conn.execute(
         "UPDATE transactions SET category_id = ?2, updated_at = ?3 WHERE id = ?1",
         params![id, category_id, updated_at],
+    )?;
+    Ok(())
+}
+
+/// Set (or clear) who actually incurred this transaction. Metadata only —
+/// never touches amount/currency/category, so it cannot affect the ledger.
+pub fn set_attribution(
+    conn: &Connection,
+    id: &str,
+    member_id: Option<&str>,
+    updated_at: &str,
+) -> CoreResult<()> {
+    conn.execute(
+        "UPDATE transactions SET attributed_member_id = ?2, updated_at = ?3 WHERE id = ?1",
+        params![id, member_id, updated_at],
     )?;
     Ok(())
 }

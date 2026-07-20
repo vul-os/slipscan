@@ -1,8 +1,9 @@
 //! slipscan — command-line interface.
 //!
 //! Subcommands: `init`, `import`, `extract`, `mail-sync`, `recon`, `report`,
-//! `fx`, `pack`, `vault`, `serve`, `list`. Every command has human-readable
-//! output by default and `--json` for machines. Binaries may use anyhow.
+//! `fx`, `pack`, `vault`, `serve`, `list`, `member`, `attribute`, `split`.
+//! Every command has human-readable output by default and `--json` for
+//! machines. Binaries may use anyhow.
 //!
 //! Privacy posture:
 //! * `serve` binds 127.0.0.1 unless the user passes `--lan` (explicit opt-in)
@@ -16,8 +17,9 @@ use anyhow::{anyhow, bail, Context};
 use clap::{Parser, Subcommand, ValueEnum};
 use slipscan_core::datadir::{self, DataDirResolver, MoveStep};
 use slipscan_core::domain::{
-    Account, Book, BookKind, DocumentSource, NewBook, NewPayEndpoint, NewPayWatch,
-    PayDeliveryState, PayEndpointWithSecret, TransactionFilter, TransactionSource,
+    Account, Book, BookKind, DocumentSource, Member, MemberPatch, NewBook, NewMember,
+    NewPayEndpoint, NewPayWatch, PayDeliveryState, PayEndpointWithSecret, SplitShare,
+    TransactionFilter, TransactionSource,
 };
 use slipscan_core::secrets::SecretString;
 use slipscan_core::CoreService;
@@ -108,6 +110,12 @@ enum ReportKind {
     /// South Africa). `vat` is accepted as an alias for compatibility.
     #[value(alias = "vat")]
     Tax,
+    /// Per-member expense + contribution rollup (household attribution).
+    /// Needs `--from`/`--to`.
+    Members,
+    /// Net position per member over a period — "who owes whom" (household
+    /// attribution). Needs `--from`/`--to`.
+    SettleUp,
 }
 
 #[derive(Debug, Subcommand)]
@@ -174,13 +182,22 @@ enum Command {
         #[command(subcommand)]
         action: ReconAction,
     },
-    /// Reports: trial balance, profit & loss, balance sheet, tax summary.
+    /// Reports: trial balance, profit & loss, balance sheet, tax summary,
+    /// per-member expense/contribution, settle-up.
     Report {
         #[arg(value_enum)]
         kind: ReportKind,
         /// CSV output (trial balance only).
         #[arg(long)]
         csv: bool,
+        /// Start date (YYYY-MM-DD), inclusive — required for `members` and
+        /// `settle-up`; every other report kind ignores it.
+        #[arg(long)]
+        from: Option<String>,
+        /// End date (YYYY-MM-DD), inclusive — required for `members` and
+        /// `settle-up`.
+        #[arg(long)]
+        to: Option<String>,
     },
     /// Exchange rates via your configured OpenRate endpoint (opt-in: with no
     /// URL configured, SlipScan makes zero FX network calls).
@@ -192,6 +209,32 @@ enum Command {
     Account {
         #[command(subcommand)]
         action: AccountAction,
+    },
+    /// Household members: local data describing whose money it is, never a
+    /// login (see ARCHITECTURE.md "Household members & per-person
+    /// attribution").
+    Member {
+        #[command(subcommand)]
+        action: MemberAction,
+    },
+    /// Override (or clear) a transaction's attributed member. Metadata
+    /// only — never touches amount/currency/category.
+    Attribute {
+        /// Transaction id.
+        transaction_id: String,
+        /// Member id or label; `-` clears the attribution.
+        #[arg(allow_hyphen_values = true)]
+        member: String,
+    },
+    /// Split a transaction across members. Metadata only — never touches
+    /// amount/currency/category.
+    Split {
+        /// Transaction id.
+        transaction_id: String,
+        /// `member:amount_minor` pairs (member id or label), e.g.
+        /// `alice:1500 bailey:1500`; must sum to the transaction's absolute
+        /// amount. No pairs at all clears the split.
+        shares: Vec<String>,
     },
     /// Tax rates for a book (list and configure — e.g. the generic
     /// profile's configurable standard rate).
@@ -283,6 +326,54 @@ enum AccountAction {
         /// Bank/institution label.
         #[arg(long)]
         institution: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum MemberAction {
+    /// Add a member to the book.
+    Add {
+        /// Display label, e.g. "Alex".
+        label: String,
+        /// Short display initial; defaults to the label's first
+        /// alphanumeric character, uppercased.
+        #[arg(long)]
+        initial: Option<String>,
+        /// Cosmetic hex colour swatch; defaults to the next built-in swatch.
+        #[arg(long)]
+        colour: Option<String>,
+        /// Account (id or exact name) this member owns by default — new
+        /// transactions on it attribute to this member unless overridden.
+        #[arg(long)]
+        account: Option<String>,
+    },
+    /// List members of the book.
+    List,
+    /// Update a member's label/initial/colour/default account.
+    Update {
+        /// Member id.
+        id: String,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        initial: Option<String>,
+        #[arg(long)]
+        colour: Option<String>,
+        /// Set the default account (id or exact name).
+        #[arg(long, conflicts_with = "clear_account")]
+        account: Option<String>,
+        /// Clear the default account (as opposed to leaving it unchanged).
+        #[arg(long)]
+        clear_account: bool,
+    },
+    /// Remove a member. Refused when they carry any attribution or split
+    /// unless --reassign names another member to move it onto first.
+    Remove {
+        /// Member id.
+        id: String,
+        /// Move the member's attributions/splits onto this member id first.
+        #[arg(long)]
+        reassign: Option<String>,
     },
 }
 
@@ -509,6 +600,32 @@ fn resolve_account(svc: &CoreService, book_id: &str, selector: &str) -> anyhow::
                  see `slipscan list accounts` or create one with `slipscan account add`"
             )
         })
+}
+
+/// Resolve a member within `book_id` by id or exact label.
+fn resolve_member(svc: &CoreService, book_id: &str, selector: &str) -> anyhow::Result<Member> {
+    svc.member_list(book_id)?
+        .into_iter()
+        .find(|m| m.id == selector || m.label == selector)
+        .ok_or_else(|| {
+            anyhow!(
+                "no member with id or label {selector:?} in this book; \
+                 see `slipscan member list` or add one with `slipscan member add`"
+            )
+        })
+}
+
+/// `--from`/`--to` are required for the household attribution reports
+/// (`members`, `settle-up`) since their service calls take a mandatory
+/// inclusive date range — every other report kind ignores them.
+fn require_range<'a>(
+    from: Option<&'a str>,
+    to: Option<&'a str>,
+) -> anyhow::Result<(&'a str, &'a str)> {
+    match (from, to) {
+        (Some(f), Some(t)) => Ok((f, t)),
+        _ => bail!("this report needs --from and --to (YYYY-MM-DD, inclusive date range)"),
+    }
 }
 
 fn emit<T: serde::Serialize>(
@@ -876,6 +993,155 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
+        Command::Member { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                MemberAction::Add {
+                    label,
+                    initial,
+                    colour,
+                    account,
+                } => {
+                    let default_account_id = match account {
+                        Some(sel) => Some(resolve_account(&svc, &book.id, sel)?.id),
+                        None => None,
+                    };
+                    let member = svc.member_add(NewMember {
+                        book_id: book.id.clone(),
+                        label: label.clone(),
+                        initial: initial.clone(),
+                        colour: colour.clone(),
+                        default_account_id,
+                    })?;
+                    emit(cli.json, &member, || {
+                        println!(
+                            "Created member {} ({}) — initial {}, colour {}{}",
+                            member.label,
+                            member.id,
+                            member.initial,
+                            member.colour,
+                            match &member.default_account_id {
+                                Some(id) => format!(", default account {id}"),
+                                None => String::new(),
+                            }
+                        );
+                    })
+                }
+                MemberAction::List => {
+                    let members = svc.member_list(&book.id)?;
+                    emit(cli.json, &members, || {
+                        if members.is_empty() {
+                            println!("No members yet. Add one with `slipscan member add <label>`.");
+                        }
+                        for m in &members {
+                            println!(
+                                "{}\t{}\t{}\t{}\t{}",
+                                m.id,
+                                m.label,
+                                m.initial,
+                                m.colour,
+                                m.default_account_id.as_deref().unwrap_or("-")
+                            );
+                        }
+                    })
+                }
+                MemberAction::Update {
+                    id,
+                    label,
+                    initial,
+                    colour,
+                    account,
+                    clear_account,
+                } => {
+                    let default_account_id = if *clear_account {
+                        Some(None)
+                    } else if let Some(sel) = account {
+                        Some(Some(resolve_account(&svc, &book.id, sel)?.id))
+                    } else {
+                        None
+                    };
+                    let member = svc.member_update(
+                        id,
+                        MemberPatch {
+                            label: label.clone(),
+                            initial: initial.clone(),
+                            colour: colour.clone(),
+                            default_account_id,
+                        },
+                    )?;
+                    emit(cli.json, &member, || {
+                        println!("Updated member {} ({})", member.label, member.id);
+                    })
+                }
+                MemberAction::Remove { id, reassign } => {
+                    svc.member_remove(id, reassign.as_deref())?;
+                    emit(
+                        cli.json,
+                        &serde_json::json!({ "removed": id }),
+                        || match reassign {
+                            Some(target) => println!(
+                                "Removed member {id} — attributions/splits reassigned to \
+                                 {target}."
+                            ),
+                            None => println!("Removed member {id}."),
+                        },
+                    )
+                }
+            }
+        }
+
+        Command::Attribute {
+            ref transaction_id,
+            ref member,
+        } => {
+            let svc = open_service(&env.db)?;
+            let txn = svc.transaction_get(transaction_id)?;
+            let member_id = if member == "-" {
+                None
+            } else {
+                Some(resolve_member(&svc, &txn.book_id, member)?.id)
+            };
+            let updated = svc.transaction_attribute(transaction_id, member_id.as_deref())?;
+            emit(cli.json, &updated, || match &updated.attributed_member_id {
+                Some(id) => println!("Attributed {transaction_id} to member {id}."),
+                None => println!("Cleared the attribution on {transaction_id}."),
+            })
+        }
+
+        Command::Split {
+            ref transaction_id,
+            ref shares,
+        } => {
+            let svc = open_service(&env.db)?;
+            let txn = svc.transaction_get(transaction_id)?;
+            let mut parsed = Vec::with_capacity(shares.len());
+            for raw in shares {
+                let (member_sel, amount_str) = raw.split_once(':').ok_or_else(|| {
+                    anyhow!("split share {raw:?} must be member:amount_minor, e.g. alice:1500")
+                })?;
+                let member = resolve_member(&svc, &txn.book_id, member_sel)?;
+                let share_minor: i64 = amount_str
+                    .parse()
+                    .with_context(|| format!("parsing amount in split share {raw:?}"))?;
+                parsed.push(SplitShare {
+                    member_id: member.id,
+                    share_minor,
+                });
+            }
+            let splits = svc.transaction_split_set(transaction_id, parsed)?;
+            emit(cli.json, &splits, || {
+                if splits.is_empty() {
+                    println!("Cleared the split on {transaction_id}.");
+                } else {
+                    println!("Split {transaction_id} across {} member(s):", splits.len());
+                    for s in &splits {
+                        println!("  {}\t{}", s.member_id, fmt_minor(s.share_minor));
+                    }
+                }
+            })
+        }
+
         Command::Tax { ref action } => {
             let svc = open_service(&env.db)?;
             let book = resolve_book(&svc, cli.book.as_deref())?;
@@ -1047,7 +1313,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
-        Command::Report { kind, csv } => {
+        Command::Report {
+            kind,
+            csv,
+            ref from,
+            ref to,
+        } => {
             let svc = open_service(&env.db)?;
             let book = resolve_book(&svc, cli.book.as_deref())?;
             if csv && !matches!(kind, ReportKind::Tb) {
@@ -1157,6 +1428,56 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             );
                         }
                         println!("Net tax position\t{}", fmt_minor(tax.net_minor));
+                    })
+                }
+                ReportKind::Members => {
+                    let (from, to) = require_range(from.as_deref(), to.as_deref())?;
+                    let expense = svc.report_member_expense(&book.id, from, to)?;
+                    let contribution = svc.report_member_contribution(&book.id, from, to)?;
+                    let out = serde_json::json!({
+                        "expense": expense,
+                        "contribution": contribution,
+                    });
+                    emit(cli.json, &out, || {
+                        println!(
+                            "Member expense & contribution — {} ({from}..{to})",
+                            book.name
+                        );
+                        println!("Expense:");
+                        for r in &expense {
+                            println!(
+                                "  {}\t{}\t{}",
+                                r.member_label,
+                                r.currency,
+                                fmt_minor(r.total_minor)
+                            );
+                        }
+                        println!("Contribution:");
+                        for r in &contribution {
+                            println!(
+                                "  {}\t{}\t{}",
+                                r.member_label,
+                                r.currency,
+                                fmt_minor(r.total_minor)
+                            );
+                        }
+                    })
+                }
+                ReportKind::SettleUp => {
+                    let (from, to) = require_range(from.as_deref(), to.as_deref())?;
+                    let rows = svc.report_settle_up(&book.id, from, to)?;
+                    emit(cli.json, &rows, || {
+                        println!("Settle-up — {} ({from}..{to})", book.name);
+                        for r in &rows {
+                            println!(
+                                "{}\t{}\tcontrib {}\texpense {}\tnet {}",
+                                r.member_label,
+                                r.currency,
+                                fmt_minor(r.contributions_minor),
+                                fmt_minor(r.expenses_minor),
+                                fmt_minor(r.net_minor)
+                            );
+                        }
                     })
                 }
             }
@@ -1755,15 +2076,28 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 ListTarget::Transactions => {
                     let book = resolve_book(&svc, cli.book.as_deref())?;
                     let txns = svc.transaction_list(&book.id, &TransactionFilter::default())?;
+                    // A book with no members yet has every transaction
+                    // unattributed (None) — the lookup below degrades to "-"
+                    // for all of them, unchanged from before members existed.
+                    let members = svc.member_list(&book.id)?;
                     emit(cli.json, &txns, || {
                         for t in &txns {
+                            let attributed = match &t.attributed_member_id {
+                                Some(id) => members
+                                    .iter()
+                                    .find(|m| &m.id == id)
+                                    .map(|m| m.label.as_str())
+                                    .unwrap_or("?"),
+                                None => "-",
+                            };
                             println!(
-                                "{}\t{}\t{}\t{}\t{}",
+                                "{}\t{}\t{}\t{}\t{}\t{}",
                                 t.id,
                                 t.posted_date,
                                 fmt_minor(t.amount_minor),
                                 t.currency,
-                                t.merchant.as_deref().unwrap_or("-")
+                                t.merchant.as_deref().unwrap_or("-"),
+                                attributed
                             );
                         }
                     })
@@ -1906,7 +2240,7 @@ mod tests {
         ] {
             let cli = Cli::try_parse_from(["slipscan", "report", arg]).unwrap();
             match cli.command {
-                Command::Report { kind, csv } => {
+                Command::Report { kind, csv, .. } => {
                     assert!(matches!(
                         (kind, expected),
                         (ReportKind::Tb, ReportKind::Tb)
@@ -1921,6 +2255,163 @@ mod tests {
         }
         let cli = Cli::try_parse_from(["slipscan", "report", "tb", "--csv"]).unwrap();
         assert!(matches!(cli.command, Command::Report { csv: true, .. }));
+    }
+
+    #[test]
+    fn parses_report_members_and_settle_up() {
+        let cli = Cli::try_parse_from([
+            "slipscan",
+            "report",
+            "members",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-12-31",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Report {
+                kind: ReportKind::Members,
+                from,
+                to,
+                ..
+            } => {
+                assert_eq!(from.as_deref(), Some("2026-01-01"));
+                assert_eq!(to.as_deref(), Some("2026-12-31"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["slipscan", "report", "settle-up"])
+                .unwrap()
+                .command,
+            Command::Report {
+                kind: ReportKind::SettleUp,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_member_actions() {
+        let cli = Cli::try_parse_from([
+            "slipscan",
+            "member",
+            "add",
+            "Alex",
+            "--initial",
+            "A",
+            "--colour",
+            "#112233",
+            "--account",
+            "Joint",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Member {
+                action:
+                    MemberAction::Add {
+                        label,
+                        initial,
+                        colour,
+                        account,
+                    },
+            } => {
+                assert_eq!(label, "Alex");
+                assert_eq!(initial.as_deref(), Some("A"));
+                assert_eq!(colour.as_deref(), Some("#112233"));
+                assert_eq!(account.as_deref(), Some("Joint"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["slipscan", "member", "list"]).is_ok());
+
+        let cli = Cli::try_parse_from([
+            "slipscan",
+            "member",
+            "update",
+            "m-1",
+            "--label",
+            "Alexis",
+            "--clear-account",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Member {
+                action:
+                    MemberAction::Update {
+                        id,
+                        label,
+                        clear_account,
+                        account,
+                        ..
+                    },
+            } => {
+                assert_eq!(id, "m-1");
+                assert_eq!(label.as_deref(), Some("Alexis"));
+                assert!(clear_account);
+                assert!(account.is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // --account and --clear-account are mutually exclusive.
+        assert!(Cli::try_parse_from([
+            "slipscan",
+            "member",
+            "update",
+            "m-1",
+            "--account",
+            "x",
+            "--clear-account",
+        ])
+        .is_err());
+
+        let cli = Cli::try_parse_from(["slipscan", "member", "remove", "m-1", "--reassign", "m-2"])
+            .unwrap();
+        match cli.command {
+            Command::Member {
+                action: MemberAction::Remove { id, reassign },
+            } => {
+                assert_eq!(id, "m-1");
+                assert_eq!(reassign.as_deref(), Some("m-2"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_attribute_and_split() {
+        let cli = Cli::try_parse_from(["slipscan", "attribute", "t-1", "m-1"]).unwrap();
+        match cli.command {
+            Command::Attribute {
+                transaction_id,
+                member,
+            } => {
+                assert_eq!(transaction_id, "t-1");
+                assert_eq!(member, "m-1");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // The clearing sentinel parses fine despite the leading hyphen.
+        let cli = Cli::try_parse_from(["slipscan", "attribute", "t-1", "-"]).unwrap();
+        match cli.command {
+            Command::Attribute { member, .. } => assert_eq!(member, "-"),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let cli = Cli::try_parse_from(["slipscan", "split", "t-1", "m-1:1500", "m-2:500"]).unwrap();
+        match cli.command {
+            Command::Split {
+                transaction_id,
+                shares,
+            } => {
+                assert_eq!(transaction_id, "t-1");
+                assert_eq!(shares, vec!["m-1:1500", "m-2:500"]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // No shares at all is valid (clears the split).
+        assert!(Cli::try_parse_from(["slipscan", "split", "t-1"]).is_ok());
     }
 
     #[test]
@@ -2129,6 +2620,207 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("--account"), "{err}");
+    }
+
+    /// Household members end-to-end through the CLI: add members, default
+    /// attribution follows the owning account, override + split via the
+    /// CLI, per-member reports come out right, and remove is refused until
+    /// reassigned. See ARCHITECTURE.md "Household members & per-person
+    /// attribution".
+    #[test]
+    fn members_attribution_and_reports_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("h.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let run_cli = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_cli(&["init", "--name", "Household", "--currency", "usd"]).unwrap();
+        run_cli(&["account", "add", "Joint"]).unwrap();
+        run_cli(&["member", "add", "Alex", "--account", "Joint"]).unwrap();
+        run_cli(&["member", "add", "Bailey"]).unwrap();
+        run_cli(&["member", "list"]).unwrap();
+
+        let svc = CoreService::open(&db).unwrap();
+        let book = svc.book_list().unwrap().remove(0);
+        let account = svc.account_list(&book.id).unwrap().remove(0);
+        let members = svc.member_list(&book.id).unwrap();
+        let alex = members.iter().find(|m| m.label == "Alex").unwrap().clone();
+        let bailey = members
+            .iter()
+            .find(|m| m.label == "Bailey")
+            .unwrap()
+            .clone();
+        assert_eq!(
+            alex.default_account_id.as_deref(),
+            Some(account.id.as_str())
+        );
+        drop(svc);
+
+        // A grocery debit and a salary credit on the joint account.
+        let csv_path = dir.path().join("joint.csv");
+        std::fs::write(
+            &csv_path,
+            "Date,Description,Amount\n\
+             06/01/2026,GROCERY STORE,-100.00\n\
+             06/02/2026,SALARY,2000.00\n",
+        )
+        .unwrap();
+        run_cli(&[
+            "import",
+            csv_path.to_str().unwrap(),
+            "--preset",
+            "generic-mdy",
+            "--account",
+            "Joint",
+        ])
+        .unwrap();
+
+        let svc = CoreService::open(&db).unwrap();
+        let txns = svc
+            .transaction_list(&book.id, &TransactionFilter::default())
+            .unwrap();
+        assert_eq!(txns.len(), 2);
+        // Default attribution follows the account's owning member.
+        assert!(txns
+            .iter()
+            .all(|t| t.attributed_member_id.as_deref() == Some(alex.id.as_str())));
+        let grocery = txns.iter().find(|t| t.amount_minor == -10_000).unwrap();
+        let salary = txns.iter().find(|t| t.amount_minor == 200_000).unwrap();
+        let (grocery_id, salary_id) = (grocery.id.clone(), salary.id.clone());
+        drop(svc);
+
+        // Re-attribute the grocery run to Bailey; split the salary 3:1.
+        run_cli(&["attribute", &grocery_id, &bailey.id]).unwrap();
+        run_cli(&[
+            "split",
+            &salary_id,
+            &format!("{}:150000", alex.id),
+            &format!("{}:50000", bailey.id),
+        ])
+        .unwrap();
+
+        let svc = CoreService::open(&db).unwrap();
+        assert_eq!(
+            svc.transaction_get(&grocery_id)
+                .unwrap()
+                .attributed_member_id
+                .as_deref(),
+            Some(bailey.id.as_str())
+        );
+        assert_eq!(svc.transaction_splits_list(&salary_id).unwrap().len(), 2);
+        drop(svc);
+
+        // `report members`/`report settle-up` need --from/--to.
+        let err = run_cli(&["report", "members"]).unwrap_err().to_string();
+        assert!(err.contains("--from"), "{err}");
+        run_cli(&[
+            "report",
+            "members",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-12-31",
+        ])
+        .unwrap();
+        run_cli(&[
+            "report",
+            "settle-up",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-12-31",
+        ])
+        .unwrap();
+
+        // Check the actual numbers behind those CLI calls.
+        let svc = CoreService::open(&db).unwrap();
+        let expense = svc
+            .report_member_expense(&book.id, "2026-01-01", "2026-12-31")
+            .unwrap();
+        let bailey_expense = expense.iter().find(|r| r.member_label == "Bailey").unwrap();
+        assert_eq!(
+            bailey_expense.total_minor, 10_000,
+            "grocery reattributed to Bailey"
+        );
+
+        let contribution = svc
+            .report_member_contribution(&book.id, "2026-01-01", "2026-12-31")
+            .unwrap();
+        let alex_contribution = contribution
+            .iter()
+            .find(|r| r.member_label == "Alex")
+            .unwrap();
+        assert_eq!(alex_contribution.total_minor, 150_000, "split share");
+        let bailey_contribution = contribution
+            .iter()
+            .find(|r| r.member_label == "Bailey")
+            .unwrap();
+        assert_eq!(bailey_contribution.total_minor, 50_000);
+
+        let settle = svc
+            .report_settle_up(&book.id, "2026-01-01", "2026-12-31")
+            .unwrap();
+        let alex_settle = settle.iter().find(|r| r.member_label == "Alex").unwrap();
+        assert_eq!(alex_settle.contributions_minor, 150_000);
+        assert_eq!(alex_settle.expenses_minor, 0);
+        assert_eq!(alex_settle.net_minor, 150_000);
+        let bailey_settle = settle.iter().find(|r| r.member_label == "Bailey").unwrap();
+        assert_eq!(bailey_settle.contributions_minor, 50_000);
+        assert_eq!(bailey_settle.expenses_minor, 10_000);
+        assert_eq!(bailey_settle.net_minor, 40_000);
+        drop(svc);
+
+        // Update: rename and clear the default account.
+        run_cli(&[
+            "member",
+            "update",
+            &alex.id,
+            "--label",
+            "Alexis",
+            "--clear-account",
+        ])
+        .unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        let alexis = svc.member_get(&alex.id).unwrap();
+        assert_eq!(alexis.label, "Alexis");
+        assert_eq!(alexis.default_account_id, None);
+        drop(svc);
+
+        // Remove is refused while Bailey has attributions; --reassign moves
+        // them onto Alex first, so the grocery transaction keeps its member.
+        let err = run_cli(&["member", "remove", &bailey.id])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("reassign"), "{err}");
+        run_cli(&["member", "remove", &bailey.id, "--reassign", &alex.id]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        assert!(svc.member_get(&bailey.id).is_err());
+        assert_eq!(
+            svc.transaction_get(&grocery_id)
+                .unwrap()
+                .attributed_member_id
+                .as_deref(),
+            Some(alex.id.as_str())
+        );
+        drop(svc);
+
+        // "-" clears an attribution.
+        run_cli(&["attribute", &grocery_id, "-"]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        assert_eq!(
+            svc.transaction_get(&grocery_id)
+                .unwrap()
+                .attributed_member_id,
+            None
+        );
+
+        // `list transactions` keeps working and does not choke on a member
+        // that no longer exists after cleanup / on an unattributed row.
+        drop(svc);
+        run_cli(&["list", "transactions"]).unwrap();
     }
 
     #[test]

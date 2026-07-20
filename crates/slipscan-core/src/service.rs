@@ -62,6 +62,25 @@ const fn fallback_income_code(kind: BookKind) -> &'static str {
 /// stay many orders of magnitude below both limits.
 const MAX_LINE_AMOUNT_MINOR: i64 = 1_000_000_000_000_000;
 
+/// Default swatches for `member_add` when no colour is given, cycled by how
+/// many members already exist in the book. Drawn straight from the design
+/// system's own palette (ARCHITECTURE.md "Design system": accent, success,
+/// warning, danger) so a member never gets a colour invented on the spot.
+const DEFAULT_MEMBER_COLOURS: &[&str] = &["#C8FF00", "#16A34A", "#D97706", "#DC2626"];
+
+/// Derive a member's display initial from their label when none is given
+/// explicitly: the first alphanumeric character, uppercased. Unicode-aware,
+/// like `normalize_merchant` — falls back to "?" only if the label somehow
+/// carries no alphanumeric character at all (label emptiness is already
+/// rejected before this runs).
+fn derive_initial(label: &str) -> String {
+    label
+        .chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().collect::<String>())
+        .unwrap_or_else(|| "?".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Reconciliation matcher tuning.
 // ---------------------------------------------------------------------------
@@ -425,6 +444,14 @@ impl CoreService {
             }
         }
 
+        // Default attribution: the account's owning member, when one has
+        // claimed it as their default account. Purely a starting point — the
+        // caller overrides per transaction via `transaction_attribute`.
+        // Backward compatible by construction: a book with zero members (or
+        // an account nobody claimed) always yields None here.
+        let attributed_member_id =
+            repo::member::find_default_owner(&tx, &new.book_id, &new.account_id)?.map(|m| m.id);
+
         let now = now_iso();
         let txn = Transaction {
             id: new_id(),
@@ -443,6 +470,7 @@ impl CoreService {
             description: new.description,
             notes: new.notes,
             status: TransactionStatus::Pending,
+            attributed_member_id,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -582,6 +610,302 @@ impl CoreService {
         )?;
         tx.commit()?;
         Ok(after)
+    }
+
+    /// Override a transaction's attribution (or clear it with `None`).
+    /// Metadata only: never touches amount/currency/category/journals, so
+    /// double-entry integrity — and every other field on the transaction —
+    /// is untouched.
+    pub fn transaction_attribute(
+        &self,
+        transaction_id: &str,
+        member_id: Option<&str>,
+    ) -> CoreResult<Transaction> {
+        let before = self.transaction_get(transaction_id)?;
+        if let Some(mid) = member_id {
+            let member = self.member_get(mid)?;
+            if member.book_id != before.book_id {
+                return Err(CoreError::Validation(
+                    "member does not belong to this book".into(),
+                ));
+            }
+        }
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::transaction::set_attribution(&tx, transaction_id, member_id, &now)?;
+        let mut after = before.clone();
+        after.attributed_member_id = member_id.map(str::to_string);
+        after.updated_at = now;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "transaction",
+            Some(transaction_id),
+            "attribute",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// The split rows on a transaction, if any (empty when it is either
+    /// singly-attributed or unattributed).
+    pub fn transaction_splits_list(
+        &self,
+        transaction_id: &str,
+    ) -> CoreResult<Vec<TransactionSplit>> {
+        repo::member::splits_for_transaction(self.conn(), transaction_id)
+    }
+
+    /// Replace a transaction's split set. `shares` must name each member at
+    /// most once and sum exactly to the transaction's absolute amount (the
+    /// only invariant the splits table has to satisfy); an empty list clears
+    /// the split, reverting the transaction to single-member attribution /
+    /// unattributed via `attributed_member_id`. Metadata only, like
+    /// `transaction_attribute` — never touches the ledger.
+    pub fn transaction_split_set(
+        &self,
+        transaction_id: &str,
+        shares: Vec<SplitShare>,
+    ) -> CoreResult<Vec<TransactionSplit>> {
+        let txn = self.transaction_get(transaction_id)?;
+        let target = txn.amount_minor.checked_abs().ok_or_else(|| {
+            CoreError::Validation("transaction amount out of range for splitting".into())
+        })?;
+
+        let mut seen = std::collections::HashSet::new();
+        let mut sum: i64 = 0;
+        for share in &shares {
+            if !seen.insert(share.member_id.as_str()) {
+                return Err(CoreError::Validation(format!(
+                    "member {} appears more than once in the split",
+                    share.member_id
+                )));
+            }
+            if share.share_minor <= 0 {
+                return Err(CoreError::Validation(
+                    "split shares must be positive".into(),
+                ));
+            }
+            let member = self.member_get(&share.member_id)?;
+            if member.book_id != txn.book_id {
+                return Err(CoreError::Validation(
+                    "split member does not belong to this book".into(),
+                ));
+            }
+            sum = sum
+                .checked_add(share.share_minor)
+                .ok_or_else(|| CoreError::Validation("split shares overflow".into()))?;
+        }
+        if !shares.is_empty() && sum != target {
+            return Err(CoreError::Validation(format!(
+                "split shares must sum to the transaction's absolute amount \
+                 ({target} minor units), got {sum}"
+            )));
+        }
+
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::member::set_splits(&tx, transaction_id, &txn.book_id, &shares, &now)?;
+        self.emit_audit(
+            &tx,
+            Some(&txn.book_id),
+            "transaction",
+            Some(transaction_id),
+            "split_set",
+            None,
+            Some(serde_json::to_string(&shares)?),
+        )?;
+        tx.commit()?;
+        repo::member::splits_for_transaction(self.conn(), transaction_id)
+    }
+
+    // -----------------------------------------------------------------------
+    // Household members
+    //
+    // Local data, never logins (ARCHITECTURE.md "Household members &
+    // per-person attribution"). A book may have zero members — every method
+    // above that touches attribution degrades to a no-op / None in that case,
+    // so pre-existing books keep working unchanged.
+    // -----------------------------------------------------------------------
+
+    pub fn member_add(&self, new: NewMember) -> CoreResult<Member> {
+        let book = self.book_get(&new.book_id)?;
+        let label = new.label.trim().to_string();
+        if label.is_empty() {
+            return Err(CoreError::Validation(
+                "member label must not be empty".into(),
+            ));
+        }
+        if let Some(account_id) = &new.default_account_id {
+            let account = self.account_get(account_id)?;
+            if account.book_id != book.id {
+                return Err(CoreError::Validation(
+                    "default account does not belong to this book".into(),
+                ));
+            }
+        }
+        let initial = match new.initial.as_deref().map(str::trim) {
+            Some(explicit) if !explicit.is_empty() => explicit.to_string(),
+            _ => derive_initial(&label),
+        };
+        let colour = match new.colour.as_deref().map(str::trim) {
+            Some(explicit) if !explicit.is_empty() => explicit.to_string(),
+            _ => {
+                let existing = repo::member::count(self.conn(), &book.id)?;
+                DEFAULT_MEMBER_COLOURS[(existing as usize) % DEFAULT_MEMBER_COLOURS.len()]
+                    .to_string()
+            }
+        };
+
+        let now = now_iso();
+        let member = Member {
+            id: new_id(),
+            book_id: book.id,
+            label,
+            initial,
+            colour,
+            default_account_id: new.default_account_id,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::member::insert(&tx, &member)?;
+        self.emit_audit(
+            &tx,
+            Some(&member.book_id),
+            "member",
+            Some(&member.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&member)?),
+        )?;
+        tx.commit()?;
+        Ok(member)
+    }
+
+    pub fn member_get(&self, id: &str) -> CoreResult<Member> {
+        repo::member::get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "member",
+            id: id.to_string(),
+        })
+    }
+
+    /// Every member of the book, empty for a book nobody has set up
+    /// household members on yet (the common case remains fully supported).
+    pub fn member_list(&self, book_id: &str) -> CoreResult<Vec<Member>> {
+        repo::member::list(self.conn(), book_id)
+    }
+
+    pub fn member_update(&self, id: &str, patch: MemberPatch) -> CoreResult<Member> {
+        let before = self.member_get(id)?;
+        let mut after = before.clone();
+        if let Some(label) = patch.label {
+            let label = label.trim().to_string();
+            if label.is_empty() {
+                return Err(CoreError::Validation(
+                    "member label must not be empty".into(),
+                ));
+            }
+            after.label = label;
+        }
+        if let Some(initial) = patch.initial {
+            let initial = initial.trim().to_string();
+            if initial.is_empty() {
+                return Err(CoreError::Validation(
+                    "member initial must not be empty".into(),
+                ));
+            }
+            after.initial = initial;
+        }
+        if let Some(colour) = patch.colour {
+            let colour = colour.trim().to_string();
+            if colour.is_empty() {
+                return Err(CoreError::Validation(
+                    "member colour must not be empty".into(),
+                ));
+            }
+            after.colour = colour;
+        }
+        if let Some(default_account_id) = patch.default_account_id {
+            if let Some(account_id) = &default_account_id {
+                let account = self.account_get(account_id)?;
+                if account.book_id != before.book_id {
+                    return Err(CoreError::Validation(
+                        "default account does not belong to this book".into(),
+                    ));
+                }
+            }
+            after.default_account_id = default_account_id;
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::member::update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "member",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Remove a member. Refused when the member carries any attribution
+    /// (single `attributed_member_id` or split rows) unless `reassign_to`
+    /// names another member in the same book — every one of those
+    /// attributions is then moved onto the reassignment target before the
+    /// member row is deleted, so no transaction silently loses its history.
+    pub fn member_remove(&self, id: &str, reassign_to: Option<&str>) -> CoreResult<()> {
+        let before = self.member_get(id)?;
+        let target = match reassign_to {
+            Some(target_id) => {
+                if target_id == id {
+                    return Err(CoreError::Validation(
+                        "cannot reassign a member's attributions to themselves".into(),
+                    ));
+                }
+                let target = self.member_get(target_id)?;
+                if target.book_id != before.book_id {
+                    return Err(CoreError::Validation(
+                        "reassignment target does not belong to this book".into(),
+                    ));
+                }
+                Some(target)
+            }
+            None => {
+                if repo::member::has_attributions(self.conn(), id)? {
+                    return Err(CoreError::Validation(format!(
+                        "member {id} still has attributed transactions or splits — pass a \
+                         reassign-target member to move them first, or clear the \
+                         attributions/splits before removing"
+                    )));
+                }
+                None
+            }
+        };
+
+        let tx = self.conn().unchecked_transaction()?;
+        if let Some(target) = &target {
+            repo::member::reassign_attributions(&tx, id, &target.id)?;
+        }
+        repo::member::delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "member",
+            Some(id),
+            "remove",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -2179,6 +2503,57 @@ impl CoreService {
         to_date: &str,
     ) -> CoreResult<TaxPeriodSummary> {
         self.report_tax_summary(book_id, from_date, to_date)
+    }
+
+    /// Per-member outflow (expense) totals over an inclusive date range, in
+    /// the book's base currency. Split shares are distributed; unattributed
+    /// spend rolls into an "Unattributed" row.
+    pub fn report_member_expense(
+        &self,
+        book_id: &str,
+        from_date: &str,
+        to_date: &str,
+    ) -> CoreResult<Vec<MemberAmountRow>> {
+        let book = self.book_get(book_id)?;
+        repo::report::member_expense(self.conn(), book_id, from_date, to_date, &book.currency)
+    }
+
+    /// Per-member inflow (contribution) totals over an inclusive date range,
+    /// in the book's base currency — mirrors [`Self::report_member_expense`]
+    /// for money coming in.
+    pub fn report_member_contribution(
+        &self,
+        book_id: &str,
+        from_date: &str,
+        to_date: &str,
+    ) -> CoreResult<Vec<MemberAmountRow>> {
+        let book = self.book_get(book_id)?;
+        repo::report::member_contribution(self.conn(), book_id, from_date, to_date, &book.currency)
+    }
+
+    /// Each member's share of each category's spend over an inclusive date
+    /// range, in the book's base currency.
+    pub fn report_member_category(
+        &self,
+        book_id: &str,
+        from_date: &str,
+        to_date: &str,
+    ) -> CoreResult<Vec<MemberCategoryRow>> {
+        let book = self.book_get(book_id)?;
+        repo::report::member_category(self.conn(), book_id, from_date, to_date, &book.currency)
+    }
+
+    /// Net position per member over an inclusive date range (contributions
+    /// minus attributed expenses) — "who owes whom" — in the book's base
+    /// currency.
+    pub fn report_settle_up(
+        &self,
+        book_id: &str,
+        from_date: &str,
+        to_date: &str,
+    ) -> CoreResult<Vec<MemberSettleRow>> {
+        let book = self.book_get(book_id)?;
+        repo::report::settle_up(self.conn(), book_id, from_date, to_date, &book.currency)
     }
 
     // -----------------------------------------------------------------------
@@ -6229,5 +6604,676 @@ mod tests {
                 "missing pay_delivery audit {action}"
             );
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Household members & per-person attribution
+    // -------------------------------------------------------------------
+
+    fn make_member(svc: &CoreService, book: &Book, label: &str) -> Member {
+        svc.member_add(NewMember {
+            book_id: book.id.clone(),
+            label: label.into(),
+            initial: None,
+            colour: None,
+            default_account_id: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn member_crud_and_a_zero_members_book_still_works() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+
+        // A book with zero members behaves exactly as before: transactions
+        // create fine and simply come out unattributed.
+        assert!(svc.member_list(&book.id).unwrap().is_empty());
+        let mut new = make_txn(&svc, &book, &account);
+        new.amount_minor = -1_000;
+        let txn = svc.transaction_create(new).unwrap();
+        assert_eq!(txn.attributed_member_id, None);
+
+        // Add, with defaults derived (no explicit initial/colour given).
+        let alex = svc
+            .member_add(NewMember {
+                book_id: book.id.clone(),
+                label: "  alex  ".into(),
+                initial: None,
+                colour: None,
+                default_account_id: Some(account.id.clone()),
+            })
+            .unwrap();
+        assert_eq!(alex.label, "alex", "label is trimmed");
+        assert_eq!(alex.initial, "A", "derived from the label, uppercased");
+        assert_eq!(alex.colour, "#C8FF00", "first default swatch");
+        assert_eq!(
+            alex.default_account_id.as_deref(),
+            Some(account.id.as_str())
+        );
+
+        // A second member without an explicit colour cycles to the next
+        // swatch instead of colliding.
+        let bailey = svc
+            .member_add(NewMember {
+                book_id: book.id.clone(),
+                label: "Bailey".into(),
+                initial: Some("BB".into()),
+                colour: None,
+                default_account_id: None,
+            })
+            .unwrap();
+        assert_eq!(bailey.initial, "BB", "explicit initial wins");
+        assert_eq!(bailey.colour, "#16A34A", "second default swatch");
+
+        assert_eq!(
+            svc.member_list(&book.id).unwrap(),
+            vec![alex.clone(), bailey.clone()]
+        );
+
+        // Update: label, colour, and clearing the default account.
+        let updated = svc
+            .member_update(
+                &alex.id,
+                MemberPatch {
+                    label: Some("Alexis".into()),
+                    colour: Some("#000000".into()),
+                    default_account_id: Some(None),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.label, "Alexis");
+        assert_eq!(updated.colour, "#000000");
+        assert_eq!(updated.default_account_id, None);
+        assert_eq!(updated.initial, "A", "untouched field stays as-is");
+
+        // Remove: no attributions yet, so it just goes.
+        svc.member_remove(&bailey.id, None).unwrap();
+        assert_eq!(svc.member_list(&book.id).unwrap(), vec![updated]);
+        assert!(matches!(
+            svc.member_get(&bailey.id),
+            Err(CoreError::NotFound { .. })
+        ));
+
+        // Audited (create, update, remove).
+        let audits = svc.audit_list(Some(&book.id), 50).unwrap();
+        for action in ["create", "update", "remove"] {
+            assert!(
+                audits
+                    .iter()
+                    .any(|a| a.entity_type == "member" && a.action == action),
+                "missing member audit {action}"
+            );
+        }
+    }
+
+    #[test]
+    fn member_add_validates_label_and_book_and_account_scoping() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let other_book = svc
+            .book_create(NewBook {
+                name: "Other".into(),
+                kind: BookKind::Personal,
+                currency: None,
+                country: Some("ZA".into()),
+                region: None,
+            })
+            .unwrap();
+        let account = make_account(&svc, &book);
+
+        assert!(matches!(
+            svc.member_add(NewMember {
+                book_id: book.id.clone(),
+                label: "   ".into(),
+                initial: None,
+                colour: None,
+                default_account_id: None,
+            }),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.member_add(NewMember {
+                book_id: "nope".into(),
+                label: "Alex".into(),
+                initial: None,
+                colour: None,
+                default_account_id: None,
+            }),
+            Err(CoreError::NotFound { .. })
+        ));
+        // An account from a different book cannot be claimed as a default.
+        assert!(matches!(
+            svc.member_add(NewMember {
+                book_id: other_book.id.clone(),
+                label: "Alex".into(),
+                initial: None,
+                colour: None,
+                default_account_id: Some(account.id.clone()),
+            }),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn default_attribution_follows_the_accounts_owning_member() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let owned_account = make_account(&svc, &book);
+        let unowned_account = make_account(&svc, &book);
+        let owner = svc
+            .member_add(NewMember {
+                book_id: book.id.clone(),
+                label: "Owner".into(),
+                initial: None,
+                colour: None,
+                default_account_id: Some(owned_account.id.clone()),
+            })
+            .unwrap();
+
+        let mut owned_txn = make_txn(&svc, &book, &owned_account);
+        owned_txn.amount_minor = -400;
+        let txn = svc.transaction_create(owned_txn).unwrap();
+        assert_eq!(txn.attributed_member_id.as_deref(), Some(owner.id.as_str()));
+
+        // An account nobody claimed stays unattributed by default.
+        let mut unowned_txn = make_txn(&svc, &book, &unowned_account);
+        unowned_txn.amount_minor = -400;
+        let txn2 = svc.transaction_create(unowned_txn).unwrap();
+        assert_eq!(txn2.attributed_member_id, None);
+    }
+
+    #[test]
+    fn transaction_attribute_overrides_default_and_can_clear() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let owner = svc
+            .member_add(NewMember {
+                book_id: book.id.clone(),
+                label: "Owner".into(),
+                initial: None,
+                colour: None,
+                default_account_id: Some(account.id.clone()),
+            })
+            .unwrap();
+        let other = make_member(&svc, &book, "Other");
+        let other_book_member = {
+            let other_book = svc
+                .book_create(NewBook {
+                    name: "Other book".into(),
+                    kind: BookKind::Personal,
+                    currency: None,
+                    country: Some("ZA".into()),
+                    region: None,
+                })
+                .unwrap();
+            make_member(&svc, &other_book, "Elsewhere")
+        };
+
+        let mut new = make_txn(&svc, &book, &account);
+        new.amount_minor = -900;
+        let txn = svc.transaction_create(new).unwrap();
+        assert_eq!(txn.attributed_member_id.as_deref(), Some(owner.id.as_str()));
+
+        // Override to another member in the same book.
+        let overridden = svc.transaction_attribute(&txn.id, Some(&other.id)).unwrap();
+        assert_eq!(
+            overridden.attributed_member_id.as_deref(),
+            Some(other.id.as_str())
+        );
+        assert_eq!(
+            overridden.amount_minor, txn.amount_minor,
+            "attribution never touches the amount"
+        );
+
+        // Clear back to unattributed.
+        let cleared = svc.transaction_attribute(&txn.id, None).unwrap();
+        assert_eq!(cleared.attributed_member_id, None);
+
+        // A member from a different book is rejected.
+        assert!(matches!(
+            svc.transaction_attribute(&txn.id, Some(&other_book_member.id)),
+            Err(CoreError::Validation(_))
+        ));
+
+        // Audited.
+        let audits = svc.audit_list(Some(&book.id), 50).unwrap();
+        assert!(audits
+            .iter()
+            .any(|a| a.entity_type == "transaction" && a.action == "attribute"));
+    }
+
+    #[test]
+    fn transaction_split_set_enforces_the_sum_invariant() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let a = make_member(&svc, &book, "A");
+        let b = make_member(&svc, &book, "B");
+
+        let mut new = make_txn(&svc, &book, &account);
+        new.amount_minor = -1_000;
+        let txn = svc.transaction_create(new).unwrap();
+
+        // Shares that don't sum to the absolute amount are rejected.
+        assert!(matches!(
+            svc.transaction_split_set(
+                &txn.id,
+                vec![
+                    SplitShare {
+                        member_id: a.id.clone(),
+                        share_minor: 400
+                    },
+                    SplitShare {
+                        member_id: b.id.clone(),
+                        share_minor: 500
+                    },
+                ],
+            ),
+            Err(CoreError::Validation(_))
+        ));
+        // A duplicate member is rejected.
+        assert!(matches!(
+            svc.transaction_split_set(
+                &txn.id,
+                vec![
+                    SplitShare {
+                        member_id: a.id.clone(),
+                        share_minor: 600
+                    },
+                    SplitShare {
+                        member_id: a.id.clone(),
+                        share_minor: 400
+                    },
+                ],
+            ),
+            Err(CoreError::Validation(_))
+        ));
+        // A non-positive share is rejected.
+        assert!(matches!(
+            svc.transaction_split_set(
+                &txn.id,
+                vec![
+                    SplitShare {
+                        member_id: a.id.clone(),
+                        share_minor: 1_000
+                    },
+                    SplitShare {
+                        member_id: b.id.clone(),
+                        share_minor: 0
+                    },
+                ],
+            ),
+            Err(CoreError::Validation(_))
+        ));
+        // Nothing was written by any of the rejected attempts.
+        assert!(svc.transaction_splits_list(&txn.id).unwrap().is_empty());
+
+        // An exact split succeeds.
+        let splits = svc
+            .transaction_split_set(
+                &txn.id,
+                vec![
+                    SplitShare {
+                        member_id: a.id.clone(),
+                        share_minor: 400,
+                    },
+                    SplitShare {
+                        member_id: b.id.clone(),
+                        share_minor: 600,
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(splits.len(), 2);
+        assert_eq!(splits.iter().map(|s| s.share_minor).sum::<i64>(), 1_000);
+
+        // An empty list clears the split.
+        let cleared = svc.transaction_split_set(&txn.id, vec![]).unwrap();
+        assert!(cleared.is_empty());
+        assert!(svc.transaction_splits_list(&txn.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn attribution_and_splits_never_touch_the_ledger() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let account = make_account(&svc, &book);
+        let a = make_member(&svc, &book, "A");
+        let b = make_member(&svc, &book, "B");
+
+        let mut new = make_txn(&svc, &book, &account);
+        new.amount_minor = -5_000;
+        let txn = svc.transaction_create(new).unwrap();
+        let posted = svc.journal_generate_for_transaction(&txn.id, None).unwrap();
+
+        // Attribute after posting: metadata only.
+        svc.transaction_attribute(&txn.id, Some(&a.id)).unwrap();
+        assert_eq!(svc.journal_get(&posted.journal.id).unwrap(), posted);
+
+        // Split after posting: still metadata only.
+        svc.transaction_split_set(
+            &txn.id,
+            vec![
+                SplitShare {
+                    member_id: a.id.clone(),
+                    share_minor: 2_000,
+                },
+                SplitShare {
+                    member_id: b.id.clone(),
+                    share_minor: 3_000,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(svc.journal_get(&posted.journal.id).unwrap(), posted);
+
+        // And the trial balance is untouched too.
+        let tb_before: i64 = svc
+            .report_trial_balance(&book.id)
+            .unwrap()
+            .iter()
+            .map(|r| r.debit_minor - r.credit_minor)
+            .sum();
+        assert_eq!(tb_before, 0, "still balanced");
+    }
+
+    #[test]
+    fn member_remove_refuses_with_attributions_unless_reassigned() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let m1 = make_member(&svc, &book, "One");
+        let m2 = make_member(&svc, &book, "Two");
+
+        // Single attribution.
+        let mut new_a = make_txn(&svc, &book, &account);
+        new_a.amount_minor = -500;
+        let txn_a = svc.transaction_create(new_a).unwrap();
+        svc.transaction_attribute(&txn_a.id, Some(&m1.id)).unwrap();
+
+        // Split where the target member already holds a share on the same
+        // transaction — reassignment must merge, not collide.
+        let mut new_b = make_txn(&svc, &book, &account);
+        new_b.amount_minor = -500;
+        new_b.dedupe_occurrence = 1; // distinguish from txn_a: same account/date/amount/text
+        let txn_b = svc.transaction_create(new_b).unwrap();
+        svc.transaction_split_set(
+            &txn_b.id,
+            vec![
+                SplitShare {
+                    member_id: m1.id.clone(),
+                    share_minor: 300,
+                },
+                SplitShare {
+                    member_id: m2.id.clone(),
+                    share_minor: 200,
+                },
+            ],
+        )
+        .unwrap();
+
+        // Split where the target has no existing row for that transaction —
+        // reassignment is a plain rename.
+        let mut new_c = make_txn(&svc, &book, &account);
+        new_c.amount_minor = -400;
+        let txn_c = svc.transaction_create(new_c).unwrap();
+        svc.transaction_split_set(
+            &txn_c.id,
+            vec![SplitShare {
+                member_id: m1.id.clone(),
+                share_minor: 400,
+            }],
+        )
+        .unwrap();
+
+        // Refused without a reassignment target.
+        let err = svc.member_remove(&m1.id, None).unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)), "{err}");
+        assert!(
+            svc.member_get(&m1.id).is_ok(),
+            "member survives the refusal"
+        );
+
+        // Cannot reassign to itself.
+        assert!(matches!(
+            svc.member_remove(&m1.id, Some(&m1.id)),
+            Err(CoreError::Validation(_))
+        ));
+        // Cannot reassign to a member of a different book.
+        let other_book = svc
+            .book_create(NewBook {
+                name: "Other".into(),
+                kind: BookKind::Personal,
+                currency: None,
+                country: Some("ZA".into()),
+                region: None,
+            })
+            .unwrap();
+        let stranger = make_member(&svc, &other_book, "Stranger");
+        assert!(matches!(
+            svc.member_remove(&m1.id, Some(&stranger.id)),
+            Err(CoreError::Validation(_))
+        ));
+
+        // Reassigning to m2 succeeds and moves every attribution.
+        svc.member_remove(&m1.id, Some(&m2.id)).unwrap();
+        assert!(matches!(
+            svc.member_get(&m1.id),
+            Err(CoreError::NotFound { .. })
+        ));
+
+        let after_a = svc.transaction_get(&txn_a.id).unwrap();
+        assert_eq!(
+            after_a.attributed_member_id.as_deref(),
+            Some(m2.id.as_str())
+        );
+
+        let splits_b = svc.transaction_splits_list(&txn_b.id).unwrap();
+        assert_eq!(splits_b.len(), 1, "merged into the target's existing row");
+        assert_eq!(splits_b[0].member_id, m2.id);
+        assert_eq!(splits_b[0].share_minor, 500, "300 + 200");
+
+        let splits_c = svc.transaction_splits_list(&txn_c.id).unwrap();
+        assert_eq!(splits_c.len(), 1);
+        assert_eq!(splits_c[0].member_id, m2.id);
+        assert_eq!(
+            splits_c[0].share_minor, 400,
+            "plain rename, no target row existed"
+        );
+    }
+
+    /// Full multi-member fixture exercising every member report: expense,
+    /// contribution, category, and settle-up, including the unattributed
+    /// bucket and split distribution. Numbers are computed by hand in the
+    /// comments below and asserted exactly.
+    #[test]
+    fn member_reports_on_a_seeded_fixture() {
+        let svc = svc();
+        let book = make_book(&svc);
+        assert_eq!(book.currency, "ZAR");
+        let account_a = make_account(&svc, &book);
+        let account_b = make_account(&svc, &book);
+        let account_unowned = make_account(&svc, &book);
+        let groceries = make_category(&svc, &book, "Groceries");
+        let rent = make_category(&svc, &book, "Rent");
+
+        let a = svc
+            .member_add(NewMember {
+                book_id: book.id.clone(),
+                label: "A".into(),
+                initial: None,
+                colour: None,
+                default_account_id: Some(account_a.id.clone()),
+            })
+            .unwrap();
+        let b = svc
+            .member_add(NewMember {
+                book_id: book.id.clone(),
+                label: "B".into(),
+                initial: None,
+                colour: None,
+                default_account_id: Some(account_b.id.clone()),
+            })
+            .unwrap();
+        let c = make_member(&svc, &book, "C");
+
+        let mk = |account_id: &str, amount: i64, category_id: Option<&str>| NewTransaction {
+            book_id: book.id.clone(),
+            account_id: account_id.to_string(),
+            source: TransactionSource::Manual,
+            provider_txn_id: None,
+            posted_date: "2026-07-10".into(),
+            amount_minor: amount,
+            currency: "ZAR".into(),
+            merchant: None,
+            description: None,
+            notes: None,
+            category_id: category_id.map(str::to_string),
+            document_id: None,
+            dedupe_occurrence: 0,
+        };
+
+        // Expenses (all default-attributed, then one overridden, one split).
+        svc.transaction_create(mk(&account_a.id, -1_000, Some(&groceries.id)))
+            .unwrap(); // -> A / Groceries: 1000
+        svc.transaction_create(mk(&account_b.id, -2_000, Some(&rent.id)))
+            .unwrap(); // -> B / Rent: 2000
+        let overridden = svc
+            .transaction_create(mk(&account_a.id, -500, Some(&groceries.id)))
+            .unwrap(); // default A, then overridden to C
+        svc.transaction_attribute(&overridden.id, Some(&c.id))
+            .unwrap(); // -> C / Groceries: 500
+        svc.transaction_create(mk(&account_unowned.id, -300, Some(&rent.id)))
+            .unwrap(); // -> Unattributed / Rent: 300
+        let split_expense = svc
+            .transaction_create(mk(&account_a.id, -1_200, Some(&groceries.id)))
+            .unwrap();
+        svc.transaction_split_set(
+            &split_expense.id,
+            vec![
+                SplitShare {
+                    member_id: a.id.clone(),
+                    share_minor: 700,
+                },
+                SplitShare {
+                    member_id: b.id.clone(),
+                    share_minor: 500,
+                },
+            ],
+        )
+        .unwrap(); // -> A / Groceries += 700, B / Groceries += 500
+
+        // Contributions (income).
+        svc.transaction_create(mk(&account_a.id, 5_000, None))
+            .unwrap(); // -> A contribution: 5000
+        svc.transaction_create(mk(&account_b.id, 3_000, None))
+            .unwrap(); // -> B contribution: 3000
+        let split_income = svc
+            .transaction_create(mk(&account_a.id, 1_000, None))
+            .unwrap();
+        svc.transaction_split_set(
+            &split_income.id,
+            vec![
+                SplitShare {
+                    member_id: a.id.clone(),
+                    share_minor: 400,
+                },
+                SplitShare {
+                    member_id: c.id.clone(),
+                    share_minor: 600,
+                },
+            ],
+        )
+        .unwrap(); // -> A contribution += 400, C contribution: 600
+        svc.transaction_create(mk(&account_unowned.id, 200, None))
+            .unwrap(); // -> Unattributed contribution: 200
+
+        // -- expense report: A=1700, B=2500, C=500, Unattributed=300 --
+        let expense = svc
+            .report_member_expense(&book.id, "2026-07-01", "2026-07-31")
+            .unwrap();
+        let find = |rows: &[MemberAmountRow], id: Option<&str>| {
+            rows.iter()
+                .find(|r| r.member_id.as_deref() == id)
+                .unwrap_or_else(|| panic!("missing row for {id:?} in {rows:?}"))
+                .total_minor
+        };
+        assert_eq!(find(&expense, Some(&a.id)), 1_700);
+        assert_eq!(find(&expense, Some(&b.id)), 2_500);
+        assert_eq!(find(&expense, Some(&c.id)), 500);
+        assert_eq!(find(&expense, None), 300);
+        assert_eq!(expense.iter().map(|r| r.total_minor).sum::<i64>(), 5_000);
+        for row in &expense {
+            assert_eq!(row.currency, "ZAR");
+        }
+
+        // -- contribution report: A=5400, B=3000, C=600, Unattributed=200 --
+        let contribution = svc
+            .report_member_contribution(&book.id, "2026-07-01", "2026-07-31")
+            .unwrap();
+        assert_eq!(find(&contribution, Some(&a.id)), 5_400);
+        assert_eq!(find(&contribution, Some(&b.id)), 3_000);
+        assert_eq!(find(&contribution, Some(&c.id)), 600);
+        assert_eq!(find(&contribution, None), 200);
+        assert_eq!(
+            contribution.iter().map(|r| r.total_minor).sum::<i64>(),
+            9_200
+        );
+
+        // -- category report --
+        let category = svc
+            .report_member_category(&book.id, "2026-07-01", "2026-07-31")
+            .unwrap();
+        let find_cat = |member_id: Option<&str>, category_id: Option<&str>| {
+            category
+                .iter()
+                .find(|r| {
+                    r.member_id.as_deref() == member_id && r.category_id.as_deref() == category_id
+                })
+                .unwrap_or_else(|| panic!("missing category row for {member_id:?}/{category_id:?}"))
+                .total_minor
+        };
+        assert_eq!(find_cat(Some(&a.id), Some(&groceries.id)), 1_700);
+        assert_eq!(find_cat(Some(&b.id), Some(&groceries.id)), 500);
+        assert_eq!(find_cat(Some(&b.id), Some(&rent.id)), 2_000);
+        assert_eq!(find_cat(Some(&c.id), Some(&groceries.id)), 500);
+        assert_eq!(find_cat(None, Some(&rent.id)), 300);
+        assert_eq!(category.len(), 5, "no stray rows");
+
+        // -- settle-up: net = contributions - expenses --
+        // A: 5400 - 1700 = 3700
+        // B: 3000 - 2500 = 500
+        // C: 600 - 500 = 100
+        // Unattributed: 200 - 300 = -100
+        let settle = svc
+            .report_settle_up(&book.id, "2026-07-01", "2026-07-31")
+            .unwrap();
+        assert_eq!(settle.len(), 4, "3 members + the Unattributed bucket");
+        let find_settle = |id: Option<&str>| {
+            settle
+                .iter()
+                .find(|r| r.member_id.as_deref() == id)
+                .unwrap_or_else(|| panic!("missing settle row for {id:?}"))
+        };
+        let ra = find_settle(Some(&a.id));
+        assert_eq!(ra.contributions_minor, 5_400);
+        assert_eq!(ra.expenses_minor, 1_700);
+        assert_eq!(ra.net_minor, 3_700);
+        let rb = find_settle(Some(&b.id));
+        assert_eq!(rb.net_minor, 500);
+        let rc = find_settle(Some(&c.id));
+        assert_eq!(rc.net_minor, 100);
+        let ru = find_settle(None);
+        assert_eq!(ru.member_label, "Unattributed");
+        assert_eq!(ru.net_minor, -100);
+        // Sum of net positions is total contributions minus total expenses
+        // for the whole household (9200 − 5000) — it only nets to zero when
+        // the household spends exactly what it takes in.
+        assert_eq!(settle.iter().map(|r| r.net_minor).sum::<i64>(), 4_200);
     }
 }
