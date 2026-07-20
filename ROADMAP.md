@@ -83,13 +83,37 @@ Simple by design: connect your email, watch for reference codes, fire signed web
 - [x] Detection hook on inbound transactions (every source inherits: the hook runs inside `transaction_create`) *(partial upstream: parsing bank-alert emails into transactions is not wired yet — see [docs/EMAIL.md](docs/EMAIL.md); statement imports and manual entries trigger detection today)*
 - [x] `slipscan pay` CLI, server routes, desktop Payments panel — guide with receiver verification example: [docs/PAYMENTS.md](docs/PAYMENTS.md)
 
-## Phase 5 — Self-host server mode
+## Phase 4.9 — Household members & per-person attribution
 
+Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Household members & per-person attribution". Members are local data (no logins); sharing is via the synced data folder or self-host server.
+
+- [ ] Members in core: table + repo + service (label, initial/colour, default account); books gain members
+- [ ] Transaction attribution: `attributed_member` on every transaction, default = account owner, overridable; orthogonal to the ledger (no debit/credit change)
+- [ ] Per-member reports: expense + contribution rollups, share-of-category, "who owes whom" settle-up over a period
+- [ ] Split attribution: `(member, share_minor)` rows summing to the amount
+- [ ] Surfaces: member CRUD + attribution on Transactions, a household view on the Dashboard, member filter on Reports — CLI + server + desktop
+- [ ] Design-system-grade UI for all of the above (both themes, responsive)
+
+## Phase 4.95 — Bank feeds (safe paths only)
+
+No fabricated credential scrapers. Real, testable, ToS-respecting integrations plus a contributor SDK.
+
+- [ ] Bank-alert email parser: rules-driven extraction of transaction-notification emails into statement lines (patterns supplied per-bank by the user/community, not hardcoded)
+- [ ] API adapters where banks publish real APIs (e.g. Investec Programmable Banking — OAuth + REST) as the reference `BankAdapter` implementation
+- [ ] Adapter SDK: documented trait, mock-transport test harness, fixtures format, `BANK-ADAPTERS.md` walkthrough so people build/maintain their own bank's adapter
+- [ ] File/statement import remains the universal fallback *(done: CSV presets)*
+
+## Phase 5 — Feature-parity push (Vault22/22seven + Xero) & self-host
+
+Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Feature parity". Every screen held to the design-system bar.
+
+- [ ] **Parity matrices** written and tracked: Vault22/22seven (net worth, accounts, goals, nudges, household, peer comparison) and Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency, reconciliation)
+- [ ] Xero-side gaps: invoicing + quotes, fixed-asset register, multi-currency converted views (OpenRate FX already wired)
+- [ ] Vault22-side gaps: net-worth over time, goals, the remaining nudge tiers
+- [ ] UI/UX parity pass: deep design-system CSS across every screen, responsive, both themes — no screen ships below the bar
 - [ ] Headless mode: run the core on your own home server / NAS, desktop and mobile as clients *(partial: `slipscan-server` serves the core surface over HTTP with optional bearer auth; no in-server connectors/scheduler yet, and the desktop cannot connect to a remote server yet)*
 - [ ] IPC/HTTP parity: every operation under the same name and payload on both transports (current gaps listed in [docs/API.md](docs/API.md))
-- [ ] Multi-user households
 - [ ] Mobile companion app (Tauri mobile)
-- [ ] Insights & budgeting parity with 22seven/Vault22-class products
 
 ## Non-goals
 

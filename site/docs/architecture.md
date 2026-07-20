@@ -126,6 +126,22 @@ The user owns their data's location and its backup. SlipScan never operates back
 - **What moves and what doesn't.** The vault ciphertext moves with the folder, but the KEK stays in the OS keychain — a synced/backed-up folder alone still yields no secrets (by design; restoring onto a new machine means re-entering credentials). State that explicitly wherever backup is discussed.
 - **Safety rails.** Refuse to move into a subfolder of the current data folder, into a path without write permission, or onto a target that already contains a different SlipScan database (offer open-instead). While a move is in progress the app is read-only.
 
+## Household members & per-person attribution
+
+A book can belong to a household of several people, sharing one set of books, with spend and contributions tracked per person — without accounts, logins, or any hosted identity.
+
+- **Members are data, not logins.** A member is a person in the household: a label, an initial/colour, optional default account(s) they own. Members live in the book like categories do. SlipScan has no authentication — "who is using the app" is still just whoever is at the machine (or holds the self-host bearer token). Members describe *whose money it is*, never *who may access it*.
+- **One dashboard, shared the sovereign way.** Sharing the household dashboard means sharing the book: a synced data folder, or the self-host server with the desktop/mobile as clients (see Data location, Self-host). No SlipScan cloud, no per-member cloud accounts.
+- **Attribution is orthogonal to the ledger.** Every transaction carries an *attributed member* — who actually incurred it — independent of which account it came from. So an expense that hits one person's account (or a joint account) can be attributed to another person. Default attribution follows the account's owning member; it is overridable per transaction. Attribution is metadata on the transaction: it never alters debits/credits, so double-entry integrity is untouched — it only adds a member dimension to reporting.
+- **Splits.** A single transaction may be split across members as a set of `(member, share_minor)` rows that sum to the transaction amount (e.g. a grocery shop split three ways). Single-member attribution is the MVP; splits are the natural extension of the same table.
+- **Contributions.** Money into the shared pool (income, transfers in) is attributed per member too, so the household can see who contributed what.
+- **Reports.** Per-member expense and contribution rollups, share-of-category per person, and a "who owes whom" settle-up view (net position per member over a period) — computed locally, like every other report.
+- **Privacy holds.** Members, attributions, and settle-up are ordinary local rows in the shared book; nothing about this introduces a network call, an account, or a hosted service.
+
+## Feature parity — Vault22/22seven and Xero
+
+SlipScan's north star is genuine parity with the two products it stands in for, tracked as living matrices in [ROADMAP.md](../ROADMAP.md), with the desktop UI held to the same "precision ledger" design system depth (deep, documented CSS tokens; responsive; both themes first-class) across every screen. Personal-finance parity (Vault22/22seven): accounts and net worth, automatic categorisation, budgets and goals, nudges, per-person household view, peer benchmarks. Accounting parity (Xero): chart of accounts, double-entry journals, VAT/tax returns, bank reconciliation, invoicing and quotes, fixed assets, multi-currency. Each gap is a tracked issue, not a surprise; a screen ships only when it meets the design-system bar, not merely when it functions.
+
 ## Insights, nudges & anonymous peer benchmarks
 
 Target: the full Vault22/22seven experience — nudges, spending insights, peer comparison — without anyone learning who you are.
