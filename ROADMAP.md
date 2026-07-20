@@ -6,9 +6,9 @@ Phase contracts for the old (removed) cloud stack live only in git history, alon
 
 ## Phase 0 — Consolidation ✅
 
-- [x] Merge legacy repos (frontend, supabase) and branches into one history on `main`
+- [x] Fold every prior repo into one history on `main` — frontend, supabase, the ShapePay repos (frontend, supabase, scraper-go), and slipsnap-mono — each secret-scrubbed and re-authored before grafting (heritage only; their files live in history, not the current tree)
 - [x] MIT license, README, roadmap, contribution guidelines
-- [x] Single repo: `vul-os/slipscan`
+- [x] Single repo `vul-os/slipscan`; `main` and `dev` kept in lockstep, no other branches
 
 ## Phase 1 — Rust core
 

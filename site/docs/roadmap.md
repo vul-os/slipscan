@@ -6,9 +6,9 @@ Phase contracts for the old (removed) cloud stack live only in git history, alon
 
 ## Phase 0 — Consolidation ✅
 
-- [x] Merge legacy repos (frontend, supabase) and branches into one history on `main`
+- [x] Fold every prior repo into one history on `main` — frontend, supabase, the ShapePay repos (frontend, supabase, scraper-go), and slipsnap-mono — each secret-scrubbed and re-authored before grafting (heritage only; their files live in history, not the current tree)
 - [x] MIT license, README, roadmap, contribution guidelines
-- [x] Single repo: `vul-os/slipscan`
+- [x] Single repo `vul-os/slipscan`; `main` and `dev` kept in lockstep, no other branches
 
 ## Phase 1 — Rust core
 
@@ -87,12 +87,12 @@ Simple by design: connect your email, watch for reference codes, fire signed web
 
 Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Household members & per-person attribution". Members are local data (no logins); sharing is via the synced data folder or self-host server.
 
-- [ ] Members in core: table + repo + service (label, initial/colour, default account); books gain members
-- [ ] Transaction attribution: `attributed_member` on every transaction, default = account owner, overridable; orthogonal to the ledger (no debit/credit change)
-- [ ] Per-member reports: expense + contribution rollups, share-of-category, "who owes whom" settle-up over a period
-- [ ] Split attribution: `(member, share_minor)` rows summing to the amount
-- [ ] Surfaces: member CRUD + attribution on Transactions, a household view on the Dashboard, member filter on Reports — CLI + server + desktop
-- [ ] Design-system-grade UI for all of the above (both themes, responsive)
+- [x] Members in core: table + repo + service (label, initial/colour, default account); books gain members
+- [x] Transaction attribution: `attributed_member` on every transaction, default = account owner, overridable; orthogonal to the ledger (no debit/credit change)
+- [x] Per-member reports: expense + contribution rollups, share-of-category, "who owes whom" settle-up over a period
+- [x] Split attribution: `(member, share_minor)` rows summing to the amount
+- [x] Surfaces: member CRUD + attribution on Transactions, a household view on the Dashboard, member filter on Reports — CLI + server + desktop
+- [x] Design-system-grade UI for all of the above (both themes, responsive)
 
 ## Phase 4.95 — Bank feeds (safe paths only)
 
