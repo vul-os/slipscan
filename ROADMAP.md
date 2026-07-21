@@ -43,6 +43,13 @@ Share the smarts, not the data.
 - [ ] Distribution with no central registry: git remotes and/or p2p, verified by signature
 - [ ] Opt-in, privacy-preserving contribution flow (rules only — never transactions)
 - [ ] Device-to-device sync (your own devices, end-to-end encrypted)
+  - [x] Merge algebra: `slipscan-sync` maps SlipScan's replicated state onto the
+        shared DMTAP Sync engine (`substrate/SYNC.md` ③) rather than a private
+        CRDT — editable rows as §4.4 LWW registers, the posted ledger as a §4.3
+        add-only set. Same compiled core Ofisi and FlowStock use; as a native
+        Rust product SlipScan takes it as a plain crate dependency.
+  - [ ] Oplog: record each repo write as a signed op (nothing mints ops yet)
+  - [ ] Per-device identity from the existing vault, and a transport
 
 ## Phase 4.5 — Insights, nudges & anonymous benchmarks
 

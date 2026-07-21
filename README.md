@@ -82,6 +82,16 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
 - Write-only credential vault rooted in the OS keychain — secrets can be set, rotated, revoked, and used, never viewed ([threat model](docs/THREAT-MODEL.md))
 - Opt-in multi-currency FX via [OpenRate](https://github.com/vul-os/openrate) — self-hosted, provenance-graded rates. Decimal-only rate math (floats never touch money), a local rate cache, and every conversion recording the exact rate, quality grade, and as-of age it used — surfaced on the CLI (`slipscan fx`), the HTTP server, and the desktop Settings screen; converted report views are still landing (Phase 4.7). No endpoint configured means zero FX network calls ([contract](docs/ARCHITECTURE.md#exchange-rates--openrate))
 - Headless self-host server mode for an always-on box ([guide](docs/SELFHOST.md))
+- **Device sync will use one shared, specified merge engine** — not a private
+  CRDT invented here. `slipscan-sync` expresses SlipScan's replicated state in
+  the DMTAP Sync algebra (`substrate/SYNC.md` ③): editable rows as
+  last-writer-wins registers, the posted ledger as an add-only set, so
+  concurrent edits converge the way double-entry requires and a journal is never
+  clobbered. Money crosses the wire as an exact decimal — the algebra forbids
+  floats, and so does SlipScan. As a native Rust product it takes the shared
+  engine as a plain crate dependency. **Status: the mapping and its tests exist;
+  the oplog, device identity and transport do not yet, so nothing syncs between
+  devices today** ([roadmap](ROADMAP.md))
 
 > [!NOTE]
 > **Status: 0.2.0, under active development.** The Rust core, CLI, extraction, ingestion, packs, and server crates are implemented; bank adapters, nudges/benchmarks, and device sync are tracked phase-by-phase in [ROADMAP.md](ROADMAP.md).

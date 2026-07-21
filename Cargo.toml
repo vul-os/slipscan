@@ -15,6 +15,7 @@ slipscan-extract = { path = "crates/slipscan-extract" }
 slipscan-ingest = { path = "crates/slipscan-ingest" }
 slipscan-packs = { path = "crates/slipscan-packs" }
 slipscan-server = { path = "crates/slipscan-server" }
+slipscan-sync = { path = "crates/slipscan-sync" }
 
 anyhow = "1"
 async-trait = "0.1"

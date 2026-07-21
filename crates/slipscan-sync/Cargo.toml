@@ -1,0 +1,39 @@
+[package]
+name = "slipscan-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "SlipScan's replicated state expressed in the shared DMTAP Sync algebra (substrate/SYNC.md capability 3)"
+
+[dependencies]
+# The one shared implementation of the substrate's op algebra. SlipScan is a
+# native Rust product, so this is a plain crate dependency: no WASM, no
+# embedded runtime, none of the binary-size cost the Go and JS surfaces pay to
+# reach the same compiled core.
+#
+# KNOWN LIMITATION — this path resolves only on a machine that also has an
+# `envoir` checkout beside this one. A fresh `git clone && cargo build` of
+# SlipScan alone does NOT build this crate.
+#
+# Unlike the Go and JS bindings, nothing here is gitignored build output —
+# `dmtap-sync` is plain Rust source with one path dependency (`dmtap-core`), so
+# vendoring is not forced on us the way it was on FlowStock and Ofisi. The fix
+# is a versioned dependency on the upstream repo, either of:
+#
+#   dmtap-sync = { git = "https://github.com/vul-os/envoir", tag = "..." }
+#   dmtap-sync = "0.1"            # once it is published
+#
+# A git dependency resolves `dmtap-core` inside the same checkout on its own.
+# It is not used yet only because it needs a tag to pin to; until then this
+# path keeps the mapping honest against real upstream source rather than a
+# copy that can silently drift.
+dmtap-sync = { path = "../../../envoir/crates/dmtap-sync" }
+
+rust_decimal = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
