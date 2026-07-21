@@ -19,7 +19,9 @@
 
 <!-- Plain-text badges on purpose: rendering this README triggers no external
      image fetches — the same no-default-network-calls ethos as the app. -->
-<p align="center"><sub><a href="LICENSE">MIT license</a> · Rust 1.85+ · Tauri 2 · SQLite · offline-first</sub></p>
+<p align="center"><sub><a href="LICENSE-MIT">MIT</a> OR <a href="LICENSE-APACHE">Apache-2.0</a> · Rust 1.85+ · Tauri 2 · SQLite · offline-first</sub></p>
+
+<p align="center"><sub>Part of <strong><a href="https://vulos.org">VulOS</a></strong> — the open, self-hostable web OS &amp; app suite. Runs standalone, or as an app hosted by the Vulos OS.</sub></p>
 
 <p align="center">
   <img src="assets/screens/dashboard.png" alt="SlipScan dashboard — the shipped desktop app showing balances, budget burn, nudges, and recent activity" width="820">
@@ -237,4 +239,5 @@ Contributions are welcome — bank adapters, mailbox providers, and classificati
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE) — © VulOS. SlipScan is a VulOS
+project; source and issues at [github.com/vul-os/slipscan](https://github.com/vul-os/slipscan).
