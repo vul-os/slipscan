@@ -1,6 +1,18 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# slipscan-sync carries an optional dependency on envoir's `dmtap-sync` (see
+# crates/slipscan-sync/Cargo.toml). Cargo resolves EVERY optional dependency's
+# source into the lockfile for the whole workspace regardless of which
+# features are active — verified empirically: even with the feature off and
+# an already-committed Cargo.lock, a plain `cargo build` still shells out to
+# update the envoir git remote and the crates.io index. `default-members`
+# does not prevent this; only `exclude` does, because it removes the crate
+# from workspace dependency resolution entirely. So slipscan-sync is excluded
+# here to keep a bare `git clone && cargo build` of SlipScan free of any
+# dependency on envoir. Build it on its own, with the mapping enabled, via:
+#   cargo build --manifest-path crates/slipscan-sync/Cargo.toml --features sync-dmtap
+exclude = ["crates/slipscan-sync"]
 
 [workspace.package]
 version = "0.2.0"
@@ -15,7 +27,10 @@ slipscan-extract = { path = "crates/slipscan-extract" }
 slipscan-ingest = { path = "crates/slipscan-ingest" }
 slipscan-packs = { path = "crates/slipscan-packs" }
 slipscan-server = { path = "crates/slipscan-server" }
-slipscan-sync = { path = "crates/slipscan-sync" }
+# slipscan-sync is intentionally NOT a workspace dependency here: it is
+# excluded from the workspace (see [workspace].exclude above) so that a
+# default build never touches envoir, and nothing else in SlipScan depends on
+# it (grep-confirmed). Build it standalone; see that exclusion's comment.
 
 anyhow = "1"
 async-trait = "0.1"

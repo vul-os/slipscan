@@ -87,6 +87,17 @@
 //! `rust_decimal::Decimal` throughout and floats are already banned from money
 //! math. [`decimal_value`] encodes a decimal as its canonical text form, which
 //! is exact, and the substrate's no-float rule costs SlipScan nothing.
+//!
+//! # Feature-gated
+//!
+//! Everything below is behind the `sync-dmtap` feature, default-off. With it
+//! off this crate compiles to an empty, dependency-free no-op — it is
+//! `exclude`d from the root workspace precisely so that pulling in nothing
+//! here doesn't require touching `envoir` at all (see the root `Cargo.toml`
+//! and this crate's `Cargo.toml` for why `optional` alone isn't sufficient).
+//! Enable with `--features sync-dmtap` when building this crate on its own.
+
+#![cfg(feature = "sync-dmtap")]
 
 use dmtap_sync::{Hlc, SVal, SyncOp, OP_LWW_SET, OP_SET_ADD};
 use rust_decimal::Decimal;

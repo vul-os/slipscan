@@ -1,10 +1,17 @@
 [package]
 name = "slipscan-sync"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-rust-version.workspace = true
+# NOT workspace-inherited: this crate is deliberately `exclude`d from the
+# root workspace (see the root Cargo.toml's `[workspace].exclude` comment),
+# which means Cargo does not treat it as a workspace member and any
+# `<field>.workspace = true` inheritance fails ("failed to find a workspace
+# root") when this manifest is built on its own via `--manifest-path`. Values
+# below are copied from `[workspace.package]` / `[workspace.dependencies]` in
+# the root Cargo.toml and must be kept in sync with it by hand.
+version = "0.2.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/vulos/slipscan"
+rust-version = "1.85"
 description = "SlipScan's replicated state expressed in the shared DMTAP Sync algebra (substrate/SYNC.md capability 3)"
 
 [dependencies]
@@ -13,27 +20,38 @@ description = "SlipScan's replicated state expressed in the shared DMTAP Sync al
 # embedded runtime, none of the binary-size cost the Go and JS surfaces pay to
 # reach the same compiled core.
 #
-# KNOWN LIMITATION — this path resolves only on a machine that also has an
-# `envoir` checkout beside this one. A fresh `git clone && cargo build` of
-# SlipScan alone does NOT build this crate.
+# Optional and default-off, mirroring boloka-kernel's `dmtap-pub` seam
+# (boloka/crates/boloka-kernel/Cargo.toml): a fresh `git clone && cargo build`
+# of SlipScan alone must never require an `envoir` checkout beside it, and
+# must never even reach out to fetch it. Pinned to a reviewed revision via
+# `git`, not `path` — a git dependency resolves `dmtap-core` inside the same
+# checkout on its own, and does not depend on a sibling directory existing at
+# all. Enable with `--features sync-dmtap`.
 #
-# Unlike the Go and JS bindings, nothing here is gitignored build output —
-# `dmtap-sync` is plain Rust source with one path dependency (`dmtap-core`), so
-# vendoring is not forced on us the way it was on FlowStock and Ofisi. The fix
-# is a versioned dependency on the upstream repo, either of:
-#
-#   dmtap-sync = { git = "https://github.com/vul-os/envoir", tag = "..." }
-#   dmtap-sync = "0.1"            # once it is published
-#
-# A git dependency resolves `dmtap-core` inside the same checkout on its own.
-# It is not used yet only because it needs a tag to pin to; until then this
-# path keeps the mapping honest against real upstream source rather than a
-# copy that can silently drift.
-dmtap-sync = { path = "../../../envoir/crates/dmtap-sync" }
+# Being `optional` alone is NOT enough to keep the default build free of
+# envoir: Cargo resolves every optional dependency's source into the
+# lockfile for a whole workspace regardless of which features are active —
+# verified empirically, a plain `cargo build` at the workspace root still
+# shells out to update the envoir git remote even with this feature off and
+# an already-committed Cargo.lock. That's why this crate is additionally
+# `exclude`d from the root workspace (see root Cargo.toml) rather than relying
+# on `optional` + a default-off feature by itself.
+dmtap-sync = { git = "https://github.com/vul-os/envoir", rev = "12526123cb37e459df5717c2ce243bbecbf5ac23", optional = true }
 
-rust_decimal = { workspace = true }
-serde_json = { workspace = true }
-thiserror = { workspace = true }
+rust_decimal = "1"
+serde_json = "1"
+thiserror = "2"
 
-[lints]
-workspace = true
+[features]
+default = []
+# Additive DMTAP Sync mapping (substrate/SYNC.md capability ③). Enabling this
+# changes NO behaviour of the rest of SlipScan — nothing else in the workspace
+# depends on this crate — it only makes `op_for_write`/`parse_row_value` and
+# friends available, and pulls in `dmtap-sync` (and transitively `dmtap-core`).
+sync-dmtap = ["dep:dmtap-sync"]
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+uninlined_format_args = "allow"
