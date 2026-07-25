@@ -80,7 +80,7 @@ peer (changes relay transitively through shared peers). One reachable peer per
 pair is enough — a sync round pushes **and** pulls.
 
 To sync across the internet without opening ports, expose a branch through a
-[Vulos Relay](https://github.com/vul-os/vulos-relay) tunnel and use the
+[Ephor](https://github.com/vul-os/ephor) tunnel and use the
 `https://…` relay URL as the peer address.
 
 See [SYNC.md](SYNC.md) for topologies, transport security and merge semantics.

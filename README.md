@@ -146,7 +146,7 @@ flowchart LR
         UB[Browser UI] --> CB[Go binary]
         CB --> DB[(SQLite + oplog)]
     end
-    CA <-- "HTTP /api/sync (mutual Ed25519 key auth)<br>LAN · VPN · Vulos Relay" --> CB
+    CA <-- "HTTP /api/sync (mutual Ed25519 key auth)<br>LAN · VPN · Ephor" --> CB
 ```
 
 Every mutation is journalled to an oplog with a hybrid-logical-clock timestamp

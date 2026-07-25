@@ -20,7 +20,7 @@ iframe.
 │   └─ SQLite (WAL)  ~/.flowstock/flowstock.db                                         │
 │                                                                                     │
 └───────────────▲───────────────────────────────────────────────────▲────────────────┘
-                │  HTTP /api/sync/* (LAN · VPN · Vulos Relay tunnel)  │
+                │  HTTP /api/sync/* (LAN · VPN · Ephor tunnel)  │
                 ▼                                                     ▼
           other branch                                          other branch
 ```

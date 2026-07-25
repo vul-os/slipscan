@@ -106,7 +106,7 @@ generated on first run). Neither is edited by hand. See [SYNC.md](SYNC.md).
 - Sync signatures authenticate peers but do not encrypt the payload. Sync is
   plain HTTP over whatever network you run it on. Use a trusted LAN, a
   VPN/overlay (Tailscale, WireGuard, Netbird), or an HTTPS tunnel
-  (Vulos Relay, an _optional_ convenience — never required). Peer URLs may be
+  (Ephor, an _optional_ convenience — never required). Peer URLs may be
   `http://` or `https://`.
 - The **Sync folder** carries the same business data as the mesh. Treat it as
   trusted storage: a shared/private Dropbox or Syncthing folder, a NAS share

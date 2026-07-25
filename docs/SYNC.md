@@ -122,7 +122,7 @@ a fresh key, rotate the secret alongside removal to revoke completely.
 - Sync traffic is business data. The signatures authenticate peers but do **not**
   encrypt the payload, so still run it on a **trusted network**: a LAN, a
   VPN/overlay (Tailscale, WireGuard, Netbird), or an HTTPS tunnel such as a
-  [Vulos Relay](https://github.com/vul-os/vulos-relay) exposing the port as
+  [Ephor](https://github.com/vul-os/ephor) exposing the port as
   `https://…`. Peer URLs may be `http://` or `https://`.
 - The shared secret is compared in constant time; failed auth returns 401.
 
@@ -130,7 +130,7 @@ a fresh key, rotate the secret alongside removal to revoke completely.
 
 FlowStock never _needs_ the internet or any Vulos service to sync. A LAN, a
 VPN/overlay you run yourself, or the folder transport below are all first-class.
-A **Vulos Relay** tunnel is only ever an _optional convenience_ for reaching a
+An **Ephor** tunnel is only ever an _optional convenience_ for reaching a
 branch across the internet without opening a port — nothing about sync depends
 on it.
 
