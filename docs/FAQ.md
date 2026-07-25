@@ -36,7 +36,7 @@ Extraction needs a model; where it runs is your call. Fully local via Ollama or 
 
 ## What's the relationship with VulOS?
 
-SlipScan is a **standalone product in the VulOS family** — same principles (open source, self-hosted, no central server), zero coupling. It never imports other Vulos products and none of them are required. It *connects* to siblings across clean seams when **you** choose to: a [lilmail](https://github.com/vul-os) mailbox is just an IMAP mailbox, [Vulos Relay](https://vulos.org) is one optional way to make a self-host box reachable, llmux is one LLM provider option. "No coupling to VulOS" is a stated non-goal in [ROADMAP.md](../ROADMAP.md#non-goals).
+SlipScan is a **standalone product in the VulOS family** — same principles (open source, self-hosted, no central server), zero coupling. It never imports other Vulos products and none of them are required. It *connects* to siblings across clean seams when **you** choose to: a [lilmail](https://github.com/vul-os) mailbox is just an IMAP mailbox, [Ephor](https://github.com/vul-os/ephor) is one optional way to make a self-host box reachable, llmux is one LLM provider option. "No coupling to VulOS" is a stated non-goal in [ROADMAP.md](../ROADMAP.md#non-goals).
 
 ## Is there a mobile app? Sync between devices?
 

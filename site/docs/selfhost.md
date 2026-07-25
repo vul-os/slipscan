@@ -64,11 +64,11 @@ The same shape works with nginx or Traefik. Rules of thumb:
 - Prefer a VPN/overlay (WireGuard, Tailscale-style) for out-of-home access — your devices join the network; nothing is exposed.
 - If you ever must expose an HTTPS endpoint, scope the proxy route to exactly that path and keep auth on everything else. (There is currently no SlipScan route that needs one — Microsoft Graph push, which would, is not implemented; see [EMAIL.md](EMAIL.md#outlook--microsoft-365--connector-implemented-no-app-surface-yet).)
 
-## Exposing via your own Vulos Relay (optional)
+## Exposing via your own Ephor (optional)
 
-If you use the VulOS family, [Vulos Relay](https://vulos.org) is its reachability fabric — a way to give a machine behind NAT a stable, authenticated endpoint **you** operate. SlipScan can sit behind *your* relay like any other service: the relay terminates reachability, your box holds the data.
+If you use the VulOS family, [Ephor](https://github.com/vul-os/ephor) is its reachability fabric — a way to give a machine behind NAT a stable, authenticated endpoint **you** operate. SlipScan can sit behind *your* relay like any other service: the relay terminates reachability, your box holds the data.
 
-This is strictly optional and strictly yours: SlipScan does not ship with, default to, or depend on any relay — including Vulos Relay. It is one more "endpoint the user explicitly configured." SlipScan works fully without it; the products connect across a clean seam, they don't require each other.
+This is strictly optional and strictly yours: SlipScan does not ship with, default to, or depend on any relay — including Ephor. It is one more "endpoint the user explicitly configured." SlipScan works fully without it; the products connect across a clean seam, they don't require each other.
 
 ## Devices as clients
 
