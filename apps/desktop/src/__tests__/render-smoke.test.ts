@@ -75,7 +75,7 @@ const CASES: Record<RouteId, RouteCase & { component: Component }> = {
     component: Transactions as Component,
     heading: "Transactions",
     anchors: [
-      "25 of 25",
+      "30 of 30",
       "WOOLWORTHS 178 CLAREMONT",
       "−R 842.35",
       "Discovery Credit Card",
@@ -148,7 +148,7 @@ const CASES: Record<RouteId, RouteCase & { component: Component }> = {
   reports: {
     component: Reports as Component,
     heading: "Reports",
-    anchors: ["VAT201", "R 54,623.84", "Net refundable", "Trial balance (CSV)"],
+    anchors: ["VAT201", "R 90,723.84", "Net refundable", "Trial balance (CSV)"],
   },
   settings: {
     component: Settings as Component,

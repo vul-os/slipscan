@@ -12,20 +12,19 @@
  * step, Escape dismisses it, and dismissal is remembered — it never blocks
  * the app and never comes back on its own.
  *
+ * WHAT IT DOES: the region step creates the book. `book_create` is a
+ * registered IPC command (src-tauri `commands::book_create`), so the region
+ * and currency picked here become an actual book, seeded with the chart of
+ * accounts and tax rate table that profile prescribes.
+ *
  * WHAT IT DOES *NOT* DO, and says so on screen (contract: honest caveats are
  * a feature, never quietly upgraded):
- *   - It does not create a book. `book_create` exists in slipscan-core but is
- *     not exposed as a Tauri command, so no screen can call it. Under Tauri
- *     the backend seeds a first book itself (src-tauri `ensure_seeded`), so
- *     the way to *get* a book here is to point SlipScan at a data folder —
- *     which is wired, and is what the data step does.
  *   - It does not enable bank-alert-email parsing. That is not built. The
  *     mailbox step records nothing and only points at where the IMAP details
  *     live.
  *
- * The region and currency the user picks are recorded locally as a stated
- * preference. They are not written to a book, because there is no book and
- * no command that would accept them.
+ * The region and currency are also recorded locally, so Settings can open on
+ * the profile the user chose without re-reading it off the book.
  */
 
 import type { RegionInfo } from "./api/types";

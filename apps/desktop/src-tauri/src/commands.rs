@@ -90,6 +90,31 @@ pub async fn book_list(state: State<'_, AppState>) -> Result<Vec<BookDto>, Strin
     Ok(books.iter().map(|b| dto::book_dto(b, &db_path)).collect())
 }
 
+/// Create a book, then seed it the way a fresh install's book is seeded.
+///
+/// The payload is core's own [`core::NewBook`], so region and currency are
+/// whatever the caller picked out of `region_list` — nothing jurisdictional
+/// is decided here or anywhere below. Core rejects an unknown region id, and
+/// falls back to the *generic* profile (never a country) when neither
+/// `region` nor `country` is given; the currency comes from the chosen
+/// profile's data when omitted.
+///
+/// Unlike the HTTP route of the same name, this also runs
+/// [`crate::state::seed_book_contents`]: the desktop has no `coa_seed`
+/// command, so a bare create would leave first-run setup holding a book with
+/// no chart of accounts and no categories.
+#[tauri::command]
+pub async fn book_create(
+    state: State<'_, AppState>,
+    query: core::NewBook,
+) -> Result<BookDto, String> {
+    let service = state.service()?;
+    let db_path = slipscan_core::datadir::db_path(&state.data_dir()?);
+    let book = service.book_create(query).map_err(err)?;
+    crate::state::seed_book_contents(&service, &book).map_err(err)?;
+    Ok(dto::book_dto(&book, &db_path))
+}
+
 #[derive(serde::Deserialize)]
 pub struct BookScopedQuery {
     pub book_id: String,

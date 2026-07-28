@@ -353,6 +353,13 @@ async function tick(times = 6): Promise<void> {
 const flat = (el: Element | null) =>
   (el?.textContent ?? "").replace(/\s+/g, " ").trim();
 
+/** The region-profile choices only. The step also carries a book-kind
+ * radiogroup, so an unscoped `[role="radio"]` sweep would count both and
+ * silently stop asserting "exactly the profiles the backend serves". */
+const regionRadios = (): Element[] => [
+  ...document.querySelectorAll('[role="radiogroup"][aria-label="Region profile"] [role="radio"]'),
+];
+
 describe("first-run dialog", () => {
   let fatal: string[] = [];
   const onError = (e: ErrorEvent) => fatal.push(e.message);
@@ -394,7 +401,7 @@ describe("first-run dialog", () => {
       firstRun.step = "region";
       await tick();
 
-      const radios = [...document.querySelectorAll('[role="radio"]')];
+      const radios = regionRadios();
       const served = await mockApi.region_list();
       expect(radios).toHaveLength(served.length);
       for (const region of served) {
@@ -421,7 +428,7 @@ describe("first-run dialog", () => {
 
       const served = await mockApi.region_list();
       const withCurrency = served.find((r) => r.default_currency)!;
-      const radios = [...document.querySelectorAll('[role="radio"]')];
+      const radios = regionRadios();
       const index = served.indexOf(withCurrency);
       (radios[index] as HTMLElement).click();
       await tick();
@@ -440,19 +447,55 @@ describe("first-run dialog", () => {
     const { dispose } = render(FirstRun as Component);
     try {
       firstRun.open = true;
-      firstRun.step = "region";
-      await tick();
-      // The book it cannot create.
-      expect(flat(document.querySelector('[role="dialog"]'))).toContain(
-        "book_create",
-      );
-
       firstRun.step = "mailbox";
       await tick();
-      // The e-mail parsing that is not built.
+      // The e-mail parsing that is not built. This caveat is still true and
+      // must stay: `book_create` being wired says nothing about IMAP.
       expect(flat(document.querySelector('[role="dialog"]'))).toMatch(
         /not (built|implemented)/i,
       );
+      expect(fatal).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 20_000);
+
+  it("creates the first book from the profile the user picked", async () => {
+    const { dispose } = render(FirstRun as Component);
+    try {
+      firstRun.open = true;
+      firstRun.step = "region";
+      await tick();
+
+      // Pick whichever served profile names a currency — never a literal id.
+      const served = await mockApi.region_list();
+      const profile = served.find((r) => r.default_currency)!;
+      const radios = regionRadios();
+      (radios[served.indexOf(profile)] as HTMLElement).click();
+      await tick();
+      expect(firstRun.issue).toBeNull();
+
+      const before = (await mockApi.book_list()).length;
+      const create = [...document.querySelectorAll("button")].find((b) =>
+        flat(b).includes("Create this book"),
+      )!;
+      expect(create, "the region step offers no way to create the book").toBeDefined();
+      create.click();
+      await tick(12);
+
+      // A real book exists now, carrying that profile's own labels.
+      const books = await mockApi.book_list();
+      expect(books).toHaveLength(before + 1);
+      const made = books.at(-1)!;
+      expect(made.region).toBe(profile.id);
+      expect(made.currency).toBe(profile.default_currency);
+
+      const shown = flat(document.querySelector('[role="dialog"]'));
+      expect(shown).toContain(made.name);
+      expect(shown).toContain(profile.display_name);
+      expect(shown).toContain(profile.tax_report_name);
+      // And the caveat this change made false is gone.
+      expect(shown).not.toContain("book_create");
       expect(fatal).toEqual([]);
     } finally {
       dispose();

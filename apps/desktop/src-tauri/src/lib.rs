@@ -70,6 +70,7 @@ pub fn run() {
             health,
             commands::data_status,
             commands::data_move,
+            commands::book_create,
             commands::book_list,
             commands::account_list,
             commands::transaction_list,

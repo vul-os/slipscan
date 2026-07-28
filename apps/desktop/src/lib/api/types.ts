@@ -34,6 +34,26 @@ export interface Book {
   created_at: string;
 }
 
+/**
+ * Mirrors core's `NewBook`. Region and currency are the caller's choice out
+ * of `region_list` — there is no default jurisdiction here or in core: with
+ * neither `region` nor `country` given the book lands on the **generic**
+ * profile, and an unknown `region` id is rejected rather than silently
+ * downgraded.
+ */
+export interface NewBook {
+  name: string;
+  kind: BookKind;
+  /** Omit to take the chosen region profile's default currency, if it has
+   * one; a profile without one makes this required. */
+  currency?: string;
+  /** ISO 3166-1 alpha-2; also infers the region profile when `region` is
+   * omitted. */
+  country?: string;
+  /** Region profile id from `region_list`. */
+  region?: string;
+}
+
 // ---------------------------------------------------------------------------
 // data folder (movable) — contract: "Data location & backup". One folder
 // holds everything durable; backup is the user's own cloud syncing it.

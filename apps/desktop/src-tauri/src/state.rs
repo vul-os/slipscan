@@ -273,6 +273,21 @@ pub fn ensure_seeded(service: &CoreService) -> CoreResult<Book> {
         country: None,
         region: None, // core resolves this to the generic profile
     })?;
+    seed_book_contents(service, &book)?;
+    Ok(book)
+}
+
+/// Fill a just-created book with the two things that make it usable on day
+/// one: the chart of accounts its **own region profile** prescribes (core's
+/// `coa_seed` reads the book's region and kind — no jurisdiction is decided
+/// here) and the starter category set above.
+///
+/// Shared by [`ensure_seeded`] and the `book_create` IPC command, so a book
+/// made in first-run setup is seeded exactly like the one a fresh install
+/// gets. The desktop exposes no separate `coa_seed` command, so a bare
+/// create would otherwise hand back a book with an empty ledger and no
+/// categories to classify into.
+pub fn seed_book_contents(service: &CoreService, book: &Book) -> CoreResult<()> {
     service.coa_seed(&book.id)?;
     for &(name, kind, icon) in DEFAULT_CATEGORIES {
         service.category_create(NewCategory {
@@ -284,7 +299,7 @@ pub fn ensure_seeded(service: &CoreService) -> CoreResult<Book> {
             color: None,
         })?;
     }
-    Ok(book)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -314,6 +329,49 @@ mod tests {
             service.category_tree(&book.id).unwrap().len(),
             DEFAULT_CATEGORIES.len()
         );
+    }
+
+    /// The seed the `book_create` command runs takes its chart of accounts
+    /// from the book's **own** region profile. Driven off the profile data
+    /// rather than a literal id, so adding a country cannot quietly leave
+    /// first-run setup seeding somebody else's chart.
+    #[test]
+    fn seeding_a_created_book_follows_its_own_region_profile() {
+        let service = CoreService::new(
+            Db::open_in_memory().unwrap(),
+            Box::new(MemorySecretStore::new()),
+        );
+        for profile in slipscan_core::region::profiles() {
+            let book = service
+                .book_create(NewBook {
+                    name: format!("Book {}", profile.id),
+                    kind: BookKind::Personal,
+                    currency: Some("ZAR".to_string()),
+                    country: None,
+                    region: Some(profile.id.to_string()),
+                })
+                .unwrap();
+            assert_eq!(book.region, profile.id);
+            seed_book_contents(&service, &book).unwrap();
+
+            let codes: Vec<String> = service
+                .coa_list(&book.id)
+                .unwrap()
+                .into_iter()
+                .map(|a| a.code)
+                .collect();
+            for &(code, _, _) in profile.personal_coa {
+                assert!(
+                    codes.iter().any(|c| c == code),
+                    "{} chart is missing {code}",
+                    profile.id
+                );
+            }
+            assert_eq!(
+                service.category_tree(&book.id).unwrap().len(),
+                DEFAULT_CATEGORIES.len()
+            );
+        }
     }
 
     fn tmp_root(tag: &str) -> PathBuf {

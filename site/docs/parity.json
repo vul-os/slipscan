@@ -94,9 +94,10 @@
     }
   },
   "ipc": {
-    "count": 64,
+    "count": 65,
     "commands": [
       "account_list",
+      "book_create",
       "book_list",
       "budget_list",
       "budget_upsert",
@@ -163,9 +164,10 @@
     ]
   },
   "client": {
-    "count": 64,
+    "count": 65,
     "calls": [
       "account_list",
+      "book_create",
       "book_list",
       "budget_list",
       "budget_upsert",
@@ -237,14 +239,13 @@
     "category_list": "category_tree"
   },
   "missing_from_ipc": {
-    "count": 19,
+    "count": 18,
     "operations": [
       "account_create",
       "account_delete",
       "account_get",
       "account_update",
       "audit_list",
-      "book_create",
       "book_get",
       "budget_status",
       "category_create",

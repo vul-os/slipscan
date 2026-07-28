@@ -32,6 +32,7 @@ import type {
   MemberCategoryRow,
   MemberPatch,
   MemberSettleRow,
+  NewBook,
   NewMember,
   NewPayEndpoint,
   NewPayWatch,
@@ -84,6 +85,9 @@ const book: Book = {
   file_path: "~/SlipScan/personal.slipscan.db",
   created_at: "2026-01-04T08:12:00Z",
 };
+
+/** A database file can hold several books; `book_create` appends here. */
+const books: Book[] = [book];
 
 const regions: RegionInfo[] = [
   {
@@ -201,6 +205,7 @@ const categories: Category[] = [
   cat("Health", "expense", "🩺"),
   cat("Household", "expense", "🏠"),
   cat("Salary", "income", "💼"),
+  cat("Rental income", "income", "🏘️"),
   cat("Interest", "income", "🏦"),
   cat("Transfers", "transfer", "🔁"),
 ];
@@ -213,9 +218,15 @@ const acctId = (name: string): string =>
 
 // ---------------------------------------------------------------------------
 // household members — a small two-person demo household (ARCHITECTURE.md
-// "Household members & per-person attribution"). Alex owns the cheque
-// account, Sam owns the credit card; TymeBank and Cash stay joint (no
-// default owner), exactly the shape core supports.
+// "Household members & per-person attribution"). The FNB cheque account is
+// the everyday account both salaries land in, with Alex as its default
+// attribution; Sam's default is the credit card they carry. TymeBank and
+// Cash stay joint (no default owner), exactly the shape core supports.
+//
+// A member has ONE default account, so the income that does not follow it —
+// Sam's salary into the shared cheque account — carries an explicit
+// `member` override on its seed, which is the same override path the Uber
+// trip below uses in the other direction.
 // ---------------------------------------------------------------------------
 
 interface MemberSeed {
@@ -262,10 +273,22 @@ interface TxSeed {
   member?: string | null;
 }
 
+// Dates run backwards from the demo "today" (2026-07-16, the capture clock
+// in scripts/screenshot.mjs). Nothing may be dated after it: a seed in the
+// future simply never appears on a month-scoped screen.
+//
+// The household is paid on the 15th, so July's income has already landed by
+// the demo's today — which is what makes the per-member contribution and
+// settle-up reports show real figures for the month on screen rather than a
+// month that has not been paid yet.
 const txSeeds: TxSeed[] = [
   { d: "2026-07-16", desc: "WOOLWORTHS 178 CLAREMONT", merchant: "Woolworths", amount: -84_235, cat: "Groceries", acct: "FNB Cheque", source: "scraper" },
   { d: "2026-07-16", desc: "UBER *TRIP HELP.UBER.COM", merchant: "Uber", amount: -11_650, cat: "Transport & fuel", acct: "Discovery Credit Card", source: "scraper", member: "Alex" },
   { d: "2026-07-15", desc: "CHECKERS SIXTY60 RONDEBOSCH", merchant: "Checkers Sixty60", amount: -63_780, cat: "Groceries", acct: "Discovery Credit Card", source: "scraper" },
+  { d: "2026-07-15", desc: "SALARY - MOLEFE CONSULTING", merchant: null, amount: 5_450_000, cat: "Salary", acct: "FNB Cheque", source: "scraper" },
+  // Sam is paid into the same everyday account, so this one carries the
+  // explicit attribution rather than inheriting the account's default.
+  { d: "2026-07-15", desc: "SALARY - THELA DESIGN STUDIO", merchant: null, amount: 2_860_000, cat: "Salary", acct: "FNB Cheque", source: "scraper", member: "Sam" },
   { d: "2026-07-15", desc: "VIDA E CAFFE KLOOF ST", merchant: "Vida e Caffè", amount: -6_850, cat: "Eating out", acct: "Discovery Credit Card", source: "scraper" },
   { d: "2026-07-14", desc: "ESKOM PREPAID ELEC", merchant: "Eskom", amount: -95_000, cat: "Utilities", acct: "FNB Cheque", source: "scraper" },
   { d: "2026-07-14", desc: "PNP FAMILY KENILWORTH", merchant: "Pick n Pay", amount: -41_290, cat: "Groceries", acct: "FNB Cheque", source: "scraper" },
@@ -282,12 +305,19 @@ const txSeeds: TxSeed[] = [
   { d: "2026-07-03", desc: "BUILDERS WAREHOUSE TOKAI", merchant: "Builders", amount: -78_635, cat: "Household", acct: "Discovery Credit Card", source: "scraper" },
   { d: "2026-07-02", desc: "INTEREST CAPITALISED", merchant: null, amount: 12_384, cat: "Interest", acct: "TymeBank GoalSave", source: "scraper" },
   { d: "2026-07-01", desc: "UBER EATS CAPE TOWN", merchant: "Uber Eats", amount: -28_450, cat: "Eating out", acct: "Discovery Credit Card", source: "scraper" },
+  // The garden-flat tenant's monthly EFT. The reference is the whole token
+  // `RENT-12B`, which is the watch code the Payments screen matches on.
+  { d: "2026-07-01", desc: "EFT CREDIT RENT-12B COETZEE", merchant: null, amount: 750_000, cat: "Rental income", acct: "FNB Cheque", source: "scraper" },
   { d: "2026-06-30", desc: "CITY OF CT MUNICIPAL", merchant: "City of Cape Town", amount: -164_420, cat: "Utilities", acct: "FNB Cheque", source: "scraper" },
   { d: "2026-06-28", desc: "WOOLWORTHS 178 CLAREMONT", merchant: "Woolworths", amount: -112_060, cat: "Groceries", acct: "FNB Cheque", source: "scraper" },
   { d: "2026-06-27", desc: "SHELL ULTRA CITY N2", merchant: "Shell", amount: -85_500, cat: "Transport & fuel", acct: "FNB Cheque", source: "scraper" },
-  { d: "2026-06-25", desc: "SALARY - MOLEFE CONSULTING", merchant: null, amount: 5_450_000, cat: "Salary", acct: "FNB Cheque", source: "scraper" },
   { d: "2026-06-24", desc: "PNP FAMILY KENILWORTH", merchant: "Pick n Pay", amount: -58_420, cat: "Groceries", acct: "FNB Cheque", source: "scraper" },
   { d: "2026-06-23", desc: "KAUAI KLOOF NEK", merchant: "Kauai", amount: -14_900, cat: "Eating out", acct: "Discovery Credit Card", source: "scraper" },
+  { d: "2026-06-15", desc: "SALARY - MOLEFE CONSULTING", merchant: null, amount: 5_450_000, cat: "Salary", acct: "FNB Cheque", source: "scraper" },
+  { d: "2026-06-15", desc: "SALARY - THELA DESIGN STUDIO", merchant: null, amount: 2_860_000, cat: "Salary", acct: "FNB Cheque", source: "scraper", member: "Sam" },
+  // June's rent predates the RENT-12B watch (created 2026-06-28), so it is
+  // correctly unmatched — a watch only sees what arrives after it exists.
+  { d: "2026-06-01", desc: "EFT CREDIT RENT-12B COETZEE", merchant: null, amount: 750_000, cat: "Rental income", acct: "FNB Cheque", source: "scraper" },
 ];
 
 const transactions: Transaction[] = txSeeds.map((s, i) => ({
@@ -314,20 +344,33 @@ const transactions: Transaction[] = txSeeds.map((s, i) => ({
   created_at: `${s.d}T04:00:00Z`,
 }));
 
+/** A seeded transaction by (date, description). Positional references break
+ * silently the moment a seed is inserted above them, and one already had:
+ * the payments watch below used to point at whichever row happened to sit
+ * at index 17. */
+const txOn = (date: string, description: string): Transaction => {
+  const found = transactions.find(
+    (t) => t.posted_at.startsWith(date) && t.description === description,
+  );
+  if (!found) throw new Error(`no seeded transaction "${description}" on ${date}`);
+  return found;
+};
+
 // One split example: the big Woolworths shop, 60/40 between Alex and Sam —
 // the shares must sum to exactly the transaction's absolute amount, just
 // like core's `transaction_split_set` invariant.
+const woolworthsShop = txOn("2026-07-16", "WOOLWORTHS 178 CLAREMONT");
 let transactionSplits: TransactionSplit[] = [
   {
     id: id("ts00"),
-    transaction_id: transactions[0]!.id,
+    transaction_id: woolworthsShop.id,
     member_id: memberId("Alex"),
     share_minor: 50_541,
     created_at: "2026-07-16T09:00:00Z",
   },
   {
     id: id("ts00"),
-    transaction_id: transactions[0]!.id,
+    transaction_id: woolworthsShop.id,
     member_id: memberId("Sam"),
     share_minor: 33_694,
     created_at: "2026-07-16T09:00:00Z",
@@ -482,6 +525,7 @@ const ledgerAccounts: LedgerAccount[] = (
     ["3000", "Opening balance equity", "equity"],
     ["4000", "Salary income", "income"],
     ["4100", "Interest income", "income"],
+    ["4200", "Rental income", "income"],
     ["5000", "Groceries", "expense"],
     ["5100", "Transport & fuel", "expense"],
     ["5200", "Utilities", "expense"],
@@ -536,9 +580,20 @@ const journalEntries: JournalEntry[] = [
     ["2200", 12_005, 0],
     ["1000", 0, 92_040],
   ]),
-  entry("2026-06-25", "June salary", [
-    ["1000", 5_450_000, 0],
-    ["4000", 0, 5_450_000],
+  // Both salaries land in the same cheque account, so one entry carries the
+  // pair; the member dimension is attribution metadata on the transactions
+  // and never reaches a debit or a credit.
+  entry("2026-07-15", "July salaries", [
+    ["1000", 8_310_000, 0],
+    ["4000", 0, 8_310_000],
+  ]),
+  entry("2026-07-01", "Garden flat rent — July", [
+    ["1000", 750_000, 0],
+    ["4200", 0, 750_000],
+  ]),
+  entry("2026-06-15", "June salaries", [
+    ["1000", 8_310_000, 0],
+    ["4000", 0, 8_310_000],
   ]),
 ];
 
@@ -577,8 +632,8 @@ const payWatches: PayWatch[] = [
     book_id: BOOK_ID,
     code: "RENT-12B",
     label: "Garden flat rent",
-    expected_amount_minor: null,
-    expected_currency: null,
+    expected_amount_minor: 750_000,
+    expected_currency: "ZAR",
     enabled: true,
     created_at: "2026-06-28T07:00:00Z",
   },
@@ -613,14 +668,17 @@ const payEndpoints: PayEndpoint[] = [
   },
 ];
 
-// The RENT-12B watch matched the inbound interest-day credit in the seed set.
+// The RENT-12B watch matched July's rent EFT — the one inbound credit whose
+// description actually carries that reference, at exactly the amount the
+// watch expects.
+const julyRent = txOn("2026-07-01", "EFT CREDIT RENT-12B COETZEE");
 const payMatches: PayMatch[] = [
   {
     id: id("pm00"),
     book_id: BOOK_ID,
     watch_id: payWatches[0]!.id,
-    transaction_id: transactions[17]!.id,
-    matched_at: "2026-07-02T04:10:00Z",
+    transaction_id: julyRent.id,
+    matched_at: "2026-07-01T04:10:00Z",
   },
 ];
 
@@ -634,18 +692,18 @@ const payDeliveries: PayDelivery[] = [
       event: "payment.matched",
       reference: "RENT-12B",
       watch_label: "Garden flat rent",
-      amount_minor: 12_384,
+      amount_minor: 750_000,
       currency: "ZAR",
-      posted_date: "2026-07-02",
-      matched_at: "2026-07-02T04:10:00Z",
+      posted_date: "2026-07-01",
+      matched_at: "2026-07-01T04:10:00Z",
     }),
     state: "delivered",
     attempts: 1,
-    next_attempt_at: "2026-07-02T04:10:00Z",
+    next_attempt_at: "2026-07-01T04:10:00Z",
     last_status: 200,
     last_error: null,
-    created_at: "2026-07-02T04:10:00Z",
-    updated_at: "2026-07-02T04:11:00Z",
+    created_at: "2026-07-01T04:10:00Z",
+    updated_at: "2026-07-01T04:11:00Z",
   },
   {
     id: id("pd00"),
@@ -656,18 +714,18 @@ const payDeliveries: PayDelivery[] = [
       event: "payment.matched",
       reference: "RENT-12B",
       watch_label: "Garden flat rent",
-      amount_minor: 12_384,
+      amount_minor: 750_000,
       currency: "ZAR",
-      posted_date: "2026-07-02",
-      matched_at: "2026-07-02T04:10:00Z",
+      posted_date: "2026-07-01",
+      matched_at: "2026-07-01T04:10:00Z",
     }),
     state: "pending",
     attempts: 3,
-    next_attempt_at: "2026-07-02T06:41:00Z", // past — due for "Deliver now"
+    next_attempt_at: "2026-07-01T06:41:00Z", // past — due for "Deliver now"
     last_status: 503,
     last_error: "HTTP 503",
-    created_at: "2026-07-02T04:10:00Z",
-    updated_at: "2026-07-02T04:41:00Z",
+    created_at: "2026-07-01T04:10:00Z",
+    updated_at: "2026-07-01T04:41:00Z",
   },
 ];
 
@@ -1299,6 +1357,29 @@ function settleUp(from: string, to: string): MemberSettleRow[] {
   return out;
 }
 
+/**
+ * Money in and money out for one `YYYY-MM`, straight off the seeded rows.
+ * Transfers between the household's own accounts are excluded from the
+ * expense side, exactly like `report_spending` — moving R5 000 into savings
+ * is not spending it.
+ */
+function seededMonthTotals(month: string): {
+  income_minor: number;
+  expense_minor: number;
+} {
+  const rows = transactions.filter((t) => t.posted_at.startsWith(month));
+  const isTransfer = (t: Transaction): boolean =>
+    categories.find((c) => c.id === t.category_id)?.kind === "transfer";
+  return {
+    income_minor: rows
+      .filter((t) => t.amount_minor > 0)
+      .reduce((s, t) => s + t.amount_minor, 0),
+    expense_minor: rows
+      .filter((t) => t.amount_minor < 0 && !isTransfer(t))
+      .reduce((s, t) => s + -t.amount_minor, 0),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // mock service surface — same names/shapes as the core services
 // ---------------------------------------------------------------------------
@@ -1312,7 +1393,56 @@ export const mockApi = {
     tauri: "browser",
   }),
 
-  book_list: async (): Promise<Book[]> => clone([book]),
+  book_list: async (): Promise<Book[]> => clone(books),
+
+  /**
+   * Mirrors core's `book_create`, including the parts that are easy to get
+   * wrong: the region profile is resolved from the `region_list` data (an
+   * explicit id wins, else the country infers one, else **generic** — never
+   * a jurisdiction picked here), an unknown region id is rejected rather
+   * than downgraded, and the currency falls back to the chosen profile's
+   * own default only when the profile names one.
+   */
+  book_create: async (q: NewBook): Promise<Book> => {
+    const name = q.name.trim();
+    if (!name) throw new Error("book name must not be empty");
+    let profile: RegionInfo | undefined;
+    if (q.region) {
+      profile = regions.find((r) => r.id === q.region);
+      if (!profile)
+        throw new Error(
+          `unknown region profile "${q.region}" (known: ${regions
+            .map((r) => r.id)
+            .join(", ")})`,
+        );
+    } else if (q.country) {
+      profile = regions.find(
+        (r) => r.country?.toUpperCase() === q.country!.toUpperCase(),
+      );
+    }
+    profile ??= regions.find((r) => r.id === "generic")!;
+    const currency = (q.currency ?? profile.default_currency ?? "").trim().toUpperCase();
+    if (!currency)
+      throw new Error(
+        "currency is required (the selected region profile has no default)",
+      );
+    if (!/^[A-Z]{3}$/.test(currency))
+      throw new Error(`invalid currency code "${currency}"`);
+    const created: Book = {
+      id: id("bk00"),
+      name,
+      slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+      kind: q.kind,
+      currency,
+      region: profile.id,
+      region_name: profile.display_name,
+      tax_report_name: profile.tax_report_name,
+      file_path: dataState.db_path,
+      created_at: new Date().toISOString(),
+    };
+    books.push(created);
+    return clone(created);
+  },
 
   data_status: async (): Promise<DataStatus> =>
     clone({ ...dataState, cloud_sync_hint: mockCloudHint(dataState.data_dir) }),
@@ -1728,18 +1858,31 @@ export const mockApi = {
     };
   },
 
+  /**
+   * Six months of history. The five closed months are invented — the seeds
+   * only carry the recent slice a fresh import would hold — at the
+   * household's steady state: two salaries (R54 500 + R28 600) plus the
+   * garden flat's R7 500, with interest capitalising quarterly.
+   *
+   * The current month is NOT invented: it is computed from the same seeded
+   * rows every other screen reads, so the last bar can never drift away from
+   * the Household, Budgets and Reports figures beside it. It is a partial
+   * month (the demo clock is the 16th), which is why its expense bar is
+   * short while its income is already whole — the household is paid on the
+   * 15th.
+   */
   report_income_expense: async (_q: {
     book_id: string;
   }): Promise<IncomeExpenseReport> => ({
     book_id: BOOK_ID,
     currency: "ZAR",
     months: [
-      { month: "2026-02", income_minor: 5_450_000, expense_minor: 3_310_400 },
-      { month: "2026-03", income_minor: 5_450_000, expense_minor: 3_642_210 },
-      { month: "2026-04", income_minor: 5_462_384, expense_minor: 2_980_770 },
-      { month: "2026-05", income_minor: 5_450_000, expense_minor: 3_871_120 },
-      { month: "2026-06", income_minor: 5_462_384, expense_minor: 3_120_450 },
-      { month: "2026-07", income_minor: 12_384, expense_minor: 1_932_353 },
+      { month: "2026-02", income_minor: 9_060_000, expense_minor: 3_310_400 },
+      { month: "2026-03", income_minor: 9_060_000, expense_minor: 3_642_210 },
+      { month: "2026-04", income_minor: 9_072_384, expense_minor: 2_980_770 },
+      { month: "2026-05", income_minor: 9_060_000, expense_minor: 3_871_120 },
+      { month: "2026-06", income_minor: 9_060_000, expense_minor: 3_120_450 },
+      { month: "2026-07", ...seededMonthTotals("2026-07") },
     ],
   }),
 

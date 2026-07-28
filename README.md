@@ -117,6 +117,10 @@ These are the **shipped desktop app**, running with demo data. The full annotate
     <td width="50%"><img src="assets/screens/payments.png" alt="Payments"><br><sub><em>Payments — reference watches, webhook endpoints with rotate-once secrets, and the signed-delivery queue with retry status</em></sub></td>
     <td width="50%"><img src="assets/screens/transactions.png" alt="Transactions"><br><sub><em>Transactions — inline categorisation and per-person attribution (member avatars) for households sharing a book</em></sub></td>
   </tr>
+  <tr>
+    <td width="50%"><img src="assets/screens/household.png" alt="Household"><br><sub><em>Household — spend and contributions per person, each one's share of every category, and a settle-up that reconciles; members are local rows, never logins</em></sub></td>
+    <td width="50%"><img src="assets/screens/packs.png" alt="Packs"><br><sub><em>Packs — signed classification packs with their signer fingerprint, the built-in seed taxonomies, and peer comparison computed locally against installed benchmark packs</em></sub></td>
+  </tr>
 </table>
 
 ## Quick start

@@ -34,6 +34,7 @@ import type {
   MemberCategoryRow,
   MemberPatch,
   MemberSettleRow,
+  NewBook,
   NewMember,
   InstalledPackInfo,
   NewPayEndpoint,
@@ -94,6 +95,14 @@ export const api = {
   health: (): Promise<Health> => call("health", {}, mockApi.health),
 
   bookList: (): Promise<Book[]> => call("book_list", {}, mockApi.book_list),
+
+  /** Create a book and seed it (chart of accounts + starter categories) from
+   * the region profile it was created with — the command is what first-run
+   * setup calls to turn the region and currency the user picked into an
+   * actual book. Nothing jurisdictional is chosen here: `region` is an id the
+   * caller took from `regionList`, and core rejects one it does not know. */
+  bookCreate: (q: NewBook): Promise<Book> =>
+    call("book_create", { query: q }, () => mockApi.book_create(q)),
 
   // -- data folder: one movable folder holds everything durable. Backup is
   // the user's own cloud syncing that folder; SlipScan ships no backup
