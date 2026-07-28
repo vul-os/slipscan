@@ -30,27 +30,46 @@ The race detector is clean and CI runs it, in both tag configurations:
 npm run test:race   # go test -race ./backend/... , then again with -tags dmtap
 ```
 
-## Vendored-engine provenance
+## Engine provenance and conformance
 
-Two guards in `backend/internal/substrate/vendor_drift_test.go` run in **both**
-builds, because they are about the vendored engine's bytes rather than the
-engine:
+The shared sync engine is a **published module**, pinned by `go.mod` and
+`go.sum`. `go build` refuses to proceed on substituted bytes, so the toolchain
+enforces "these are the module's bytes" on every build — a strictly stronger
+guarantee, applied more often, than the hand-kept `SHA256SUMS.txt` that guarded
+the vendored copy this replaced.
 
-- **`TestVendoredTreeMatchesManifest`** checks every file in
-  `third_party/dmtapsync/` against the digests in its `SHA256SUMS.txt`, fails if
-  the manifest is missing, and needs nothing but this repo.
-- **`TestVendoredMatchesPinnedUpstream`** compares each vendored file against
-  `git show <pinned commit>:bindings/go/<file>` in an `envoir` checkout
-  (`FLOWSTOCK_ENVOIR_DIR`, or `../envoir`), reading the pin out of `VENDOR.md`.
-  This is the only guard that catches drift **laundered through a regenerated
-  manifest** — bytes changed and `SHA256SUMS.txt` re-run over them.
+What the toolchain does **not** answer is whether the engine inside that module
+still computes the algebra FlowStock merges on. Three guards cover that:
 
-Because the second one is the load-bearing guard, it is not allowed to quietly
-do nothing. CI checks `vul-os/envoir` out at the pinned commit and sets
-`FLOWSTOCK_REQUIRE_UPSTREAM_VENDOR_CHECK=1`, which turns every "could not
+- **`TestEngineIsAPinnedModuleNotAVendoredCopy`** (both builds, needs nothing but
+  this repo) asserts the module is required at the version the test names, is
+  not redirected by a `replace`, has both hashes in `go.sum`, and that no
+  vendored copy has reappeared. It counts its own checks.
+- **`TestEngineDrivesTheFrozenConformanceVectors`** (`-tags dmtap`) drives 14 of
+  the 24 frozen `SYNC.md` §10 conformance vectors through the engine actually
+  linked into the binary — canonical op encoding, the COSE_Sign1 envelope and
+  its two forgeries, LWW winners and exact ties, OR-Set add-wins, death
+  domination and the deleted-beats-live tie, the §4.6 PN-counter union
+  (including the partial-merge associativity subcase), the observable-state
+  root, the namespace-leak refusal and the stability cut. Every input and
+  expectation is a literal copied from the spec's `sync_vectors.json`, so this
+  **never skips** — no checkout, no network, no environment variable. It asserts
+  the number of vectors it drove.
+- **`TestFrozenVectorsMatchTheSpecFile`** re-derives all 76 of those literals
+  from `conformance/vectors/sync_vectors.json` in a `kotva` checkout
+  (`FLOWSTOCK_KOTVA_DIR`, or `../kotva`), so this repo's copy of the frozen
+  values cannot drift from the frozen values themselves.
+
+Only the third can skip, and it is not allowed to do so where it matters: CI
+checks `vul-os/kotva` out at the tag matching the engine version in `go.mod` and
+sets `FLOWSTOCK_REQUIRE_SPEC_VECTOR_CHECK=1`, which turns every "could not
 compare" path into a **failure**; the release workflow does the same. Locally,
-with no checkout, it skips — but prints what was not verified and how many files
-went uncompared, and it asserts it compared all ten when it does run.
+with no checkout, it skips — but prints what was not verified and how many values
+went uncompared, and asserts it compared all 76 when it does run.
+
+`TestNothingStillReadsTheVendoredPath` (both builds) walks the repo for the dead
+names left by that migration and asserts a floor on the number of files it
+scanned, so a walk that started in the wrong place cannot report a clean result.
 
 ## Published docs
 
@@ -65,8 +84,10 @@ npm run docs:sync    # rewrite site/docs/ from docs/ after editing docs/
 `scripts/docs-mirror.mjs` reads the `const DOCS = [...]` manifest in
 `site/docs.html` to learn what the site publishes, then requires a byte-identical
 `docs/` source for each page, refuses any unaccounted-for file in `site/docs/`,
-asserts the published count against a floor, and scans the hand-authored shells
-(`site/*.html`) for claims that were published and were wrong. It has no skip
+asserts the published count against a floor, and scans both the hand-authored
+shells (`site/*.html`) and `docs/*.md` itself for claims that were published and
+were wrong — the source as well as the copies, since a claim corrected only in
+the mirror comes back the next time the mirror is regenerated. It has no skip
 path: both trees are in this repo.
 
 ## Browser tests

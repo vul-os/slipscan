@@ -1,7 +1,7 @@
 //go:build !dmtap
 
 // Package substrate, in this build, carries no dependency on
-// github.com/vul-os/envoir/bindings/go at all — that binding, and the real
+// github.com/vul-os/kotva/bindings/go at all — that binding, and the real
 // Engine that wraps it (substrate.go, mapping.go), only compile with
 // `-tags dmtap`. This file exists so that the packages which reference the
 // seam unconditionally (main.go, api.Server.Substrate) still type-check and

@@ -88,16 +88,26 @@
 //
 // # What it costs
 //
-// Measured on an Apple M2, with `go test -bench Open ./backend/internal/substrate`
-// and by building the binary at the commit before this package existed:
+// Re-measured on an Apple M2 against the published engine module
+// (github.com/vul-os/kotva/bindings/go v0.2.0), with
+// `go test -tags dmtap -bench Open ./backend/internal/substrate` and by building
+// ./backend/cmd/flowstock with and without `-tags dmtap`:
 //
-//	embedded engine artifact   426,890 bytes (417 KiB)
-//	flowstock binary           15,300,578 → 19,049,794 bytes (+3.58 MiB, +24.5%)
-//	Open, no cache             ~118 ms, once per process
-//	Open, warm cache           ~5.7 ms  (~20x)
+//	embedded engine artifact   427,731 bytes (418 KiB)
+//	flowstock binary           15,301,826 → 19,049,826 bytes (+3.57 MiB, +24.5%)
+//	Open, no cache             ~150 ms, once per process
+//	Open, warm cache           ~7 ms    (~20x)
+//
+// The previous figures here were taken against the vendored copy of the binding
+// and its 426,890-byte artifact: +3.58 MiB, ~118 ms, ~5.7 ms. The binary delta
+// moved by 1,216 bytes — a rounding boundary, not a regression. The startup
+// numbers did move: the artifact is 841 bytes larger and compiling it costs
+// proportionally more, and these were taken on a busy laptop where cold Open
+// ranged 148–190 ms across runs. Treat them as an order of magnitude, which is
+// all the decision they inform needs.
 //
 // The binary delta is worth stating plainly, because the artifact size alone
-// understates it by an order of magnitude: only 417 KiB of those 3.58 MiB is the
+// understates it by an order of magnitude: only 418 KiB of those 3.57 MiB is the
 // engine. The rest is wazero's optimizing compiler, which is the price of
 // running WebAssembly without cgo — and cgo was the alternative FlowStock cannot
 // take, since it cross-compiles to a single static binary for laptops, shop
@@ -107,7 +117,7 @@
 // on a one-minute timer, so it compiles once and amortizes over the process
 // lifetime. It is not nothing on a shop-counter PC that gets power-cycled daily,
 // which is why main.go passes a cache dir under the data directory and turns
-// 118ms into 6ms for every start after the first.
+// ~150ms into ~7ms for every start after the first.
 package substrate
 
 import (
@@ -115,7 +125,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	dmtapsync "github.com/vul-os/envoir/bindings/go"
+	kotvasync "github.com/vul-os/kotva/bindings/go"
 
 	"flowstock/backend/internal/store"
 )
@@ -183,7 +193,7 @@ func ledgerValue(op store.Op) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	return dmtapsync.Text(markLive + string(canon)), nil
+	return kotvasync.Text(markLive + string(canon)), nil
 }
 
 // rowValue is the LWW value for one catalog row, discriminated live/deleted.
@@ -196,7 +206,7 @@ func rowValue(op store.Op) (json.RawMessage, error) {
 	if op.Deleted {
 		mark = markDeleted
 	}
-	return dmtapsync.Text(mark + body), nil
+	return kotvasync.Text(mark + body), nil
 }
 
 // decodeRowValue reads back what rowValue wrote.
@@ -226,36 +236,36 @@ func decodeRowValue(tagged json.RawMessage) (payload json.RawMessage, deleted bo
 // syncOp expresses a FlowStock op as a SyncOp. author is the hex Ed25519 public
 // key of the node that minted it — which is also the op's HLC author, so the key
 // an op claims and the key it is signed with are the same by construction.
-func syncOp(op store.Op, author string, k kinds, ns string) (dmtapsync.Op, error) {
+func syncOp(op store.Op, author string, k kinds, ns string) (kotvasync.Op, error) {
 	ms, counter, _, ok := store.ParseHLC(op.HLC)
 	if !ok {
-		return dmtapsync.Op{}, fmt.Errorf("substrate: unparseable hlc %q", op.HLC)
+		return kotvasync.Op{}, fmt.Errorf("substrate: unparseable hlc %q", op.HLC)
 	}
 	if ms < 0 {
-		return dmtapsync.Op{}, fmt.Errorf("substrate: negative wall clock in hlc %q", op.HLC)
+		return kotvasync.Op{}, fmt.Errorf("substrate: negative wall clock in hlc %q", op.HLC)
 	}
-	hlc := dmtapsync.HLC{Wall: uint64(ms), Counter: counter, Author: author}
+	hlc := kotvasync.HLC{Wall: uint64(ms), Counter: counter, Author: author}
 
 	if store.IsInsertOnly(op.Tbl) {
 		if op.Deleted {
 			// Unreachable through the API, which refuses to delete a ledger
 			// row, and refused here too rather than silently mapped to
 			// something that would converge on the wrong ledger.
-			return dmtapsync.Op{}, fmt.Errorf("substrate: %s is insert-only; a delete has no mapping", op.Tbl)
+			return kotvasync.Op{}, fmt.Errorf("substrate: %s is insert-only; a delete has no mapping", op.Tbl)
 		}
 		val, err := ledgerValue(op)
 		if err != nil {
-			return dmtapsync.Op{}, err
+			return kotvasync.Op{}, err
 		}
-		return dmtapsync.Op{Kind: k.setAdd, NS: ns, Target: op.Tbl, Value: val, HLC: hlc}, nil
+		return kotvasync.Op{Kind: k.setAdd, NS: ns, Target: op.Tbl, Value: val, HLC: hlc}, nil
 	}
 
 	val, err := rowValue(op)
 	if err != nil {
-		return dmtapsync.Op{}, err
+		return kotvasync.Op{}, err
 	}
 	field := lwwField
-	return dmtapsync.Op{
+	return kotvasync.Op{
 		Kind:   k.lwwSet,
 		NS:     ns,
 		Target: rowTarget(op.Tbl, op.RowID),

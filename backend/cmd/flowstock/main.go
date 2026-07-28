@@ -112,7 +112,16 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Public: auth + the sync mesh (which carries its own bearer-secret auth).
+	// Public in the sense that the app's password gate does not cover them: the
+	// sync mesh authenticates itself, and more strictly. Every request is signed
+	// with the caller's node Ed25519 key and verified against the key that node
+	// enrolled when it paired (sync.transportAuth); the shared secret only
+	// bootstraps that enrollment. Wrapping these in authHandler.Middleware would
+	// mean a peer had to know the operator's password, which is not a credential
+	// another branch has.
+	//
+	// This comment used to read "carries its own bearer-secret auth", which
+	// stopped being true when the transport moved to mutual key auth.
 	mux.HandleFunc("POST /api/auth/login", authHandler.Login)
 	mux.HandleFunc("GET /api/auth/check", authHandler.Check)
 	mux.Handle("DELETE /api/auth/logout", authHandler.Middleware(http.HandlerFunc(authHandler.Logout)))

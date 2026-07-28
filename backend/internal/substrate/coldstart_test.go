@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	dmtapsync "github.com/vul-os/envoir/bindings/go"
+	kotvasync "github.com/vul-os/kotva/bindings/go"
 
 	"flowstock/backend/internal/substrate"
 )
@@ -26,7 +26,7 @@ func benchOpen(b *testing.B, cache string) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	signer := dmtapsync.InMemorySigner{PrivateKey: priv}
+	signer := kotvasync.InMemorySigner{PrivateKey: priv}
 	b.ReportAllocs()
 	for b.Loop() {
 		eng, err := substrate.Open(context.Background(), substrate.Options{
@@ -53,7 +53,7 @@ func BenchmarkOpenCached(b *testing.B) {
 	// Warm it, so the measured runs are all hits.
 	_, priv, _ := ed25519.GenerateKey(nil)
 	eng, err := substrate.Open(context.Background(), substrate.Options{
-		Signer: dmtapsync.InMemorySigner{PrivateKey: priv}, NS: "bench", CacheDir: dir,
+		Signer: kotvasync.InMemorySigner{PrivateKey: priv}, NS: "bench", CacheDir: dir,
 	})
 	if err != nil {
 		b.Fatal(err)
@@ -65,9 +65,9 @@ func BenchmarkOpenCached(b *testing.B) {
 // TestEngineArtifactSize records the embedded artifact's size in the test output
 // so the number in the adoption notes can be checked rather than trusted.
 func TestEngineArtifactSize(t *testing.T) {
-	if dmtapsync.EngineWasmSize == 0 {
+	if kotvasync.EngineWasmSize == 0 {
 		t.Fatal("the engine artifact is empty")
 	}
 	t.Logf("embedded engine artifact: %d bytes (%.0f KiB)",
-		dmtapsync.EngineWasmSize, float64(dmtapsync.EngineWasmSize)/1024)
+		kotvasync.EngineWasmSize, float64(kotvasync.EngineWasmSize)/1024)
 }

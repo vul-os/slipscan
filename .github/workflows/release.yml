@@ -9,8 +9,8 @@ name: Release
 #     backend/cmd/flowstock/frontend_embed.go), cross-compiled for
 #     linux/amd64, linux/arm64, darwin/amd64, darwin/arm64. CGO_ENABLED=0 —
 #     the sqlite driver is modernc.org/sqlite (pure Go) and the DMTAP sync
-#     bindings are a vendored WASM module (third_party/dmtapsync), so no C
-#     toolchain is needed to cross-compile.
+#     binding runs its WASM engine on wazero (also pure Go), so no C toolchain
+#     is needed to cross-compile.
 #   - release: one GitHub Release with all four archives + SHA256SUMS.txt.
 #
 # The container image for the same tag is a separate concern — see
@@ -45,34 +45,34 @@ jobs:
     name: go test
     needs: version-guard
     runs-on: ubuntu-latest
-    # A release is the moment the vendored engine's provenance matters most, so
-    # the upstream comparison is mandatory here too — same flag, same checkout
-    # as .github/workflows/ci.yml. Skipping it would mean shipping a .wasm blob
-    # nothing had tied back to the commit VENDOR.md claims it came from.
+    # A release is the moment the engine's conformance matters most, so the
+    # vector cross-check is mandatory here too — same flag, same checkout as
+    # .github/workflows/ci.yml. Skipping it would mean shipping a binary whose
+    # frozen expectations nobody had held against the spec that froze them.
     env:
-      FLOWSTOCK_REQUIRE_UPSTREAM_VENDOR_CHECK: "1"
-      FLOWSTOCK_ENVOIR_DIR: ${{ github.workspace }}/.upstream-envoir
+      FLOWSTOCK_REQUIRE_SPEC_VECTOR_CHECK: "1"
+      FLOWSTOCK_KOTVA_DIR: ${{ github.workspace }}/.upstream-kotva
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Read the pinned upstream commit
+      - name: Resolve the engine's pinned version
         id: pin
         run: |
-          sha="$(grep -m1 '^| Commit' third_party/dmtapsync/VENDOR.md | grep -oE '[0-9a-f]{40}' | head -1)"
-          if [ -z "$sha" ]; then
-            echo "::error::third_party/dmtapsync/VENDOR.md has no 40-character commit in its 'Commit' row"
+          ver="$(go list -m -f '{{.Version}}' github.com/vul-os/kotva/bindings/go)"
+          if [ -z "$ver" ]; then
+            echo "::error::go.mod does not require github.com/vul-os/kotva/bindings/go"
             exit 1
           fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "pinned upstream commit: $sha"
-      - name: Check out envoir at the pinned commit
+          echo "ref=bindings/go/$ver" >> "$GITHUB_OUTPUT"
+          echo "engine module version: $ver"
+      - name: Check out the substrate repo at the engine's tag
         uses: actions/checkout@v4
         with:
-          repository: vul-os/envoir
-          ref: ${{ steps.pin.outputs.sha }}
-          path: .upstream-envoir
+          repository: vul-os/kotva
+          ref: ${{ steps.pin.outputs.ref }}
+          path: .upstream-kotva
       - run: go test ./backend/...
       # The substrate package only compiles under its own tag; without this the
       # release would ship having never built it.
@@ -149,9 +149,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # create the Release and upload assets
-      id-token: write       # mint the OIDC token the attestation is signed with
-      attestations: write   # record the attestation against this repo
+      contents: write # create the Release and upload assets
+      id-token: write # mint the OIDC token the attestation is signed with
+      attestations: write # record the attestation against this repo
     steps:
       # scripts/verify.sh checks this job's own output below, so the repo has to
       # be present.

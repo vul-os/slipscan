@@ -6,7 +6,7 @@ import (
 	"math"
 	"testing"
 
-	dmtapsync "github.com/vul-os/envoir/bindings/go"
+	kotvasync "github.com/vul-os/kotva/bindings/go"
 )
 
 // flowstockHLC must never hand back a string whose lexical order can diverge
@@ -24,11 +24,11 @@ import (
 func TestFlowstockHLCRejectsOutOfWidthValues(t *testing.T) {
 	e := &Engine{nodeOf: map[string]string{"aa": "node1"}}
 
-	if got := e.flowstockHLC(dmtapsync.HLC{Wall: 1700000000000, Counter: 5, Author: "aa"}); got == "" {
+	if got := e.flowstockHLC(kotvasync.HLC{Wall: 1700000000000, Counter: 5, Author: "aa"}); got == "" {
 		t.Fatal("an in-bounds HLC should render a string, got \"\"")
 	}
 
-	cases := map[string]dmtapsync.HLC{
+	cases := map[string]kotvasync.HLC{
 		"counter one past the 4-hex-digit width": {Wall: 1700000000000, Counter: 0x10000, Author: "aa"},
 		"wall one digit past the 13-digit width": {Wall: 10000000000000, Counter: 0, Author: "aa"},
 		"wall past int64 entirely":               {Wall: math.MaxUint64, Counter: 0, Author: "aa"},
@@ -44,7 +44,7 @@ func TestFlowstockHLCRejectsOutOfWidthValues(t *testing.T) {
 
 	// An unmapped author must still report "" (the pre-existing behaviour),
 	// so the new bounds check does not mask or change that case.
-	if got := e.flowstockHLC(dmtapsync.HLC{Wall: 1700000000000, Counter: 5, Author: "unknown"}); got != "" {
+	if got := e.flowstockHLC(kotvasync.HLC{Wall: 1700000000000, Counter: 5, Author: "unknown"}); got != "" {
 		t.Fatalf("an unmapped author should render \"\", got %q", got)
 	}
 }

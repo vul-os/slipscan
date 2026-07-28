@@ -12,7 +12,7 @@ import (
 	"math"
 	"sync"
 
-	dmtapsync "github.com/vul-os/envoir/bindings/go"
+	kotvasync "github.com/vul-os/kotva/bindings/go"
 
 	"flowstock/backend/internal/store"
 )
@@ -26,10 +26,10 @@ import (
 // is already single-writer (store.mu), so serializing costs nothing here.
 type Engine struct {
 	mu     sync.Mutex
-	rt     *dmtapsync.Runtime
-	in     *dmtapsync.Instance
-	eng    *dmtapsync.Engine
-	signer dmtapsync.Signer
+	rt     *kotvasync.Runtime
+	in     *kotvasync.Instance
+	eng    *kotvasync.Engine
+	signer kotvasync.Signer
 	author string // hex public key of this node
 	ns     string
 	kinds  kinds
@@ -51,7 +51,7 @@ type Engine struct {
 type Options struct {
 	// Signer holds this node's Ed25519 key. Required. No key material ever
 	// crosses into the engine — see Open.
-	Signer dmtapsync.Signer
+	Signer kotvasync.Signer
 	// NS is the substrate namespace (§7). FlowStock uses the workspace's org id,
 	// so an op from another workspace is not merely rejected by the store's org
 	// check but lands in a different namespace in the algebra too.
@@ -79,11 +79,11 @@ func Open(ctx context.Context, opt Options) (*Engine, error) {
 		return nil, errors.New("substrate: the signer has no public key")
 	}
 
-	var opts []dmtapsync.Option
+	var opts []kotvasync.Option
 	if opt.CacheDir != "" {
-		opts = append(opts, dmtapsync.WithCompilationCacheDir(opt.CacheDir))
+		opts = append(opts, kotvasync.WithCompilationCacheDir(opt.CacheDir))
 	}
-	rt, err := dmtapsync.New(ctx, opts...)
+	rt, err := kotvasync.New(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("substrate: compiling the engine: %w", err)
 	}
@@ -124,7 +124,7 @@ func Open(ctx context.Context, opt Options) (*Engine, error) {
 // is the whole signer story in one call: FlowStock's per-node Ed25519 key, which
 // already signs op batches and snapshots, becomes the substrate author key.
 //
-// The key never reaches the engine. A dmtapsync.Signer is asked for signatures
+// The key never reaches the engine. A kotvasync.Signer is asked for signatures
 // over a preimage the engine hands out, and the binding's own test asserts the
 // module exposes no entry point that could accept key material — so this is
 // structural, not a convention to remember. FlowStock holds its key in process
@@ -137,7 +137,7 @@ func OpenForStore(ctx context.Context, st *store.Store, cacheDir string) (*Engin
 		return nil, errors.New("substrate: this node has no Ed25519 identity")
 	}
 	return Open(ctx, Options{
-		Signer:        dmtapsync.CryptoSigner{Key: signer},
+		Signer:        kotvasync.CryptoSigner{Key: signer},
 		NS:            st.OrgID(),
 		PubkeyForNode: st.PubkeyForNode,
 		CacheDir:      cacheDir,
@@ -351,7 +351,7 @@ func (e *Engine) Stats() Stats {
 // above for "no FlowStock node maps to this author") rather than rendered as a
 // string whose lexical order would silently diverge from its numeric order —
 // exactly the hazard store/hlc.go's own width bounds exist to rule out.
-func (e *Engine) flowstockHLC(h dmtapsync.HLC) string {
+func (e *Engine) flowstockHLC(h kotvasync.HLC) string {
 	node, ok := e.nodeOf[h.Author]
 	if !ok {
 		return ""

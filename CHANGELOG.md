@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The DMTAP sync engine is now a fetched, pinned module instead of a vendored
+  copy.** `third_party/dmtapsync/` (~2,070 LOC plus a 427 KB `.wasm`) is gone;
+  `go.mod` requires `github.com/vul-os/kotva/bindings/go v0.2.0` and the
+  `replace` directive that redirected the old
+  `github.com/vul-os/envoir/bindings/go` import to that directory is gone with
+  it. The Go package renamed with the repo — `kotvasync`, was `dmtapsync` — so
+  the four files that import it were updated; nothing else in FlowStock moved.
+  Vendoring existed for two reasons, both now resolved upstream: the binding was
+  not a fetchable module, and its embedded `.wasm` was gitignored, so a proxy
+  fetch arrived unable to compile. The artifact is committed and tied to its
+  Rust sources by `wasm_provenance.json`, and the module is tagged.
+- **The vendored-copy drift guards are replaced, not deleted.**
+  `vendor_drift_test.go` hashed a directory that no longer exists, and `go.sum`
+  now answers "are these the module's bytes?" on every build rather than only
+  when a test runs. What `go.sum` does not answer — whether the engine inside
+  still computes the algebra FlowStock merges on — is now covered by
+  `backend/internal/substrate/engine_conformance_test.go`, which drives 14 of
+  the 24 frozen `SYNC.md` §10 conformance vectors through the linked engine and
+  never skips, and by `engine_pin_test.go`, which asserts in both build
+  configurations that the engine is required at a pinned version, is not
+  redirected by a `replace`, has both `go.sum` hashes, and that no vendored copy
+  has come back. This mattered: the engine in v0.2.0 is a fresh build (427,731
+  bytes against the vendored copy's 426,890), so the pinned bytes were bytes
+  nothing in this repo had ever executed.
+- **Re-measured the engine's cost against the published module.** The binary
+  delta for `-tags dmtap` is +3,748,000 bytes on a plain `go build`
+  (15,301,826 → 19,049,826), which is 3.57 MiB where the note in
+  `backend/internal/substrate/mapping.go` said 3.58 — a rounding boundary
+  crossed by 1,216 bytes, not a regression. The release-build delta is
+  unchanged at 2.6 MiB (linux/amd64, stripped: 12,001,464 → 14,762,168). Cold
+  `Open` moved from ~118 ms to ~150 ms and warm from ~5.7 ms to ~7 ms, tracking
+  the 841-byte-larger artifact.
+- **The stale-claim scan in `scripts/docs-mirror.mjs` now covers `docs/*.md`,
+  not only the hand-authored site shells.** Both banned claims originated in
+  `docs/` and the shells only repeated them, so guarding the copies and not the
+  source left the regression path open. One stale claim survived the earlier
+  correction pass and is fixed here: `backend/cmd/flowstock/main.go` still
+  described the sync mesh as carrying "its own bearer-secret auth" after the
+  transport moved to mutual Ed25519.
+
 ### Added
 
 - **The shared DMTAP sync engine, as an opt-in build** (`-tags dmtap` plus

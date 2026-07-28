@@ -11,16 +11,19 @@ jobs:
     timeout-minutes: 30
 
     env:
-      # third_party/dmtapsync is a vendored copy of envoir's Go bindings, and
-      # backend/internal/substrate/vendor_drift_test.go compares it against the
-      # exact upstream commit VENDOR.md pins. That comparison needs an envoir
-      # checkout; it used to have none here, so the check *skipped in CI* while
-      # reporting a green job — a gate passing by doing nothing. The checkout
-      # step below supplies the commit, and this flag turns every remaining
-      # "could not compare" path into a failure so it can never silently skip
-      # here again.
-      FLOWSTOCK_REQUIRE_UPSTREAM_VENDOR_CHECK: "1"
-      FLOWSTOCK_ENVOIR_DIR: ${{ github.workspace }}/.upstream-envoir
+      # backend/internal/substrate/engine_conformance_test.go drives the frozen
+      # SYNC conformance vectors through the engine using literals copied into
+      # that file, and cross-checks those literals against the real
+      # conformance/vectors/sync_vectors.json in the kotva substrate repo. The
+      # cross-check is the only part that needs a checkout; the checkout step
+      # below supplies it, and this flag turns every remaining "could not
+      # compare" path into a failure so it can never silently skip here.
+      #
+      # This replaces FLOWSTOCK_REQUIRE_UPSTREAM_VENDOR_CHECK, which guarded a
+      # vendored copy of the binding that no longer exists — the engine is a
+      # published, go.sum-pinned module now.
+      FLOWSTOCK_REQUIRE_SPEC_VECTOR_CHECK: "1"
+      FLOWSTOCK_KOTVA_DIR: ${{ github.workspace }}/.upstream-kotva
 
     steps:
       - uses: actions/checkout@v4
@@ -35,27 +38,30 @@ jobs:
           go-version: "1.25"
           cache: true
 
-      # Read the pin out of VENDOR.md rather than duplicating it here, so the
-      # commit stays written down exactly once (the Go test reads the same row).
-      - name: Read the pinned upstream commit
+      # Read the engine's version out of go.mod rather than duplicating it here,
+      # so the pin stays written down where the toolchain enforces it. The
+      # substrate repo tags its Go submodule as bindings/go/<version>, and the
+      # vectors checked out at that tag are the ones the engine in that version
+      # was built and proved against.
+      - name: Resolve the engine's pinned version
         id: pin
         run: |
-          sha="$(grep -m1 '^| Commit' third_party/dmtapsync/VENDOR.md | grep -oE '[0-9a-f]{40}' | head -1)"
-          if [ -z "$sha" ]; then
-            echo "::error::third_party/dmtapsync/VENDOR.md has no 40-character commit in its 'Commit' row"
+          ver="$(go list -m -f '{{.Version}}' github.com/vul-os/kotva/bindings/go)"
+          if [ -z "$ver" ]; then
+            echo "::error::go.mod does not require github.com/vul-os/kotva/bindings/go"
             exit 1
           fi
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "pinned upstream commit: $sha"
+          echo "ref=bindings/go/$ver" >> "$GITHUB_OUTPUT"
+          echo "engine module version: $ver"
 
-      # vul-os/envoir is public, so this needs no token. If it ever fails the
-      # job fails — which is the point: no provenance comparison, no green tick.
-      - name: Check out envoir at the pinned commit
+      # vul-os/kotva is public, so this needs no token. If it ever fails the job
+      # fails — which is the point: no vector cross-check, no green tick.
+      - name: Check out the substrate repo at the engine's tag
         uses: actions/checkout@v4
         with:
-          repository: vul-os/envoir
-          ref: ${{ steps.pin.outputs.sha }}
-          path: .upstream-envoir
+          repository: vul-os/kotva
+          ref: ${{ steps.pin.outputs.ref }}
+          path: .upstream-kotva
 
       - name: Install dependencies
         run: npm ci

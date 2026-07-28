@@ -262,13 +262,13 @@ everything matches.
 
 Building with `-tags dmtap` grows the shipped binary by **2.6 MiB**: on
 linux/amd64, built the way the release workflow builds it
-(`-tags embed_frontend -trimpath -ldflags "-s -w"`), 12,005,560 → 14,766,264
+(`-tags embed_frontend -trimpath -ldflags "-s -w"`), 12,001,464 → 14,762,168
 bytes. A plain `go build` with no frontend embedded pays a little more, 3.57
 MiB, because nothing is stripped. Almost none of that is the
-engine — the WebAssembly module is 426 KB. The rest is
+engine — the WebAssembly module is 428 KB. The rest is
 [wazero](https://wazero.io), the compiler that has to be embedded alongside
-anything that runs WebAssembly. There is also a one-off ~120 ms compile at first
-start, which drops to ~6 ms once the compiled-code cache under the data dir is
+anything that runs WebAssembly. There is also a one-off ~150 ms compile at first
+start, which drops to ~7 ms once the compiled-code cache under the data dir is
 warm.
 
 The criterion for paying it is narrow:

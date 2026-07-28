@@ -2,8 +2,18 @@ module flowstock
 
 go 1.25.0
 
+// The DMTAP Sync engine is a published module now, fetched like any other
+// dependency and pinned by go.sum. It used to be a vendored copy under
+// third_party/, because the binding's old home was never a tagged, fetchable
+// module and its embedded .wasm was gitignored upstream, so a proxy fetch
+// arrived with the //go:embed target missing. Both reasons are gone: the engine
+// moved to the vul-os/kotva substrate repo, the artifact is committed and tied
+// to its Rust sources by wasm_provenance.json, and v0.2.0 is tagged. The Go
+// package renamed with the repo, and is imported only from files behind
+// `//go:build dmtap`. See CHANGELOG.md for the migration, and
+// backend/internal/substrate/engine_pin_test.go for what keeps it this way.
 require (
-	github.com/vul-os/envoir/bindings/go v0.0.0
+	github.com/vul-os/kotva/bindings/go v0.2.0
 	modernc.org/sqlite v1.34.5
 )
 
@@ -19,8 +29,3 @@ require (
 	modernc.org/mathutil v1.6.0 // indirect
 	modernc.org/memory v1.8.0 // indirect
 )
-
-// The DMTAP Sync engine is vendored, not fetched: its embedded .wasm is build
-// output that is gitignored upstream, so a proxy-fetched module does not compile.
-// See third_party/dmtapsync/VENDOR.md.
-replace github.com/vul-os/envoir/bindings/go => ./third_party/dmtapsync

@@ -137,7 +137,7 @@ truncated download, or a digest mismatch each abort with their own diagnostic,
 and nothing is installed. There is deliberately no `--skip-verify` and no path
 where an absent manifest means "nothing to check" — a verifier that shrugs at a
 404 prints a line that looks like verification while checking nothing, which is
-worse than no verifier because it turns *"I don't know"* into *"it's fine"*.
+worse than no verifier because it turns _"I don't know"_ into _"it's fine"_.
 
 Releases also carry a sigstore build-provenance attestation, signed with a
 short-lived certificate minted from the release workflow's OIDC identity — no

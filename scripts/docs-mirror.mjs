@@ -190,7 +190,7 @@ const BANNED_CLAIMS = [
   },
   {
     re: /~?\s?15\s?MB/i,
-    why: "the measured linux/amd64 release binary is 12,005,560 bytes (11.45 MiB, ~12 MB) — see third_party/dmtapsync/VENDOR.md",
+    why: "the measured linux/amd64 release binary is 12,001,464 bytes (11.45 MiB, ~12 MB) — see docs/SYNC.md, 'Choosing an engine'",
   },
 ];
 const MIN_SHELL_PAGES = 2;
@@ -212,6 +212,40 @@ if (shellPages < MIN_SHELL_PAGES) {
   fail(
     `scanned ${shellPages} shell page(s) under ${rel(SITE_DIR)}; expected at least ${MIN_SHELL_PAGES} ` +
       `(index.html and docs.html). The stale-claim scan checked almost nothing.`,
+  );
+}
+
+/**
+ * The same scan over `docs/*.md`, which is where both of those claims actually
+ * originated — the shells only repeated them. Guarding the copies and not the
+ * source is how a corrected claim comes back: someone rewrites the reference
+ * page, the shells are regenerated from it, and the shell guard fires on a
+ * change nobody made deliberately, or does not fire at all because the wording
+ * shifted.
+ *
+ * docs/ is mirrored byte-for-byte into site/docs/, so scanning docs/ covers the
+ * published pages too — and it scans them BEFORE the mirror is written, which is
+ * the only point at which `docs:sync` could otherwise publish a regression.
+ */
+const MIN_DOC_PAGES = 5;
+
+let docPages = 0;
+for (const name of existsSync(DOCS_DIR) ? readdirSync(DOCS_DIR) : []) {
+  if (!name.endsWith(".md")) continue;
+  docPages++;
+  const text = readFileSync(join(DOCS_DIR, name), "utf8");
+  for (const { re, why } of BANNED_CLAIMS) {
+    const hit = text.match(re);
+    if (hit)
+      fail(
+        `docs/${name} contains the published-and-wrong claim ${JSON.stringify(hit[0])}: ${why}`,
+      );
+  }
+}
+if (docPages < MIN_DOC_PAGES) {
+  fail(
+    `scanned ${docPages} page(s) under ${rel(DOCS_DIR)}; expected at least ${MIN_DOC_PAGES}. ` +
+      `The stale-claim scan checked almost nothing.`,
   );
 }
 
@@ -243,7 +277,8 @@ if (mode === "write") {
   );
 }
 console.log(
-  `  (${shellPages} site shell page(s) scanned for ${BANNED_CLAIMS.length} known-wrong published claim(s))`,
+  `  (${shellPages} site shell page(s) + ${docPages} docs/ page(s) scanned for ` +
+    `${BANNED_CLAIMS.length} known-wrong published claim(s))`,
 );
 
 // Pages that live in docs/ but are not published are fine (they are developer

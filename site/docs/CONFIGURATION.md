@@ -70,7 +70,7 @@ branches that have converged return the identical 66-character root, which is a
 far stronger check than comparing what the two screens show.
 
 The engine costs **2.6 MiB** of binary size in a release build (3.57 MiB for a
-plain unstripped `go build`) and ~120 ms at first start (~6 ms afterwards, from
+plain unstripped `go build`) and ~150 ms at first start (~7 ms afterwards, from
 a compiled-code cache under the data dir). See
 [Choosing an engine](SYNC.md#choosing-an-engine) for when that is worth paying.
 

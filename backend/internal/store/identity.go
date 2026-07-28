@@ -85,7 +85,7 @@ func VerifySig(pubHex string, msg []byte, sigHex string) bool {
 // CryptoSigner exposes this node's identity as a crypto.Signer — a custodian
 // that answers signature requests without surrendering the key.
 //
-// It is the shape the substrate sync binding takes (dmtapsync.CryptoSigner), and
+// It is the shape the substrate sync binding takes (kotvasync.CryptoSigner), and
 // deliberately the only shape: that binding accepts no key material at all, so
 // FlowStock hands out signatures rather than a seed. Today the custodian is an
 // in-process ed25519.PrivateKey; moving it to an HSM or agent later is a change
