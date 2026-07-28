@@ -109,11 +109,45 @@ docker run -p 8787:8787 -v flowstock-data:/data \
   ghcr.io/vul-os/flowstock:latest
 ```
 
-**Binary** — download from [Releases](https://github.com/vul-os/flowstock/releases):
+**Binary** — `install.sh` downloads the archive for your platform and verifies
+it against the release's own `SHA256SUMS.txt` before unpacking it:
 
 ```bash
+curl -fsSLO https://raw.githubusercontent.com/vul-os/flowstock/main/install.sh
+less install.sh      # review before running
+sh install.sh
 ./flowstock          # serves http://127.0.0.1:8787
 ```
+
+### Verifying a release yourself
+
+Downloading an asset by hand from [Releases](https://github.com/vul-os/flowstock/releases)?
+[`scripts/verify.sh`](scripts/verify.sh) is the same contract with per-failure
+exit codes, and needs only `curl` and `sha256sum`/`shasum`:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/vul-os/flowstock/main/scripts/verify.sh
+bash verify.sh --tag v0.3.0 --attest flowstock_v0.3.0_linux_amd64.tar.gz
+bash verify.sh --dir ~/Downloads flowstock_v0.3.0_linux_amd64.tar.gz
+```
+
+Both it and `install.sh` fail closed: a missing, empty, HTML or malformed
+`SHA256SUMS.txt`, a manifest with no entry for the asset you asked for, a
+truncated download, or a digest mismatch each abort with their own diagnostic,
+and nothing is installed. There is deliberately no `--skip-verify` and no path
+where an absent manifest means "nothing to check" — a verifier that shrugs at a
+404 prints a line that looks like verification while checking nothing, which is
+worse than no verifier because it turns *"I don't know"* into *"it's fine"*.
+
+Releases also carry a sigstore build-provenance attestation, signed with a
+short-lived certificate minted from the release workflow's OIDC identity — no
+long-lived key, no secret, nothing to rotate. `--attest` (and `install.sh`,
+when the `gh` CLI is present) checks it; without `gh` both say provenance was
+**not** checked rather than letting a pass imply more than it checked.
+
+`make release-guards` runs both failure matrices — 24 synthetic-origin cases
+for the verifier, 14 for the installer — so the refusals are exercised rather
+than assumed.
 
 **From source** (Go 1.25+, Node 18+):
 

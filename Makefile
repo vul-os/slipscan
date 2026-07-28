@@ -3,7 +3,7 @@ VERSION := $(shell cat VERSION 2>/dev/null || echo dev)
 # Every target here is phony — none of them names a file it produces. `test-e2e`
 # was missing from this list, so a directory or file called `test-e2e` appearing
 # in the tree would have made `make test` quietly do nothing.
-.PHONY: dev dev-app build build-frontend test test-go test-e2e test-race lint docs-check docs-sync screenshots run
+.PHONY: dev dev-app build build-frontend test test-go test-e2e test-race lint docs-check docs-sync screenshots run release-guards
 
 # UI-only dev (browser + demo data)
 dev:
@@ -21,10 +21,20 @@ build-frontend:
 	npm run build
 
 # Tests
-test: test-go test-e2e
+test: test-go release-guards test-e2e
 
 test-go:
 	go test ./backend/...
+
+# The release guards, exercised rather than assumed. `verify.sh --selftest`
+# stands up a synthetic origin broken 24 different ways; the install matrix
+# runs install.sh against a synthetic release and asserts that nothing was
+# installed on any case except the one whose digest matched. Both are seconds,
+# and a checksum gate that has quietly stopped failing looks exactly like one
+# that works right up until someone is shipped a substituted archive.
+release-guards:
+	bash scripts/verify.sh --selftest
+	bash scripts/install-failure-matrix.sh
 
 # The race detector, in both tag configurations. CI runs this too.
 test-race:

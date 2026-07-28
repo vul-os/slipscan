@@ -145,22 +145,90 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: publish GitHub release
+    name: publish GitHub release (checksummed + attested)
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create the Release and upload assets
+      id-token: write       # mint the OIDC token the attestation is signed with
+      attestations: write   # record the attestation against this repo
     steps:
+      # scripts/verify.sh checks this job's own output below, so the repo has to
+      # be present.
+      - uses: actions/checkout@v4
+
+      # Everything that will be published lands in dist/ and nothing else does.
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
-      # install.sh downloads this file and refuses to install anything it does
-      # not cover, so the glob is spelled out rather than left as `*`: the
-      # archives are what needs a digest, and naming them keeps the sums file
-      # from ever listing itself.
+      # install.sh and scripts/verify.sh both refuse to install or verify
+      # anything this file does not cover, so the manifest is generated FROM the
+      # staged directory rather than from a hand-written glob: "published" and
+      # "covered" become the same set by construction instead of two lists
+      # someone keeps in sync.
       - name: Checksums
         working-directory: dist
-        run: sha256sum -- *.tar.gz > SHA256SUMS.txt && cat SHA256SUMS.txt
+        run: |
+          set -euo pipefail
+
+          mapfile -t ASSETS < <(find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -exec basename {} \; | LC_ALL=C sort)
+
+          # FAIL CLOSED. `sha256sum -- *.tar.gz` was the whole step: if the
+          # build matrix produced nothing the glob would go through literally
+          # and this could still publish a release whose manifest vouched for
+          # nothing. A build that produced no artifacts is a red release.
+          if [ "${#ASSETS[@]}" -eq 0 ]; then
+            echo "::error::dist/ contains no artifacts — refusing to publish a release whose manifest would vouch for nothing."
+            exit 1
+          fi
+
+          : > SHA256SUMS.txt
+          for a in "${ASSETS[@]}"; do
+            sha256sum "$a" >> SHA256SUMS.txt
+          done
+
+          # COVERAGE ASSERTION. Without this the step is trivially satisfiable:
+          # a one-line manifest "covers" a four-archive release and every later
+          # check still passes.
+          LINES="$(wc -l < SHA256SUMS.txt | tr -d ' ')"
+          if [ "$LINES" -ne "${#ASSETS[@]}" ]; then
+            echo "::error::SHA256SUMS.txt has ${LINES} line(s) for ${#ASSETS[@]} staged artifact(s) — the manifest does not cover the release."
+            exit 1
+          fi
+
+          echo "SHA256SUMS.txt covers ${#ASSETS[@]} artifact(s):"
+          cat SHA256SUMS.txt
+          printf '%s\n' "${ASSETS[@]}" > "${RUNNER_TEMP}/release-assets.txt"
+
+      # The producer checked by the consumer. If verify.sh and the emit step
+      # ever disagree about the format, this surfaces in a red release job
+      # rather than in a user's terminal after the release is public.
+      - name: Verify SHA256SUMS.txt with the same script users run
+        run: |
+          set -euo pipefail
+          mapfile -t ASSETS < "${RUNNER_TEMP}/release-assets.txt"
+          bash scripts/verify.sh --dir dist "${ASSETS[@]}"
+
+      # Prove the refusals still fire, on this runner, for this release, before
+      # anything is published. A verifier whose failure paths are never
+      # exercised is a verifier that has probably stopped failing.
+      - name: Prove the verifier still refuses broken releases
+        run: bash scripts/verify.sh --selftest
+
+      - name: Prove install.sh still refuses unverified bytes
+        run: bash scripts/install-failure-matrix.sh
+
+      # Short-lived sigstore cert minted from this job's OIDC identity. No
+      # secret is referenced and none needs to exist — there is no key to store,
+      # own or rotate. Attests every file in dist/, including SHA256SUMS.txt
+      # itself, so an attestation on the manifest transitively covers every
+      # archive the manifest names.
+      - name: Attest build provenance (sigstore via OIDC — no long-lived key)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -168,7 +236,25 @@ jobs:
           generate_release_notes: true
           files: dist/*
           body: |
-            Single self-contained `flowstock` binary (frontend embedded) for each platform, plus `SHA256SUMS.txt` covering every archive attached here. `install.sh` verifies against it and refuses to install on a mismatch.
+            Single self-contained `flowstock` binary (frontend embedded) for each platform, plus `SHA256SUMS.txt` covering every archive attached here.
+
+            ### Verify before you run this
+
+            ```sh
+            curl -fsSLO https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}/scripts/verify.sh
+            bash verify.sh --tag ${{ github.ref_name }} --attest flowstock_${{ github.ref_name }}_linux_amd64.tar.gz
+            ```
+
+            `verify.sh` fetches `SHA256SUMS.txt`, looks up the exact entry for
+            the asset and compares digests. It exits non-zero, with a distinct
+            diagnostic, on a missing or malformed manifest, a missing entry, a
+            truncated download or a digest mismatch. There is no skip path.
+            `--attest` additionally checks the sigstore build provenance (needs
+            the `gh` CLI); without it, provenance is NOT checked and the script
+            says so rather than letting a pass imply more than it checked.
+
+            `install.sh` performs the same digest check itself and will not
+            install an archive it could not verify.
 
             Container image: build `Dockerfile` yourself with `--build-arg VERSION=${{ github.ref_name }}`, or watch for a published `ghcr.io` tag if this repo wires that up separately.
         env:
