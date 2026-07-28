@@ -102,11 +102,21 @@
       <Icon name="shield" size={15} class="text-accent-ring dark:text-accent" />
       Privacy, non-negotiable
     </h2>
+    <!-- Kept exhaustive on purpose. A privacy list that names three egress
+         paths when there are four is worse than no list, so this enumerates
+         every one the product can actually open — including the webhook
+         endpoints Payments registers, which do not live in Connections — and
+         names none it cannot. -->
     <ul class="space-y-1 text-[12px] text-t2">
       <li>· No telemetry, no analytics, no default network calls.</li>
       <li>
-        · Egress only to endpoints you configured in the Connections tab —
-        your LLM, your IMAP server, your bank session.
+        · Egress only to endpoints you entered yourself: your LLM provider,
+        your IMAP or OAuth mail host, your exchange-rate instance — all in
+        Connections — and the webhook URLs you register on Payments.
+      </li>
+      <li>
+        · Each of those fires only when you ask. Nothing polls, and nothing
+        runs in the background.
       </li>
       <li>
         · Your data is one folder — a SQLite file plus your documents —

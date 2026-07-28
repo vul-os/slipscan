@@ -479,3 +479,107 @@ describe("app shell", () => {
     }
   }, 30_000);
 });
+
+/**
+ * Shell chrome added alongside the screens: the command palette's trigger,
+ * the skip link, and the landmarks a keyboard user navigates by.
+ *
+ * The palette's own behaviour is covered in depth by palette.test.ts; what
+ * belongs *here* is that the shell still wires it up, and that adding two
+ * overlays to App.svelte did not cost the app its landmarks or its skip
+ * link — regressions that no route test would notice.
+ */
+describe("app shell · chrome", () => {
+  it("exposes one landmark per region, each with a name", async () => {
+    const { target, dispose } = render(App as Component);
+    try {
+      await settle(target);
+
+      const aside = target.querySelector("aside")!;
+      expect(aside.getAttribute("aria-label")).toBe("Primary");
+      // Two navs would make "next landmark" ambiguous; there is exactly one.
+      const navs = [...target.querySelectorAll("nav")];
+      expect(navs).toHaveLength(1);
+      expect(navs[0]!.getAttribute("aria-label")).toBe("Sections");
+
+      const main = target.querySelector("main")!;
+      expect(main.id).toBe("main");
+      // -1, not 0: the skip link focuses it programmatically, but it must
+      // not sit in the tab order itself.
+      expect(main.tabIndex).toBe(-1);
+      expect(fatal, `runtime errors: ${fatal.join(" | ")}`).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+
+  it("leads with a skip link that actually moves focus to the content", async () => {
+    const { target, dispose } = render(App as Component);
+    try {
+      await settle(target);
+
+      // First focusable in DOM order — a skip link the user has to tab to
+      // three times is not a skip link.
+      const focusable = target.querySelector<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), [tabindex="0"]',
+      )!;
+      expect(focusable.className).toContain("skip-link");
+      expect(focusable.textContent?.trim()).toBe("Skip to content");
+
+      focusable.click();
+      flushSync();
+      expect(document.activeElement).toBe(target.querySelector("main"));
+      expect(fatal, `runtime errors: ${fatal.join(" | ")}`).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+
+  it("offers the command palette from the rail, naming its shortcut", async () => {
+    const { target, dispose } = render(App as Component);
+    try {
+      await settle(target);
+
+      const trigger = target.querySelector<HTMLButtonElement>(
+        "#palette-trigger",
+      )!;
+      expect(trigger, "the rail no longer offers the palette").not.toBeNull();
+      // The chord is announced, not just drawn as a decorative chip.
+      expect(trigger.getAttribute("aria-keyshortcuts")).toContain("K");
+      expect(trigger.getAttribute("aria-label")).toMatch(/search|jump/i);
+
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      trigger.click();
+      flushSync();
+      expect(document.querySelector('[role="dialog"]')).not.toBeNull();
+
+      // Clean up: the palette is a module singleton shared with other suites.
+      document
+        .querySelector<HTMLElement>(".scrim-hit")!
+        .click();
+      flushSync();
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      expect(fatal, `runtime errors: ${fatal.join(" | ")}`).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+
+  it("does not greet an existing install with first-run setup", async () => {
+    // The mock dataset has a book, which is the whole gate: setup appears
+    // only when book_list comes back empty.
+    const { target, dispose } = render(App as Component);
+    try {
+      await settle(target);
+      expect(text(target)).not.toContain("Set up SlipScan");
+      expect(
+        [...document.querySelectorAll('[role="dialog"]')].map((d) =>
+          d.getAttribute("aria-labelledby"),
+        ),
+      ).toEqual([]);
+      expect(fatal, `runtime errors: ${fatal.join(" | ")}`).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+});

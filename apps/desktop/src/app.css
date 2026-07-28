@@ -28,11 +28,13 @@
 
   --color-accent: #c8ff00;
   --color-accent-fg: #0a0a0a;
-  --color-accent-muted: #e8ffa3;
+  /* Border/graphic-weight lime. NOT a text colour: 1.89:1 on white. Use
+   * --color-accent-text for accent-family type on light surfaces. */
   --color-accent-ring: #9fcc00;
   /* Readable accent-family text on light surfaces (the lime itself fails
-   * contrast on white); pairs with `dark:text-accent`. Keep in step with
-   * --color-accent when retheming. */
+   * contrast on white — 5.25:1 vs 1.35:1); pairs with `dark:text-accent`.
+   * Keep in step with --color-accent when retheming; the token test pins
+   * --ss-focus to this value so the two cannot drift apart silently. */
   --color-accent-text: #5c7500;
 
   --font-sans:
@@ -44,10 +46,11 @@
   /* Below `rail:` the sidebar collapses to an icon rail; content tightens. */
   --breakpoint-rail: 56.25rem;
 
-  --ease-out-cubic: cubic-bezier(0.22, 1, 0.36, 1);
-
-  --animate-fade-in: fade-in 0.18s ease-out;
-  --animate-slide-up: slide-up 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  /* Named animations spend the shared durations and easings below rather
+   * than inlining their own — "three durations, two easings" is the whole
+   * motion system, and an animation with a bespoke 0.18s is outside it. */
+  --animate-fade-in: fade-in var(--dur-base) var(--ease-decel);
+  --animate-slide-up: slide-up var(--dur-base) var(--ease-decel);
   --animate-shimmer: shimmer 1.6s linear infinite;
 
   @keyframes fade-in {
@@ -94,12 +97,17 @@
   --ss-hairline: oklch(0 0 0 / 0.07); /* inner-edge hairline for elevation */
   --ss-t1: #18181b; /* primary text */
   --ss-t2: #52525b; /* secondary text */
-  --ss-t3: #a1a1aa; /* tertiary text / placeholders */
-  --ss-focus: #5c7500; /* focus ring — lime family, ≥3:1 on this theme */
+  /* Tertiary text: captions, eyebrows, kbd, placeholders. It is TEXT, so it
+   * carries 4.5:1 against the darkest surface it sits on (sunken, 4.66:1) —
+   * #a1a1aa read 2.33:1 there and was the app's worst contrast failure. */
+  --ss-t3: #6d6d76;
+  --ss-focus: #5c7500; /* = --color-accent-text; ≥3:1 on every surface */
   --ss-accent-ui: #5c7500; /* native control accent (checkbox/radio) */
-  --ss-ok: #15803d; /* semantic ok text, AA on panel */
-  --ss-warn: #b45309; /* semantic warn text, AA on panel */
-  --ss-err: #dc2626; /* semantic error text, AA on panel */
+  --ss-ok: #15803d; /* semantic ok text, AA on panel and on ok/10 */
+  --ss-warn: #b45309; /* semantic warn text, AA on panel and on warn/10 */
+  /* AA on panel *and* on its own danger/10 tint, which is where it is
+   * actually used (error banners, danger badges); #dc2626 read 4.45:1 there. */
+  --ss-err: #c81e1e;
   --shadow-raised: 0 1px 2px oklch(0.21 0.01 285 / 0.05),
     0 2px 6px -2px oklch(0.21 0.01 285 / 0.05); /* card lift, light theme */
   --shadow-overlay: 0 4px 12px -2px oklch(0.21 0.01 285 / 0.08),
@@ -118,12 +126,15 @@
   --ss-hairline: oklch(1 0 0 / 0.045);
   --ss-t1: #fafafa;
   --ss-t2: #a1a1aa;
-  --ss-t3: #6e6e77;
-  --ss-focus: #c8ff00;
+  /* Same rule as light: 4.5:1 against the darkest surface it lands on
+   * (overlay, 4.70:1). #6e6e77 read 3.40:1 there. */
+  --ss-t3: #85858f;
+  --ss-focus: #c8ff00; /* = --color-accent */
   --ss-accent-ui: #c8ff00;
   --ss-ok: oklch(0.72 0.17 152);
   --ss-warn: oklch(0.78 0.14 75);
-  --ss-err: oklch(0.7 0.18 25);
+  /* Lifted from 0.7 L: on its own danger/10 tint that read 4.18:1. */
+  --ss-err: oklch(0.75 0.16 25);
   --shadow-raised: inset 0 1px 0 0 var(--ss-hairline); /* hairline, not glow */
   --shadow-overlay: inset 0 1px 0 0 oklch(1 0 0 / 0.06),
     0 16px 40px -12px oklch(0 0 0 / 0.55);
@@ -151,7 +162,9 @@
   --chart-3: #b0761f;
   --chart-4: #6a6fbf;
   --chart-5: #b1524e;
-  --chart-other: #a1a1aa;
+  /* "Other" is still a chart mark, so it owes 3:1 against the surface it is
+   * drawn on (SC 1.4.11). #a1a1aa read 2.46:1 on the app background. */
+  --chart-other: #86868f;
 }
 
 .dark {
@@ -344,10 +357,35 @@
     @apply border-transparent bg-transparent hover:border-transparent;
   }
 
+  /* Destructive, stated quietly: danger *text*, danger border on hover. */
   .btn-danger {
     @apply text-danger hover:border-danger/40;
   }
 
+  /* Destructive, committed: the filled confirm button in a danger prompt.
+   * Deliberately the only filled red in the product — the accent stays lime,
+   * so red reads as "this one is different" rather than as chrome.
+   * The label flips ink per theme because --ss-err does: white clears 5.74:1
+   * on the light red and only 2.43:1 on the lighter dark-theme one. */
+  .btn-destructive {
+    @apply border-transparent bg-danger text-ink-0 hover:border-transparent hover:bg-danger hover:brightness-110;
+  }
+  .dark .btn-destructive {
+    @apply text-ink-950 hover:brightness-95;
+  }
+
+  /* Disabled is a button state, not a per-caller utility stack. */
+  .btn:disabled {
+    pointer-events: none;
+    opacity: 0.5;
+  }
+
+  /* KNOWN DEVIATION, measured: the resting hairline on .btn/.input is
+   * --ss-line, 1.27:1 on the light panel and 1.24:1 on the dark one, below
+   * the 3:1 WCAG 1.4.11 asks of a control boundary. It is deliberate — the
+   * "brutally clean surfaces" rule — and mitigated by hover (line-2) and by
+   * the 5:1+ focus ring. Raising it is a whole-product visual decision, not
+   * a token tweak; see the token test for the numbers. */
   .input {
     @apply h-8 w-full rounded-md border border-line bg-panel px-2.5 text-[13px] text-t1 outline-none placeholder:text-t3;
     transition:
@@ -554,6 +592,105 @@
     .skeleton {
       animation: none;
     }
+  }
+
+  /* --- overlays (Dialog, CommandPalette, ConfirmDialog) ---------------- */
+
+  /* The scrim sits above the film grain (z 90) and below the skip link
+   * (z 100), so Tab from the very top still reaches "Skip to content". */
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 95;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    /* Dark theme dims harder: an overlay a step lighter than the app needs
+     * the background pushed further back to still read as "behind". */
+    background: oklch(0 0 0 / 0.28);
+  }
+  .dark .scrim {
+    background: oklch(0 0 0 / 0.55);
+  }
+
+  /* Palettes belong near the top of the window, where the eye already is
+   * after ⌘K; prompts belong dead centre. */
+  .scrim-top {
+    align-items: flex-start;
+    padding-top: min(12vh, 7rem);
+  }
+
+  /* The scrim's own click target. A real button so it is a stated affordance
+   * with a name, not a div with a handler; tabindex="-1" keeps it out of the
+   * cycle that Dialog traps. */
+  .scrim-hit {
+    position: absolute;
+    inset: 0;
+    cursor: default;
+  }
+
+  .dialog-panel {
+    position: relative;
+    display: flex;
+    max-height: calc(100vh - 2rem);
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .scrim {
+      animation: fade-in var(--dur-quick) var(--ease-standard);
+    }
+    .dialog-panel {
+      animation: slide-up var(--dur-base) var(--ease-decel);
+    }
+  }
+
+  /* --- command palette ------------------------------------------------ */
+
+  /* The rail's palette button. It looks like the search field it replaced,
+   * but it is a button, so it keeps the standard focus ring — `.input`
+   * deliberately trades that away for a border pen-stroke, which is right
+   * for a field you are typing into and wrong for a control you activate.
+   * Reusing `.input` here cost the ring entirely; a browser test caught it. */
+  .palette-trigger {
+    @apply flex h-8 w-full cursor-default items-center justify-center gap-2 rounded-md border border-line bg-panel px-0 text-left text-[13px] text-t3 select-none hover:border-line-2 hover:bg-sunken hover:text-t2 rail:justify-start rail:px-2.5;
+    transition:
+      background-color var(--dur-quick) var(--ease-standard),
+      border-color var(--dur-quick) var(--ease-standard),
+      color var(--dur-quick) var(--ease-standard);
+  }
+
+  /* Rows are aria `option`s, not buttons — the combobox pattern keeps DOM
+   * focus in the text field — so the active row is styled from
+   * aria-selected, and there is no :focus-visible ring to draw here. */
+  .palette-option {
+    @apply mx-1.5 flex cursor-default items-center gap-2.5 rounded-md px-2.5 py-1.5;
+    transition: background-color var(--dur-quick) var(--ease-standard);
+  }
+  .palette-option.is-active {
+    @apply bg-ink-900 text-ink-50;
+  }
+  .dark .palette-option.is-active {
+    @apply bg-ink-100 text-ink-900;
+  }
+
+  /* Matched characters, from the fuzzy matcher. Weight rather than colour:
+   * the active row inverts, and a lime highlight would vanish on it. */
+  .palette-hit {
+    font-weight: 650;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+    text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  }
+
+  /* The trailing chord chip has to survive the inverted active row. */
+  .palette-trailing-active {
+    border-color: color-mix(in srgb, currentColor 30%, transparent);
+    background: color-mix(in srgb, currentColor 12%, transparent);
+    color: inherit;
   }
 
   /* --- a11y ----------------------------------------------------------- */

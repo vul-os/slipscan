@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "screenshot": "node scripts/screenshot.mjs",
+    "qa:shots": "node scripts/qa-shots.mjs",
     "tauri": "tauri",
     "test": "vitest run",
     "test:watch": "vitest",

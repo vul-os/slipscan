@@ -3,6 +3,14 @@
    * Credential vault tab. Write-only: secrets go in, only metadata comes
    * out. Owns its own load and its own state — nothing here is shared with
    * the settings blob or the other tabs.
+   *
+   * "Write-only" is the hard part of this screen to design, because a list of
+   * things you cannot open reads as broken unless the UI says why. So the
+   * absence is stated as a property, not left as a gap: there is no reveal
+   * control to look for, the fingerprint is offered as the thing you *can*
+   * check an entry against, and rotation is presented as the answer to "I
+   * lost it" rather than the user hunting for a copy button that will never
+   * exist.
    */
   import { tick } from "svelte";
   import { api } from "../../lib/api/client";
@@ -10,6 +18,7 @@
   import { fmtDate, fmtRelative } from "../../lib/format";
   import EmptyState from "../../lib/components/EmptyState.svelte";
   import Icon from "../../lib/components/Icon.svelte";
+  import ConfirmDialog from "../../lib/components/ConfirmDialog.svelte";
 
   let credentials = $state<VaultCredentialMeta[]>([]);
   let vaultError = $state<string | null>(null);
@@ -28,16 +37,21 @@
   let rotateSecret = $state("");
   let rotateBusy = $state(false);
   let rotateSecretInput = $state<HTMLInputElement | null>(null);
-  /** Entry name awaiting a second click to confirm revocation. */
-  let revokeArmed = $state<string | null>(null);
-  let revokeTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Entry awaiting confirmation of revocation, if any. */
+  let confirmRevoke = $state<VaultCredentialMeta | null>(null);
+  let revokeBusy = $state(false);
+  let revokeError = $state<string | null>(null);
 
-  function disarmRevoke(name?: string) {
-    if (name === undefined || revokeArmed === name) {
-      revokeArmed = null;
-      clearTimeout(revokeTimer);
-    }
-  }
+  /**
+   * Entries SlipScan writes for itself, rather than ones a person typed in.
+   * Today that is the per-endpoint webhook signing secrets from Payments
+   * (`pay.endpoint.{id}`, core's `endpoint_secret_name`). Revoking one of
+   * these is not "forgetting a password you can re-enter" — the endpoint it
+   * belongs to keeps its row and quietly loses the ability to sign, so the
+   * prompt has to say which screen just broke.
+   */
+  const managedBy = (name: string): string | null =>
+    name.startsWith("pay.endpoint.") ? "a Payments webhook endpoint" : null;
 
   async function loadVault() {
     vaultLoadError = null;
@@ -114,23 +128,26 @@
     }
   }
 
-  /** Two-step revoke: first click arms, second click destroys. The armed
-   * state disarms on mouse-out, focus loss, Escape, or a short timeout —
-   * keyboard users must never be left with a permanently armed button. */
+  /**
+   * Revocation is type-to-confirm, the one place on these screens that earns
+   * it: the secret is destroyed outright and cannot be recovered from
+   * anything SlipScan holds — not from a backup of the data folder, which
+   * never carries the keychain key. Whatever was using it stops working until
+   * the original is re-obtained from wherever it came from, which for an
+   * OAuth token or a rotated API key can mean a fresh grant. Typing the name
+   * is proportionate to a cost that big.
+   */
   async function revokeCredential(name: string) {
-    if (revokeArmed !== name) {
-      disarmRevoke();
-      revokeArmed = name;
-      revokeTimer = setTimeout(() => disarmRevoke(name), 5000);
-      return;
-    }
-    disarmRevoke();
-    vaultError = null;
+    revokeBusy = true;
+    revokeError = null;
     try {
       await api.vaultRevoke({ name });
+      confirmRevoke = null;
       await loadVault();
     } catch (err) {
-      vaultError = String(err);
+      revokeError = String(err);
+    } finally {
+      revokeBusy = false;
     }
   }
 </script>
@@ -147,8 +164,29 @@
     </button>
   </div>
   <p class="mb-3 text-[12px] text-t3">
-    Write-only: secrets can be set, rotated and revoked — never viewed.
-    Only a label, timestamps and a fingerprint are stored in the clear.
+    Secrets go in, and only metadata comes out: a name, a label, timestamps
+    and a short fingerprint. Everything else is envelope-encrypted under a key
+    that exists solely in this machine's OS keychain.
+  </p>
+
+  <!-- Said plainly and up front, because a list of things that will not open
+       reads as a broken screen otherwise. The point is that there is nothing
+       to look for: no reveal control exists, and this explains what to do
+       instead of hunting for one. -->
+  <p
+    class="mb-3 flex items-start gap-1.5 rounded-lg border border-line bg-sunken/50 px-3 py-2 text-[11.5px] leading-relaxed text-t2"
+  >
+    <Icon name="shield" size={13} class="mt-0.5 shrink-0 text-t3" />
+    <span>
+      <span class="font-medium">There is no way to read a secret back</span> —
+      not here, not on the CLI, not out of the database. That is the design,
+      not a missing feature: SlipScan only ever hands one to the code that
+      needs it at the moment it is used. To check an entry is the one you
+      think it is, compare its
+      <span class="font-mono">fp</span> below against the fingerprint shown
+      wherever you stored it. If you have lost the original, rotate it — a
+      replacement is always possible, recovery never is.
+    </span>
   </p>
 
   {#if vaultError}
@@ -233,10 +271,13 @@
       {/snippet}
     </EmptyState>
   {:else if credentials.length === 0}
+    <!-- Names what actually uses the vault today. Listing a consumer that is
+         not built would make an empty vault look like a setup step someone
+         had skipped. -->
     <EmptyState
       icon="key"
       title="No credentials stored"
-      body="IMAP passwords, LLM API keys and bank-scraper logins live here, envelope-encrypted under a key that only exists in your OS keychain."
+      body="Mailbox passwords and OAuth tokens for slipscan mail-sync, an LLM API key if you configure a provider, and the signing secret behind every webhook endpoint you add on Payments all live here."
     />
   {:else}
     <ul class="divide-y divide-line">
@@ -262,21 +303,27 @@
               </span>
             </span>
             <div class="flex shrink-0 items-center gap-1.5">
-              <button class="btn h-7" onclick={() => toggleRotate(c.name)}>
+              <!-- One word for one operation. This button, the form it opens
+                   and the metadata row all say "rotate"; calling it "replace"
+                   here and "rotate" two lines down made them read as two
+                   different things. -->
+              <button
+                class="btn h-7"
+                aria-expanded={rotating === c.name}
+                onclick={() => toggleRotate(c.name)}
+              >
                 <Icon name="refresh" size={13} />
-                Replace
+                {rotating === c.name ? "Close" : "Rotate"}
               </button>
               <button
                 class="btn btn-danger h-7"
-                onclick={() => revokeCredential(c.name)}
-                onmouseleave={() => disarmRevoke(c.name)}
-                onblur={() => disarmRevoke(c.name)}
-                onkeydown={(e) => {
-                  if (e.key === "Escape") disarmRevoke(c.name);
+                onclick={() => {
+                  revokeError = null;
+                  confirmRevoke = c;
                 }}
               >
                 <Icon name="trash" size={13} />
-                {revokeArmed === c.name ? "Really revoke?" : "Revoke"}
+                Revoke
               </button>
             </div>
           </div>
@@ -319,3 +366,26 @@
     </ul>
   {/if}
 </section>
+
+{#if confirmRevoke}
+  {@const target = confirmRevoke}
+  {@const managed = managedBy(target.name)}
+  <ConfirmDialog
+    open
+    title="Revoke {target.label ?? target.name}?"
+    body={managed
+      ? `This secret belongs to ${managed}. Destroying it does not remove the endpoint — it keeps its row and its URL and simply stops being able to sign, so deliveries fail until you rotate its secret from Payments.`
+      : "The secret is destroyed. It cannot be recovered from a backup of your data folder, because the key that decrypts it never leaves this machine's keychain — anything using it stops working until you supply the original again."}
+    confirmLabel="Revoke credential"
+    confirmPhrase={target.name}
+    tone="danger"
+    busy={revokeBusy}
+    error={revokeError}
+    onconfirm={() => revokeCredential(target.name)}
+    oncancel={() => {
+      if (revokeBusy) return;
+      confirmRevoke = null;
+      revokeError = null;
+    }}
+  />
+{/if}

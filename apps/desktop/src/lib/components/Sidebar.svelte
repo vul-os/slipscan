@@ -1,58 +1,28 @@
 <script lang="ts">
   import logoMark from "../../assets/logo-mark.svg?raw";
-  import { router, type RouteId } from "../router.svelte";
+  import wordmarkLight from "../../assets/logo-wordmark.svg";
+  import wordmarkDark from "../../assets/logo-wordmark-dark.svg";
+  import { router } from "../router.svelte";
   import { theme, type ThemeMode } from "../theme.svelte";
   import { api, isTauri } from "../api/client";
   import { apiStatus } from "../api/status.svelte";
-  import { globalSearch } from "../search.svelte";
+  import { NAV_GROUPS } from "../nav";
+  import { palette } from "../palette.svelte";
   import type { Book, Health } from "../api/types";
   import type { IconName } from "../icons";
   import Icon from "./Icon.svelte";
 
-  interface NavItem {
-    route: RouteId;
-    label: string;
-    icon: IconName;
-    key: string;
-  }
-
   /**
-   * Eleven destinations is more than reads as one list, so the rail is
-   * grouped: what the money did, what the books say, and what the machine is
-   * set up with. The flattened order is exactly `ROUTES` — the group headings
-   * are decoration around the same sequence, never a re-ordering of it.
+   * Destinations come from the shared nav model (lib/nav.ts) — the same list
+   * the command palette ranks, so the rail and the palette cannot drift
+   * apart. Its flattened order is exactly `ROUTES`, pinned by a test; the
+   * group headings are decoration around that sequence, never a re-ordering
+   * of it.
    *
    * Collapsed (below the `rail` breakpoint) the headings hide and the
    * hairline between groups carries the grouping on its own.
    */
-  const nav: Array<{ heading: string; items: NavItem[] }> = [
-    {
-      heading: "Money",
-      items: [
-        { route: "dashboard", label: "Dashboard", icon: "dashboard", key: "D" },
-        { route: "transactions", label: "Transactions", icon: "transactions", key: "T" },
-        { route: "receipts", label: "Receipts", icon: "receipt", key: "R" },
-        { route: "budgets", label: "Budgets", icon: "budgets", key: "B" },
-        { route: "household", label: "Household", icon: "wallet", key: "H" },
-      ],
-    },
-    {
-      heading: "Books",
-      items: [
-        { route: "ledger", label: "Ledger", icon: "ledger", key: "L" },
-        { route: "reconcile", label: "Reconcile", icon: "reconcile", key: "C" },
-        { route: "payments", label: "Payments", icon: "zap", key: "Y" },
-        { route: "reports", label: "Reports", icon: "reports", key: "P" },
-      ],
-    },
-    {
-      heading: "This machine",
-      items: [
-        { route: "packs", label: "Packs", icon: "package", key: "K" },
-        { route: "settings", label: "Settings", icon: "settings", key: "S" },
-      ],
-    },
-  ];
+  const nav = NAV_GROUPS;
 
   const themeModes: Array<{ mode: ThemeMode; icon: IconName; label: string }> = [
     { mode: "system", icon: "monitor", label: "Follow OS theme" },
@@ -62,15 +32,9 @@
 
   let book = $state<Book | null>(null);
   let health = $state<Health | null>(null);
-  let searchText = $state("");
 
   api.bookList().then((books) => (book = books[0] ?? null));
   api.health().then((h) => (health = h));
-
-  function submitSearch() {
-    globalSearch.query = searchText;
-    router.go("transactions");
-  }
 
   // `?screenshot=1` (scripts/screenshot.mjs) hides the mock badge so docs
   // captures show the product, not the dev harness. Dev in a browser still
@@ -93,13 +57,24 @@
   <div
     class="flex items-center justify-center gap-2.5 px-0 pt-4 pb-3 rail:justify-start rail:px-4"
   >
+    <!--
+      One mark, never two. The mark IS the slash: the wordmark lockup already
+      carries it between "slip" and "scan", so the collapsed rail shows the
+      square mark on its own and the expanded rail shows the lockup instead —
+      the two are mutually exclusive.
+    -->
     <span
-      class="inline-flex size-8 shrink-0 rounded-[7px] ring-1 ring-line dark:ring-ink-700 [&>svg]:size-8"
+      class="inline-flex size-8 shrink-0 rounded-[7px] ring-1 ring-line dark:ring-ink-700 rail:hidden [&>svg]:size-8"
     >
       {@html logoMark}
     </span>
-    <span class="hidden text-[15px] font-semibold tracking-tight rail:inline">
-      slip<span class="text-accent-ring dark:text-accent">/</span>scan
+    <span class="hidden rail:inline-flex">
+      <img src={wordmarkLight} alt="slip/scan" class="h-5 w-auto dark:hidden" />
+      <img
+        src={wordmarkDark}
+        alt="slip/scan"
+        class="hidden h-5 w-auto dark:block"
+      />
     </span>
   </div>
 
@@ -122,27 +97,31 @@
     </span>
   </div>
 
-  <!-- search -->
-  <div class="relative mx-3 mb-3 hidden rail:block">
-    <Icon
-      name="search"
-      size={14}
-      class="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-t3"
-    />
-    <input
-      id="global-search"
-      class="input pr-12 pl-8"
-      placeholder="Search transactions…"
-      type="text"
-      bind:value={searchText}
-      onkeydown={(e) => {
-        if (e.key === "Enter") submitSearch();
-        if (e.key === "Escape") e.currentTarget.blur();
-      }}
-    />
-    <span class="pointer-events-none absolute top-1/2 right-2 -translate-y-1/2">
-      <span class="kbd">⌘K</span>
-    </span>
+  <!-- search / command palette
+       This used to be a text field that filtered Transactions, with a ⌘K
+       hint on it that only moved the caret here. It is now the palette's
+       trigger: the palette searches screens, actions and recent
+       transactions, and still offers "Search transactions for …" as its
+       last result — so nothing that worked here was lost, and the ⌘K label
+       finally means what it says. Collapsed, it stays reachable as an
+       icon-only button. -->
+  <div class="mx-2 mb-3 rail:mx-3">
+    <button
+      type="button"
+      id="palette-trigger"
+      class="palette-trigger"
+      aria-label="Search or jump to — command palette, Command or Control K"
+      aria-keyshortcuts="Meta+K Control+K"
+      onclick={() => palette.show()}
+    >
+      <Icon name="search" size={14} class="shrink-0" />
+      <span class="hidden min-w-0 flex-1 truncate rail:inline" aria-hidden="true"
+        >Search or jump to…</span
+      >
+      <span class="kbd hidden shrink-0 rail:inline-flex" aria-hidden="true"
+        >⌘K</span
+      >
+    </button>
   </div>
 
   <!-- nav -->

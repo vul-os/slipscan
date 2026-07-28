@@ -1,23 +1,44 @@
 #!/usr/bin/env node
 /**
  * QA screenshotter — every route at three widths in both themes.
- * Writes to a scratch dir passed via QA_OUT (or ./qa-shots).
+ *
+ * This is the responsive/accessibility sweep, not the gallery: it exists to
+ * be looked through by a human before a UI change lands, and it covers two
+ * things the published gallery (scripts/screenshot.mjs, a single 1440px dark
+ * shot per route) structurally cannot.
+ *
+ *   - The `rail` breakpoint. The sidebar collapses to an icon rail below
+ *     ~900px, so 760 sits under it and 1100/1520 above — the one capture that
+ *     proves the collapse still works in both directions.
+ *   - Focus rings. A keyboard-reachability regression is invisible in every
+ *     other artifact this repo produces.
+ *
+ * Run it with `npm run qa:shots`. Output is disposable and goes to a temp
+ * directory (override with QA_OUT); nothing here is committed, which is why
+ * it writes outside the repo rather than to a path someone has to remember
+ * not to `git add`.
  */
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { readRoutes } from "./routes.mjs";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const OUT = process.env.QA_OUT || join(appDir, "qa-shots");
+const OUT = process.env.QA_OUT || join(tmpdir(), "slipscan-qa-shots");
 const BASE = "http://localhost:1420";
 const WIDTHS = [760, 1100, 1520];
 const HEIGHT = 960;
-const ROUTES = [
-  "dashboard", "transactions", "receipts", "budgets", "ledger",
-  "reconcile", "payments", "reports", "settings",
-];
+// Same authority as the gallery — see scripts/routes.mjs. This list used to
+// be inline here too, and was missing `household` and `packs`.
+const ROUTES = readRoutes();
+// The sweep is compared run-to-run by eye, so it is pinned exactly as the
+// gallery is: an unpinned clock changes the dashboard greeting and, after
+// July 2026, empties every month-scoped screen. See screenshot.mjs.
+const LOCALE_TZ = "Africa/Johannesburg";
+const CAPTURE_TIME = "2026-07-16T09:30:00+02:00";
 
 async function serverUp() {
   try {
@@ -64,7 +85,10 @@ async function main() {
           viewport: { width, height: HEIGHT },
           deviceScaleFactor: 1,
           colorScheme: themeName,
+          locale: "en-US",
+          timezoneId: LOCALE_TZ,
         });
+        await context.clock.setFixedTime(new Date(CAPTURE_TIME));
         await context.addInitScript(
           (t) => localStorage.setItem("slipscan.theme", t), themeName,
         );
@@ -89,10 +113,12 @@ async function main() {
         if (width === 1520) {
           await openRoute(page, "receipts");
           try {
-            const row = page.locator('tbody tr[role="button"]').first();
+            // The expander is the button in the row's first cell, not the
+            // row — see the matching note in screenshot.mjs.
+            const row = page.locator("tbody button[aria-expanded]").first();
             await row.click({ timeout: 3000 });
-            await page.waitForSelector('tr[aria-expanded="true"]', { timeout: 3000 });
-            await page.waitForTimeout(300);
+            await page.waitForSelector('button[aria-expanded="true"]', { timeout: 3000 });
+            await page.waitForTimeout(450);
             await page.screenshot({ path: join(OUT, `receipt-detail__${width}__${themeName}.png`) });
             console.log(`  ✓ receipt-detail__${width}__${themeName}.png`);
           } catch (e) { console.log("  (receipt-detail skipped)", e.message); }

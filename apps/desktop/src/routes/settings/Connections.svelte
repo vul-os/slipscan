@@ -9,6 +9,7 @@
    * owns and saves, so `settings` is bound rather than copied.
    */
   import { api } from "../../lib/api/client";
+  import { router } from "../../lib/router.svelte";
   import type { Book, FxCachedRate, FxStatus, Settings } from "../../lib/api/types";
   import { fmtRelative } from "../../lib/format";
   import EmptyState from "../../lib/components/EmptyState.svelte";
@@ -301,56 +302,60 @@
     </p>
   </section>
 
-  <!-- bank connections (scraper adapters). `settings.scrapers` is a
-       SettingsDto field that defaults to an empty list and that nothing in
-       this app writes, so outside the browser mock this list is always the
-       empty state below. -->
+  <!--
+    Bank connections.
+
+    This panel used to render `settings.scrapers` as a live list, with an
+    empty state behind it. `scrapers` is a SettingsDto field with no writer on
+    any surface — no CLI command, no server route, nothing in this app — so
+    the list branch could only ever be reached by the browser mock, which
+    filled it with two fabricated banks. That made the dev shell and the
+    documentation screenshots show connected accounts the product cannot
+    have. The unreachable branch is gone; what is left is the true state,
+    stated once.
+  -->
   <section class="card p-4">
-    <h2 class="mb-1 flex items-center gap-2 text-[13px] font-semibold">
-      <Icon name="bank" size={15} class="text-t3" />
-      Bank connections
-    </h2>
+    <div class="mb-1 flex items-center justify-between">
+      <h2 class="flex items-center gap-2 text-[13px] font-semibold">
+        <Icon name="bank" size={15} class="text-t3" />
+        Bank connections
+      </h2>
+      <Badge tone="neutral" dot={false} label="not implemented" />
+    </div>
     <p class="mb-3 text-[12px] text-t3">
-      Scraper adapters run bank sessions on this machine. Credentials live in
-      the vault; only status metadata is shown here.
+      The design is scraper adapters running bank sessions on this machine,
+      with their logins in the vault. None of it is built — there is no
+      adapter to configure and nothing to connect.
     </p>
-    {#if settings.scrapers.length === 0}
-      <EmptyState
-        icon="bank"
-        title="No bank connections"
-        body="Statement CSV import works today (via the CLI); live scraper adapters are on the roadmap."
-      />
-    {:else}
-      <ul class="divide-y divide-line">
-        {#each settings.scrapers as sc (sc.id)}
-          <li class="row-hover flex items-center gap-3 py-2.5 first:pt-0 last:pb-0">
-            <span
-              class="flex size-8 shrink-0 items-center justify-center rounded-md bg-sunken text-t3"
-            >
-              <Icon name="bank" size={15} />
-            </span>
-            <span class="min-w-0 flex-1 leading-tight">
-              <span class="block text-[12.5px] font-medium">
-                {sc.institution}
-              </span>
-              <span class="block truncate font-mono text-[10.5px] text-t3">
-                {sc.adapter}
-                {#if sc.last_sync}· last sync {fmtRelative(sc.last_sync)}{/if}
-              </span>
-            </span>
-            <Badge
-              tone={sc.status === "connected"
-                ? "success"
-                : sc.status === "needs_attention"
-                  ? "warning"
-                  : "neutral"}
-              label={sc.status === "needs_attention"
-                ? "needs re-auth"
-                : sc.status}
-            />
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <EmptyState
+      icon="bank"
+      title="No bank connections, and none possible yet"
+      body="Getting transactions in today means importing a statement CSV, which SlipScan does well: slipscan import on the CLI, then Reconcile to match it against what you already have."
+    />
+  </section>
+
+  <!--
+    Payments registers webhook URLs, and those are egress. A tab that opens by
+    claiming to hold "every configured egress in one place" has to either list
+    them or point at them, or it is quietly incomplete.
+  -->
+  <section class="card p-4">
+    <div class="mb-1 flex items-center justify-between">
+      <h2 class="flex items-center gap-2 text-[13px] font-semibold">
+        <Icon name="zap" size={15} class="text-t3" />
+        Webhook endpoints
+      </h2>
+      <button class="btn h-7" onclick={() => router.go("payments")}>
+        Open Payments
+        <Icon name="arrow-right" size={13} />
+      </button>
+    </div>
+    <p class="text-[12px] text-t3">
+      The one other place SlipScan can reach the network is the endpoints you
+      register on Payments, which receive a signed POST when a watched
+      reference code turns up. They are configured there, next to the watch
+      codes that trigger them, and they only ever fire on a delivery you
+      queued or ran.
+    </p>
   </section>
 </div>

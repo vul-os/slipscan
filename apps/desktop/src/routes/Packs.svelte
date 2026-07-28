@@ -46,6 +46,7 @@
   import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
   import Money from "../lib/components/Money.svelte";
+  import ConfirmDialog from "../lib/components/ConfirmDialog.svelte";
 
   let book = $state<Book | null>(null);
   let packs = $state<InstalledPackInfo[] | null>(null);
@@ -235,35 +236,25 @@
   }
 
   // -- uninstall ------------------------------------------------------------
-  // Two-step, same as the vault's revoke: first click arms, second removes.
+  // Arm-to-confirm through the shared prompt: focus on Cancel, Escape
+  // cancels, and the failure lands inside the prompt rather than as a banner
+  // at the top of a screen the user is no longer looking at.
 
-  let removeArmed = $state<string | null>(null);
-  let removeTimer: ReturnType<typeof setTimeout> | undefined;
+  let confirmUninstall = $state<InstalledPackInfo | null>(null);
   let removeBusy = $state<string | null>(null);
+  let removeError = $state<string | null>(null);
   let listError = $state<string | null>(null);
 
-  function disarmRemove(packId?: string) {
-    if (packId === undefined || removeArmed === packId) {
-      removeArmed = null;
-      clearTimeout(removeTimer);
-    }
-  }
-
   async function uninstall(pack: InstalledPackInfo) {
-    if (removeArmed !== pack.pack_id) {
-      disarmRemove();
-      removeArmed = pack.pack_id;
-      removeTimer = setTimeout(() => disarmRemove(pack.pack_id), 5000);
-      return;
-    }
-    disarmRemove();
     listError = null;
+    removeError = null;
     removeBusy = pack.pack_id;
     try {
       await api.packUninstall({ book_id: pack.book_id, pack_id: pack.pack_id });
+      confirmUninstall = null;
       await load();
     } catch (err) {
-      listError = String(err);
+      removeError = String(err);
     } finally {
       removeBusy = null;
     }
@@ -873,15 +864,13 @@
           <button
             class="btn btn-danger h-7"
             disabled={removeBusy === p.pack_id}
-            onclick={() => uninstall(p)}
-            onmouseleave={() => disarmRemove(p.pack_id)}
-            onblur={() => disarmRemove(p.pack_id)}
-            onkeydown={(e) => {
-              if (e.key === "Escape") disarmRemove(p.pack_id);
+            onclick={() => {
+              removeError = null;
+              confirmUninstall = p;
             }}
           >
             <Icon name="trash" size={13} />
-            {removeArmed === p.pack_id ? "Really uninstall?" : "Uninstall"}
+            Uninstall
           </button>
         </div>
       </div>
@@ -1165,4 +1154,23 @@
     </span>
   </p>
 </section>
+{/if}
+
+{#if confirmUninstall}
+  {@const target = confirmUninstall}
+  <ConfirmDialog
+    open
+    title="Uninstall {target.name}?"
+    body="Its rules stop classifying and its registration goes. Categories it created stay — they are ordinary local categories now, and your transactions still point at them — and {target.pack_id} stays pinned to the signer that first claimed it, so no other key can take the id over later."
+    confirmLabel="Uninstall pack"
+    tone="danger"
+    busy={removeBusy === target.pack_id}
+    error={removeError}
+    onconfirm={() => uninstall(target)}
+    oncancel={() => {
+      if (removeBusy) return;
+      confirmUninstall = null;
+      removeError = null;
+    }}
+  />
 {/if}

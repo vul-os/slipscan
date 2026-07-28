@@ -35,6 +35,10 @@
   let moveTarget = $state("");
   let moveError = $state<string | null>(null);
   let movedAt = $state<number | null>(null);
+  /** Which of the two outcomes just happened. `use_existing` copies nothing —
+   * it repoints at a database already sitting in the target — so reporting it
+   * as "Moved" would credit the app with work it deliberately did not do. */
+  let movedKind = $state<"moved" | "opened">("moved");
   let moveInput = $state<HTMLInputElement | null>(null);
   let pathCopied = $state(false);
 
@@ -81,6 +85,7 @@
       });
       moveStage = "idle";
       moveTarget = "";
+      movedKind = useExisting ? "opened" : "moved";
       movedAt = Date.now();
       setTimeout(() => (movedAt = null), 4000);
       // The book's database path changed too.
@@ -118,7 +123,7 @@
           role="status"
         >
           <Icon name="check" size={13} />
-          Moved
+          {movedKind === "opened" ? "Now open" : "Moved"}
         </span>
       {/if}
       {#if dataStatus?.cloud_sync_hint}
@@ -255,11 +260,42 @@
               {moveTarget.trim()}
             </span>
           </div>
-          <p class="text-[11.5px] text-t3">
-            SlipScan copies the database and documents, verifies every
-            file's checksum, opens the copy to check it, switches over
-            atomically, and only then removes the old copy. The app is
-            read-only while this runs.
+          <!-- The two outcomes are different operations and are described as
+               such. Once the target turns out to hold a database, the only
+               button offered stops copying anything, and leaving the copy
+               narrative in place would describe work that is not about to
+               happen. -->
+          {#if targetHasDb}
+            <p class="text-[11.5px] text-t3">
+              Nothing will be copied or overwritten. SlipScan repoints at the
+              database already in that folder and leaves your current one
+              exactly where it is — so this is a switch between two sets of
+              books, not a move, and it is reversible by pointing back.
+            </p>
+          {:else}
+            <p class="text-[11.5px] text-t3">
+              SlipScan copies the database and documents, verifies every
+              file's checksum, opens the copy to check it, switches over
+              atomically, and only then removes the old copy. The app is
+              read-only while this runs.
+            </p>
+          {/if}
+          <!-- The moment this matters is here, not in the guidance box
+               further down the page. Someone moving their folder into a
+               shared drive is about to form a belief about what they just
+               copied, and "everything" is the wrong one. -->
+          <p
+            class="flex items-start gap-1.5 rounded-lg border border-line bg-surface px-3 py-2 text-[11.5px] leading-relaxed text-t2"
+          >
+            <Icon name="key" size={13} class="mt-0.5 shrink-0 text-t3" />
+            <span>
+              <span class="font-medium">Your credentials are not moving.</span>
+              The vault's key lives in this machine's OS keychain and stays
+              there, so what lands in the new folder yields no secrets on its
+              own — which is exactly what makes the folder safe to put in a
+              shared drive, and why opening it on another machine means
+              entering them once more.
+            </span>
           </p>
           <div class="flex items-center gap-2">
             {#if targetHasDb}

@@ -1,4 +1,23 @@
 <script lang="ts">
+  /**
+   * Payments — reference watches in, signed webhooks out.
+   *
+   * Two things this screen has to keep straight, because both are easy to
+   * overstate:
+   *
+   * * **Where detection fires.** The hook lives inside `transaction_create`,
+   *   so every source inherits it — but the only sources that exist today are
+   *   statement imports and manual entries. Parsing bank-alert emails into
+   *   transactions is NOT wired (ROADMAP.md, docs/EMAIL.md): alert mail is
+   *   captured as a document, never turned into a transaction, so it cannot
+   *   trigger a watch. No copy here may imply otherwise.
+   * * **What a signing secret is.** It is generated locally, held write-only
+   *   in the credential vault, and displayed exactly once — at creation or at
+   *   rotation, in a modal that has to be acknowledged. There is no path that
+   *   brings it back; losing it means rotating, which breaks whatever is
+   *   already verifying with the old one. That is why rotate is a confirm,
+   *   not a button.
+   */
   import { tick } from "svelte";
   import { api } from "../lib/api/client";
   import type {
@@ -15,6 +34,8 @@
   import Skeleton from "../lib/components/Skeleton.svelte";
   import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
+  import Dialog from "../lib/components/Dialog.svelte";
+  import ConfirmDialog from "../lib/components/ConfirmDialog.svelte";
 
   let book = $state<Book | null>(null);
   let watches = $state<PayWatch[]>([]);
@@ -41,8 +62,6 @@
   let epUrl = $state("");
   let epBusy = $state(false);
   let epLabelInput = $state<HTMLInputElement | null>(null);
-  /** Id of the endpoint whose secret is being rotated right now, if any. */
-  let rotatingId = $state<string | null>(null);
 
   /**
    * The one-time secret reveal. Populated only from an add/rotate response —
@@ -61,28 +80,110 @@
   let deliverBusy = $state(false);
   let deliveredNote = $state<string | null>(null);
 
-  /** Two-step remove (same pattern as the vault's revoke): first click arms,
-   * second destroys; disarms on mouse-out, blur, Escape, or timeout. Keys
-   * are prefixed (`watch:` / `endpoint:`) so the two lists never cross-arm. */
-  let removeArmed = $state<string | null>(null);
-  let removeTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Arm-to-confirm for the three irreversible actions on this screen, through
+   * the shared ConfirmDialog: focus lands on Cancel, Escape cancels, the
+   * failure renders inside the prompt, and the await cannot be abandoned
+   * halfway. Rotation is in here with the two removals on purpose — it
+   * destroys a live secret, so a single stray click must not be able to
+   * break a receiver that is verifying signatures right now.
+   */
+  type Confirm =
+    | { kind: "watch-remove"; watch: PayWatch }
+    | { kind: "endpoint-remove"; endpoint: PayEndpoint }
+    | { kind: "endpoint-rotate"; endpoint: PayEndpoint };
 
-  function disarmRemove(key?: string) {
-    if (key === undefined || removeArmed === key) {
-      removeArmed = null;
-      clearTimeout(removeTimer);
-    }
+  let confirm = $state<Confirm | null>(null);
+  let confirmBusy = $state(false);
+  let confirmError = $state<string | null>(null);
+
+  function ask(next: Confirm) {
+    confirm = next;
+    confirmError = null;
   }
 
-  function armOrConfirm(key: string): boolean {
-    if (removeArmed !== key) {
-      disarmRemove();
-      removeArmed = key;
-      removeTimer = setTimeout(() => disarmRemove(key), 5000);
-      return false;
+  function cancelConfirm() {
+    if (confirmBusy) return;
+    confirm = null;
+    confirmError = null;
+  }
+
+  const confirmCopy = $derived.by(() => {
+    const c = confirm;
+    if (!c) return null;
+    if (c.kind === "watch-remove") {
+      // Removing a watch is a wider blast radius than it looks: pay_matches
+      // is ON DELETE CASCADE from pay_watch_codes, and pay_deliveries is ON
+      // DELETE CASCADE from pay_matches (migration 0400_shapepay), so the
+      // record of what this code ever matched goes too. Pause keeps all of
+      // it, so the prompt names it rather than making removal the only exit.
+      const hits = matchCount(c.watch.id);
+      return {
+        title: `Stop watching ${c.watch.code}?`,
+        body:
+          `This also deletes what it has already matched — ` +
+          `${hits} ${hits === 1 ? "match" : "matches"} and any deliveries ` +
+          `queued from ${hits === 1 ? "it" : "them"}, including ones still ` +
+          `retrying. To stop firing webhooks but keep the history, pause it ` +
+          `instead.`,
+        label: "Remove watch code",
+      };
     }
-    disarmRemove();
-    return true;
+    if (c.kind === "endpoint-remove") {
+      return {
+        title: `Remove “${c.endpoint.label}”?`,
+        body: "Its signing secret is destroyed and its queued deliveries — including anything still pending a retry — go with it. Nothing is re-sent to this URL afterwards.",
+        label: "Remove endpoint",
+      };
+    }
+    return {
+      title: `Rotate the secret for “${c.endpoint.label}”?`,
+      body: "The current secret stops working the moment this completes, so anything already verifying signatures with it starts rejecting them. The new secret is shown once, immediately after.",
+      // Named as the destruction it is — rotation is not a refresh, it throws
+      // the old key away — which is also what makes the prompt's trash icon
+      // the right icon rather than a mismatched one.
+      label: "Rotate & destroy the old",
+    };
+  });
+
+  async function runConfirm() {
+    const c = confirm;
+    if (!c || !book) return;
+    confirmBusy = true;
+    confirmError = null;
+    try {
+      let rotated: PayEndpointWithSecret | null = null;
+      if (c.kind === "watch-remove") {
+        await api.payWatchRemove({ watch_id: c.watch.id });
+        watches = await api.payWatchList({ book_id: book.id });
+      } else if (c.kind === "endpoint-remove") {
+        await api.payEndpointRemove({ endpoint_id: c.endpoint.id });
+        if (revealed?.endpoint.id === c.endpoint.id) dismissReveal();
+        // Deliveries cascade with the endpoint — refresh both lists.
+        [endpoints, deliveries] = await Promise.all([
+          api.payEndpointList({ book_id: book.id }),
+          api.payDeliveryList({ book_id: book.id }),
+        ]);
+      } else {
+        rotated = await api.payEndpointRotateSecret({
+          endpoint_id: c.endpoint.id,
+        });
+      }
+      confirm = null;
+      if (rotated) {
+        // Let the prompt unmount and hand focus back before the reveal claims
+        // it. Two dialogs mounting in one flush makes focus restore ambiguous,
+        // and the loser is the user's focus, which lands on <body>.
+        await tick();
+        reveal(rotated, "rotated");
+      }
+    } catch (err) {
+      // Stays open with the reason on it, so the action can be retried or
+      // abandoned deliberately rather than vanishing into a page-level error.
+      confirmError = String(err);
+    } finally {
+      confirmBusy = false;
+    }
   }
 
   async function loadLists(bookId: string) {
@@ -208,17 +309,6 @@
     }
   }
 
-  async function removeWatch(id: string) {
-    if (!armOrConfirm(`watch:${id}`) || !book) return;
-    watchError = null;
-    try {
-      await api.payWatchRemove({ watch_id: id });
-      watches = await api.payWatchList({ book_id: book.id });
-    } catch (err) {
-      watchError = String(err);
-    }
-  }
-
   async function toggleWatch(w: PayWatch) {
     watchError = null;
     try {
@@ -293,34 +383,6 @@
     }
   }
 
-  async function rotateSecret(id: string) {
-    endpointError = null;
-    rotatingId = id;
-    try {
-      reveal(await api.payEndpointRotateSecret({ endpoint_id: id }), "rotated");
-    } catch (err) {
-      endpointError = String(err);
-    } finally {
-      rotatingId = null;
-    }
-  }
-
-  async function removeEndpoint(id: string) {
-    if (!armOrConfirm(`endpoint:${id}`) || !book) return;
-    endpointError = null;
-    try {
-      await api.payEndpointRemove({ endpoint_id: id });
-      if (revealed?.endpoint.id === id) dismissReveal();
-      // Deliveries cascade with the endpoint — refresh both lists.
-      [endpoints, deliveries] = await Promise.all([
-        api.payEndpointList({ book_id: book.id }),
-        api.payDeliveryList({ book_id: book.id }),
-      ]);
-    } catch (err) {
-      endpointError = String(err);
-    }
-  }
-
   async function toggleEndpoint(e: PayEndpoint) {
     endpointError = null;
     try {
@@ -365,6 +427,11 @@
     return d.attempts > 0 ? "warning" : "neutral";
   }
 
+  /** Mirrors `MAX_DELIVERY_ATTEMPTS` in slipscan-core's pay module. Kept as a
+   * named constant rather than a number inlined into prose so the copy and the
+   * per-row wording cannot drift apart from each other. */
+  const MAX_DELIVERY_ATTEMPTS = 20;
+
   /** Attempts timeline: one dot per past attempt (capped — older ones fold
    * into a "+n" count). Every attempt of an undelivered delivery failed; a
    * delivered one succeeded on its last try. */
@@ -380,7 +447,7 @@
 <PageHeader
   eyebrow="Reference watches · signed webhooks"
   title="Payments"
-  subtitle="Inbox in, webhook out: when an inbound transaction carries a reference code you watch, SlipScan fires HMAC-signed webhooks at endpoints you register. No central infrastructure."
+  subtitle="When a transaction lands carrying a reference code you watch, SlipScan fires HMAC-signed webhooks at endpoints you register — from this machine, with no central infrastructure in the path."
 />
 
 {#if loadError}
@@ -409,9 +476,25 @@
       </div>
       <p class="mb-3 text-[12px] text-t3">
         The EFT reference you gave a customer. Codes match case-insensitively
-        as whole tokens on inbound transactions from any source — email-ingested
-        bank alerts first (Settings → Email ingest), imports and manual entries
-        alike.
+        as whole tokens against a transaction's description and merchant, so
+        <span class="font-mono">INV1</span> never matches
+        <span class="font-mono">INV11</span>.
+      </p>
+      <!-- The detection hook lives inside transaction_create, so it does
+           apply to every source. Saying "any source" and stopping there would
+           still mislead, because the set of sources that reach it today is
+           two. State the set. -->
+      <p
+        class="mb-3 flex items-start gap-1.5 rounded-lg border border-line bg-sunken/50 px-3 py-2 text-[11.5px] leading-relaxed text-t2"
+      >
+        <Icon name="alert-circle" size={13} class="mt-0.5 shrink-0 text-t3" />
+        <span>
+          Detection runs on every transaction as it is created, which today
+          means <span class="font-medium">statement imports and entries you
+          make yourself</span>. Reading a payment out of a bank-alert email is
+          not implemented — alert mail is only ever captured as a document, so
+          it cannot trigger a watch.
+        </span>
       </p>
 
       {#if watchError}
@@ -531,15 +614,10 @@
                 </button>
                 <button
                   class="btn btn-danger h-7"
-                  onclick={() => removeWatch(w.id)}
-                  onmouseleave={() => disarmRemove(`watch:${w.id}`)}
-                  onblur={() => disarmRemove(`watch:${w.id}`)}
-                  onkeydown={(e) => {
-                    if (e.key === "Escape") disarmRemove(`watch:${w.id}`);
-                  }}
+                  onclick={() => ask({ kind: "watch-remove", watch: w })}
                 >
                   <Icon name="trash" size={13} />
-                  {removeArmed === `watch:${w.id}` ? "Really remove?" : "Remove"}
+                  Remove
                 </button>
               </div>
             </li>
@@ -573,52 +651,6 @@
           <Icon name="alert-circle" size={13} />
           {endpointError}
         </p>
-      {/if}
-
-      {#if revealed}
-        <!-- The one-time reveal: deliberate and calm — full secret in mono
-             (never truncated: hand-copy must stay possible), copy button,
-             and a plain note that dismissing it is forever. -->
-        <div
-          class="animate-slide-up mb-4 rounded-lg border border-accent-ring/40 bg-accent/[0.06] p-3"
-          role="alert"
-        >
-          <p class="mb-1 flex flex-wrap items-center gap-2 text-[12.5px] font-semibold">
-            <Icon name="key" size={14} class="text-accent-ring dark:text-accent" />
-            Signing secret for “{revealed.endpoint.label}”
-            <Badge tone="warning" label="shown once" />
-          </p>
-          <p class="mb-2 text-[11.5px] text-t3">
-            Copy it into your receiver now to verify signatures
-            {#if revealed.action === "rotated"}
-              — the previous secret has been destroyed.
-            {:else}
-              — after you close this it can never be viewed again, only
-              rotated.
-            {/if}
-          </p>
-          <div class="flex flex-wrap items-center gap-2">
-            <code
-              class="min-w-0 flex-1 basis-56 rounded-md border border-line bg-surface px-2 py-1.5 font-mono text-[11.5px] break-all select-all"
-            >
-              {revealed.secret}
-            </code>
-            <div class="flex shrink-0 items-center gap-2">
-              <button class="btn h-7" onclick={copySecret}>
-                {#if secretCopied}
-                  <Icon name="check" size={13} />
-                  Copied
-                {:else}
-                  <Icon name="copy" size={13} />
-                  Copy
-                {/if}
-              </button>
-              <button class="btn btn-primary h-7" onclick={dismissReveal}>
-                Done — I've stored it
-              </button>
-            </div>
-          </div>
-        </div>
       {/if}
 
       {#if showEndpointForm}
@@ -705,25 +737,17 @@
                 </button>
                 <button
                   class="btn h-7"
-                  onclick={() => rotateSecret(e.id)}
-                  disabled={rotatingId !== null}
+                  onclick={() => ask({ kind: "endpoint-rotate", endpoint: e })}
                 >
                   <Icon name="refresh" size={13} />
-                  {rotatingId === e.id ? "Rotating…" : "Rotate secret"}
+                  Rotate secret
                 </button>
                 <button
                   class="btn btn-danger h-7"
-                  onclick={() => removeEndpoint(e.id)}
-                  onmouseleave={() => disarmRemove(`endpoint:${e.id}`)}
-                  onblur={() => disarmRemove(`endpoint:${e.id}`)}
-                  onkeydown={(ev) => {
-                    if (ev.key === "Escape") disarmRemove(`endpoint:${e.id}`);
-                  }}
+                  onclick={() => ask({ kind: "endpoint-remove", endpoint: e })}
                 >
                   <Icon name="trash" size={13} />
-                  {removeArmed === `endpoint:${e.id}`
-                    ? "Really remove?"
-                    : "Remove"}
+                  Remove
                 </button>
               </div>
             </li>
@@ -765,10 +789,26 @@
         </div>
       </div>
       <p class="mb-3 text-[12px] text-t3">
-        Failed deliveries retry with backoff (1m, 5m, 30m, 2h, 12h, then
-        daily) until the receiver answers; a 4xx rejection fails immediately.
-        Payloads carry the reference, amount and dates — never account numbers
-        or the raw bank description.
+        A delivery that does not land retries with backoff — 1m, 5m, 30m, 2h,
+        12h, then daily — and a 4xx rejection fails immediately without
+        retrying. Payloads carry the reference, amount and dates, never account
+        numbers or the raw bank description.
+      </p>
+      <!-- The cap is the part a screen is tempted to leave out, and it is
+           exactly the part that matters: "failed" is terminal, there is no
+           re-queue command on any surface, and a receiver that comes back up
+           on day 21 gets nothing. Saying "retries until the receiver answers"
+           would be a promise the queue does not keep. -->
+      <p
+        class="mb-3 flex items-start gap-1.5 rounded-lg border border-line bg-sunken/50 px-3 py-2 text-[11.5px] leading-relaxed text-t2"
+      >
+        <Icon name="alert-circle" size={13} class="mt-0.5 shrink-0 text-t3" />
+        <span>
+          Retrying stops after {MAX_DELIVERY_ATTEMPTS} attempts and the delivery
+          is abandoned as <span class="font-medium">failed</span>. That state is
+          final — nothing re-queues it, so a receiver fixed after that point has
+          to be reconciled from the matches themselves.
+        </span>
       </p>
 
       {#if deliveryError}
@@ -838,6 +878,10 @@
                     {d.attempts === 1 ? "attempt" : "attempts"}
                     {#if d.state === "pending"}
                       · next retry {fmtUntil(d.next_attempt_at)}
+                    {:else if d.state === "failed"}
+                      <!-- Terminal. Saying so on the row is the difference
+                           between "it is still trying" and the truth. -->
+                      · <span class="text-danger">given up — not retried</span>
                     {/if}
                     {#if d.last_status != null}
                       · HTTP {d.last_status}
@@ -857,3 +901,85 @@
     </section>
   </div>
 {/if}
+
+<!--
+  The one-time reveal.
+
+  A secret you can only ever see once must not be something a user can scroll
+  past, tab past, or dismiss by pressing Escape on their way somewhere else.
+  So it is the one modal in the product that refuses to be waved away
+  (`dismissible={false}` — no scrim click, no Escape): the only way out is the
+  button that says you have stored it. The secret is never truncated, because
+  copying it by hand has to stay possible when the clipboard is unavailable.
+-->
+<Dialog
+  open={revealed !== null}
+  title={revealed?.action === "rotated"
+    ? "New signing secret — shown once"
+    : "Signing secret — shown once"}
+  description={revealed
+    ? `For “${revealed.endpoint.label}”. This is the only time it is displayed; after this it can be rotated, never read.`
+    : undefined}
+  dismissible={false}
+  onclose={dismissReveal}
+>
+  {#if revealed}
+    {@const r = revealed}
+    <div class="space-y-3 px-5 pb-4">
+      <p
+        class="flex items-start gap-1.5 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-[12px] leading-relaxed text-warning"
+      >
+        <Icon name="alert-circle" size={13} class="mt-0.5 shrink-0" />
+        <span>
+          {#if r.action === "rotated"}
+            The previous secret has already been destroyed — anything still
+            verifying with it is failing right now. Put this one in place.
+          {:else}
+            Copy it into your receiver to verify signatures. Lose it and the
+            only way forward is rotating, which breaks whatever is already
+            verifying with it.
+          {/if}
+        </span>
+      </p>
+
+      <div>
+        <span class="eyebrow mb-1.5 block" id="pay-secret-label">
+          HMAC-SHA256 key · 64 hex characters
+        </span>
+        <code
+          class="block rounded-md border border-line bg-sunken px-2.5 py-2 font-mono text-[12px] leading-relaxed break-all select-all"
+          aria-labelledby="pay-secret-label"
+        >
+          {r.secret}
+        </code>
+      </div>
+    </div>
+  {/if}
+
+  {#snippet footer()}
+    <button class="btn" onclick={copySecret}>
+      {#if secretCopied}
+        <Icon name="check" size={13} />
+        Copied
+      {:else}
+        <Icon name="copy" size={13} />
+        Copy
+      {/if}
+    </button>
+    <button class="btn btn-primary" data-autofocus onclick={dismissReveal}>
+      Done — I've stored it
+    </button>
+  {/snippet}
+</Dialog>
+
+<ConfirmDialog
+  open={confirm !== null}
+  title={confirmCopy?.title ?? ""}
+  body={confirmCopy?.body}
+  confirmLabel={confirmCopy?.label ?? "Confirm"}
+  tone="danger"
+  busy={confirmBusy}
+  error={confirmError}
+  onconfirm={runConfirm}
+  oncancel={cancelConfirm}
+/>

@@ -40,6 +40,7 @@
   import StatCard from "../lib/components/StatCard.svelte";
   import MemberAvatar from "../lib/components/MemberAvatar.svelte";
   import Icon from "../lib/components/Icon.svelte";
+  import ConfirmDialog from "../lib/components/ConfirmDialog.svelte";
 
   const thisMonth = localMonth();
   let month = $state(thisMonth);
@@ -111,21 +112,22 @@
   let editDefaultAccount = $state("");
   let editBusy = $state(false);
 
-  /** Two-step remove (same pattern as the vault's revoke). A refusal because
-   * the member still has attributed transactions/splits switches to an
-   * inline reassign picker instead of a bare error. */
-  let removeArmed = $state<string | null>(null);
-  let removeTimer: ReturnType<typeof setTimeout> | undefined;
+  /**
+   * Removing a member is arm-to-confirm through the shared prompt: focus
+   * lands on Cancel, Escape cancels, and the await cannot be abandoned.
+   *
+   * Deliberately without `confirmPhrase`. Type-to-confirm is for the
+   * unrecoverable, and this is not: a member carrying attributed history
+   * cannot be removed at all until it is reassigned (core refuses, and the
+   * refusal opens the picker below), and one carrying none is a label and a
+   * colour that can be typed again in seconds. Making people spell out a name
+   * to undo a typo is friction pretending to be safety.
+   */
+  let confirmRemove = $state<Member | null>(null);
   let removeBusy = $state<string | null>(null);
+  let removeError = $state<string | null>(null);
   let reassignFor = $state<string | null>(null);
   let reassignTarget = $state("");
-
-  function disarmMemberRemove(id?: string) {
-    if (id === undefined || removeArmed === id) {
-      removeArmed = null;
-      clearTimeout(removeTimer);
-    }
-  }
 
   const accountName = (accounts: Account[], accountId: string): string =>
     accounts.find((a) => a.id === accountId)?.name ?? "—";
@@ -205,33 +207,30 @@
     reassignTo?: string,
   ) {
     membersError = null;
+    removeError = null;
     removeBusy = m.id;
     try {
       await api.memberRemove({ id: m.id, reassign_to: reassignTo });
       if (reassignFor === m.id) reassignFor = null;
+      confirmRemove = null;
       data = reload(true);
     } catch (err) {
       const msg = String(err);
       if (!reassignTo && msg.includes("attributed transactions or splits")) {
+        // Not an error to show inside the prompt — it is a different
+        // decision. Close the prompt and open the picker that can actually
+        // resolve it, with the history intact.
+        confirmRemove = null;
         reassignFor = m.id;
         reassignTarget = members.find((x) => x.id !== m.id)?.id ?? "";
+      } else if (confirmRemove?.id === m.id) {
+        removeError = msg;
       } else {
         membersError = msg;
       }
     } finally {
       removeBusy = null;
     }
-  }
-
-  async function removeMember(m: Member, members: Member[]) {
-    if (removeArmed !== m.id) {
-      disarmMemberRemove();
-      removeArmed = m.id;
-      removeTimer = setTimeout(() => disarmMemberRemove(m.id), 5000);
-      return;
-    }
-    disarmMemberRemove();
-    await attemptRemoveMember(m, members);
   }
 
   // -- derived views over the reports ---------------------------------------
@@ -531,15 +530,13 @@
                 <button
                   class="btn btn-danger h-7"
                   disabled={removeBusy === m.id}
-                  onclick={() => removeMember(m, d.members)}
-                  onmouseleave={() => disarmMemberRemove(m.id)}
-                  onblur={() => disarmMemberRemove(m.id)}
-                  onkeydown={(e) => {
-                    if (e.key === "Escape") disarmMemberRemove(m.id);
+                  onclick={() => {
+                    removeError = null;
+                    confirmRemove = m;
                   }}
                 >
                   <Icon name="trash" size={13} />
-                  {removeArmed === m.id ? "Really remove?" : "Remove"}
+                  Remove
                 </button>
               </div>
             </div>
@@ -853,6 +850,27 @@
         None of it introduces a network call, an account, or a hosted service.
       </p>
     </section>
+  {/if}
+
+  <!-- Lives inside the resolved branch because the reassign fallback needs
+       the loaded member list to offer somewhere for the history to go. -->
+  {#if confirmRemove}
+    {@const target = confirmRemove}
+    <ConfirmDialog
+      open
+      title="Remove {target.label}?"
+      body="No transaction is deleted or changed — attribution is metadata, and removing a member never touches a debit or a credit. If anything is still attributed to {target.label}, SlipScan refuses outright and offers to move that history to another member first, so nothing is quietly orphaned."
+      confirmLabel="Remove member"
+      tone="danger"
+      busy={removeBusy === target.id}
+      error={removeError}
+      onconfirm={() => attemptRemoveMember(target, d.members)}
+      oncancel={() => {
+        if (removeBusy) return;
+        confirmRemove = null;
+        removeError = null;
+      }}
+    />
   {/if}
 {:catch err}
   <div class="card">

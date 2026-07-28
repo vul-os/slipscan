@@ -35,6 +35,15 @@ export const icons = {
     '<circle cx="12" cy="12" r="8.5"/><path d="M12 8v4.5"/><path d="M12 15.8v.2"/>',
   "arrow-right": '<path d="M4.5 12h15"/><path d="m14 6.5 5.5 5.5-5.5 5.5"/>',
   "chevron-down": '<path d="m6 9.5 6 6 6-6"/>',
+  "chevron-up": '<path d="m6 14.5 6-6 6 6"/>',
+  /** The Return key, for keyboard hints in the command palette. */
+  "corner-down-left":
+    '<path d="M19.5 4.5v7a3 3 0 0 1-3 3H5"/><path d="m9 10.5-4 4 4 4"/>',
+  /** ⌘ — the palette chord on macOS. */
+  command:
+    '<path d="M8.5 8.5h7v7h-7z"/><path d="M8.5 8.5V6.75a2.25 2.25 0 1 0-2.25 2.25h9.5A2.25 2.25 0 1 0 17.5 6.75V8.5"/><path d="M8.5 15.5v1.75a2.25 2.25 0 1 1-2.25-2.25h9.5a2.25 2.25 0 1 1-2.25 2.25V15.5"/>',
+  globe:
+    '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/><path d="M12 3.5c2.2 2.3 3.4 5.3 3.4 8.5s-1.2 6.2-3.4 8.5c-2.2-2.3-3.4-5.3-3.4-8.5S9.8 5.8 12 3.5z"/>',
   inbox:
     '<path d="M4 4.5h16v15H4z"/><path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20"/>',
   sparkle:

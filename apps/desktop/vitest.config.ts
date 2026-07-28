@@ -14,6 +14,12 @@ export default defineConfig({
   resolve: { conditions: ["browser"] },
   test: {
     environment: "jsdom",
+    // Vitest stubs every `.css` import to an empty string by default, which
+    // also swallows `?raw`. The token audit (src/__tests__/tokens.test.ts)
+    // reads app.css as text to measure its contrast, so raw CSS has to come
+    // through. Nothing under test imports a stylesheet for its side effects,
+    // so this changes nothing else.
+    css: true,
     include: ["src/**/__tests__/**/*.test.ts"],
     setupFiles: ["./src/__tests__/setup.ts"],
     restoreMocks: true,
