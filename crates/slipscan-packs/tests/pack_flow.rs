@@ -16,9 +16,10 @@ use slipscan_core::Db;
 
 use slipscan_packs::builtin;
 use slipscan_packs::{
-    compare, key_fingerprint, sign_pack, BenchmarkCohort, BenchmarkSet, BenchmarkStat,
-    InstallOutcome, Installer, MatchKind, MerchantRule, Pack, PackCategory, PackError, PackKind,
-    PackMeta, PackPayload, Provenance, TrustStatus, TrustStore,
+    compare, key_fingerprint, sign_pack, AmountSpec, AmountStyle, BenchmarkCohort, BenchmarkSet,
+    BenchmarkStat, CurrencySpec, DateSpec, Direction, DirectionSpec, Extractor, InstallOutcome,
+    Installer, MailPart, MailRule, MailRuleSet, MatchKind, MerchantRule, Pack, PackCategory,
+    PackError, PackKind, PackMeta, PackPayload, Provenance, TrustStatus, TrustStore,
 };
 
 fn make_book(conn: &Connection) -> String {
@@ -98,6 +99,7 @@ fn taxonomy_payload(version: &str) -> PackPayload {
         keyword_rules: vec![],
         vat_hints: vec![],
         benchmarks: None,
+        mailrules: None,
     }
 }
 
@@ -609,6 +611,7 @@ fn benchmark_pack_installs_and_compares_locally() {
                 mean_minor: None,
             }],
         }),
+        mailrules: None,
     };
     let verified = sign_pack(&Pack::build(&payload).unwrap(), &signer(5))
         .verify()
@@ -711,4 +714,230 @@ fn classifier_on_a_pack_free_database_reads_nothing_and_creates_nothing() {
         .unwrap();
     assert_eq!(tables, 0);
     assert!(Installer::open_readonly(conn).unwrap().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// mailrules packs
+// ---------------------------------------------------------------------------
+
+/// A deliberately invented alert format. No real bank's patterns ship in this
+/// repository — that is the whole reason mailrules is a pack kind rather than
+/// code.
+fn mailrules_payload(version: &str) -> PackPayload {
+    PackPayload {
+        meta: PackMeta {
+            id: "fixture-bank-alerts".into(),
+            name: "Fixture bank alerts".into(),
+            version: version.into(),
+            region: None,
+            author: Some("tests".into()),
+            description: None,
+        },
+        categories: vec![],
+        merchant_rules: vec![],
+        keyword_rules: vec![],
+        vat_hints: vec![],
+        benchmarks: None,
+        mailrules: Some(MailRuleSet {
+            rules: vec![MailRule {
+                id: "card-purchase".into(),
+                description: Some("Card purchase notification".into()),
+                from_patterns: vec!["meridian.example".into()],
+                subject_patterns: vec![r"(?i)card purchase".into()],
+                body_patterns: vec![],
+                amount: AmountSpec {
+                    part: MailPart::Body,
+                    pattern: r"(?i)purchase of USD ([\d.,]+) was made".into(),
+                    group: 1,
+                    style: AmountStyle::Point,
+                },
+                currency: CurrencySpec::Fixed { code: "USD".into() },
+                date: DateSpec::Received,
+                merchant: Extractor {
+                    part: MailPart::Body,
+                    pattern: r"(?i)was made at (.+?) on your card".into(),
+                    group: 1,
+                },
+                reference: None,
+                direction: DirectionSpec::Fixed {
+                    direction: Direction::Debit,
+                },
+                account_hint: None,
+                max_date_drift_days: 30,
+            }],
+        }),
+    }
+}
+
+fn signed_mailrules(version: &str, seed: u8) -> slipscan_packs::VerifiedPack {
+    let pack = Pack::build(&mailrules_payload(version)).unwrap();
+    sign_pack(&pack, &signer(seed)).verify().unwrap()
+}
+
+#[test]
+fn mailrules_pack_installs_versions_and_is_read_back_whole() {
+    let db = Db::open_in_memory().unwrap();
+    let conn = db.conn();
+    let book_id = make_book(conn);
+    TrustStore::open(conn)
+        .unwrap()
+        .trust(&signer_hex(7), "bank pack publisher")
+        .unwrap();
+    let installer = Installer::open(conn).unwrap();
+
+    let report = installer
+        .install(&book_id, &signed_mailrules("1.0.0", 7))
+        .unwrap();
+    assert_eq!(report.outcome, InstallOutcome::Installed);
+    assert_eq!(report.pack.kind, PackKind::MailRules);
+    // A mailrules pack touches no categories and no classification rules.
+    assert_eq!(report.categories_created, 0);
+    assert_eq!(report.rules_installed, 0);
+    assert!(repo::category::list(conn, &book_id).unwrap().is_empty());
+
+    let sets = installer.mailrule_sets(&book_id).unwrap();
+    assert_eq!(sets.len(), 1);
+    assert_eq!(sets[0].0, "fixture-bank-alerts");
+    assert_eq!(sets[0].1.rules.len(), 1);
+    assert_eq!(sets[0].1.rules[0].id, "card-purchase");
+
+    // Same version twice is a no-op error; downgrades are refused; upgrades
+    // replace the rules wholesale — same contract as every other kind.
+    assert!(matches!(
+        installer.install(&book_id, &signed_mailrules("1.0.0", 7)),
+        Err(PackError::AlreadyInstalled { .. })
+    ));
+    assert!(matches!(
+        installer.install(&book_id, &signed_mailrules("0.9.0", 7)),
+        Err(PackError::Downgrade { .. })
+    ));
+    let report = installer
+        .install(&book_id, &signed_mailrules("1.1.0", 7))
+        .unwrap();
+    assert_eq!(
+        report.outcome,
+        InstallOutcome::Upgraded {
+            from: "1.0.0".into()
+        }
+    );
+
+    // And the pack id is pinned to its first signer like any other.
+    TrustStore::open(conn)
+        .unwrap()
+        .trust(&signer_hex(9), "impostor")
+        .unwrap();
+    assert!(matches!(
+        installer.install(&book_id, &signed_mailrules("2.0.0", 9)),
+        Err(PackError::SignerChanged { .. })
+    ));
+
+    // Uninstall leaves nothing behind to match against.
+    assert!(installer
+        .uninstall(&book_id, "fixture-bank-alerts")
+        .unwrap());
+    assert!(installer.mailrule_sets(&book_id).unwrap().is_empty());
+}
+
+#[test]
+fn mailrule_sets_ignores_packs_of_other_kinds() {
+    let db = Db::open_in_memory().unwrap();
+    let conn = db.conn();
+    let book_id = make_book(conn);
+    TrustStore::open(conn)
+        .unwrap()
+        .trust(&signer_hex(7), "publisher")
+        .unwrap();
+    let installer = Installer::open(conn).unwrap();
+
+    installer
+        .install(&book_id, &signed_taxonomy("1.0.0", 7))
+        .unwrap();
+    installer
+        .install(&book_id, &signed_mailrules("1.0.0", 7))
+        .unwrap();
+
+    assert_eq!(installer.mailrule_sets(&book_id).unwrap().len(), 1);
+    assert!(installer.benchmark_sets(&book_id).unwrap().is_empty());
+    // The taxonomy pack still did its own job alongside.
+    assert!(!repo::category::list(conn, &book_id).unwrap().is_empty());
+}
+
+/// A book created before `mailrules` existed carries a `CHECK` constraint
+/// listing only the two kinds that did. `CREATE TABLE IF NOT EXISTS` cannot
+/// widen it, so without an explicit migration every mailrules install into an
+/// existing book would fail on a raw constraint violation.
+#[test]
+fn a_book_created_before_mailrules_existed_can_still_install_one() {
+    let db = Db::open_in_memory().unwrap();
+    let conn = db.conn();
+    let book_id = make_book(conn);
+
+    // Recreate the exact pre-mailrules table and put a row in it, so the
+    // migration has real data to preserve.
+    conn.execute_batch(
+        "CREATE TABLE pack_installs (
+            book_id      TEXT NOT NULL,
+            pack_id      TEXT NOT NULL,
+            name         TEXT NOT NULL,
+            version      TEXT NOT NULL,
+            kind         TEXT NOT NULL CHECK (kind IN ('taxonomy', 'benchmark')),
+            region       TEXT,
+            signer       TEXT NOT NULL,
+            payload_json BLOB NOT NULL,
+            installed_at TEXT NOT NULL,
+            updated_at   TEXT NOT NULL,
+            PRIMARY KEY (book_id, pack_id)
+        );",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO pack_installs
+            (book_id, pack_id, name, version, kind, region, signer,
+             payload_json, installed_at, updated_at)
+         VALUES (?1, 'legacy-taxonomy', 'Legacy', '1.0.0', 'taxonomy', 'ZA',
+                 'somesigner', X'7B7D', '2026-01-01T00:00:00Z',
+                 '2026-01-01T00:00:00Z')",
+        rusqlite::params![book_id],
+    )
+    .unwrap();
+    assert!(
+        conn.execute(
+            "INSERT INTO pack_installs
+                (book_id, pack_id, name, version, kind, signer, payload_json,
+                 installed_at, updated_at)
+             VALUES ('b', 'p', 'n', '1.0.0', 'mailrules', 's', X'7B7D', 'x', 'y')",
+            [],
+        )
+        .is_err(),
+        "the old schema must genuinely reject mailrules, or this test proves nothing"
+    );
+
+    // Opening the installer migrates in place, preserving every row.
+    TrustStore::open(conn)
+        .unwrap()
+        .trust(&signer_hex(7), "publisher")
+        .unwrap();
+    let installer = Installer::open(conn).unwrap();
+    let legacy: (String, String, String) = conn
+        .query_row(
+            "SELECT name, kind, region FROM pack_installs WHERE pack_id = 'legacy-taxonomy'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(legacy, ("Legacy".into(), "taxonomy".into(), "ZA".into()));
+
+    installer
+        .install(&book_id, &signed_mailrules("1.0.0", 7))
+        .unwrap();
+    assert_eq!(installer.mailrule_sets(&book_id).unwrap().len(), 1);
+
+    // Idempotent: opening again on an already-migrated database is a no-op
+    // and still preserves the rows.
+    Installer::open(conn).unwrap();
+    assert_eq!(
+        conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM pack_installs", [], |r| r.get(0))
+            .unwrap(),
+        2
+    );
 }

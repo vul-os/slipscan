@@ -29,6 +29,9 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
+# Test-only: sign a fixture pack so the `pack install` path can be driven
+# end to end through the CLI exactly as a user would.
+ed25519-dalek = { workspace = true }
 tempfile = "3"
 
 [lints]

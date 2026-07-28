@@ -128,6 +128,89 @@ test("seeding built-in packs is an explicit, region-visible choice", async ({
   expect(consoleErrors, consoleErrors.join(" | ")).toHaveLength(0);
 });
 
+// The fetch half of packs. Driven in a real browser because the whole point
+// is the sequence a user walks: no source at all -> add one -> read it ->
+// meet a signer this machine has never seen -> accept that fingerprint on
+// purpose -> install. Every one of those steps is a claim the product makes
+// about privacy or trust, so every one of them is asserted here.
+test("fetching a pack from a source is a sequence of explicit decisions", async ({
+  page,
+}) => {
+  const { pageErrors, consoleErrors } = watchForErrors(page);
+  await open(page, "packs");
+  const main = page.locator("main");
+
+  // 1. The default state, and the promise it keeps: nothing configured, so
+  //    nothing is being contacted.
+  await expect(main).toContainText("SlipScan fetches packs only from sources you have added");
+  await page.getByRole("button", { name: "Sources" }).click();
+  await expect(main).toContainText("No sources configured");
+  await expect(main).toContainText("making no outbound request about packs at all");
+
+  // 2. A source is a place, not an authority — and adding one contacts
+  //    nothing.
+  await page.getByLabel("Name").fill("stick");
+  await page.getByLabel("Source URI").fill("folder:/Volumes/USB/packs");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(main).toContainText("folder / USB");
+  await expect(main).toContainText("local only");
+  await expect(main).toContainText("never read");
+
+  // 3. Reading installs nothing, and shows what each pack would do.
+  await page.getByRole("button", { name: "Read" }).click();
+  await expect(main).toContainText("stick offered");
+  await expect(main).toContainText("Nothing has been installed");
+  await expect(main).toContainText("Worldwide grocery chains");
+
+  // A file that does not verify is reported as such rather than dropped —
+  // and it does not hide the rest of the catalogue.
+  await expect(main).toContainText("not verified");
+  await expect(main).toContainText("signature verification failed");
+
+  // A pack from a signer already trusted here needs no further ceremony…
+  await expect(main).toContainText("trusted as SlipScan Community");
+  // …and one from a signer this machine has never seen is called that.
+  await expect(main).toContainText("never seen here");
+
+  // 4. Arriving is not accepting. The install button for the unknown signer
+  //    is inert until the fingerprint is ticked off.
+  const accept = page.getByRole("button", { name: "Accept signer & install" });
+  await expect(accept).toBeDisabled();
+  await expect(main).toContainText("I have compared");
+  await page.getByRole("checkbox").first().check();
+  await expect(accept).toBeEnabled();
+
+  // 5. And then it installs, through the same verify -> trust -> pin path a
+  //    hand-picked file takes.
+  await accept.click();
+  await expect(main).toContainText("Installed Worldwide grocery chains 2.0.0");
+
+  expect(pageErrors, pageErrors.join(" | ")).toHaveLength(0);
+  expect(consoleErrors, consoleErrors.join(" | ")).toHaveLength(0);
+});
+
+// The refusal the pin exists for, on the screen where a user would meet it:
+// a source offering "a newer version" of a pack id under a different key.
+test("a source cannot take over a pack id with a new key", async ({ page }) => {
+  const { pageErrors } = watchForErrors(page);
+  await open(page, "packs");
+  const main = page.locator("main");
+
+  await page.getByRole("button", { name: "Sources" }).click();
+  await page.getByLabel("Name").fill("team");
+  await page.getByLabel("Source URI").fill("folder:/srv/packs");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByRole("button", { name: "Read" }).click();
+  await expect(main).toContainText("team offered");
+
+  // za-benchmarks-2026 is installed at 0.3.1 and the source offers 0.2.0:
+  // backwards, which is refused rather than quietly skipped.
+  await expect(main).toContainText("refused");
+  await expect(main).toContainText("downgrades are rejected");
+
+  expect(pageErrors, pageErrors.join(" | ")).toHaveLength(0);
+});
+
 test("peer comparison names what it could not compare", async ({ page }) => {
   const { pageErrors, consoleErrors } = watchForErrors(page);
   await open(page, "packs");

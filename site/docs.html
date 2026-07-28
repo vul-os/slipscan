@@ -197,6 +197,83 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
   background:var(--panel);border:1px solid var(--line);border-radius:12px;
   padding:18px;margin:1.3em 0;text-align:center;overflow-x:auto;
 }
+/* ── the one built-in chapter ────────────────────────────────────────────
+   "How it works" is not markdown mirrored out of the repo — it is the
+   architecture, data-flow and engineering-contract material that used to open
+   site/index.html, moved into the room where its audience actually is. It
+   renders from a <template> instead of a fetch, so scripts/sync-docs.mjs has
+   nothing to mirror and its viewer/published cross-check is untouched (that
+   audit only matches DOCS entries carrying a "path": "./docs/…").
+   These rules are lifted from index.html so the two pages stay one object. */
+.builtin{font-size:16px}
+.builtin>*:first-child{margin-top:0}
+.builtin :is(h1,h2,h3){scroll-margin-top:80px;letter-spacing:-.022em;font-weight:650}
+.builtin h1{font-size:clamp(28px,4vw,36px);letter-spacing:-.035em;margin:.2em 0 .5em;border-bottom:1px solid var(--line);padding-bottom:.35em}
+.builtin h2{font-size:24px;margin:1.9em 0 .6em;border-bottom:1px solid var(--line);padding-bottom:.3em}
+.builtin h3{font-size:16.5px;margin:0 0 7px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.builtin p{color:var(--t2);margin:0 0 1em}
+.builtin p.lead{font-size:17px;max-width:62ch}
+.builtin strong,.builtin b{color:var(--t1)}
+.builtin a{color:var(--accent-text);text-decoration:underline;text-underline-offset:2px}
+.builtin code{font-size:.87em;background:var(--sunken);border:1px solid var(--line);padding:1px 5px;border-radius:5px;color:var(--t1)}
+.builtin .grid{display:grid;gap:14px;margin:24px 0}
+.builtin .g2{grid-template-columns:repeat(2,1fr)}
+@media(max-width:760px){.builtin .g2{grid-template-columns:1fr}}
+.builtin .card{border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:20px;box-shadow:var(--shadow-raised)}
+.builtin .card p:last-child{margin-bottom:0}
+.builtin .card .ic{
+  width:32px;height:32px;border-radius:9px;display:grid;place-items:center;
+  background:var(--accent-wash);border:1px solid var(--accent-edge);color:var(--accent-text);margin-bottom:14px;
+}
+.builtin .card .ic svg{width:17px;height:17px;stroke-width:1.8}
+.builtin .card p{font-size:14px}
+.chip{
+  display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;
+  font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.05em;
+  text-transform:uppercase;white-space:nowrap;border:1px solid;
+}
+.chip::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}
+.chip-built{color:var(--accent-text);border-color:var(--accent-edge);background:var(--accent-wash)}
+
+/* the data-flow diagram, with the same wire/packet language index.html used */
+.flowwrap{margin:24px 0;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);box-shadow:var(--shadow-raised);overflow:hidden}
+.flowwrap .fh{
+  display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 18px;
+  border-bottom:1px solid var(--line);background:var(--sunken);font-family:var(--mono);font-size:11.5px;color:var(--t3);
+}
+.flowwrap .fh .k{display:inline-flex;align-items:center;gap:7px}
+.flowwrap .fh .k i{width:16px;height:2px;background:var(--accent);border-radius:1px}
+.flowwrap .fh .k.dash i{background:none;border-top:2px dashed var(--t3)}
+.flowscroll{overflow-x:auto;padding:26px 20px}
+.flow{display:block;width:100%;min-width:660px;height:auto}
+.flow .box{fill:var(--sunken);stroke:var(--line-2);stroke-width:1}
+.flow .box-core{fill:var(--accent-wash);stroke:var(--accent-edge);stroke-width:1.4}
+.flow .box-opt{fill:none;stroke:var(--line-2);stroke-width:1;stroke-dasharray:5 4}
+.flow .db{fill:var(--sunken);stroke:var(--line-2);stroke-width:1}
+.flow .t{font-family:var(--sans);font-size:12.5px;font-weight:600;fill:var(--t1)}
+.flow .sub{font-family:var(--mono);font-size:10px;font-weight:400;fill:var(--t3)}
+.flow .wire{stroke:var(--line-2);stroke-width:1.5;fill:none}
+.flow .wire-opt{stroke:var(--t3);stroke-width:1.4;fill:none;stroke-dasharray:5 5}
+.flow .pkt{fill:var(--accent)}
+.flow .cap{font-family:var(--mono);font-size:9.5px;fill:var(--t3)}
+.flow .zone{fill:none;stroke:var(--accent-edge);stroke-width:1;stroke-dasharray:3 5}
+.flow .zonelbl{font-family:var(--mono);font-size:10px;fill:var(--accent-text);letter-spacing:.08em}
+@keyframes pkt-a{0%{transform:translateX(0);opacity:0}8%{opacity:1}92%{opacity:1}100%{transform:translateX(var(--d));opacity:0}}
+.flow .pkt{animation:pkt-a 2.6s var(--ease) infinite}
+.flow .p2{animation-delay:.45s}.flow .p3{animation-delay:.9s}
+.flow .p4{animation-delay:1.35s}.flow .p5{animation-delay:1.8s}
+.flowfoot{padding:13px 18px;border-top:1px solid var(--line);background:var(--sunken);font-size:13px;color:var(--t2)}
+.flowfoot b{color:var(--t1)}
+
+/* the engineering contract */
+.contract{margin:24px 0;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--panel);box-shadow:var(--shadow-raised)}
+.contract .r{display:flex;gap:14px;align-items:flex-start;padding:15px 18px;border-bottom:1px solid var(--line)}
+.contract .r:last-child{border-bottom:0}
+.contract .r svg{width:16px;height:16px;flex:none;margin-top:3px;color:var(--accent-text);stroke-width:1.9}
+.contract .r b{display:block;font-size:14.5px;margin-bottom:3px}
+.contract .r span{font-size:13.5px;color:var(--t2)}
+.contract code{font-family:var(--mono);font-size:.87em;background:var(--sunken);border:1px solid var(--line);padding:1px 5px;border-radius:5px;color:var(--t1)}
+
 .docs-title{font-family:var(--mono);font-size:11.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--t3);margin-bottom:10px}
 .docs-error{
   color:var(--err);background:color-mix(in srgb,var(--err) 10%,transparent);
@@ -217,7 +294,8 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
 
 @media (prefers-reduced-motion: reduce){
   html{scroll-behavior:auto}
-  *,*::before,*::after{animation-duration:.001ms!important;transition-duration:.001ms!important}
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
+  .flow .pkt{opacity:.75}
 }
 </style>
 <script src="./assets/vendor/marked.umd.js"></script>
@@ -249,6 +327,7 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
   <aside class="docs-nav" aria-label="Chapters">
     <div class="label">slip/scan docs</div>
         <a data-slug="getting-started" href="#getting-started">Getting started</a>
+        <a data-slug="how-it-works" href="#how-it-works">How it works</a>
         <a data-slug="architecture" href="#architecture">Architecture</a>
         <a data-slug="configuration" href="#configuration">Configuration</a>
         <a data-slug="email" href="#email">Email ingestion</a>
@@ -257,6 +336,7 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
         <a data-slug="packs" href="#packs">Packs</a>
         <a data-slug="benchmarks" href="#benchmarks">Benchmarks</a>
         <a data-slug="selfhost" href="#selfhost">Self-hosting</a>
+        <a data-slug="nodes" href="#nodes">Nodes</a>
         <a data-slug="api" href="#api">API</a>
         <a data-slug="threat-model" href="#threat-model">Threat model</a>
         <a data-slug="screenshots" href="#screenshots">Screenshots</a>
@@ -271,6 +351,183 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
     <article class="markdown" id="content">Loading…</article>
   </main>
 </div>
+<template id="tpl-how-it-works">
+<!-- ═══════════════════════════════════════════════════════════════════════
+     Moved here verbatim from site/index.html, where these three sections
+     ("There is nothing to breach", the data-flow diagram, and the engineering
+     contract) opened the page and were read before anybody had seen what the
+     product does. The material was never the problem, only the room it was in;
+     a reader who opens the docs asked for exactly this. The one thing left
+     behind is the egress table, which stays on the landing page because it is
+     the receipt for a promise made there.
+     ═══════════════════════════════════════════════════════════════════════ -->
+<h1>How it works</h1>
+<p class="lead">slip/scan is a Rust core over one plain SQLite file, wrapped in a Tauri desktop
+  app, with a CLI and an optional headless server over the same services. Below: why there is no
+  server component, where each piece of work happens, and the invariants the workspace enforces
+  on itself. The version of this argument written for somebody deciding whether to install it is
+  on the <a href="./index.html#different">landing page</a>.</p>
+
+<h2>There is nothing to breach.</h2>
+<p>Most finance apps are a honeypot with a UI on top: your transactions, your
+          bank tokens and everyone else's sit in one database somebody else operates. slip/scan
+          removes the honeypot. <strong>There is no slip/scan server</strong> — not a small one, not
+          an optional one. Nothing to subpoena, nothing to breach, nothing to shut down and take your
+          books with it.</p>
+
+<div class="grid g2">
+  <div class="card">
+    <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5h16M4 12h16M4 16.5h16"/><path d="M8 4v16"/></svg></div>
+    <h3>One file, one folder, yours <span class="chip chip-built">Built</span></h3>
+    <p>Books and documents live in one folder you can see, relocate from Settings or with
+      <code>slipscan data move</code> — a verified copy and an atomic switch, never a half-moved
+      library. Back it up by pointing your own sync at it: iCloud, Dropbox, Syncthing, a NAS.
+      slip/scan ships no backup service, and the keychain key never travels with the folder.</p>
+  </div>
+  <div class="card">
+    <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5M12 14.5v2.5"/></svg></div>
+    <h3>Secrets are write-only <span class="chip chip-built">Built</span></h3>
+    <p>Mailbox tokens, LLM keys and webhook signing secrets go into a vault rooted in your OS
+      keychain. They can be <em>set, rotated, revoked and used</em> — never viewed. Not by the
+      UI, not by the CLI, not by a support agent, because there is no support agent. A signing
+      secret is shown exactly once, at create or rotate.</p>
+  </div>
+  <div class="card">
+    <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 4v10L12 21l-7.5-4V7z"/><path d="M9 12l2 2 4-4"/></svg></div>
+    <h3>Signed knowledge, not pooled data <span class="chip chip-built">Built</span></h3>
+    <p>Category taxonomies, merchant mappings and classification rules travel as ed25519-signed
+      packs over git or a file you were handed — there is no registry, and slip/scan never
+      fetches one. Each pack id is pinned to the key that first signed it, so no other key can
+      take that id over later. Rules move; your transactions never do.</p>
+  </div>
+  <div class="card">
+    <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5a14 14 0 0 1 0 17 14 14 0 0 1 0-17z"/></svg></div>
+    <h3>Global by default <span class="chip chip-built">Built</span></h3>
+    <p>Nothing country-specific is compiled in. Chart-of-accounts seeds, tax rates, the name of
+      the return your books produce, bank CSV presets and merchant packs all arrive as
+      <em>region profiles</em> — data you pick. South Africa is the first profile (VAT201); a
+      generic profile covers everywhere else from day one.</p>
+  </div>
+</div>
+
+<h2>Sources in, one core, one file.</h2>
+<p>Everything below the dashed line happens on the machine in front of you.
+          Sources feed one Rust core; the core owns a plain SQLite database holding your books; the
+          desktop app is a thin IPC shell over the same services the CLI calls. The only endpoint
+          outside the line is one you configured yourself.</p>
+
+<div class="flowwrap">
+  <div class="fh">
+    <span class="k"><i></i>built and wired</span>
+    <span class="k dash"><i></i>opt-in, off until you configure it</span>
+    <span class="k" style="margin-left:auto">flow of your data — never leaves the box</span>
+  </div>
+  <div class="flowscroll">
+    <svg class="flow" viewBox="0 0 980 440" role="img"
+         aria-label="Diagram. Inside a boundary marked ‘your machine’: statement import, mailbox sync and a watched drop folder all feed one Rust core; the core owns your SQLite books and answers the Tauri desktop app over IPC. Outside the boundary, and only when you configure them: signed packs arriving as files, and your own OpenRate instance supplying exchange rates.">
+      <!-- the machine boundary -->
+      <rect class="zone" x="16" y="52" width="932" height="290" rx="14"/>
+      <text class="zonelbl" x="34" y="44">YOUR MACHINE</text>
+
+      <!-- sources -->
+      <rect class="box" x="40" y="76" width="200" height="56" rx="9"/>
+      <text class="t" x="56" y="102">Statement import</text>
+      <text class="sub" x="56" y="120">CSV / OFX · column presets</text>
+
+      <rect class="box" x="40" y="152" width="200" height="56" rx="9"/>
+      <text class="t" x="56" y="178">Mailbox sync</text>
+      <text class="sub" x="56" y="196">IMAP · Gmail · MS Graph</text>
+
+      <rect class="box" x="40" y="228" width="200" height="56" rx="9"/>
+      <text class="t" x="56" y="254">Watched drop folder</text>
+      <text class="sub" x="56" y="272">slipscan watch ./inbox</text>
+
+      <!-- sources onto the bus, bus into the core -->
+      <path class="wire" d="M240 104 H300 V180"/>
+      <path class="wire" d="M240 180 H300"/>
+      <path class="wire" d="M240 256 H300 V180"/>
+      <path class="wire" d="M300 180 H360"/>
+      <rect class="pkt p1" x="244" y="101" width="6" height="6" rx="1" style="--d:50px"/>
+      <rect class="pkt p3" x="244" y="177" width="6" height="6" rx="1" style="--d:50px"/>
+      <rect class="pkt p5" x="244" y="253" width="6" height="6" rx="1" style="--d:50px"/>
+      <rect class="pkt p2" x="304" y="177" width="6" height="6" rx="1" style="--d:52px"/>
+
+      <!-- the core -->
+      <rect class="box-core" x="360" y="140" width="238" height="84" rx="10"/>
+      <text class="t" x="380" y="170">Rust core</text>
+      <text class="sub" x="380" y="190">categorise · budget · ledger</text>
+      <text class="sub" x="380" y="206">reconcile · report · extract</text>
+
+      <!-- the core owns the file -->
+      <path class="wire" d="M479 224 V262"/>
+      <rect class="db" x="386" y="262" width="186" height="56" rx="9"/>
+      <text class="t" x="404" y="288">SQLite</text>
+      <text class="sub" x="404" y="306">your books, one file</text>
+
+      <!-- the app is a shell over the core -->
+      <path class="wire" d="M598 182 H674"/>
+      <text class="cap" x="612" y="174">IPC</text>
+      <rect class="box" x="674" y="140" width="214" height="84" rx="10"/>
+      <text class="t" x="694" y="170">Desktop app</text>
+      <text class="sub" x="694" y="190">Tauri 2 · Svelte 5</text>
+      <text class="sub" x="694" y="206">thin shell, no logic</text>
+      <rect class="pkt p4" x="602" y="179" width="6" height="6" rx="1" style="--d:68px"/>
+
+      <!-- outside the boundary: nothing here happens unless you set it up -->
+      <text class="zonelbl" x="34" y="364">OUTSIDE — ONLY IF YOU SET IT UP</text>
+
+      <rect class="box-opt" x="40" y="372" width="200" height="56" rx="9"/>
+      <text class="t" x="56" y="398">Signed packs</text>
+      <text class="sub" x="56" y="416">rules in · data never out</text>
+      <path class="wire-opt" d="M240 400 H300 V256"/>
+
+      <rect class="box-opt" x="674" y="372" width="214" height="56" rx="9"/>
+      <text class="t" x="694" y="398">OpenRate</text>
+      <text class="sub" x="694" y="416">your instance · no URL = no calls</text>
+      <path class="wire-opt" d="M674 400 H630 V210 H598"/>
+      <text class="cap" x="636" y="250">rates + provenance</text>
+    </svg>
+  </div>
+  <div class="flowfoot">
+    <b>Between machines there is no hub.</b> Every node is a self-hosted peer, and the only
+    thing that ever crosses is a signed pack of rules. Dropping a slip onto the window is
+    <em>not</em> how files get in yet — today that is the file picker, the CLI, or the watched
+    folder above.
+  </div>
+</div>
+
+<h2>The rules that do not bend.</h2>
+<p>These are not aspirations in a marketing page — they are invariants the
+          workspace enforces, most of them with a test that fails the build if they slip.</p>
+
+<div class="contract">
+  <div class="r">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+    <div><b>Money is <code>i64</code> minor units. Never a float.</b><span>Not in the core, not over IPC, not across the FX boundary — exchange-rate maths is decimal-only. A cent cannot drift because it was never a binary fraction.</span></div>
+  </div>
+  <div class="r">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
+    <div><b>Secrets never reach a log, a <code>Debug</code> impl, or an IPC response.</b><span>The vault hands out a secret to the code that needs it and nowhere else. A webhook signing secret is shown once, at create or rotate, and is unrecoverable after that — by design, not by oversight.</span></div>
+  </div>
+  <div class="r">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 4v10L12 21l-7.5-4V7z"/><path d="M9.5 12l1.8 1.8L15 10"/></svg>
+    <div><b>Posted journals are immutable.</b><span>A correction is a reversing entry, the way double-entry has always required. History is append-only, so a report you ran last quarter still reproduces this quarter.</span></div>
+  </div>
+  <div class="r">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    <div><b>The workspace denies <code>unsafe_code</code>.</b><span>Whole-workspace lint, no per-crate exemptions. Rust's guarantees are worth having only if nothing quietly opts out of them.</span></div>
+  </div>
+  <div class="r">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 4v10L12 21l-7.5-4V7z"/><circle cx="12" cy="12" r="2.6"/></svg>
+    <div><b>Trust on first use, then pinned.</b><span>A pack id is bound to the key that first signed it. A later key with the same id is rejected, not silently accepted — the failure mode most signing schemes leave open.</span></div>
+  </div>
+  <div class="r">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4.5l3 2"/></svg>
+    <div><b>The screen tells you when something is not wired.</b><span>Rollover recorded but not applied, FX <code>not configured</code>, import via the CLI, a review action core supports but desktop has not registered — each one says so in place, instead of offering a button that does nothing.</span></div>
+  </div>
+</div>
+</template>
+
 <footer class="site-footer">
   <div class="foot-bar">
     <a class="v" href="https://vulos.org" target="_blank" rel="noopener"><img src="./assets/vulos-logo.png" alt="">Part of Vulos — open by design</a>
@@ -285,6 +542,11 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
 // The site is served from the repo root; docs render straight from the repo's own markdown.
 const DOCS = [
   {"slug":"getting-started","title":"Getting started","path":"./docs/getting-started.md"},
+  // The one chapter that is not mirrored markdown: it renders from the
+  // <template id="tpl-how-it-works"> in this page. Deliberately carries no
+  // "path", so scripts/sync-docs.mjs neither expects a ./docs/*.md for it nor
+  // flags it as an unpublished chapter.
+  {"slug":"how-it-works","title":"How it works","builtin":"tpl-how-it-works"},
   {"slug":"architecture","title":"Architecture","path":"./docs/architecture.md"},
   {"slug":"configuration","title":"Configuration","path":"./docs/configuration.md"},
   {"slug":"email","title":"Email ingestion","path":"./docs/email.md"},
@@ -293,10 +555,12 @@ const DOCS = [
   {"slug":"packs","title":"Packs","path":"./docs/packs.md"},
   {"slug":"benchmarks","title":"Benchmarks","path":"./docs/benchmarks.md"},
   {"slug":"selfhost","title":"Self-hosting","path":"./docs/selfhost.md"},
+  {"slug":"nodes","title":"Nodes","path":"./docs/nodes.md"},
   {"slug":"api","title":"API","path":"./docs/api.md"},
   {"slug":"threat-model","title":"Threat model","path":"./docs/threat-model.md"},
   {"slug":"screenshots","title":"Screenshots","path":"./docs/screenshots.md"},
   {"slug":"faq","title":"FAQ","path":"./docs/faq.md"},
+  {"slug":"parity","title":"Feature parity","path":"./docs/parity.md"},
   {"slug":"roadmap","title":"Roadmap","path":"./docs/roadmap.md"},
   {"slug":"changelog","title":"Changelog","path":"./docs/changelog.md"},
   {"slug":"contributing","title":"Contributing","path":"./docs/contributing.md"},
@@ -306,7 +570,7 @@ const bySlug = Object.fromEntries(DOCS.map(d=>[d.slug,d]));
 // Served file name -> slug. The chapters are mirrored under their lowercased
 // repo name (GETTING-STARTED.md -> getting-started.md), so a cross-doc link
 // written against the repo layout looks up directly once lowercased.
-const FILE_TO_SLUG = Object.fromEntries(DOCS.map(d=>[d.path.split('/').pop().toLowerCase(),d.slug]));
+const FILE_TO_SLUG = Object.fromEntries(DOCS.filter(d=>d.path).map(d=>[d.path.split('/').pop().toLowerCase(),d.slug]));
 
 /* @shared:docs-links — scripts/sync-docs.mjs extracts everything between these
    two markers and runs it verbatim, so the published viewer and the `--check`
@@ -477,6 +741,22 @@ async function load(){
   const doc = bySlug[slug];
   setActive(doc.slug);
   crumb.textContent = doc.title;
+
+  // The built-in chapter is already in the document: clone it, and swap the
+  // markdown styling off so its cards, diagram and contract table render as
+  // themselves rather than as prose. No fetch, so it cannot 404 and it cannot
+  // reach the network — the whole page stays self-contained.
+  if(doc.builtin){
+    const tpl = document.getElementById(doc.builtin);
+    content.className = 'builtin';
+    content.replaceChildren(tpl ? tpl.content.cloneNode(true) : document.createTextNode(''));
+    const seen = new Map();
+    content.querySelectorAll('h1,h2,h3').forEach(h=>{ h.id = headingId(h.textContent, seen); });
+    rendered = doc.slug;
+    jump(anchor);
+    return;
+  }
+  content.className = 'markdown';
   content.innerHTML = 'Loading…';
   try {
     const res = await fetch(doc.path, {cache:'no-cache'});

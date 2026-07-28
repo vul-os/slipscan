@@ -39,6 +39,66 @@ pub enum CoreError {
     #[error("secret store error: {0}")]
     Secret(String),
 
+    // -- Device identity & pairing (docs/NODES.md) ------------------------
+    //
+    // Every one of these is a REFUSAL rather than a fallback. A pinned key
+    // is never silently replaced, so each of these paths must end here and
+    // not in some "re-pair anyway" branch.
+    #[error(
+        "this device already has an identity ({keyname}); replacing it is \
+         `slipscan device rotate` (signed by the current key) or \
+         `slipscan device reset` (a deliberate local wipe)"
+    )]
+    DeviceIdentityExists { keyname: String },
+
+    #[error("this device has no identity yet — run `slipscan device init` first")]
+    DeviceIdentityMissing,
+
+    #[error(
+        "a device private key exists in the vault with no identity row — a torn write. \
+         Run `slipscan device reset` to clear it, then `slipscan device init`"
+    )]
+    DeviceIdentityTorn,
+
+    #[error(
+        "the private key in the vault is not this device's pinned public key; refusing to \
+         act on a key this device cannot prove it holds"
+    )]
+    DeviceKeyMismatch,
+
+    #[error("refusing to record a rotation that does not verify against the key it replaces")]
+    DeviceRotationUnsigned,
+
+    #[error(
+        "the {subject} is unusable (not 32 bytes of hex); refusing rather than \
+         verifying against a key that cannot be decoded"
+    )]
+    DeviceKeyUnusable { subject: String },
+
+    #[error(
+        "key-name mismatch: you expected {expected}, this key is {actual}. \
+         Refusing to pair — compare the key-name on the other device's screen"
+    )]
+    DeviceKeynameMismatch { expected: String, actual: String },
+
+    #[error(
+        "{typed} is not a well-formed key-name (its checksum word does not agree) — \
+         it looks mistyped rather than wrong; check it and try again"
+    )]
+    DeviceKeynameMistyped { typed: String },
+
+    // The device id, not the key-name, is what `forget` takes — the message
+    // has to name the argument the user can actually paste.
+    #[error(
+        "this device is revoked here ({keyname}); refusing to re-pair it. A revoked key cannot \
+         let itself back in — run `slipscan device forget {public_key}` first if you really \
+         mean to"
+    )]
+    DevicePeerRevoked { keyname: String, public_key: String },
+
+    #[error("pairing refused: {0}")]
+    DevicePairing(String),
+
     #[error(
         "exchange rates are not configured: set the OpenRate base URL first \
          (fx_configure) — SlipScan makes no FX network calls until you do"

@@ -41,6 +41,8 @@ import type {
   NewPayWatch,
   PackDocumentRequest,
   PackInstallOutcome,
+  PackOffer,
+  PackSourceInfo,
   PackVerification,
   PayDelivery,
   PayEndpoint,
@@ -392,6 +394,50 @@ export const api = {
    * (local now) so history never breaks, and the signer pin is kept. */
   packUninstall: (q: { book_id: string; pack_id: string }): Promise<boolean> =>
     call("pack_uninstall", { query: q }, () => mockApi.pack_uninstall(q)),
+
+  // -- pack sources: the fetch half. The same signed bytes over any
+  // transport — a file, a synced folder or USB stick, a git remote, plain
+  // HTTPS — because the signature is what is trusted, not the channel.
+  //
+  // There is no registry and no default source: the list starts empty, only
+  // `packSourceAdd` ever writes to it, and until it has an entry nothing here
+  // makes an outbound request. --
+
+  /** Configured sources. Empty on a fresh install, and empty is the whole
+   * privacy story: no source, no request. */
+  packSourceList: (): Promise<PackSourceInfo[]> =>
+    call("pack_source_list", {}, mockApi.pack_source_list),
+
+  /** Add a source. Nothing is contacted by adding one — it is read when the
+   * user asks. `uri` is `file:<path>`, `folder:<path>`, `git:<url>[#ref]` or
+   * `https://<url>`; plain `http://` is refused. */
+  packSourceAdd: (q: { name: string; uri: string }): Promise<PackSourceInfo> =>
+    call("pack_source_add", { query: q }, () => mockApi.pack_source_add(q)),
+
+  /** Forget a source. Installed packs are untouched — where a pack came from
+   * is history, not a dependency. */
+  packSourceRemove: (q: { name: string }): Promise<boolean> =>
+    call("pack_source_remove", { query: q }, () => mockApi.pack_source_remove(q)),
+
+  /** Read a source's catalogue and preflight every pack against the book.
+   * **Installs nothing.** Each offer carries the catalogue's claim and, when
+   * the bytes verify, the real facts — show the second, act on the second. */
+  packSourceFetch: (q: { book_id: string; source: string }): Promise<PackOffer[]> =>
+    call("pack_source_fetch", { query: q }, () => mockApi.pack_source_fetch(q)),
+
+  /** Fetch one pack from a source and install it. Verification happens on the
+   * bytes first. A signer this machine has never seen refuses unless
+   * `accept_signer` carries the fingerprint the user was shown and checked —
+   * and a pack id whose publisher key changed refuses regardless, because the
+   * pin is not overridable from anywhere. */
+  packSourceInstall: (q: {
+    book_id: string;
+    source: string;
+    pack_id: string;
+    document?: string;
+    accept_signer?: string;
+  }): Promise<PackInstallOutcome> =>
+    call("pack_source_install", { query: q }, () => mockApi.pack_source_install(q)),
 
   /** Install the built-in seed packs into a book. **Opt-in, never automatic**
    * — which taxonomy a book starts from is the user's decision, and putting a

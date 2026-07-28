@@ -9,6 +9,9 @@ description = "SlipScan ingestion: mailbox (IMAP) connectors, file import/watch,
 
 [dependencies]
 slipscan-core = { workspace = true }
+# Mail-alert parsing rules are a pack kind, so ingest reads the pack format.
+# One direction only: packs knows nothing about ingest.
+slipscan-packs = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -24,6 +27,9 @@ futures = "0.3"
 getrandom = "0.3"
 mail-parser = "0.11"
 notify = "8"
+# Mail-alert field extractors are regexes carried by packs. Same crate (and
+# same lockfile entry) slipscan-packs already compiles its rules with.
+regex = "1"
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }

@@ -78,7 +78,7 @@ document.documentElement.setAttribute('data-theme',s==='light'||s==='dark'?s:(ma
   --quick:120ms; --base:200ms; --slow:320ms;
   --ease:cubic-bezier(.2,0,.2,1); --decel:cubic-bezier(.05,.7,.1,1);
 
-  --radius:14px; --radius-sm:9px; --max:1180px; --rail:236px;
+  --radius:14px; --radius-sm:9px; --max:1180px;
   --mono:ui-monospace,SFMono-Regular,"SF Mono","Geist Mono",Menlo,Consolas,monospace;
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
   color-scheme:dark;
@@ -142,12 +142,6 @@ p{margin:0}
 }
 .brand{display:flex;align-items:center;gap:9px;flex:none}
 .brand img{height:22px;width:auto}
-.bookchip{
-  display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 10px;
-  border:1px solid var(--line);border-radius:999px;background:var(--sunken);
-  font-family:var(--mono);font-size:11.5px;color:var(--t2);white-space:nowrap;
-}
-.bookchip i{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
 .spacer{flex:1}
 .kbtn{
   display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 10px;
@@ -185,70 +179,45 @@ kbd{
 .btn-ghost{background:var(--panel);border-color:var(--line-2);color:var(--t1);box-shadow:var(--shadow-raised)}
 .btn-ghost:hover{border-color:var(--accent-edge)}
 .btn-sm{padding:0 13px;height:32px;font-size:13.5px;border-radius:9px}
-/* The top bar sheds its optional furniture before it ever wraps or overflows. */
-@media(max-width:900px){.bookchip{display:none}}
+/* The top bar sheds its optional furniture before it ever wraps or overflows.
+   The palette button is the one thing that never goes: with the rail gone it
+   is the only jump affordance a phone has, so it degrades to the icon alone
+   rather than disappearing. */
 @media(max-width:640px){.kbtn .hide-xs{display:none}}
-@media(max-width:480px){.kbtn{display:none}}
+@media(max-width:480px){.kbtn kbd{display:none}.kbtn{padding:0 8px}}
+/* the window-chrome caption has nowhere to go at phone widths and is decoration */
+@media(max-width:560px){.window-bar .right{display:none}}
 
-/* ── shell: icon rail + content, exactly as the app lays out ───────────── */
-.shell{display:grid;grid-template-columns:var(--rail) minmax(0,1fr);max-width:var(--max);margin:0 auto}
-.rail{
-  position:sticky;top:56px;align-self:start;height:calc(100dvh - 56px);
-  border-right:1px solid var(--line);padding:16px 10px 20px;overflow-y:auto;overflow-x:hidden;
-  display:flex;flex-direction:column;gap:2px;
-}
-.rail .grp{
-  font-size:10.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--t3);
-  padding:14px 10px 5px;font-weight:600;
-}
-.rail .grp:first-child{padding-top:2px}
-.rail a{
-  display:flex;align-items:center;gap:10px;height:36px;padding:0 10px;border-radius:9px;
-  color:var(--t2);font-size:14px;font-weight:500;position:relative;
+/* ── shell: one centred column, and no rail ─────────────────────────────
+   This page used to reproduce the app's own layout — a sticky, full-height
+   icon rail beside the content. On the product that rail earns its column:
+   it navigates between eleven working screens. On a landing page it held
+   nine anchor links and charged a permanent 236px of every viewport for
+   them, squeezing the screenshots (the strongest thing this product has)
+   into 864px of a 1180px shell.
+
+   Section awareness moved into the sticky top bar instead — an anchor set
+   plus a 2px reading-progress line — which costs no layout at all, and the
+   content column got the whole 1180px back. */
+.wrap{max-width:var(--max);margin:0 auto;padding:0 clamp(16px,3vw,40px)}
+.main{min-width:0}
+
+/* in-header anchor set: the rail's job, in space the header already owns */
+.topnav{display:flex;align-items:center;gap:1px;min-width:0}
+.topnav a{
+  display:inline-flex;align-items:center;height:30px;padding:0 11px;border-radius:8px;
+  color:var(--t2);font-size:13.5px;font-weight:500;white-space:nowrap;
   transition:background var(--quick) var(--ease),color var(--quick) var(--ease);
 }
-.rail a svg{width:17px;height:17px;flex:none;stroke-width:1.7}
-.rail a .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rail a .jk{
-  font-family:var(--mono);font-size:10.5px;color:var(--t3);border:1px solid var(--line);
-  border-radius:4px;padding:0 4px;opacity:0;transition:opacity var(--quick) var(--ease);
-}
-.rail a:hover{background:var(--sunken);color:var(--t1)}
-.rail a:hover .jk{opacity:1}
-.rail a[aria-current=true]{background:var(--accent-wash);color:var(--t1);font-weight:600}
-.rail a[aria-current=true]::before{
-  content:"";position:absolute;left:-10px;top:8px;bottom:8px;width:2px;border-radius:0 2px 2px 0;background:var(--accent);
-}
-.rail .railfoot{margin-top:auto;padding:12px 10px 0;border-top:1px solid var(--line);color:var(--t3);font-size:11.5px;line-height:1.5}
-.rail .railfoot kbd{font-size:10px}
+.topnav a:hover{background:var(--sunken);color:var(--t1)}
+.topnav a[aria-current=true]{background:var(--accent-wash);color:var(--t1);font-weight:600}
+@media(max-width:1160px){.topnav{display:none}}
 
-@media(max-width:900px){
-  :root{--rail:56px}
-  .rail{padding:12px 8px;align-items:center}
-  .rail .grp{padding:12px 0 4px;font-size:0;height:1px;width:22px;background:var(--line);border-radius:1px;margin:6px 0}
-  .rail a{width:38px;justify-content:center;padding:0}
-  .rail a .lbl,.rail a .jk{display:none}
-  .rail a[aria-current=true]::before{left:-8px}
-  .rail .railfoot{display:none}
+/* reading progress — sits on the header's own bottom border, zero layout */
+.progress{
+  position:absolute;left:0;bottom:-1px;height:2px;width:0;max-width:100%;
+  background:var(--accent);border-radius:0 2px 2px 0;pointer-events:none;
 }
-@media(max-width:560px){
-  .shell{display:block}
-  .rail{
-    position:sticky;top:56px;height:auto;flex-direction:row;gap:4px;align-items:center;
-    border-right:0;border-bottom:1px solid var(--line);overflow-x:auto;padding:8px 10px;
-    background:color-mix(in srgb,var(--surface) 92%,transparent);backdrop-filter:blur(14px);
-    z-index:50;scrollbar-width:none;
-  }
-  .rail::-webkit-scrollbar{display:none}
-  .rail .grp{display:none}
-  .rail a{flex:none}
-  /* horizontal strip: the current marker becomes an underline, not a left bar */
-  .rail a[aria-current=true]::before{left:8px;right:8px;top:auto;bottom:-5px;width:auto;height:2px;border-radius:2px}
-  /* the chrome caption has nowhere to go at this width and is decoration */
-  .window-bar .right{display:none}
-}
-
-.main{min-width:0;padding:0 clamp(16px,3vw,40px)}
 .pane{padding:clamp(44px,6vw,76px) 0;border-bottom:1px solid var(--line);scroll-margin-top:72px}
 .pane:last-of-type{border-bottom:0}
 .eyebrow{
@@ -354,9 +323,32 @@ h1 .slash{color:var(--accent-text)}
 .card h3{font-size:16.5px;margin-bottom:7px;display:flex;align-items:center;gap:9px;flex-wrap:wrap}
 .card p{font-size:14px;color:var(--t2)}
 .card p + p{margin-top:9px}
-.card code,.egress code,.contract code,.lead code{
+.card code,.egress code,.promise code,.lead code{
   font-family:var(--mono);font-size:.87em;background:var(--sunken);border:1px solid var(--line);
   padding:1px 5px;border-radius:5px;color:var(--t1);
+}
+/* Feature cards lead with the outcome; the machinery that produces it is a
+   footnote in mono, so an engineer can still see what is underneath without
+   the sentence above it being written for them. */
+.card .meta{
+  margin-top:12px;padding-top:11px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:11px;color:var(--t3);letter-spacing:.02em;line-height:1.55;
+}
+
+/* ── why it's different: four promises, each with its reason ───────────── */
+.promises{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:30px}
+@media(max-width:780px){.promises{grid-template-columns:1fr}}
+.promise{
+  border:1px solid var(--line);border-left:2px solid var(--accent);border-radius:var(--radius);
+  background:var(--panel);padding:21px 22px;box-shadow:var(--shadow-raised);
+  transition:border-color var(--base) var(--ease);
+}
+.promise:hover{border-color:var(--line-2);border-left-color:var(--accent)}
+.promise h3{font-size:18px;letter-spacing:-.025em;margin-bottom:8px}
+.promise p{font-size:14.5px;color:var(--t2)}
+.promise .because{
+  margin-top:12px;padding-top:11px;border-top:1px solid var(--line);
+  font-family:var(--mono);font-size:11px;color:var(--t3);letter-spacing:.02em;line-height:1.55;
 }
 
 /* honesty chips — built means in the tree, wired in, and under test */
@@ -371,6 +363,9 @@ h1 .slash{color:var(--accent-text)}
 .chip-note{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 40%,transparent);background:color-mix(in srgb,var(--warn) 12%,transparent)}
 .legend{display:flex;flex-wrap:wrap;gap:10px 22px;margin-top:22px;font-size:13px;color:var(--t2)}
 .legend span{display:inline-flex;align-items:center;gap:8px}
+/* a second beat inside one section — used where "built" hands over to "not built" */
+.subhead{margin-top:clamp(38px,5vw,60px);padding-top:clamp(30px,4vw,44px);border-top:1px solid var(--line)}
+.subhead h3{font-size:clamp(21px,2.8vw,27px);letter-spacing:-.03em;margin-bottom:11px}
 
 /* ── architecture ──────────────────────────────────────────────────────── */
 .egress{
@@ -615,7 +610,15 @@ h1 .slash{color:var(--accent-text)}
   <a class="brand" href="./index.html" aria-label="slip/scan home">
     <img data-wordmark src="./assets/brand/logo-wordmark-dark.svg" alt="slip/scan" width="206" height="64">
   </a>
-  <span class="bookchip"><i></i>Personal · ZAR · demo book</span>
+  <div class="spacer"></div>
+  <!-- The rail's nine links, in space the header already occupies. -->
+  <nav class="topnav" id="topnav" aria-label="Sections">
+    <a href="#features" data-sec="features">What you get</a>
+    <a href="#screens" data-sec="screens">Screens</a>
+    <a href="#different" data-sec="different">Why it's different</a>
+    <a href="#honest" data-sec="honest">What works today</a>
+    <a href="./docs.html">Docs</a>
+  </nav>
   <div class="spacer"></div>
   <button class="kbtn" id="palBtn" type="button" aria-label="Open the command palette">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
@@ -629,72 +632,26 @@ h1 .slash{color:var(--accent-text)}
     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49l-.01-1.7c-2.78.62-3.37-1.37-3.37-1.37-.45-1.19-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.28 9.28 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9l-.01 2.82c0 .27.18.6.69.49A10.03 10.03 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg>
   </a>
   <a class="btn btn-primary btn-sm" href="#install">Download</a>
+  <div class="progress" id="progress" aria-hidden="true"></div>
 </header>
 
-<div class="shell">
+<main class="main wrap" id="main">
 
-  <!-- ═══ the rail: full labels above 900px, icons below, a strip on phones ═ -->
-  <nav class="rail" id="rail" aria-label="Sections">
-    <div class="grp">Product</div>
-    <a href="#overview" data-sec="overview" aria-current="true" title="Overview">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="8.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="5.5" rx="1.5"/><rect x="3" y="14.5" width="7.5" height="6.5" rx="1.5"/><rect x="13.5" y="11.5" width="7.5" height="9.5" rx="1.5"/></svg>
-      <span class="lbl">Overview</span><span class="jk">O</span>
-    </a>
-    <a href="#architecture" data-sec="architecture" title="No server">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 3.6v5.1c0 4.6-3.3 7.7-8 9-4.7-1.3-8-4.4-8-9V6.6z"/><path d="M9 12.2l2.1 2.1L15.4 10"/></svg>
-      <span class="lbl">No server</span><span class="jk">A</span>
-    </a>
-    <a href="#flow" data-sec="flow" title="How it works">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4" width="6" height="5" rx="1.4"/><rect x="15.5" y="9.5" width="6" height="5" rx="1.4"/><rect x="2.5" y="15" width="6" height="5" rx="1.4"/><path d="M8.5 6.5h3.5v5.5h3.5M8.5 17.5h3.5V12"/></svg>
-      <span class="lbl">How it works</span><span class="jk">W</span>
-    </a>
-    <div class="grp">What it does</div>
-    <a href="#capabilities" data-sec="capabilities" title="Capabilities">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5l1.8 1.8L9 5M4 17.5l1.8 1.8L9 16"/><path d="M12.5 7h7.5M12.5 12h7.5M12.5 17.5h7.5"/></svg>
-      <span class="lbl">Capabilities</span><span class="jk">C</span>
-    </a>
-    <a href="#screens" data-sec="screens" title="Screens">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/><path d="M3 13.5l4-3.5 3.5 3 3-2.5L21 16"/></svg>
-      <span class="lbl">Screens</span><span class="jk">S</span>
-    </a>
-    <div class="grp">The contract</div>
-    <a href="#privacy" data-sec="privacy" title="What holds">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/><path d="M12 14.5v2.5"/></svg>
-      <span class="lbl">What holds</span><span class="jk">P</span>
-    </a>
-    <a href="#honest" data-sec="honest" title="Not built yet">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="3.4 2.6"><circle cx="12" cy="12" r="8.5"/></svg>
-      <span class="lbl">Not built yet</span><span class="jk">N</span>
-    </a>
-    <div class="grp">Get it</div>
-    <a href="#install" data-sec="install" title="Install">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v11M8 11l4 4 4-4"/><path d="M4 19.5h16"/></svg>
-      <span class="lbl">Install</span><span class="jk">I</span>
-    </a>
-    <a href="./docs.html" title="Docs">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
-      <span class="lbl">Docs</span>
-    </a>
-    <a href="#vulos" data-sec="vulos" title="Part of Vulos">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5a14 14 0 0 1 0 17 14 14 0 0 1 0-17z"/></svg>
-      <span class="lbl">Part of Vulos</span><span class="jk">V</span>
-    </a>
-    <div class="railfoot">Press <kbd>⌘</kbd><kbd>K</kbd> — the same palette the app ships, down to the <kbd>G</kbd> jump chords.</div>
-  </nav>
-
-  <main class="main" id="main">
-
-    <!-- ═══ overview ══════════════════════════════════════════════════════ -->
+    <!-- ═══ hero ══════════════════════════════════════════════════════════
+         One sentence a person who does not write software can read, and the
+         product on screen immediately. The architecture argument is real and
+         it is this product's whole reason to exist — but it is an argument
+         you make once somebody wants the thing, so it lives in "Why it's
+         different" now, four screens down. ══════════════════════════════ -->
     <section class="pane" id="overview">
       <div class="hero-head">
-        <span class="pill"><i></i>no server · no account · no telemetry</span>
-        <h1>You are<br>the server<span class="slash">.</span></h1>
+        <span class="pill"><i></i>no server · no account · no subscription</span>
+        <h1>Your money, on<br>your own machine<span class="slash">.</span></h1>
         <p class="hero-sub">
-          slip/scan is <strong>Vault22-class personal finance</strong> and
-          <strong>Xero-class double-entry books</strong> with the architecture inverted. A Rust
-          core over one plain SQLite file, wrapped in a Tauri desktop app. Extraction, budgets,
-          reconciliation, reports — all computed on your machine. Credentials live in your OS
-          keychain. The community shares <strong>signed rules, never data</strong>.
+          slip/scan brings your bank transactions, receipts and bills together on your own
+          computer — sorted into categories, matched against each other, and turned into
+          budgets and reports — so you can see where the month actually went
+          <strong>without handing your finances to anybody's server</strong>.
         </p>
         <div class="cta-row">
           <a class="btn btn-primary" href="#install">
@@ -705,11 +662,11 @@ h1 .slash{color:var(--accent-text)}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg>
             See every screen
           </a>
-          <a class="btn btn-ghost" href="./docs.html">Read the docs</a>
+          <a class="btn btn-ghost" href="#honest">What works today</a>
         </div>
         <div class="trust">
-          <span>MIT OR Apache-2.0</span><span>Rust 1.85+ · Tauri 2</span>
-          <span>SQLite, one file</span><span>offline-first</span>
+          <span>free · open source</span><span>macOS · Windows · Linux</span>
+          <span>works offline</span><span>nothing to sign up for</span>
         </div>
       </div>
 
@@ -738,57 +695,175 @@ h1 .slash{color:var(--accent-text)}
       <p class="shotnote">Shown: the shipped desktop app with a seeded demo book — none of it is real, and none of it left the machine that rendered it. Every screen is <a href="#screens">in the gallery below</a>.</p>
 
       <div class="stats reveal">
-        <div class="s"><div class="n">0</div><div class="l">hosted services, accounts, telemetry endpoints</div></div>
+        <div class="s"><div class="n">0</div><div class="l">accounts to create, servers to trust, subscriptions to cancel</div></div>
         <div class="s"><div class="n">1</div><div class="l">SQLite file holding your books, in a folder you can move</div></div>
+        <div class="s"><div class="n">4</div><div class="l">outbound connections it can ever make — every one you set up</div></div>
         <div class="s"><div class="n">11</div><div class="l">screens in the shipped app, all keyboard-reachable</div></div>
-        <div class="s"><div class="n">535</div><div class="l">tests in the Rust workspace, green on every commit</div></div>
       </div>
     </section>
 
-    <!-- ═══ architecture ══════════════════════════════════════════════════ -->
-    <section class="pane" id="architecture">
+    <!-- ═══ what you get ══════════════════════════════════════════════════ -->
+    <section class="pane" id="features">
       <div class="reveal">
-        <span class="eyebrow">the architecture is the feature</span>
-        <h2>There is nothing to breach.</h2>
-        <p class="lead">Most finance apps are a honeypot with a UI on top: your transactions, your
-          bank tokens and everyone else's sit in one database somebody else operates. slip/scan
-          removes the honeypot. <strong>There is no slip/scan server</strong> — not a small one, not
-          an optional one. Nothing to subpoena, nothing to breach, nothing to shut down and take your
-          books with it.</p>
+        <span class="eyebrow">what you get</span>
+        <h2>Six things it does for you.</h2>
+        <p class="lead">Written as what happens to your afternoon, not as what is in the
+          binary. The mono line under each card names the machinery, and the
+          <a href="#honest" style="color:var(--accent-text);text-decoration:underline;text-underline-offset:2px">status table</a>
+          further down has the unvarnished version.</p>
       </div>
 
-      <div class="grid g2 reveal">
+      <div class="grid g3 reveal">
+        <div class="card">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5l1.8 1.8L9 5M4 17.5l1.8 1.8L9 16"/><path d="M12.5 7h7.5M12.5 12h7.5M12.5 17.5h7.5"/></svg></div>
+          <h3>Your spending, already sorted <span class="chip chip-built">Built</span></h3>
+          <p>Export a statement from your bank and every row lands categorised — groceries, fuel,
+            the subscription you forgot about. Photograph a slip or let it arrive by email and
+            slip/scan reads the line items, the VAT and the discount off it.</p>
+          <p>Fix a category once and it stays fixed: your correction outranks every shared rule,
+            permanently.</p>
+          <div class="meta">CSV &amp; OFX import, any bank · receipts extracted by a model you choose, or none at all</div>
+        </div>
+
+        <div class="card">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg></div>
+          <h3>Where the month is going <span class="chip chip-built">Built</span> <span class="chip chip-note">rollover not applied</span></h3>
+          <p>A limit per category, a bar that fills as you spend it, and the amount left against the
+            days still to run. It tells you when a budget is burning fast, when the same charge
+            landed twice, and when something looks like a subscription you never started.</p>
+          <p>A rollover flag is stored per budget but no number on the screen uses it yet — and the
+            screen says so rather than implying otherwise.</p>
+          <div class="meta">every nudge computed here, against your own rows · 0 requests</div>
+        </div>
+
         <div class="card">
           <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5h16M4 12h16M4 16.5h16"/><path d="M8 4v16"/></svg></div>
-          <h3>One file, one folder, yours <span class="chip chip-built">Built</span></h3>
-          <p>Books and documents live in one folder you can see, relocate from Settings or with
-            <code>slipscan data move</code> — a verified copy and an atomic switch, never a half-moved
-            library. Back it up by pointing your own sync at it: iCloud, Dropbox, Syncthing, a NAS.
-            slip/scan ships no backup service, and the keychain key never travels with the folder.</p>
+          <h3>Real books, if you run something <span class="chip chip-built">Built</span></h3>
+          <p>Under the friendly screens is a proper double-entry ledger — chart of accounts,
+            journals, trial balance, income statement, balance sheet — and the tax summary your
+            country's profile names, ready to export as CSV.</p>
+          <p>A posted entry never changes. Corrections are reversals, the way an accountant expects,
+            so the report you ran last quarter still reproduces this quarter.</p>
+          <div class="meta">VAT201 for South Africa · a generic profile everywhere else</div>
         </div>
+
         <div class="card">
-          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5M12 14.5v2.5"/></svg></div>
-          <h3>Secrets are write-only <span class="chip chip-built">Built</span></h3>
-          <p>Mailbox tokens, LLM keys and webhook signing secrets go into a vault rooted in your OS
-            keychain. They can be <em>set, rotated, revoked and used</em> — never viewed. Not by the
-            UI, not by the CLI, not by a support agent, because there is no support agent. A signing
-            secret is shown exactly once, at create or rotate.</p>
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5c0-3 2.5-4.8 5.5-4.8s5.5 1.8 5.5 4.8"/><circle cx="17.5" cy="9.5" r="2.4"/><path d="M16 15c2.6 0 4.5 1.6 4.5 4"/></svg></div>
+          <h3>Who paid for what, at home <span class="chip chip-built">Built</span></h3>
+          <p>Mark a transaction with the person it belongs to and get spend per member,
+            contributions, each person's share of a category, and a settle-up view that says plainly
+            who owes whom and how much.</p>
+          <p>Members are rows in your own book, not logins. Nobody else has to sign up to be counted
+            in the household.</p>
+          <div class="meta">attribution is metadata — it never touches a debit or a credit</div>
         </div>
+
         <div class="card">
-          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 4v10L12 21l-7.5-4V7z"/><path d="M9 12l2 2 4-4"/></svg></div>
-          <h3>Signed knowledge, not pooled data <span class="chip chip-built">Built</span></h3>
-          <p>Category taxonomies, merchant mappings and classification rules travel as ed25519-signed
-            packs over git or a file you were handed — there is no registry, and slip/scan never
-            fetches one. Each pack id is pinned to the key that first signed it, so no other key can
-            take that id over later. Rules move; your transactions never do.</p>
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5h18M3 8.5A2.5 2.5 0 0 1 5.5 6h13A2.5 2.5 0 0 1 21 8.5v8a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/><path d="M7 13h4"/></svg></div>
+          <h3>A ping when the money lands <span class="chip chip-built">Built</span></h3>
+          <p>Give a customer an EFT reference to quote. When a payment carrying it turns up in your
+            books, an address you registered receives a signed message saying so — enough to release
+            an order, mark an invoice paid, or just tell you.</p>
+          <p>Detection runs on transactions as they are created, which today means statement imports
+            and entries you make yourself. Reading the alert email your bank sends is
+            <a href="#honest" style="color:var(--accent-text);text-decoration:underline;text-underline-offset:2px">not built yet</a>.</p>
+          <div class="meta">HMAC-signed · reference and amount only, never account numbers · retries 1m, 5m, 30m, 2h, 12h, then daily</div>
         </div>
+
         <div class="card">
-          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5a14 14 0 0 1 0 17 14 14 0 0 1 0-17z"/></svg></div>
-          <h3>Global by default <span class="chip chip-built">Built</span></h3>
-          <p>Nothing country-specific is compiled in. Chart-of-accounts seeds, tax rates, the name of
-            the return your books produce, bank CSV presets and merchant packs all arrive as
-            <em>region profiles</em> — data you pick. South Africa is the first profile (VAT201); a
-            generic profile covers everywhere else from day one.</p>
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A2 2 0 0 1 5 5.5h4l2 2.5h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></div>
+          <h3>Your books are a folder you own <span class="chip chip-built">Built</span></h3>
+          <p>One SQLite file and your documents, sitting in a folder you can open, move and back up
+            with whatever you already use — iCloud, Dropbox, Syncthing, a NAS, a USB stick.</p>
+          <p>There is no export step to remember, because your books were never anywhere else. The
+            key in your keychain never travels with the folder.</p>
+          <div class="meta">relocate from Settings or <code>slipscan data move</code> — verified copy, atomic switch</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ screens ═══════════════════════════════════════════════════════ -->
+    <section class="pane" id="screens">
+      <div class="reveal">
+        <span class="eyebrow">screens</span>
+        <h2>Real screens, no mockups.</h2>
+        <p class="lead">Every shot is the shipped desktop app against a seeded demo book, captured
+          with a pinned clock, locale and timezone so it reproduces byte-for-byte. Step through with
+          the tabs, the arrows, or <kbd>←</kbd> <kbd>→</kbd> once the gallery has focus.</p>
+      </div>
+
+      <div class="gal reveal">
+        <div class="galtabs" role="tablist" aria-label="Screens of the shipped app" id="galTabs"></div>
+        <div class="window galstage">
+          <div class="galbar">
+            <span class="dots"><i></i><i></i><i></i></span>
+            <span class="path" id="galPath">slip/scan — Dashboard</span>
+            <span class="count" id="galCount">01 / 12</span>
+            <span class="galnav">
+              <button type="button" id="galPrev" aria-label="Previous screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+              <button type="button" id="galNext" aria-label="Next screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></button>
+            </span>
+          </div>
+          <div class="shot-holder loading" id="galHolder" tabindex="0" role="group" aria-label="Screen gallery — use the left and right arrow keys">
+            <img id="galImg" src="./screenshots/dashboard.png" width="2880" height="1800" loading="lazy" alt="">
+          </div>
+        </div>
+        <p class="galcap" id="galCap"></p>
+        <p class="lightnote" id="lightNote">You are reading the light theme. The app ships light as a
+          first-class theme, but the committed gallery holds a light capture of the Dashboard only —
+          the other screens below are the dark capture, shown as they were taken rather than recoloured.</p>
+      </div>
+    </section>
+
+    <!-- ═══ why it's different ════════════════════════════════════════════
+         The old page opened with this argument and lost the reader who had
+         not yet seen the product. It is the same argument, kept whole, but
+         stated as what it means for the person reading rather than as an
+         architecture diagram. The diagram itself now lives in the docs, where
+         somebody who wants it will go looking. ═══════════════════════════ -->
+    <section class="pane" id="different">
+      <div class="reveal">
+        <span class="eyebrow">why it's different</span>
+        <h2>You are the server.</h2>
+        <p class="lead">Every other finance app asks you to put your transactions and your bank
+          credentials into a database somebody else runs, and then asks you to pay monthly for the
+          privilege. slip/scan does not have that database. <strong>There is no slip/scan
+          server</strong> — not a small one, not an optional one. Here is what that actually buys
+          you.</p>
+      </div>
+
+      <div class="promises reveal">
+        <div class="promise">
+          <h3>Nobody can lose your data, because nobody else has it.</h3>
+          <p>There is no account to create and no company database your rows sit in. Your books are
+            a file on your disk. A breach at a firm you have never heard of cannot expose them,
+            there is nothing to subpoena, and no outage anywhere can lock you out of last month's
+            spending.</p>
+          <div class="because">nothing to breach · nothing to subpoena · nothing to shut down</div>
+        </div>
+
+        <div class="promise">
+          <h3>No monthly fee, and no bill that shows up later.</h3>
+          <p>Free, and open source under MIT or Apache-2.0. There is no licence check in the binary,
+            no seat count, no tier that gets more expensive when you add a second book, and no free
+            trial quietly turning into a subscription.</p>
+          <div class="because">no telemetry · no update ping · no licence call</div>
+        </div>
+
+        <div class="promise">
+          <h3>Your credentials never leave your keychain.</h3>
+          <p>Mailbox tokens, model keys and signing secrets go into your operating system's own
+            vault. They can be set, rotated, revoked and used — never read back. Not by the app, not
+            by the command line, not by a support agent, because there is no support agent.</p>
+          <div class="because">a signing secret is shown once, at create or rotate, and never again</div>
+        </div>
+
+        <div class="promise">
+          <h3>It keeps working if this project disappears.</h3>
+          <p>There is no company in the loop that could switch a service off. If everything here
+            stopped tomorrow, the copy on your machine would keep opening, importing and reporting
+            exactly as it does today — and the source is yours to build for as long as you want it.</p>
+          <div class="because">one SQLite file · no service to deprecate · both licences permissive</div>
         </div>
       </div>
 
@@ -805,114 +880,53 @@ h1 .slash{color:var(--accent-text)}
         </ul>
         <div class="foot">That is the whole list. No analytics, no crash reporting, no update ping, no license check.</div>
       </div>
-    </section>
 
-    <!-- ═══ how it works ══════════════════════════════════════════════════ -->
-    <section class="pane" id="flow">
-      <div class="reveal">
-        <span class="eyebrow">how it works</span>
-        <h2>Sources in, one core, one file.</h2>
-        <p class="lead">Everything below the dashed line happens on the machine in front of you.
-          Sources feed one Rust core; the core owns a plain SQLite database holding your books; the
-          desktop app is a thin IPC shell over the same services the CLI calls. The only endpoint
-          outside the line is one you configured yourself.</p>
-      </div>
-
-      <div class="flowwrap reveal">
-        <div class="fh">
-          <span class="k"><i></i>built and wired</span>
-          <span class="k dash"><i></i>opt-in, off until you configure it</span>
-          <span class="k" style="margin-left:auto">flow of your data — never leaves the box</span>
+      <div class="grid g2 reveal">
+        <div class="card">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 4v10L12 21l-7.5-4V7z"/><path d="M9 12l2 2 4-4"/></svg></div>
+          <h3>Communities share rules, never data <span class="chip chip-built">Built</span></h3>
+          <p>Other people's work reaches you as a <em>pack</em> — a taxonomy, a set of merchant
+            mappings, classification rules — signed with an ed25519 key and handed over as a file or
+            a git repo. Your transactions never travel the other way, and slip/scan never fetches a
+            pack on its own. A pack id is pinned to the key that first signed it, so nobody can take
+            that name over later.</p>
         </div>
-        <div class="flowscroll">
-          <svg class="flow" viewBox="0 0 980 440" role="img"
-               aria-label="Diagram. Inside a boundary marked ‘your machine’: statement import, mailbox sync and a watched drop folder all feed one Rust core; the core owns your SQLite books and answers the Tauri desktop app over IPC. Outside the boundary, and only when you configure them: signed packs arriving as files, and your own OpenRate instance supplying exchange rates.">
-            <!-- the machine boundary -->
-            <rect class="zone" x="16" y="52" width="932" height="290" rx="14"/>
-            <text class="zonelbl" x="34" y="44">YOUR MACHINE</text>
-
-            <!-- sources -->
-            <rect class="box" x="40" y="76" width="200" height="56" rx="9"/>
-            <text class="t" x="56" y="102">Statement import</text>
-            <text class="sub" x="56" y="120">CSV / OFX · column presets</text>
-
-            <rect class="box" x="40" y="152" width="200" height="56" rx="9"/>
-            <text class="t" x="56" y="178">Mailbox sync</text>
-            <text class="sub" x="56" y="196">IMAP · Gmail · MS Graph</text>
-
-            <rect class="box" x="40" y="228" width="200" height="56" rx="9"/>
-            <text class="t" x="56" y="254">Watched drop folder</text>
-            <text class="sub" x="56" y="272">slipscan watch ./inbox</text>
-
-            <!-- sources onto the bus, bus into the core -->
-            <path class="wire" d="M240 104 H300 V180"/>
-            <path class="wire" d="M240 180 H300"/>
-            <path class="wire" d="M240 256 H300 V180"/>
-            <path class="wire" d="M300 180 H360"/>
-            <rect class="pkt p1" x="244" y="101" width="6" height="6" rx="1" style="--d:50px"/>
-            <rect class="pkt p3" x="244" y="177" width="6" height="6" rx="1" style="--d:50px"/>
-            <rect class="pkt p5" x="244" y="253" width="6" height="6" rx="1" style="--d:50px"/>
-            <rect class="pkt p2" x="304" y="177" width="6" height="6" rx="1" style="--d:52px"/>
-
-            <!-- the core -->
-            <rect class="box-core" x="360" y="140" width="238" height="84" rx="10"/>
-            <text class="t" x="380" y="170">Rust core</text>
-            <text class="sub" x="380" y="190">categorise · budget · ledger</text>
-            <text class="sub" x="380" y="206">reconcile · report · extract</text>
-
-            <!-- the core owns the file -->
-            <path class="wire" d="M479 224 V262"/>
-            <rect class="db" x="386" y="262" width="186" height="56" rx="9"/>
-            <text class="t" x="404" y="288">SQLite</text>
-            <text class="sub" x="404" y="306">your books, one file</text>
-
-            <!-- the app is a shell over the core -->
-            <path class="wire" d="M598 182 H674"/>
-            <text class="cap" x="612" y="174">IPC</text>
-            <rect class="box" x="674" y="140" width="214" height="84" rx="10"/>
-            <text class="t" x="694" y="170">Desktop app</text>
-            <text class="sub" x="694" y="190">Tauri 2 · Svelte 5</text>
-            <text class="sub" x="694" y="206">thin shell, no logic</text>
-            <rect class="pkt p4" x="602" y="179" width="6" height="6" rx="1" style="--d:68px"/>
-
-            <!-- outside the boundary: nothing here happens unless you set it up -->
-            <text class="zonelbl" x="34" y="364">OUTSIDE — ONLY IF YOU SET IT UP</text>
-
-            <rect class="box-opt" x="40" y="372" width="200" height="56" rx="9"/>
-            <text class="t" x="56" y="398">Signed packs</text>
-            <text class="sub" x="56" y="416">rules in · data never out</text>
-            <path class="wire-opt" d="M240 400 H300 V256"/>
-
-            <rect class="box-opt" x="674" y="372" width="214" height="56" rx="9"/>
-            <text class="t" x="694" y="398">OpenRate</text>
-            <text class="sub" x="694" y="416">your instance · no URL = no calls</text>
-            <path class="wire-opt" d="M674 400 H630 V210 H598"/>
-            <text class="cap" x="636" y="250">rates + provenance</text>
-          </svg>
-        </div>
-        <div class="flowfoot">
-          <b>Between machines there is no hub.</b> Every node is a self-hosted peer, and the only
-          thing that ever crosses is a signed pack of rules. Dropping a slip onto the window is
-          <em>not</em> how files get in yet — today that is the file picker, the CLI, or the watched
-          folder above.
+        <div class="card">
+          <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5a14 14 0 0 1 0 17 14 14 0 0 1 0-17z"/></svg></div>
+          <h3>Not built around one country <span class="chip chip-built">Built</span></h3>
+          <p>Nothing country-specific is compiled in. Account seeds, tax rates, the name of the
+            return your books produce and the CSV layouts your banks export all arrive as
+            <em>region profiles</em> — data you pick, not code somebody has to fork. South Africa is
+            the first profile (VAT201); a generic profile covers everywhere else from day one.</p>
         </div>
       </div>
+
+      <p class="shotnote">Want the wiring rather than the promise? The
+        <a href="./docs.html#how-it-works">architecture, the data-flow diagram and the invariants
+        the workspace enforces</a> are all in the docs.</p>
     </section>
 
-    <!-- ═══ capabilities ══════════════════════════════════════════════════ -->
-    <section class="pane" id="capabilities">
+    <!-- ═══ what works today ══════════════════════════════════════════════
+         The built/planned chips and the "not built yet" cards used to be two
+         sections a screen apart. They are one ledger and they read as one:
+         everything that works, then everything that does not, both with the
+         same chip vocabulary. Nothing here is softened — the whole point of
+         the section is that it costs the page something. ═════════════════ -->
+    <section class="pane" id="honest">
       <div class="reveal">
-        <span class="eyebrow">capabilities</span>
-        <h2>What is actually in the tree.</h2>
-        <p class="lead">Every line below carries a chip, and the chips are the point. A roadmap
-          reads better than a status table; a status table is the one you can act on.</p>
+        <span class="eyebrow">what works today</span>
+        <h2>Every feature, with its status attached.</h2>
+        <p class="lead">A roadmap reads better than a status table. A status table is the one you
+          can act on. Everything below carries a chip, including the things that would sell better
+          without one, and the app repeats the same caveats on the screens where they matter rather
+          than saving them for after you have installed it.</p>
         <div class="legend">
           <span><em class="chip chip-built" style="font-style:normal">Built</em> in the tree, wired to a surface, exercised by a test</span>
           <span><em class="chip chip-planned" style="font-style:normal">Planned</em> designed, not built</span>
         </div>
       </div>
 
-      <div class="caps reveal">
+      <div class="caps reveal" id="capabilities">
         <div class="ch">Money</div>
         <div class="row"><div class="nm">Double-entry ledger <span class="chip chip-built">Built</span></div>
           <div class="ds">Chart of accounts by type, balanced-by-construction journals, trial balance, income statement, balance sheet. Posted entries never change — a correction is a reversal.</div></div>
@@ -951,85 +965,12 @@ h1 .slash{color:var(--accent-text)}
         <div class="row"><div class="nm">Bank scraper adapters <span class="chip chip-planned">Planned</span></div>
           <div class="ds">The open-source adapter framework is in the tree and adapters run in your own session — no aggregator ever holds a token. Live scrapers themselves are still in progress; statement files are the supported path today.</div></div>
       </div>
-    </section>
 
-    <!-- ═══ screens ═══════════════════════════════════════════════════════ -->
-    <section class="pane" id="screens">
-      <div class="reveal">
-        <span class="eyebrow">screens</span>
-        <h2>Real screens, no mockups.</h2>
-        <p class="lead">Every shot is the shipped desktop app against a seeded demo book, captured
-          with a pinned clock, locale and timezone so it reproduces byte-for-byte. Step through with
-          the tabs, the arrows, or <kbd>←</kbd> <kbd>→</kbd> once the gallery has focus.</p>
-      </div>
-
-      <div class="gal reveal">
-        <div class="galtabs" role="tablist" aria-label="Screens of the shipped app" id="galTabs"></div>
-        <div class="window galstage">
-          <div class="galbar">
-            <span class="dots"><i></i><i></i><i></i></span>
-            <span class="path" id="galPath">slip/scan — Dashboard</span>
-            <span class="count" id="galCount">01 / 12</span>
-            <span class="galnav">
-              <button type="button" id="galPrev" aria-label="Previous screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
-              <button type="button" id="galNext" aria-label="Next screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></button>
-            </span>
-          </div>
-          <div class="shot-holder loading" id="galHolder" tabindex="0" role="group" aria-label="Screen gallery — use the left and right arrow keys">
-            <img id="galImg" src="./screenshots/dashboard.png" width="2880" height="1800" loading="lazy" alt="">
-          </div>
-        </div>
-        <p class="galcap" id="galCap"></p>
-        <p class="lightnote" id="lightNote">You are reading the light theme. The app ships light as a
-          first-class theme, but the committed gallery holds a light capture of the Dashboard only —
-          the other screens below are the dark capture, shown as they were taken rather than recoloured.</p>
-      </div>
-    </section>
-
-    <!-- ═══ what holds ════════════════════════════════════════════════════ -->
-    <section class="pane" id="privacy">
-      <div class="reveal">
-        <span class="eyebrow">the engineering contract</span>
-        <h2>The rules that do not bend.</h2>
-        <p class="lead">These are not aspirations in a marketing page — they are invariants the
-          workspace enforces, most of them with a test that fails the build if they slip.</p>
-      </div>
-      <div class="contract reveal">
-        <div class="r">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
-          <div><b>Money is <code>i64</code> minor units. Never a float.</b><span>Not in the core, not over IPC, not across the FX boundary — exchange-rate maths is decimal-only. A cent cannot drift because it was never a binary fraction.</span></div>
-        </div>
-        <div class="r">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/></svg>
-          <div><b>Secrets never reach a log, a <code>Debug</code> impl, or an IPC response.</b><span>The vault hands out a secret to the code that needs it and nowhere else. A webhook signing secret is shown once, at create or rotate, and is unrecoverable after that — by design, not by oversight.</span></div>
-        </div>
-        <div class="r">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 4v10L12 21l-7.5-4V7z"/><path d="M9.5 12l1.8 1.8L15 10"/></svg>
-          <div><b>Posted journals are immutable.</b><span>A correction is a reversing entry, the way double-entry has always required. History is append-only, so a report you ran last quarter still reproduces this quarter.</span></div>
-        </div>
-        <div class="r">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
-          <div><b>The workspace denies <code>unsafe_code</code>.</b><span>Whole-workspace lint, no per-crate exemptions. Rust's guarantees are worth having only if nothing quietly opts out of them.</span></div>
-        </div>
-        <div class="r">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 4v10L12 21l-7.5-4V7z"/><circle cx="12" cy="12" r="2.6"/></svg>
-          <div><b>Trust on first use, then pinned.</b><span>A pack id is bound to the key that first signed it. A later key with the same id is rejected, not silently accepted — the failure mode most signing schemes leave open.</span></div>
-        </div>
-        <div class="r">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v4.5l3 2"/></svg>
-          <div><b>The screen tells you when something is not wired.</b><span>Rollover recorded but not applied, FX <code>not configured</code>, import via the CLI, a review action core supports but desktop has not registered — each one says so in place, instead of offering a button that does nothing.</span></div>
-        </div>
-      </div>
-    </section>
-
-    <!-- ═══ the honest part ═══════════════════════════════════════════════ -->
-    <section class="pane" id="honest">
-      <div class="reveal">
-        <span class="eyebrow">not built yet</span>
-        <h2>The part most pages leave out.</h2>
+      <div class="subhead reveal">
+        <h3>And the part most pages leave out.</h3>
         <p class="lead">Everything here is designed, some of it is documented in detail, and
-          <strong>none of it works today</strong>. It sits on this page for the same reason it sits in
-          the app: a caveat you find after installing is a broken promise, and a caveat you find
+          <strong>none of it works today</strong>. It sits on this page for the same reason it sits
+          in the app: a caveat you find after installing is a broken promise, and a caveat you find
           before installing is a specification.</p>
       </div>
 
@@ -1208,8 +1149,7 @@ cd apps/desktop &amp;&amp; npm install &amp;&amp; npm run tauri dev
         </div>
       </div>
     </section>
-  </main>
-</div>
+</main>
 
 <!-- ═══ footer ═════════════════════════════════════════════════════════════ -->
 <footer class="site-footer">
@@ -1222,9 +1162,10 @@ cd apps/desktop &amp;&amp; npm install &amp;&amp; npm run tauri dev
     <div>
       <h4>Product</h4>
       <ul>
-        <li><a href="#capabilities">Capabilities</a></li>
+        <li><a href="#features">What you get</a></li>
         <li><a href="#screens">Screens</a></li>
-        <li><a href="#honest">Not built yet</a></li>
+        <li><a href="#different">Why it's different</a></li>
+        <li><a href="#honest">What works today</a></li>
         <li><a href="#install">Download</a></li>
       </ul>
     </div>
@@ -1232,6 +1173,7 @@ cd apps/desktop &amp;&amp; npm install &amp;&amp; npm run tauri dev
       <h4>Docs</h4>
       <ul>
         <li><a href="./docs.html#getting-started">Getting started</a></li>
+        <li><a href="./docs.html#how-it-works">How it works</a></li>
         <li><a href="./docs.html#architecture">Architecture</a></li>
         <li><a href="./docs.html#packs">Packs</a></li>
         <li><a href="./docs.html#payments">Payments</a></li>
@@ -1409,15 +1351,42 @@ showShot(0,false);
   hero.addEventListener('error',done);
 })();
 
-/* ── scroll-spy: aria-current follows the section you are reading ────── */
-var SECS=['overview','architecture','flow','capabilities','screens','privacy','honest','install','vulos'];
-var railLinks=$$('.rail a[data-sec]');
+/* ── scroll-spy: aria-current follows the section you are reading ──────
+   The rail is gone; the same signal now lands on the header's anchor set,
+   which only carries the four sections worth naming. A section with no link
+   (the hero, install, vulos) simply clears the marker. */
+var SECS=['overview','features','screens','different','honest','install','vulos'];
+var navLinks=$$('.topnav a[data-sec]');
 function setCurrent(id){
-  railLinks.forEach(function(a){
+  navLinks.forEach(function(a){
     if(a.dataset.sec===id) a.setAttribute('aria-current','true');
     else a.removeAttribute('aria-current');
   });
 }
+
+/* ── reading progress ────────────────────────────────────────────────
+   The other half of what the rail was doing. It is a width on an element
+   already inside the sticky header, so it costs no layout and nothing
+   reflows; under reduced motion it is still correct, because it is a
+   position readout rather than an animation. */
+(function(){
+  var bar=$('#progress');
+  if(!bar) return;
+  var ticking=false;
+  function paint(){
+    ticking=false;
+    var d=document.documentElement;
+    var max=d.scrollHeight-d.clientHeight;
+    bar.style.width=(max>0?Math.min(1,d.scrollTop/max)*100:0).toFixed(2)+'%';
+  }
+  addEventListener('scroll',function(){
+    if(ticking) return;
+    ticking=true;requestAnimationFrame(paint);
+  },{passive:true});
+  addEventListener('resize',paint,{passive:true});
+  paint();
+})();
+
 if('IntersectionObserver' in window){
   var spy=new IntersectionObserver(function(entries){
     entries.forEach(function(e){if(e.isIntersecting) setCurrent(e.target.id);});
@@ -1456,23 +1425,23 @@ var ICONS={
   ext:'<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14L21 3"/>',
   cmd:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/>'
 };
-/* `G` then a letter, exactly as the app's rail advertises it. */
-var CHORDS={o:'#overview',a:'#architecture',w:'#flow',c:'#capabilities',s:'#screens',
-            p:'#privacy',n:'#honest',i:'#install',v:'#vulos'};
+/* `G` then a letter, exactly as the app's palette advertises it. */
+var CHORDS={o:'#overview',f:'#features',s:'#screens',d:'#different',
+            n:'#honest',c:'#capabilities',i:'#install',v:'#vulos'};
 var CMDS=[
   {l:'Overview',h:'section',href:'#overview',i:'sec',k:'G O'},
-  {l:'No server',h:'section',href:'#architecture',i:'sec',k:'G A'},
-  {l:'How it works',h:'section',href:'#flow',i:'sec',k:'G W'},
-  {l:'Capabilities',h:'section',href:'#capabilities',i:'sec',k:'G C'},
+  {l:'What you get',h:'section',href:'#features',i:'sec',k:'G F'},
   {l:'Screens',h:'section',href:'#screens',i:'sec',k:'G S'},
-  {l:'What holds',h:'section',href:'#privacy',i:'sec',k:'G P'},
-  {l:'Not built yet',h:'section',href:'#honest',i:'sec',k:'G N'},
+  {l:"Why it's different",h:'section',href:'#different',i:'sec',k:'G D'},
+  {l:'What works today',h:'section',href:'#honest',i:'sec',k:'G N'},
+  {l:'Capability status table',h:'section',href:'#capabilities',i:'sec',k:'G C'},
   {l:'Install',h:'section',href:'#install',i:'sec',k:'G I'},
   {l:'Part of Vulos',h:'section',href:'#vulos',i:'sec',k:'G V'}
 ].concat(SHOTS.map(function(s,idx){
   return {l:s.t,h:'screen',i:'shot',shot:idx};
 })).concat([
   {l:'Getting started',h:'docs',href:'./docs.html#getting-started',i:'doc'},
+  {l:'How it works — architecture &amp; data flow',h:'docs',href:'./docs.html#how-it-works',i:'doc'},
   {l:'Architecture',h:'docs',href:'./docs.html#architecture',i:'doc'},
   {l:'Configuration',h:'docs',href:'./docs.html#configuration',i:'doc'},
   {l:'Email ingestion',h:'docs',href:'./docs.html#email',i:'doc'},

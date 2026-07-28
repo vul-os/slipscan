@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use slipscan_core::domain::{CategoryNode, CoaKind, TrialBalanceRow, VatRate};
 use slipscan_core::{CoreError, CoreService};
+use slipscan_packs::transport::{
+    self, PackPlan, PackSource, PackSourceRow, SignerDecision, SourceKind, SourceStore,
+    TransportContext,
+};
 use slipscan_packs::{
     benchmark, builtin, engine, verify_detached, BenchmarkCohort, Comparison, InstallReport,
     Installer, PackError, PackManifest, TrustStatus, TrustStore,
@@ -451,6 +455,337 @@ fn adopt_legacy_index(service: &CoreService, installer: &Installer<'_>) -> Resul
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Pack sources — fetching packs over a transport (docs/PACKS.md "Getting a
+// pack").
+//
+// The whole point of a transport is that it grants no authority: everything
+// below hands raw bytes to `slipscan_packs::transport`, which verifies the
+// signature before anything touches this database, and then to the same
+// installer a local file goes through. There is no second install path.
+//
+// There is also no default source: `SourceStore` starts empty and only the
+// operations here write to it, each of them from an explicit user request.
+// ---------------------------------------------------------------------------
+
+/// One configured pack source, as an API client sees it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackSourceEntry {
+    pub name: String,
+    /// Canonical URI — `file:`, `folder:`, `git:` or `https://`.
+    pub uri: String,
+    pub kind: String,
+    /// Whether reading it can put packets on a network.
+    pub network: bool,
+    pub added_at: String,
+    pub last_synced_at: Option<String>,
+}
+
+impl From<PackSourceRow> for PackSourceEntry {
+    fn from(row: PackSourceRow) -> Self {
+        Self {
+            name: row.name,
+            uri: row.source.uri(),
+            kind: row.source.kind().as_str().to_string(),
+            network: row.source.is_network(),
+            added_at: row.added_at,
+            last_synced_at: row.last_synced_at,
+        }
+    }
+}
+
+/// One pack a source offers: what the catalogue *claims*, and — when the
+/// bytes verify — what installing it would actually do.
+///
+/// The two are kept apart on purpose. A catalogue is a hint from an untrusted
+/// file; `verified` is the only part derived from a checked signature, and a
+/// surface must show the second, not the first, wherever a user makes a
+/// decision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackOffer {
+    /// Claimed id (catalogue).
+    pub pack_id: String,
+    /// Claimed version (catalogue).
+    pub version: String,
+    /// Claimed display name (catalogue).
+    pub name: Option<String>,
+    /// Claimed kind (catalogue). Free-form: a transport carries any pack
+    /// kind, including one this build has never heard of.
+    pub kind: Option<String>,
+    /// Claimed region (catalogue).
+    pub region: Option<String>,
+    /// Blob name within the source, and the handle `pack_fetch_install` takes.
+    pub document: String,
+    /// The verified preflight, present iff the signature checked out.
+    pub verified: Option<PackOfferPlan>,
+    /// Why this entry could not be verified. One unreadable file in a shared
+    /// folder must not hide the rest of the catalogue.
+    pub error: Option<String>,
+}
+
+/// The verified half of an offer — every field here comes from bytes whose
+/// signature has been checked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackOfferPlan {
+    pub pack_id: String,
+    pub name: String,
+    pub version: String,
+    pub kind: String,
+    pub region: Option<String>,
+    pub author: Option<String>,
+    /// Check this against the publisher's own channel before accepting.
+    pub signer_fingerprint: String,
+    pub trusted_as: Option<String>,
+    /// The fingerprint this pack id is pinned to. Different from
+    /// `signer_fingerprint` == the publisher key changed == a refusal.
+    pub pinned_fingerprint: Option<String>,
+    pub installed_version: Option<String>,
+    /// `install`, `upgrade` or `refuse`.
+    pub action: String,
+    /// Set exactly when `action == "refuse"`, in the installer's own words.
+    pub refusal: Option<String>,
+    /// Whether installing needs the user to accept this fingerprint first.
+    pub needs_signer_acceptance: bool,
+    pub categories: u32,
+    pub merchant_rules: u32,
+    pub keyword_rules: u32,
+    pub origin: Option<String>,
+}
+
+impl From<PackPlan> for PackOfferPlan {
+    fn from(plan: PackPlan) -> Self {
+        Self {
+            action: plan.action.as_str().to_string(),
+            needs_signer_acceptance: plan.needs_signer_acceptance(),
+            pack_id: plan.pack_id,
+            name: plan.name,
+            version: plan.version,
+            kind: plan.kind,
+            region: plan.region,
+            author: plan.author,
+            signer_fingerprint: plan.signer_fingerprint,
+            trusted_as: plan.trusted_as,
+            pinned_fingerprint: plan.pinned_fingerprint,
+            installed_version: plan.installed_version,
+            refusal: plan.refusal,
+            categories: plan.categories as u32,
+            merchant_rules: plan.merchant_rules as u32,
+            keyword_rules: plan.keyword_rules as u32,
+            origin: plan.origin,
+        }
+    }
+}
+
+/// Add a pack source under a short name. **The only way a source ever gets
+/// into the store** — nothing seeds it, so a fresh install has none.
+pub fn pack_source_add(
+    service: &CoreService,
+    name: &str,
+    uri: &str,
+) -> Result<PackSourceEntry, OpsError> {
+    let source = PackSource::parse(uri)?;
+    service.with_connection(|conn| Ok(SourceStore::open(conn)?.add(name, &source)?.into()))
+}
+
+/// Forget a source. Installed packs are untouched: where a pack came from is
+/// history, not a dependency.
+pub fn pack_source_remove(service: &CoreService, name: &str) -> Result<bool, OpsError> {
+    service.with_connection(|conn| Ok(SourceStore::open(conn)?.remove(name)?))
+}
+
+/// Every configured source. Empty on a fresh install, and empty is the
+/// answer that makes "no network calls until you name a source" true.
+pub fn pack_source_list(service: &CoreService) -> Result<Vec<PackSourceEntry>, OpsError> {
+    service.with_connection(|conn| {
+        let Some(store) = SourceStore::open_readonly(conn)? else {
+            return Ok(Vec::new());
+        };
+        Ok(store.list()?.into_iter().map(Into::into).collect())
+    })
+}
+
+/// Read a source's catalogue and preflight every pack it offers against a
+/// book. **Installs nothing** — this is the "what is out there, and what
+/// would it do" step, and it is where a user sees a signer fingerprint before
+/// deciding anything.
+///
+/// `ctx` carries the transport's capabilities (git cache directory, HTTPS
+/// client). A `ctx` without an HTTP client simply cannot open an `https:`
+/// source, which is the mechanism behind having no default endpoint.
+pub fn pack_source_fetch(
+    service: &CoreService,
+    book_id: &str,
+    source_name: &str,
+    ctx: &TransportContext,
+) -> Result<Vec<PackOffer>, OpsError> {
+    service.book_get(book_id)?;
+    let row = service.with_connection(|conn| {
+        let Some(store) = SourceStore::open_readonly(conn)? else {
+            return Err(OpsError::Pack(PackError::NoSuchSource(
+                source_name.to_string(),
+            )));
+        };
+        Ok(store.require(source_name)?)
+    })?;
+
+    // Reading the source happens with no database connection held: a slow
+    // network fetch must not sit on the SQLite handle the rest of the app
+    // needs, and the bytes it returns are not trusted yet anyway.
+    let store = transport::open(&row.source, ctx)?;
+    let entries = transport::discover(store.as_ref())?;
+
+    let mut offers = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let fetched = transport::fetch(store.as_ref(), entry);
+        let (verified, error) = match fetched {
+            Ok(bundle) => match service
+                .with_connection(|conn| transport::plan_bundle(conn, book_id, &bundle))
+            {
+                Ok(plan) => (Some(PackOfferPlan::from(plan)), None),
+                Err(e) => (None, Some(e.to_string())),
+            },
+            Err(e) => (None, Some(e.to_string())),
+        };
+        offers.push(PackOffer {
+            pack_id: entry.id.clone(),
+            version: entry.version.clone(),
+            name: entry.name.clone(),
+            kind: entry.kind.clone(),
+            region: entry.region.clone(),
+            document: entry.document.clone(),
+            verified,
+            error,
+        });
+    }
+    service.with_connection(|conn| SourceStore::open(conn)?.touch(&row.name))?;
+    Ok(offers)
+}
+
+/// Fetch one pack from a source and install it — verifying first, always.
+///
+/// `document` is the blob name from [`pack_source_fetch`]; if it is `None`,
+/// the newest offer whose claimed id matches `pack_id` is used, and the
+/// claim is then cross-checked against the signed payload, so a catalogue
+/// cannot substitute one pack for another.
+///
+/// `accept_signer` is the trust-on-first-use answer: the fingerprint the user
+/// compared against the publisher's own channel. Without it an unknown signer
+/// refuses ([`PackError::SignerNotAccepted`]) — a pack does not become
+/// trusted by arriving. It is **not** an override for anything else: a
+/// changed publisher key on a pinned pack id is refused no matter what is
+/// passed here.
+pub fn pack_source_install(
+    service: &CoreService,
+    book_id: &str,
+    source_name: &str,
+    pack_id: &str,
+    document: Option<&str>,
+    accept_signer: Option<&str>,
+    ctx: &TransportContext,
+) -> Result<PackInstallResult, OpsError> {
+    service.book_get(book_id)?;
+    engine::register_classifier();
+    let row = service.with_connection(|conn| {
+        let Some(store) = SourceStore::open_readonly(conn)? else {
+            return Err(OpsError::Pack(PackError::NoSuchSource(
+                source_name.to_string(),
+            )));
+        };
+        Ok(store.require(source_name)?)
+    })?;
+
+    let store = transport::open(&row.source, ctx)?;
+    let entries = transport::discover(store.as_ref())?;
+    let entry = entries
+        .iter()
+        .find(|e| match document {
+            Some(doc) => e.document == doc,
+            None => e.id == pack_id,
+        })
+        .ok_or_else(|| {
+            OpsError::Pack(PackError::NoSuchPack {
+                pack_id: pack_id.to_string(),
+                source_name: row.name.clone(),
+            })
+        })?;
+
+    // Bytes only. The signature check is inside `install_bundle`, before the
+    // installer sees anything.
+    let bundle = transport::fetch(store.as_ref(), entry)?;
+    let decision = match accept_signer {
+        Some(fp) => SignerDecision::Accept(fp),
+        None => SignerDecision::RequireKnown,
+    };
+
+    service.with_connection(|conn| {
+        // A pre-installer index must become an upgrade of the same row, not a
+        // second copy — same rule as the file install path.
+        adopt_legacy_index(service, &Installer::open(conn)?)?;
+        let report = transport::install_bundle(conn, book_id, &bundle, decision)?;
+        SourceStore::open(conn)?.touch(&row.name)?;
+        Ok(install_result(book_id, &report))
+    })
+}
+
+/// Write a verified pack into a `folder:` source, in the layout every reader
+/// above expects — the publish half of sneakernet.
+///
+/// Takes the same three inputs as an install (document, signature, key) and
+/// **verifies them first**, so nothing unverified is ever written into a
+/// shared folder under a publisher's fingerprint.
+pub fn pack_source_publish(
+    service: &CoreService,
+    source_name: &str,
+    document: &[u8],
+    signature: &[u8],
+    public_key: &[u8],
+) -> Result<PackPublishResult, OpsError> {
+    let verified = verify_detached(document, signature, public_key)?;
+    let row = service.with_connection(|conn| {
+        let Some(store) = SourceStore::open_readonly(conn)? else {
+            return Err(OpsError::Pack(PackError::NoSuchSource(
+                source_name.to_string(),
+            )));
+        };
+        Ok(store.require(source_name)?)
+    })?;
+    if row.source.kind() != SourceKind::Folder {
+        return Err(OpsError::Validation(format!(
+            "{} is a {} source; publishing writes into a folder: source \
+             (a git checkout is a folder too — point one at it and commit)",
+            row.name,
+            row.source.kind().as_str()
+        )));
+    }
+    let report = transport::publish(
+        std::path::Path::new(row.source.location()),
+        &verified,
+        signature,
+        public_key,
+    )?;
+    Ok(PackPublishResult {
+        source: row.name,
+        pack_id: report.pack_id,
+        version: report.version,
+        fingerprint: report.fingerprint,
+        written: report.written,
+        unchanged: report.unchanged,
+    })
+}
+
+/// What a publish wrote.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackPublishResult {
+    pub source: String,
+    pub pack_id: String,
+    pub version: String,
+    /// The publishing key's fingerprint — also the directory it owns.
+    pub fingerprint: String,
+    pub written: Vec<String>,
+    /// The version was already there with identical bytes; nothing changed.
+    pub unchanged: bool,
+}
+
 /// Well-known tax control account codes, stable across every region profile
 /// (contract in `slipscan_core::region`): tax input control, tax output
 /// control, and the tax-authority settlement account.
@@ -774,6 +1109,7 @@ mod tests {
                     },
                 ],
             }),
+            mailrules: None,
         };
         let bytes = serde_json::to_vec(&payload).unwrap();
         let (sig, key) = signed_by(&bytes, 9);
@@ -1477,5 +1813,252 @@ mod tests {
             report_balance_sheet(&service, "missing"),
             Err(OpsError::Core(CoreError::NotFound { .. }))
         ));
+    }
+
+    // -- pack sources -------------------------------------------------------
+
+    /// Sign a modern payload the way a publisher would, and hand back
+    /// everything a folder source needs to hold it.
+    fn published(
+        id: &str,
+        version: &str,
+        seed: u8,
+    ) -> (slipscan_packs::VerifiedPack, Vec<u8>, Vec<u8>) {
+        use slipscan_packs::{sign_pack, verify_detached, Pack, PackMeta, PackPayload};
+
+        let payload = PackPayload {
+            meta: PackMeta {
+                id: id.into(),
+                name: format!("{id} taxonomy"),
+                version: version.into(),
+                region: Some("ZA".into()),
+                author: Some("Ops tests".into()),
+                description: None,
+            },
+            categories: vec![PackCategory {
+                key: "food".into(),
+                name: "Food".into(),
+                parent_key: None,
+                kind: "expense".into(),
+                icon: None,
+                color: None,
+            }],
+            merchant_rules: vec![slipscan_packs::MerchantRule {
+                match_kind: slipscan_packs::MatchKind::Contains,
+                pattern: "pick n pay".into(),
+                category_key: "food".into(),
+                confidence: 0.9,
+            }],
+            keyword_rules: Vec::new(),
+            vat_hints: Vec::new(),
+            benchmarks: None,
+            mailrules: None,
+        };
+        let key = SigningKey::from_bytes(&[seed; 32]);
+        let pack = sign_pack(&Pack::build(&payload).unwrap(), &key);
+        let document = pack.payload_bytes().to_vec();
+        let signature = key.sign(&document).to_bytes().to_vec();
+        let public_key = key.verifying_key().as_bytes().to_vec();
+        (
+            verify_detached(&document, &signature, &public_key).unwrap(),
+            signature,
+            public_key,
+        )
+    }
+
+    /// The privacy contract at the ops layer: no source exists until the user
+    /// adds one, so there is nothing for any code path to reach out to.
+    #[test]
+    fn pack_sources_start_empty_and_only_a_user_adds_one() {
+        let service = svc();
+        assert!(pack_source_list(&service).unwrap().is_empty());
+
+        let added = pack_source_add(&service, "USB", "folder:/Volumes/USB/packs").unwrap();
+        assert_eq!(added.name, "usb");
+        assert_eq!(added.kind, "folder");
+        assert!(!added.network, "a folder is not a network transport");
+        assert!(added.last_synced_at.is_none());
+
+        // Plaintext is refused, and so is anything that is not one of the
+        // four forms — a bare string is never guessed into a scheme.
+        assert!(matches!(
+            pack_source_add(&service, "plain", "http://packs.example"),
+            Err(OpsError::Pack(PackError::InsecureUrl(_)))
+        ));
+        assert!(matches!(
+            pack_source_add(&service, "guess", "/tmp/packs"),
+            Err(OpsError::Pack(PackError::UnknownScheme(_)))
+        ));
+        // A name is taken once; repointing is remove-then-add, never silent.
+        assert!(matches!(
+            pack_source_add(&service, "usb", "folder:/elsewhere"),
+            Err(OpsError::Pack(PackError::SourceExists(_)))
+        ));
+
+        assert_eq!(pack_source_list(&service).unwrap().len(), 1);
+        assert!(pack_source_remove(&service, "usb").unwrap());
+        assert!(!pack_source_remove(&service, "usb").unwrap());
+        assert!(pack_source_list(&service).unwrap().is_empty());
+    }
+
+    /// Publish → fetch → verify → install over a folder source, with the
+    /// trust decision surfaced before it is made and the signer-change
+    /// refusal proved at the end.
+    #[test]
+    fn pack_source_fetch_preflights_before_it_installs_and_pins_the_signer() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = svc();
+        let book_id = make_book(&service);
+        let ctx = slipscan_packs::transport::TransportContext::new();
+
+        let (alice, a_sig, a_key) = published("za-groceries", "1.0.0", 3);
+        pack_source_add(
+            &service,
+            "share",
+            &format!("folder:{}", dir.path().display()),
+        )
+        .unwrap();
+        let publish = pack_source_publish(
+            &service,
+            "share",
+            alice.pack().payload_bytes(),
+            &a_sig,
+            &a_key,
+        )
+        .unwrap();
+        assert_eq!(publish.fingerprint, alice.fingerprint());
+        assert!(!publish.unchanged);
+
+        // Reading installs nothing, and says plainly that the signer is new.
+        let offers = pack_source_fetch(&service, &book_id, "share", &ctx).unwrap();
+        assert_eq!(offers.len(), 1);
+        let plan = offers[0].verified.as_ref().expect("it verified");
+        assert_eq!(plan.action, "install");
+        assert!(plan.needs_signer_acceptance);
+        assert_eq!(plan.signer_fingerprint, alice.fingerprint());
+        assert!(pack_list(&service).unwrap().is_empty(), "a read is a read");
+
+        // Arriving is not accepting.
+        assert!(matches!(
+            pack_source_install(
+                &service,
+                &book_id,
+                "share",
+                "za-groceries",
+                None,
+                None,
+                &ctx
+            ),
+            Err(OpsError::Pack(PackError::SignerNotAccepted { .. }))
+        ));
+        // And a "yes" to some other fingerprint is not a yes to this one.
+        assert!(matches!(
+            pack_source_install(
+                &service,
+                &book_id,
+                "share",
+                "za-groceries",
+                None,
+                Some("0000-0000-0000-0000"),
+                &ctx,
+            ),
+            Err(OpsError::Pack(PackError::SignerNotAccepted { .. }))
+        ));
+        assert!(pack_list(&service).unwrap().is_empty());
+
+        let installed = pack_source_install(
+            &service,
+            &book_id,
+            "share",
+            "za-groceries",
+            None,
+            Some(&alice.fingerprint()),
+            &ctx,
+        )
+        .unwrap();
+        assert_eq!(installed.pack_id, "za-groceries");
+        assert_eq!(installed.rules, 1);
+        assert_eq!(pack_list(&service).unwrap().len(), 1);
+        // The read is recorded as metadata, and only as metadata.
+        assert!(pack_source_list(&service).unwrap()[0]
+            .last_synced_at
+            .is_some());
+
+        // A second publisher offers a much newer version of the same id.
+        let (mallory, m_sig, m_key) = published("za-groceries", "9.9.9", 5);
+        pack_source_publish(
+            &service,
+            "share",
+            mallory.pack().payload_bytes(),
+            &m_sig,
+            &m_key,
+        )
+        .unwrap();
+
+        // The preflight refuses and names the key the id belongs to…
+        let offers = pack_source_fetch(&service, &book_id, "share", &ctx).unwrap();
+        let hostile = offers
+            .iter()
+            .find(|o| o.verified.as_ref().is_some_and(|v| v.version == "9.9.9"))
+            .expect("it is on offer");
+        let plan = hostile.verified.as_ref().unwrap();
+        assert_eq!(plan.action, "refuse");
+        assert_eq!(
+            plan.pinned_fingerprint.as_deref(),
+            Some(alice.fingerprint().as_str())
+        );
+        assert!(plan.refusal.as_deref().unwrap().contains("different key"));
+
+        // …and so does the attempt, with or without an "acceptance".
+        for accept in [None, Some(mallory.fingerprint())] {
+            assert!(matches!(
+                pack_source_install(
+                    &service,
+                    &book_id,
+                    "share",
+                    "za-groceries",
+                    Some(&hostile.document),
+                    accept.as_deref(),
+                    &ctx,
+                ),
+                Err(OpsError::Pack(PackError::SignerChanged { .. }))
+            ));
+        }
+        let listed = pack_list(&service).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].manifest.version, "1.0.0");
+    }
+
+    /// Publishing needs a folder, and it needs bytes that verify — nothing
+    /// unverified is ever written into a shared folder under a publisher's
+    /// fingerprint.
+    #[test]
+    fn publishing_refuses_a_non_folder_source_and_unverified_bytes() {
+        let service = svc();
+        let (alice, sig, key) = published("za-groceries", "1.0.0", 3);
+        pack_source_add(&service, "web", "https://packs.example/pub").unwrap();
+        assert!(matches!(
+            pack_source_publish(&service, "web", alice.pack().payload_bytes(), &sig, &key),
+            Err(OpsError::Validation(_))
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        pack_source_add(
+            &service,
+            "share",
+            &format!("folder:{}", dir.path().display()),
+        )
+        .unwrap();
+        let mut tampered = alice.pack().payload_bytes().to_vec();
+        let idx = tampered.len() - 2;
+        tampered[idx] ^= 0x01;
+        assert!(matches!(
+            pack_source_publish(&service, "share", &tampered, &sig, &key),
+            Err(OpsError::Pack(PackError::VerificationFailed))
+        ));
+        assert!(
+            std::fs::read_dir(dir.path()).unwrap().next().is_none(),
+            "a refused publish writes nothing at all"
+        );
     }
 }

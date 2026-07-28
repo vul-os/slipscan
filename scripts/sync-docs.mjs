@@ -51,9 +51,16 @@ const viewerPath = join(siteDir, 'docs.html');
 
 // Root-level markdown that the docs viewer also serves. Keyed by source path
 // relative to the repo root; the value is the slug it lands under.
+//
+// PARITY.md lands on slug `parity`, i.e. site/docs/parity.md, next to the
+// mirrored site/docs/parity.json below. The two are unrelated — the chapter is
+// feature parity vs Xero/Vault22, the data file is IPC-vs-HTTP surface parity —
+// but they cannot collide: resolveDocsLink sends `*.md` targets to the chapter
+// map and everything else to DOC_ASSETS, so each name resolves one way only.
 const EXTRA = {
   'CHANGELOG.md': 'changelog',
   'ROADMAP.md': 'roadmap',
+  'PARITY.md': 'parity',
   'CONTRIBUTING.md': 'contributing',
   'SECURITY.md': 'security',
 };

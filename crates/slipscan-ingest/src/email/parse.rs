@@ -1,7 +1,13 @@
 //! MIME parsing: raw RFC 5322 bytes → [`InboundMessage`].
 //!
-//! Keeps only what the ingestion pipeline needs: PDF/image attachments and —
-//! when the body looks like a receipt — the HTML body itself.
+//! Keeps what the ingestion pipeline needs: PDF/image attachments, the HTML
+//! body when it looks like a receipt (that becomes a document), and the body
+//! as **plain text** for every message, which is what bank-alert rules match
+//! against ([`super::alerts`]).
+//!
+//! The alert path needs the text of mail the receipt heuristic deliberately
+//! rejects — "you spent 184.50 at …" is not a receipt and never becomes a
+//! document — so `body_text` is populated independently of `receipt_html`.
 
 use super::{Attachment, InboundMessage};
 use crate::{IngestError, IngestResult};
@@ -49,8 +55,23 @@ pub fn parse_inbound(raw: &[u8], fallback_id: &str) -> IngestResult<InboundMessa
         });
     }
 
-    let receipt_html = msg.body_html(0).and_then(|html| {
-        let text = strip_tags(&html);
+    // Prefer a real text/plain part — the sender wrote it, so nothing is
+    // inferred. Fall back to the HTML body with tags stripped and entities
+    // decoded, which is what most bank alerts actually ship.
+    let html_body = msg.body_html(0);
+    let body_text = msg
+        .body_text(0)
+        .map(|text| text.into_owned())
+        .or_else(|| {
+            html_body
+                .as_deref()
+                .map(|html| decode_entities(&strip_tags(html)))
+        })
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+
+    let receipt_html = html_body.and_then(|html| {
+        let text = decode_entities(&strip_tags(&html));
         let subject_text = subject.as_deref().unwrap_or("");
         if looks_like_receipt(&format!("{subject_text}\n{text}")) {
             Some(html.into_owned())
@@ -67,7 +88,60 @@ pub fn parse_inbound(raw: &[u8], fallback_id: &str) -> IngestResult<InboundMessa
         received_at,
         attachments,
         receipt_html,
+        body_text,
     })
+}
+
+/// Decode the HTML entities that actually turn up in mail bodies, so an
+/// amount written `R&nbsp;184.50` reaches the rules as `R\u{a0}184.50` rather
+/// than `R&nbsp;184.50` (which no sane money pattern matches). Unknown
+/// entities are left verbatim — a decoder that guesses would corrupt text.
+fn decode_entities(text: &str) -> String {
+    if !text.contains('&') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        // Entities are short; a bare `&` in prose must not scan the rest of
+        // the document looking for a terminator.
+        let end = tail[..tail.len().min(12)].find(';');
+        let Some(end) = end else {
+            out.push('&');
+            rest = &tail[1..];
+            continue;
+        };
+        let entity = &tail[1..end];
+        let decoded = match entity {
+            "nbsp" => Some('\u{a0}'),
+            "amp" => Some('&'),
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "quot" => Some('"'),
+            "apos" | "#39" => Some('\''),
+            _ => entity
+                .strip_prefix('#')
+                .and_then(|num| match num.strip_prefix(['x', 'X']) {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => num.parse::<u32>().ok(),
+                })
+                .and_then(char::from_u32),
+        };
+        match decoded {
+            Some(ch) => {
+                out.push(ch);
+                rest = &tail[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn is_document_attachment(filename: &str, mime_type: &str) -> bool {

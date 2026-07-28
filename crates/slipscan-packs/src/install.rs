@@ -15,8 +15,9 @@
 //! additionally seeded into core's `merchant_mappings` with `source = 'pack'`,
 //! never clobbering a user's own mapping — corrections always win.
 //!
-//! Benchmark packs install as stored payloads only (stats are read back via
-//! [`Installer::benchmark_sets`]); they touch no categories and no rules.
+//! Benchmark and mailrules packs install as stored payloads only (read back
+//! via [`Installer::benchmark_sets`] and [`Installer::mailrule_sets`]); they
+//! touch no categories and no classification rules.
 //!
 //! Every install/upgrade/uninstall is recorded in core's append-only audit
 //! log. Uninstalling removes the pack's rules; categories already created are
@@ -32,6 +33,7 @@ use slipscan_core::repo;
 use slipscan_core::util::{new_id, normalize_merchant, now_iso};
 
 use crate::error::{PackError, PackResult};
+use crate::mailrules::MailRuleSet;
 use crate::model::{BenchmarkSet, MatchKind, PackKind, PackPayload, Semver};
 use crate::trust;
 use crate::verify::{key_fingerprint, Provenance, VerifiedPack};
@@ -42,7 +44,7 @@ CREATE TABLE IF NOT EXISTS pack_installs (
     pack_id      TEXT NOT NULL,
     name         TEXT NOT NULL,
     version      TEXT NOT NULL,
-    kind         TEXT NOT NULL CHECK (kind IN ('taxonomy', 'benchmark')),
+    kind         TEXT NOT NULL CHECK (kind IN ('taxonomy', 'benchmark', 'mailrules')),
     region       TEXT,
     signer       TEXT NOT NULL,
     payload_json BLOB NOT NULL,
@@ -123,6 +125,7 @@ impl<'c> Installer<'c> {
         conn.execute_batch(trust::TRUST_SCHEMA)?;
         conn.execute_batch(INSTALL_SCHEMA)?;
         migrate_region_column(conn)?;
+        migrate_kind_check(conn)?;
         Ok(Self { conn })
     }
 
@@ -380,6 +383,30 @@ impl<'c> Installer<'c> {
         }
         Ok(out)
     }
+
+    /// All mail-rule sets installed for a book, as `(pack_id, set)`, ordered
+    /// by pack id so matching is deterministic across runs.
+    ///
+    /// Like benchmark sets, mail rules are read back out of the stored
+    /// (signed) payload rather than shredded into their own table: they are
+    /// consumed whole by the ingest engine and never joined against, so a
+    /// table would buy nothing and would be a second place for them to drift
+    /// out of agreement with the bytes that were signed.
+    pub fn mailrule_sets(&self, book_id: &str) -> PackResult<Vec<(String, MailRuleSet)>> {
+        let mut out = Vec::new();
+        for pack in self.list(book_id)? {
+            if pack.kind != PackKind::MailRules {
+                continue;
+            }
+            let payload = self.payload(book_id, &pack.pack_id)?;
+            let set = payload.mailrules.ok_or_else(|| PackError::CorruptState {
+                pack_id: pack.pack_id.clone(),
+                message: "mailrules pack without a mailrules section".into(),
+            })?;
+            out.push((pack.pack_id, set));
+        }
+        Ok(out)
+    }
 }
 
 /// What one write of an install touched.
@@ -519,6 +546,67 @@ fn migrate_region_column(conn: &Connection) -> PackResult<()> {
             )?;
         }
     }
+    Ok(())
+}
+
+/// In-place migration for databases created before the `mailrules` pack kind
+/// existed.
+///
+/// `pack_installs.kind` carries a `CHECK` constraint listing the legal kinds,
+/// and SQLite bakes a `CHECK` into the table definition — `CREATE TABLE IF
+/// NOT EXISTS` leaves an existing table exactly as it was. So a book created
+/// by an earlier build would reject a mailrules install with a bare
+/// constraint failure, no matter what this crate's schema string says.
+///
+/// Widening the set of legal values is the one thing SQLite cannot do with
+/// `ALTER TABLE`; its documented answer is to rebuild the table, which is
+/// what this does — **data-preserving and idempotent**, not a tidy-up. Every
+/// row is copied by explicit column name inside one transaction, so the
+/// table's contents are identical afterwards; `pack_installs` has no indexes,
+/// triggers, views, or foreign keys pointing at it, so nothing else has to be
+/// recreated. A database that already permits `'mailrules'` (created fresh by
+/// this build, or already migrated) is left completely untouched.
+fn migrate_kind_check(conn: &Connection) -> PackResult<()> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pack_installs'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(sql) = sql else {
+        return Ok(());
+    };
+    if sql.contains("mailrules") {
+        return Ok(());
+    }
+
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE pack_installs_migrated (
+            book_id      TEXT NOT NULL,
+            pack_id      TEXT NOT NULL,
+            name         TEXT NOT NULL,
+            version      TEXT NOT NULL,
+            kind         TEXT NOT NULL
+                         CHECK (kind IN ('taxonomy', 'benchmark', 'mailrules')),
+            region       TEXT,
+            signer       TEXT NOT NULL,
+            payload_json BLOB NOT NULL,
+            installed_at TEXT NOT NULL,
+            updated_at   TEXT NOT NULL,
+            PRIMARY KEY (book_id, pack_id)
+        );
+        INSERT INTO pack_installs_migrated
+            (book_id, pack_id, name, version, kind, region, signer,
+             payload_json, installed_at, updated_at)
+        SELECT book_id, pack_id, name, version, kind, region, signer,
+               payload_json, installed_at, updated_at
+        FROM pack_installs;
+        DROP TABLE pack_installs;
+        ALTER TABLE pack_installs_migrated RENAME TO pack_installs;",
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

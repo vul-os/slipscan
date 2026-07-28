@@ -113,6 +113,10 @@ impl PackManifest {
             keyword_rules: Vec::new(),
             vat_hints: Vec::new(),
             benchmarks: None,
+            // The legacy flat manifest predates both of these sections and
+            // has nowhere to express them, so a converted pack is always a
+            // taxonomy pack.
+            mailrules: None,
         };
         payload.validate()?;
         Ok(payload)

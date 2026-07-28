@@ -8,20 +8,32 @@
 //! then feeds attachments and receipt-like HTML bodies into the core
 //! document pipeline, and [`sync_mailbox`] drives one full
 //! fetch → import → ack round.
+//!
+//! Mail carries two different things, and they take two different paths:
+//!
+//! * a **document** — a PDF/image attachment or a receipt-like HTML body —
+//!   goes into the extraction pipeline ([`import_message_documents`]);
+//! * a **bank alert** — "your card was used for 184.50 at …" — becomes a
+//!   transaction ([`alerts`]), via the statement-import path, when an
+//!   installed `mailrules` pack has a rule for it.
+//!
+//! The two are independent: a message can produce both, either, or neither.
 
+pub mod alerts;
 pub mod gmail;
 pub mod graph;
 pub mod imap;
 pub mod oauth;
 mod parse;
 
+pub use alerts::{AlertDecline, AlertField, AlertRules, ParsedAlert};
 pub use parse::{looks_like_receipt, parse_inbound};
 
 use crate::import::{kind_for_extension, sha256_hex};
 use crate::{IngestError, IngestResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use slipscan_core::domain::{Document, DocumentKind, DocumentSource, NewDocument};
+use slipscan_core::domain::{Document, DocumentKind, DocumentSource, NewDocument, Transaction};
 use slipscan_core::util::new_id;
 use slipscan_core::{CoreError, CoreService};
 use std::path::Path;
@@ -52,6 +64,15 @@ pub struct InboundMessage {
     pub attachments: Vec<Attachment>,
     /// The HTML body, kept only when it looks like a receipt/invoice.
     pub receipt_html: Option<String>,
+    /// The body as plain text (a text/plain part when the sender provided
+    /// one, otherwise the HTML body with tags stripped and entities decoded).
+    /// Kept for **every** message, not only receipt-like ones: bank alerts
+    /// are not receipts, and this is what [`alerts`] matches against.
+    ///
+    /// `#[serde(default)]` so messages serialized before this field existed
+    /// still deserialize — they simply carry no body.
+    #[serde(default)]
+    pub body_text: Option<String>,
 }
 
 /// What a push wait produced.
@@ -245,6 +266,20 @@ fn import_bytes(
     }
 }
 
+/// Turn bank-alert mail into transactions during a sync, using the rules
+/// installed in this book and booking them to one account.
+///
+/// Absent (the default), a sync behaves exactly as it always has: documents
+/// only, no transactions.
+#[derive(Debug, Clone, Copy)]
+pub struct AlertSync<'a> {
+    /// Compiled rules from installed `mailrules` packs.
+    pub rules: &'a AlertRules,
+    /// The account matched alerts are booked to. Alerts whose account hint
+    /// contradicts this account are declined, never rehomed.
+    pub account_id: &'a str,
+}
+
 /// What one sync round contributed.
 #[derive(Debug, Default)]
 pub struct MailboxSyncOutcome {
@@ -252,6 +287,15 @@ pub struct MailboxSyncOutcome {
     pub messages_filtered: usize,
     pub documents: Vec<Document>,
     pub duplicates: usize,
+    /// Transactions created from bank alerts.
+    pub transactions: Vec<Transaction>,
+    /// Alerts that matched an existing transaction and were not re-imported.
+    pub transaction_duplicates: usize,
+    /// Declines worth showing the user: a rule recognised the mail and then
+    /// could not read a field. Mail no rule claims, and mail a rule's gates
+    /// stood down on (the bank's own statements and marketing), are not in
+    /// here — that is almost every message, and none of it is a problem.
+    pub alert_declines: Vec<(String, AlertDecline)>,
 }
 
 /// One full sync round: fetch unseen mail, run the per-mailbox filter,
@@ -265,6 +309,32 @@ pub async fn sync_mailbox(
     storage_dir: &Path,
     filter: &MailboxFilter,
 ) -> IngestResult<MailboxSyncOutcome> {
+    sync_mailbox_with_alerts(connector, svc, book_id, storage_dir, filter, None).await
+}
+
+/// [`sync_mailbox`], plus bank-alert parsing when `alerts` is configured.
+///
+/// **Ordering is deliberate.** Each message's documents *and* its alert
+/// transactions are persisted before that message is acked, so the existing
+/// "never ack before it is stored" guarantee covers transactions too: a crash
+/// mid-round refetches the message and dedupe absorbs the repeat.
+///
+/// **One import call per message**, which is what preserves that ordering,
+/// carries the dedupe caveat [`import_statement_lines`] already documents for
+/// separate batches: two genuinely identical alerts (same date, amount,
+/// currency and merchant, no bank reference) are indistinguishable from one
+/// alert fetched twice, and the second is counted in
+/// [`MailboxSyncOutcome::transaction_duplicates`] rather than imported.
+/// A rule whose bank sends a unique reference (`reference.unique = true`)
+/// dedupes exactly and is not affected.
+pub async fn sync_mailbox_with_alerts(
+    connector: &mut dyn MailboxConnector,
+    svc: &CoreService,
+    book_id: &str,
+    storage_dir: &Path,
+    filter: &MailboxFilter,
+    alerts: Option<AlertSync<'_>>,
+) -> IngestResult<MailboxSyncOutcome> {
     let mut outcome = MailboxSyncOutcome::default();
     for message in connector.fetch_unseen().await? {
         outcome.messages_seen += 1;
@@ -272,6 +342,29 @@ pub async fn sync_mailbox(
             let imported = import_message_documents(svc, book_id, storage_dir, &message)?;
             outcome.documents.extend(imported.documents);
             outcome.duplicates += imported.duplicates;
+
+            if let Some(alerts) = &alerts {
+                match alerts.rules.parse(&message) {
+                    Ok(parsed) => {
+                        let result = alerts::import_alerts(
+                            svc,
+                            book_id,
+                            alerts.account_id,
+                            std::slice::from_ref(&parsed),
+                        )?;
+                        outcome.transactions.extend(result.statement.imported);
+                        outcome.transaction_duplicates += result.statement.duplicates;
+                        for decline in result.declined {
+                            outcome.alert_declines.push((message.id.clone(), decline));
+                        }
+                    }
+                    Err(decline) => {
+                        if decline.is_actionable() {
+                            outcome.alert_declines.push((message.id.clone(), decline));
+                        }
+                    }
+                }
+            }
         } else {
             outcome.messages_filtered += 1;
         }
@@ -333,6 +426,7 @@ mod tests {
             received_at: "2026-07-01T10:00:00Z".into(),
             attachments,
             receipt_html,
+            body_text: None,
         }
     }
 
@@ -443,6 +537,188 @@ mod tests {
         // its content is never imported.
         assert_eq!(conn.acked, vec!["1", "2"]);
         assert!(conn.queue.is_empty());
+    }
+
+    /// The two paths a message can take are independent, and both happen in
+    /// one round: a receipt-like body becomes a document, a bank alert
+    /// becomes a transaction, and a message can be neither.
+    #[tokio::test]
+    async fn sync_imports_documents_and_bank_alert_transactions_in_one_round() {
+        use slipscan_core::domain::{AccountKind, NewAccount};
+        use slipscan_packs::mailrules::{
+            AmountSpec, AmountStyle, CurrencySpec, DateSpec, Direction, DirectionSpec, Extractor,
+            MailPart, MailRule, MailRuleSet,
+        };
+
+        let (svc, book_id) = svc_with_book();
+        let account = svc
+            .account_create(NewAccount {
+                book_id: book_id.clone(),
+                name: "Card".into(),
+                kind: AccountKind::Card,
+                currency: "ZAR".into(),
+                institution: None,
+                account_number_masked: None,
+                opening_balance_minor: None,
+            })
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let rule = MailRule {
+            id: "card-purchase".into(),
+            description: None,
+            from_patterns: vec!["meridian.example".into()],
+            subject_patterns: vec![r"(?i)card purchase".into()],
+            body_patterns: vec![],
+            amount: AmountSpec {
+                part: MailPart::Body,
+                pattern: r"(?i)purchase of ZAR ([\d.,]+) at".into(),
+                group: 1,
+                style: AmountStyle::Point,
+            },
+            currency: CurrencySpec::Fixed { code: "ZAR".into() },
+            date: DateSpec::Received,
+            merchant: Extractor {
+                part: MailPart::Body,
+                pattern: r"(?i) at (.+?) on your card".into(),
+                group: 1,
+            },
+            reference: None,
+            direction: DirectionSpec::Fixed {
+                direction: Direction::Debit,
+            },
+            account_hint: None,
+            max_date_drift_days: 30,
+        };
+        let rules = AlertRules::compile(vec![(
+            "fixture-alerts".to_string(),
+            MailRuleSet { rules: vec![rule] },
+        )])
+        .unwrap();
+
+        // 1: a bank alert — becomes a transaction, and no document.
+        let mut alert = message_with(vec![], None);
+        alert.id = "1".into();
+        alert.from = "noreply@alerts.meridian.example".into();
+        alert.subject = Some("Card purchase notification".into());
+        alert.body_text =
+            Some("A purchase of ZAR 249.90 at CLICKS GARDENS on your card was approved.".into());
+
+        // 2: an ordinary receipt with a PDF — becomes a document, no txn.
+        let mut receipt = message_with(
+            vec![Attachment {
+                filename: "slip.pdf".into(),
+                mime_type: "application/pdf".into(),
+                bytes: b"%PDF-1.4 mixed".to_vec(),
+            }],
+            None,
+        );
+        receipt.id = "2".into();
+
+        // 3: mail from the bank that no rule claims — neither, and silent.
+        let mut newsletter = message_with(vec![], None);
+        newsletter.id = "3".into();
+        newsletter.from = "news@alerts.meridian.example".into();
+        newsletter.subject = Some("Our new travel card".into());
+        newsletter.body_text = Some("Earn more on every trip.".into());
+
+        let mut conn = FakeConnector {
+            queue: vec![alert, receipt, newsletter],
+            acked: vec![],
+        };
+        let outcome = sync_mailbox_with_alerts(
+            &mut conn,
+            &svc,
+            &book_id,
+            dir.path(),
+            &MailboxFilter::default(),
+            Some(AlertSync {
+                rules: &rules,
+                account_id: &account.id,
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.messages_seen, 3);
+        assert_eq!(
+            outcome.documents.len(),
+            1,
+            "only the receipt has a document"
+        );
+        assert_eq!(
+            outcome.transactions.len(),
+            1,
+            "only the alert is a transaction"
+        );
+        assert_eq!(outcome.transactions[0].amount_minor, -24_990);
+        assert_eq!(
+            outcome.transactions[0].description.as_deref(),
+            Some("CLICKS GARDENS")
+        );
+        // The newsletter no rule claimed is not reported as a problem.
+        assert!(
+            outcome.alert_declines.is_empty(),
+            "{:?}",
+            outcome.alert_declines
+        );
+        assert_eq!(conn.acked, vec!["1", "2", "3"]);
+
+        // The same alert refetched (a crash mid-round, a re-added mailbox)
+        // dedupes instead of double-booking the card.
+        let mut resent = message_with(vec![], None);
+        resent.id = "4".into();
+        resent.from = "noreply@alerts.meridian.example".into();
+        resent.subject = Some("Card purchase notification".into());
+        resent.body_text =
+            Some("A purchase of ZAR 249.90 at CLICKS GARDENS on your card was approved.".into());
+        let mut conn = FakeConnector {
+            queue: vec![resent],
+            acked: vec![],
+        };
+        let repeat = sync_mailbox_with_alerts(
+            &mut conn,
+            &svc,
+            &book_id,
+            dir.path(),
+            &MailboxFilter::default(),
+            Some(AlertSync {
+                rules: &rules,
+                account_id: &account.id,
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(repeat.messages_seen, 1);
+        assert!(repeat.transactions.is_empty(), "no second transaction");
+        assert_eq!(repeat.transaction_duplicates, 1);
+    }
+
+    /// Without an [`AlertSync`], a sync is byte-for-byte the behaviour it had
+    /// before alerts existed: documents only.
+    #[tokio::test]
+    async fn a_sync_without_alerts_configured_creates_no_transactions() {
+        let (svc, book_id) = svc_with_book();
+        let dir = tempfile::tempdir().unwrap();
+        let mut alert = message_with(vec![], None);
+        alert.body_text = Some("A purchase of ZAR 249.90 at CLICKS GARDENS on your card.".into());
+
+        let mut conn = FakeConnector {
+            queue: vec![alert],
+            acked: vec![],
+        };
+        let outcome = sync_mailbox(
+            &mut conn,
+            &svc,
+            &book_id,
+            dir.path(),
+            &MailboxFilter::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome.messages_seen, 1);
+        assert!(outcome.transactions.is_empty());
+        assert!(outcome.alert_declines.is_empty());
     }
 
     #[test]

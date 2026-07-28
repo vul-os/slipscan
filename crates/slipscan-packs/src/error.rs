@@ -82,6 +82,69 @@ pub enum PackError {
     #[error("unsafe payload file name {0:?} in manifest")]
     UnsafePayloadPath(String),
 
+    // -- transports (crate::transport) --------------------------------------
+    // Fetching is a separate concern from trusting: nothing in this group can
+    // produce installed state on its own, because the only way out of a
+    // transport is a `FetchedBundle` and the only way out of *that* is
+    // `verify_detached`.
+    #[error(
+        "unsupported pack source {0:?}; use file:<path>, folder:<path>, \
+         git:<url>, or https://<url>"
+    )]
+    UnknownScheme(String),
+
+    #[error(
+        "refusing the plaintext source {0:?}: use https://. The signature is \
+         what is trusted, but a plaintext fetch still tells the network which \
+         packs you run"
+    )]
+    InsecureUrl(String),
+
+    #[error("pack source {0:?} cannot be listed; it needs an index.json")]
+    SourceUnlistable(String),
+
+    #[error("pack source transport failed: {0}")]
+    Transport(String),
+
+    #[error("pack source index at {path:?} is invalid: {message}")]
+    InvalidIndex { path: String, message: String },
+
+    #[error(
+        "source index claims {claimed:?} but the signed pack is {actual:?}; \
+         refusing to install a pack the catalogue misdescribes"
+    )]
+    IndexMismatch { claimed: String, actual: String },
+
+    // `source_name` rather than `source`: thiserror reserves a field called
+    // `source` for the error-chain accessor, and a `String` is not an error.
+    #[error("pack {pack_id:?} is not offered by source {source_name:?}")]
+    NoSuchPack {
+        pack_id: String,
+        source_name: String,
+    },
+
+    #[error(
+        "pack source name {0:?} is invalid (1-64 chars of [a-z0-9._-], and \
+         not a scheme)"
+    )]
+    InvalidSourceName(String),
+
+    #[error("no pack source named {0:?}; add one with `pack source add`")]
+    NoSuchSource(String),
+
+    #[error("a pack source named {0:?} already exists")]
+    SourceExists(String),
+
+    #[error(
+        "signer {fingerprint} for pack {pack_id:?} has never been seen here; \
+         check the fingerprint against the publisher's own channel and accept \
+         it explicitly (nothing a source hands you is trusted by arriving)"
+    )]
+    SignerNotAccepted {
+        pack_id: String,
+        fingerprint: String,
+    },
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

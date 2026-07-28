@@ -21,7 +21,9 @@ use slipscan_core::datadir::DataDirResolver;
 use slipscan_core::fx::FxTransport;
 use slipscan_core::pay::WebhookTransport;
 use slipscan_core::{CoreError, CoreService};
+use slipscan_packs::transport::TransportContext;
 
+pub mod devices;
 pub mod ops;
 mod routes;
 pub mod vault;
@@ -97,6 +99,21 @@ pub type FxTransportFactory =
 pub type PayTransportFactory =
     Arc<dyn Fn() -> Result<Box<dyn WebhookTransport>, CoreError> + Send + Sync>;
 
+/// Builds the [`TransportContext`] the pack-source routes fetch through: the
+/// git checkout cache directory and the HTTPS client.
+///
+/// Same shape and rationale as [`FxTransportFactory`], and the same privacy
+/// property, one step stronger: slipscan-packs ships **no** HTTP client and
+/// **no** URL, so without this factory the `pack_source_fetch` /
+/// `pack_source_install` routes answer 503 for a `git:` or `https:` source and
+/// there is no endpoint anywhere for them to fall back to. Local `file:` and
+/// `folder:` sources need nothing and work regardless.
+///
+/// Mantra: a request is only ever made to a base URL the user added as a
+/// source (`pack_source_add`), and only when a client explicitly asks to read
+/// that source. The server never fetches packs on its own.
+pub type PackTransportFactory = Arc<dyn Fn() -> Result<TransportContext, CoreError> + Send + Sync>;
+
 /// How often serve mode's delivery loop checks the queue. The queue itself
 /// honors each delivery's `next_attempt_at` (backoff is core's schedule);
 /// this cadence only bounds the extra latency on top of it.
@@ -156,7 +173,12 @@ pub struct AppState {
     service: Arc<Mutex<CoreService>>,
     auth: Option<[u8; 32]>,
     vault: Option<Arc<Mutex<vault::VaultHandle>>>,
+    /// Device identity + peer pins (docs/NODES.md). Optional exactly like
+    /// the vault: absent means the device routes answer 503 rather than
+    /// pretending this server has an identity.
+    devices: Option<Arc<Mutex<devices::DeviceHandle>>>,
     fx_transport: Option<FxTransportFactory>,
+    pack_transport: Option<PackTransportFactory>,
     /// Resolver for the managed (movable) data folder, when this server is
     /// serving it. Powers the read-only `data_status` route; absent when the
     /// caller opened an explicit database path instead.
@@ -171,7 +193,9 @@ impl AppState {
             service: Arc::new(Mutex::new(service)),
             auth,
             vault: None,
+            devices: None,
             fx_transport: None,
+            pack_transport: None,
             data_dir: None,
         }
     }
@@ -182,10 +206,29 @@ impl AppState {
         self
     }
 
+    /// Attach a device handle so the read-only device routes work.
+    ///
+    /// Only the metadata and revocation routes are ever served: creating or
+    /// rotating this device's key, and the whole pairing ceremony, stay
+    /// local (see [`devices`]). Attaching this handle does not expose them.
+    pub fn with_devices(mut self, handle: devices::DeviceHandle) -> Self {
+        self.devices = Some(Arc::new(Mutex::new(handle)));
+        self
+    }
+
     /// Attach an FX transport factory so the explicit `fx_fetch_rate` route
     /// works. Without one the route answers 503; no other route needs it.
     pub fn with_fx_transport(mut self, factory: FxTransportFactory) -> Self {
         self.fx_transport = Some(factory);
+        self
+    }
+
+    /// Attach a pack transport factory so `pack_source_fetch` /
+    /// `pack_source_install` can read `git:` and `https:` sources. Without one
+    /// those two answer 503 for a network source; `file:` and `folder:`
+    /// sources, and every other pack route, work either way.
+    pub fn with_pack_transport(mut self, factory: PackTransportFactory) -> Self {
+        self.pack_transport = Some(factory);
         self
     }
 
@@ -214,6 +257,10 @@ impl AppState {
         self.fx_transport.clone()
     }
 
+    pub(crate) fn pack_transport(&self) -> Option<PackTransportFactory> {
+        self.pack_transport.clone()
+    }
+
     pub(crate) fn data_dir(&self) -> Option<&DataDirResolver> {
         self.data_dir.as_deref()
     }
@@ -224,6 +271,16 @@ impl AppState {
             .ok_or_else(routes::ApiError::vault_unavailable)?
             .lock()
             .map_err(|_| routes::ApiError::internal("vault state poisoned"))
+    }
+
+    pub(crate) fn devices(
+        &self,
+    ) -> Result<MutexGuard<'_, devices::DeviceHandle>, routes::ApiError> {
+        self.devices
+            .as_ref()
+            .ok_or_else(routes::ApiError::devices_unavailable)?
+            .lock()
+            .map_err(|_| routes::ApiError::internal("device state poisoned"))
     }
 
     pub(crate) fn auth_hash(&self) -> Option<&[u8; 32]> {
@@ -310,12 +367,26 @@ pub fn stored_token_hash(service: &CoreService) -> Result<Option<[u8; 32]>, Serv
 /// the served database is the managed data folder's, so the read-only
 /// `GET data_status` route can describe it; with `None` it answers 503. The
 /// data-folder *move* is deliberately not served — see the route module's
-/// rationale.
+/// rationale. Pass a [`devices::DeviceHandle`] to serve the read-only
+/// device-identity routes and peer revocation; creating or rotating a key
+/// and the whole pairing ceremony stay local either way, so attaching one
+/// exposes nothing that is not already public (see [`devices`]).
+///
+/// The parameter list is long because every entry is a *separately optional
+/// capability the caller injects*, and that is the point: with `None` the
+/// corresponding routes answer 503 rather than reaching for a default
+/// endpoint or a transport of their own. Collapsing them into one options
+/// struct would only move the list somewhere else while making "what does
+/// this server actually have" harder to read at the one call site that
+/// decides it.
+#[allow(clippy::too_many_arguments)]
 pub async fn serve(
     service: CoreService,
     vault: Option<vault::VaultHandle>,
+    devices: Option<devices::DeviceHandle>,
     fx_transport: Option<FxTransportFactory>,
     pay_transport: Option<PayTransportFactory>,
+    pack_transport: Option<PackTransportFactory>,
     data_dir: Option<DataDirResolver>,
     config: ServerConfig,
 ) -> Result<(), ServerError> {
@@ -328,8 +399,14 @@ pub async fn serve(
     if let Some(handle) = vault {
         state = state.with_vault(handle);
     }
+    if let Some(handle) = devices {
+        state = state.with_devices(handle);
+    }
     if let Some(factory) = fx_transport {
         state = state.with_fx_transport(factory);
+    }
+    if let Some(factory) = pack_transport {
+        state = state.with_pack_transport(factory);
     }
     if let Some(resolver) = data_dir {
         state = state.with_data_dir(resolver);
@@ -573,7 +650,7 @@ mod tests {
             require_auth: true,
             ..ServerConfig::default()
         };
-        let err = serve(service, None, None, None, None, config)
+        let err = serve(service, None, None, None, None, None, None, config)
             .await
             .unwrap_err();
         assert!(matches!(err, ServerError::AuthNotInitialized));

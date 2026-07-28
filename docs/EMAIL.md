@@ -4,7 +4,7 @@ Your inbox is where receipts, statements, and bank alerts already arrive. SlipSc
 
 One `MailboxConnector` trait (in `crates/slipscan-ingest`), four providers.
 
-> **Status — read this first.** The connector code below (IMAP UID sync + IDLE, Gmail history deltas + Pub/Sub pull, Graph deltas + device-code auth, Proton via Bridge) is implemented and tested in `crates/slipscan-ingest`. The surface wired to it is the CLI's **one-shot poll**, now for all three connectors: `slipscan mail-sync --provider {imap,gmail,graph}` (default `imap`, so existing invocations are unchanged) fetches unseen messages from the configured mailbox, imports attachments and receipt-like bodies as documents, and exits; `slipscan mail-sync --provider {gmail,graph} --login` runs the OAuth grant — loopback + PKCE for Gmail, device code for Graph — and the tokens land in the credential vault. What is still **not** wired: there is no long-running push loop on any surface (`mail-sync` never calls `wait_for_new`, so no IDLE holding, no Pub/Sub pull, and no `users.watch` renewal), the desktop app's mailbox settings cover generic IMAP fields only (no Gmail/Outlook add flow), and `slipscan-server` does not run mailbox connectors at all. Sections describing those flows document the implemented library behaviour and the intended UX; the wiring is tracked in [ROADMAP.md](../ROADMAP.md).
+> **Status — read this first.** The connector code below (IMAP UID sync + IDLE, Gmail history deltas + Pub/Sub pull, Graph deltas + device-code auth, Proton via Bridge) is implemented and tested in `crates/slipscan-ingest`. The surface wired to it is the CLI's **one-shot poll**, now for all three connectors: `slipscan mail-sync --provider {imap,gmail,graph}` (default `imap`, so existing invocations are unchanged) fetches unseen messages from the configured mailbox, imports attachments and receipt-like bodies as documents, and exits; `slipscan mail-sync --provider {gmail,graph} --login` runs the OAuth grant — loopback + PKCE for Gmail, device code for Graph — and the tokens land in the credential vault. **Bank-alert emails now become transactions** when you pass `--alerts --account <account>` and the book has a `mailrules` pack installed ([below](#bank-alert-emails--transactions)); without both, a sync imports documents only, exactly as before. What is still **not** wired: there is no long-running push loop on any surface (`mail-sync` never calls `wait_for_new`, so no IDLE holding, no Pub/Sub pull, and no `users.watch` renewal), the desktop app's mailbox settings cover generic IMAP fields only (no Gmail/Outlook add flow, and no alert-parsing UI), and `slipscan-server` does not run mailbox connectors at all. Sections describing those flows document the implemented library behaviour and the intended UX; the wiring is tracked in [ROADMAP.md](../ROADMAP.md).
 
 ## The connectivity matrix
 
@@ -15,7 +15,12 @@ One `MailboxConnector` trait (in `crates/slipscan-ingest`), four providers.
 | Outlook / Microsoft 365 | Graph delta queries (BYO app registration, device-code flow) | Graph change notifications — self-host server mode only; otherwise delta polling |
 | Proton Mail | IMAP via local **Proton Bridge** | IMAP IDLE against the bridge |
 
-Every connector normalises into the same document-import pipeline: attachments and receipt-like bodies become documents, and dedupe applies before anything is stored. (Parsing bank-alert emails — "You spent R 184.50 at…" — into transaction candidates is planned but **not implemented**; today alert emails are only captured as documents if they carry attachments or receipt-like bodies.)
+Mail carries two different things, and they take two different paths:
+
+- a **document** — a PDF/image attachment, or an HTML body that reads like a receipt — goes into the extraction pipeline;
+- a **bank alert** — "You spent R 184.50 at…" — becomes a **transaction**, through the same import path a CSV statement uses.
+
+A message can produce both, either, or neither, and dedupe applies on both paths before anything is stored.
 
 ## How push works with no public endpoint
 
@@ -126,11 +131,66 @@ Every mailbox has:
 
 The folder/label filter is provider-side: mail outside it is never fetched. The sender allowlist runs on the fetched message before anything is imported — non-matching mail is never stored and never sent to an extraction provider. Start with a dedicated label; add an allowlist once it is configurable, and loosen later if you find you're missing receipts.
 
+## Bank alert emails → transactions
+
+Your bank emailing you that a card was used is the most common way money visibly moves. SlipScan turns those messages into transactions — and it does it **without a single bank's format in the product**.
+
+### Formats are packs, not code
+
+Every bank writes its alerts differently, and the differences are per-bank *and* per-country: currency position, decimal comma vs point, day-first vs month-first dates, month names in the local language. Baking any of that into SlipScan would put jurisdiction literals in core logic, which the [architecture contract](ARCHITECTURE.md#global-by-default--regions-are-data-not-code) forbids.
+
+So alert formats are a **pack kind**, alongside `taxonomy` and `benchmark`: `mailrules`. They get the whole existing pack pipeline for free — ed25519 signatures, TOFU signer pinning per pack id, strict semver upgrades, per-book installation, the audit log. See [PACKS.md](PACKS.md#mailrules-packs) for the format.
+
+**SlipScan ships no bank patterns at all.** There is no builtin `mailrules` pack, and there is no default; until you install one, `--alerts` has nothing to match and says so. Community packs for FNB, Capitec, Chase, Revolut and the rest are data somebody publishes and you choose to trust — exactly like a taxonomy pack.
+
+### Turning it on
+
+```bash
+# 1. Install a mailrules pack you trust (signed, like any pack).
+slipscan pack install ./my-bank-alerts.json \
+    --signature @my-bank-alerts.sig --public-key @publisher.key
+
+# 2. Sync, and book matched alerts to an account.
+slipscan mail-sync --alerts --account "Cheque"
+```
+
+`--alerts` requires `--account`: an alert becomes a transaction, and there is no sensible account to guess. Without `--alerts` nothing changes — a sync imports documents only, as it always did.
+
+### What it does with a match
+
+A matched message is parsed into a **statement line** and fed through `import_statement_lines` — *the same function CSV and scraper statement imports call*. That is deliberate, and it is where most of the value comes from:
+
+- **dedupe** — by the bank's reference when the pack declares one as unique, otherwise by content hash, so refetching a mailbox is safe;
+- **categorisation** — the transaction carries a description and no invented merchant, so core derives the matching key from the narrative and runs the normal cascade: your own corrections and learned mappings first, installed pack rules only for a merchant your book has no opinion about;
+- **payment detection** — the [Payments](PAYMENTS.md) hook lives inside `transaction_create`, so an emailed "payment received, reference INV-2026-114" now fires it. `slipscan mail-sync` already flushes due webhook deliveries in the same command, which makes *email in → webhook out* a single invocation.
+
+Transactions from mail carry `source = email`, so they stay distinguishable from CSV and scraper imports in reports and [reconciliation](BANK-ADAPTERS.md).
+
+### It declines rather than guesses
+
+A wrongly-parsed transaction is far worse than an unparsed one: it corrupts the books, and because categorisation writes a durable merchant mapping on the way through, it teaches the learning loop to keep being wrong. So a rule that matches but cannot read a field cleanly **declines, and says why**:
+
+- the captured amount must be digits and separators only — any letter means the pattern swept up prose, and `12 Jul 2026` must never be scanned into `122026`;
+- the decimal separator must be the one the rule declared, so a point-locale rule meeting `1 234,56` declines instead of booking 123 456;
+- amounts are decimal → **`i64` minor units**, never floats, and must be strictly positive — direction comes from the rule, never from a stray minus sign;
+- a date pulled out of the text must use **named** `y`/`m`/`d` capture groups (so `03/04` cannot be silently reinterpreted) and must land within a configurable window of the message's own date;
+- a two-way debit/credit test must match exactly one side; both or neither is a decline;
+- an account hint that contradicts the target account declines, rather than putting one card's spend on another's ledger.
+
+Declines that are worth acting on — a rule recognised the mail and then failed on a field — are printed by `mail-sync` and included in its `--json` output. Mail no rule claims, and mail a rule's gates stood down on (your bank's statements and marketing come from the same domain as its alerts), are not reported: that is the gating working, and reporting it would bury the real signal.
+
+### What is still missing
+
+- No desktop UI: alert parsing is CLI-only today. There is no screen for installing a `mailrules` pack, choosing the target account, or reviewing declines.
+- No multi-account routing on the CLI: `--account` books everything from one sync to one account. The account hint is extracted and is used to *reject* a mismatch, and the library has the grouping function multi-card routing needs (`group_by_account_hint`), but no surface calls it yet.
+- Alerts are not automatically reconciled against the same transaction arriving later in a CSV or scraper import; that is ordinary [reconciliation](BANK-ADAPTERS.md) work.
+- Two genuinely identical alerts in one mailbox (same date, amount, currency and merchant) with no bank reference are indistinguishable from one alert fetched twice, and the second is counted as a duplicate rather than imported. A pack whose bank sends a unique reference is unaffected.
+
 ## What gets ingested
 
 - **Attachments** — PDFs and images become documents in the extraction pipeline.
 - **Receipt-like bodies** — HTML receipts (e-commerce order confirmations) are captured and extracted.
-- **Bank alert emails** — *planned, not implemented*: parsing "You spent R 184.50 at …" notifications into transaction candidates (deduped against scraper/import data during [reconciliation](BANK-ADAPTERS.md)) does not exist yet; today such mails are ingested only if they match the two cases above.
+- **Bank alert emails** — become transactions when a `mailrules` pack matches them and `--alerts --account` is passed (see above). A bank alert is deliberately *not* a receipt: it does not become a document unless it also carries an attachment.
 
 Everything is deduplicated by message id and content hash — connecting a mailbox with years of history will not double-import what you already have.
 

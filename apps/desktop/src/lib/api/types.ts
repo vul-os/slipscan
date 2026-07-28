@@ -624,7 +624,11 @@ export interface Settings {
 
 /** `taxonomy` packs carry categories + classification rules; `benchmark`
  * packs carry anonymous aggregate statistics and touch neither. */
-export type PackKind = "taxonomy" | "benchmark";
+/** What a pack carries. Known kinds are named for autocomplete; the `string`
+ * arm is load-bearing, not laziness — a pack kind added by a later release
+ * travels every transport unchanged, and this type must not be the thing that
+ * refuses to render it. */
+export type PackKind = "taxonomy" | "benchmark" | "mailrules" | (string & {});
 
 /** One pack installed into a book. Metadata only — the signed payload never
  * crosses IPC, and a signer is a public key, never secret material. */
@@ -687,6 +691,66 @@ export interface PackVerification {
   action: PackAction;
   /** Set only when `action === "refuse"`: the installer's own wording. */
   refusal: string | null;
+  /** Whether installing needs this fingerprint accepted first. Always false
+   * for a file the user picked with the publisher's key in hand — passing the
+   * key *is* the decision there. True for a pack that arrived over a
+   * transport, where nothing was hand-carried and arriving is not accepting. */
+  needs_signer_acceptance: boolean;
+  /** Where the bytes came from, when they came from a source rather than a
+   * file the user picked. */
+  origin: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// pack sources — the FETCH half (docs/PACKS.md "Getting a pack").
+//
+// The same signed bytes over any transport, because the signature is what is
+// trusted, not the channel. A source grants no authority: what arrives is
+// verified before anything is written, an unseen signer must be accepted
+// explicitly, and a pack id stays pinned to the key that first signed it.
+//
+// There is no registry and no default source. The list starts empty, only the
+// user writes to it, and until it has an entry SlipScan makes no outbound
+// request about packs at all.
+// ---------------------------------------------------------------------------
+
+/** Which transport a source speaks. */
+export type PackSourceKind = "file" | "folder" | "git" | "https";
+
+/** One configured source. */
+export interface PackSourceInfo {
+  /** The short handle the user refers to it by. */
+  name: string;
+  /** Canonical URI — `file:`, `folder:`, `git:` or `https://`. */
+  uri: string;
+  kind: PackSourceKind;
+  /** Whether reading it can put packets on a network. `file`/`folder` never
+   * do; showing this is how the screen stays honest about what a read costs. */
+  network: boolean;
+  added_at: string;
+  last_synced_at: string | null;
+}
+
+/** One pack a source offers.
+ *
+ * `pack_id`, `version` and `name` are the **catalogue's claims** — an
+ * untrusted file. `verified` is the only part derived from a checked
+ * signature, and it is the one a user may act on. Render the claim greyed and
+ * the verified facts plainly; never the other way round. */
+export interface PackOffer {
+  /** Claimed id (catalogue). */
+  pack_id: string;
+  /** Claimed version (catalogue). */
+  version: string;
+  /** Claimed display name (catalogue). */
+  name: string | null;
+  /** Blob name within the source; the handle `packSourceInstall` takes. */
+  document: string;
+  /** The verified preflight, present iff the signature verified. */
+  verified: PackVerification | null;
+  /** Why this entry could not be verified. One unreadable file in a shared
+   * folder must not hide the rest of the catalogue. */
+  error: string | null;
 }
 
 export interface PackInstallOutcome {

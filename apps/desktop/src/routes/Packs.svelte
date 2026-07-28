@@ -19,8 +19,17 @@
    * * **the direction of travel** — versions only move forward. Re-offering
    *   the installed version is an error, and downgrades are rejected.
    *
-   * Nothing here touches the network. Packs are files; fetch them however
-   * you like, and this screen reads the one you already hold.
+   * **Getting one here** is the other half, and it now exists: a pack can be
+   * read off a file, a synced folder or USB stick, a git remote, or an HTTPS
+   * base — the same signed bytes over any of them, because the signature is
+   * what is trusted, not the channel. Two rules make that safe to offer:
+   *
+   * * **arriving is not accepting.** A signer this machine has never seen is
+   *   refused until the user accepts that exact fingerprint. Naming a source
+   *   is not consent to everything it will ever serve.
+   * * **there is no registry and no default endpoint.** The source list
+   *   starts empty and only the user writes to it, so with no source added
+   *   nothing on this screen touches a network at all.
    */
   import { tick } from "svelte";
   import {
@@ -39,6 +48,8 @@
     Book,
     InstalledPackInfo,
     PackInstallOutcome,
+    PackOffer,
+    PackSourceInfo,
     PackVerification,
   } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -235,6 +246,153 @@
     }
   }
 
+  // -- pack sources ---------------------------------------------------------
+  // The fetch half. A source is a place, not an authority: what comes back is
+  // verified before anything is written, and an unseen signer must be
+  // accepted by fingerprint before it can install anything at all.
+  //
+  // The list starts empty and nothing ever seeds it. That is the whole
+  // privacy story, and the empty state says so rather than apologising for
+  // being empty.
+
+  let showSources = $state(false);
+  let sources = $state<PackSourceInfo[] | null>(null);
+  let sourceError = $state<string | null>(null);
+  let sourceBusy = $state<string | null>(null);
+
+  let newSourceName = $state("");
+  let newSourceUri = $state("");
+  let addingSource = $state(false);
+
+  /** Which source's catalogue is on screen, and what it offered. */
+  let openSource = $state<string | null>(null);
+  let offers = $state<PackOffer[] | null>(null);
+  let offersError = $state<string | null>(null);
+  let fetching = $state(false);
+  /** Offers whose new signer the user has explicitly ticked off. Keyed by
+   * document, because the same fingerprint on two packs is still two
+   * separate decisions. */
+  let acceptedSigners = $state<Record<string, boolean>>({});
+  let pullBusy = $state<string | null>(null);
+  let pullError = $state<string | null>(null);
+
+  async function loadSources() {
+    sourceError = null;
+    try {
+      sources = await api.packSourceList();
+    } catch (err) {
+      sources = [];
+      sourceError = String(err);
+    }
+  }
+
+  async function toggleSources() {
+    showSources = !showSources;
+    if (showSources) {
+      showInstall = false;
+      showSeeds = false;
+      resetForm();
+      if (sources === null) await loadSources();
+    }
+  }
+
+  async function addSource(e: Event) {
+    e.preventDefault();
+    if (!newSourceName.trim() || !newSourceUri.trim()) return;
+    sourceError = null;
+    addingSource = true;
+    try {
+      await api.packSourceAdd({ name: newSourceName, uri: newSourceUri });
+      newSourceName = "";
+      newSourceUri = "";
+      await loadSources();
+    } catch (err) {
+      sourceError = String(err);
+    } finally {
+      addingSource = false;
+    }
+  }
+
+  async function removeSource(name: string) {
+    sourceError = null;
+    sourceBusy = name;
+    try {
+      await api.packSourceRemove({ name });
+      if (openSource === name) {
+        openSource = null;
+        offers = null;
+      }
+      await loadSources();
+    } catch (err) {
+      sourceError = String(err);
+    } finally {
+      sourceBusy = null;
+    }
+  }
+
+  /** Read a source and preflight everything it offers. Writes nothing. */
+  async function fetchSource(name: string) {
+    if (!book) return;
+    offersError = null;
+    pullError = null;
+    acceptedSigners = {};
+    openSource = name;
+    offers = null;
+    fetching = true;
+    try {
+      offers = await api.packSourceFetch({ book_id: book.id, source: name });
+      await loadSources();
+    } catch (err) {
+      offers = [];
+      offersError = String(err);
+    } finally {
+      fetching = false;
+    }
+  }
+
+  async function pull(offer: PackOffer) {
+    const v = offer.verified;
+    if (!book || !v || v.action === "refuse") return;
+    pullError = null;
+    pullBusy = offer.document;
+    try {
+      installed = await api.packSourceInstall({
+        book_id: book.id,
+        source: openSource!,
+        pack_id: v.pack_id,
+        document: offer.document,
+        // Only ever sent when the user has ticked the fingerprint check. The
+        // backend compares it against the key that actually signed the bytes,
+        // so a "yes" is always a yes to the thing that was shown.
+        accept_signer: v.needs_signer_acceptance ? v.signer_fingerprint : undefined,
+      });
+      await load();
+      await fetchSource(openSource!);
+    } catch (err) {
+      pullError = String(err);
+      // The state moved underneath the preflight; the refusal is the truth.
+      await fetchSource(openSource!);
+    } finally {
+      pullBusy = null;
+    }
+  }
+
+  /** Whether the Install button for this offer is armed. A signer this
+   * machine has never seen needs the fingerprint ticked off first — that tick
+   * is the entire content of trust-on-first-use. */
+  function canPull(offer: PackOffer): boolean {
+    const v = offer.verified;
+    if (!v || v.action === "refuse") return false;
+    return !v.needs_signer_acceptance || acceptedSigners[offer.document] === true;
+  }
+
+  const sourceKindLabel: Record<string, string> = {
+    file: "one file",
+    folder: "folder / USB",
+    git: "git remote",
+    https: "https",
+  };
+
   // -- uninstall ------------------------------------------------------------
   // Arm-to-confirm through the shared prompt: focus on Cancel, Escape
   // cancels, and the failure lands inside the prompt rather than as a banner
@@ -364,6 +522,10 @@
   subtitle="Community classification packs carry a taxonomy and rules — never data. Each one is ed25519-signed, verified before it is installed, and bound to the key that first signed it."
 >
   {#snippet actions()}
+    <button class="btn" onclick={toggleSources}>
+      <Icon name="folder" size={14} />
+      Sources
+    </button>
     <button class="btn" onclick={toggleSeeds}>
       <Icon name="package" size={14} />
       Built-in seeds
@@ -490,6 +652,329 @@
         Nothing is fetched, and nothing leaves this machine.
       </span>
     </div>
+  </section>
+{/if}
+
+<!-- ---------------------------------------------------------------------
+     Pack sources — the fetch half. A source is a place, never an authority:
+     everything it hands over is verified before it is written, an unseen
+     signer must be accepted by fingerprint, and a pack id stays pinned to
+     the key that first signed it no matter what a source claims.
+     ------------------------------------------------------------------- -->
+{#if showSources}
+  <section class="card animate-slide-up mb-4 p-4">
+    <header class="mb-1 flex items-baseline justify-between gap-3">
+      <h2 class="text-[13px] font-semibold">Where packs come from</h2>
+      <button
+        class="btn btn-ghost h-6 px-1.5 text-[11.5px] text-t3"
+        onclick={() => (showSources = false)}
+      >
+        <Icon name="x" size={12} />
+        Close
+      </button>
+    </header>
+    <p class="mb-4 max-w-3xl text-[11.5px] leading-relaxed text-t3">
+      A source is a place to read packs from — a file, a folder your machine
+      already syncs (or a USB stick you carry), a git remote, or an HTTPS base
+      URL. The same signed bytes travel all of them, and they are checked the
+      same way, because <span class="font-medium text-t2"
+        >the signature is what is trusted, not the channel</span
+      >. There is no registry and no default: nothing is contacted until you
+      add a source here, and nothing installs until you say so.
+    </p>
+
+    {#if sourceError}
+      <p
+        class="mb-3 flex items-start gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+      >
+        <Icon name="alert-circle" size={13} class="mt-0.5 shrink-0" />
+        {sourceError}
+      </p>
+    {/if}
+
+    {#if sources === null}
+      <Skeleton rows={2} />
+    {:else if sources.length === 0}
+      <p
+        class="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-line bg-sunken/50 px-3 py-2 text-[12px] text-t2"
+      >
+        <Icon name="shield" size={13} class="shrink-0 text-t3" />
+        No sources configured — SlipScan is making no outbound request about
+        packs at all. That is the default, and it stays that way until you add
+        one below.
+      </p>
+    {:else}
+      <ul class="mb-4 divide-y divide-line rounded-lg border border-line">
+        {#each sources as s (s.name)}
+          <li class="flex flex-wrap items-start gap-3 px-3 py-2.5">
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                <span class="text-[12.5px] font-medium">{s.name}</span>
+                <Badge
+                  tone="neutral"
+                  dot={false}
+                  label={sourceKindLabel[s.kind] ?? s.kind}
+                />
+                {#if s.network}
+                  <Badge tone="warning" label="reaches the network" />
+                {:else}
+                  <Badge tone="success" label="local only" />
+                {/if}
+              </div>
+              <p class="mt-1 truncate font-mono text-[10.5px] text-t3">{s.uri}</p>
+              <p class="mt-1 text-[11px] text-t3">
+                Added {fmtDate(s.added_at)} · {s.last_synced_at
+                  ? `last read ${fmtRelative(s.last_synced_at)}`
+                  : "never read"}
+              </p>
+            </div>
+            <div class="flex shrink-0 items-center gap-1.5">
+              <button
+                class="btn h-7"
+                disabled={fetching && openSource === s.name}
+                onclick={() => fetchSource(s.name)}
+              >
+                <Icon name="search" size={13} />
+                {fetching && openSource === s.name ? "Reading…" : "Read"}
+              </button>
+              <button
+                class="btn btn-danger h-7"
+                disabled={sourceBusy === s.name}
+                onclick={() => removeSource(s.name)}
+              >
+                <Icon name="trash" size={13} />
+                Forget
+              </button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
+    <form class="grid gap-2 sm:grid-cols-[10rem_1fr_auto]" onsubmit={addSource}>
+      <label class="block">
+        <span class="mb-1 block text-[11.5px] font-medium text-t2">Name</span>
+        <input
+          class="input"
+          placeholder="team"
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          bind:value={newSourceName}
+        />
+      </label>
+      <label class="block">
+        <span class="mb-1 block text-[11.5px] font-medium text-t2">Source URI</span>
+        <input
+          class="input font-mono text-[11.5px]"
+          placeholder="folder:/Volumes/USB/packs"
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          bind:value={newSourceUri}
+        />
+      </label>
+      <div class="flex items-end">
+        <button
+          class="btn btn-primary h-8 w-full sm:w-auto"
+          type="submit"
+          disabled={addingSource || !newSourceName.trim() || !newSourceUri.trim()}
+        >
+          <Icon name="plus" size={13} />
+          {addingSource ? "Adding…" : "Add"}
+        </button>
+      </div>
+    </form>
+    <p class="mt-2 text-[11px] leading-relaxed text-t3">
+      <span class="font-mono">file:</span>&lt;path&gt; ·
+      <span class="font-mono">folder:</span>&lt;path&gt; ·
+      <span class="font-mono">git:</span>&lt;url&gt;[#ref] ·
+      <span class="font-mono">https://</span>&lt;url&gt;. Plain
+      <span class="font-mono">http://</span> is refused: the signature would
+      still protect the bytes, but a plaintext fetch tells the network which
+      packs you run, and that is data about you. Adding a source contacts
+      nothing — it is read when you press Read.
+    </p>
+
+    <!-- What the source offered, and what each would actually do. -->
+    {#if openSource}
+      <div class="mt-5 border-t border-line pt-4">
+        <h3 class="mb-1 text-[12.5px] font-semibold">
+          {openSource} offered
+        </h3>
+        <p class="mb-3 text-[11.5px] text-t3">
+          Nothing has been installed. Every line below was verified against its
+          own signature after it arrived — a catalogue's own description of a
+          pack is a hint, and where the two disagree the pack is refused.
+        </p>
+
+        {#if offersError}
+          <p
+            class="mb-3 flex items-start gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+          >
+            <Icon name="alert-circle" size={13} class="mt-0.5 shrink-0" />
+            {offersError}
+          </p>
+        {/if}
+        {#if pullError}
+          <p
+            class="mb-3 flex items-start gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+          >
+            <Icon name="alert-circle" size={13} class="mt-0.5 shrink-0" />
+            {pullError}
+          </p>
+        {/if}
+
+        {#if offers === null}
+          <Skeleton rows={3} />
+        {:else if offers.length === 0 && !offersError}
+          <p class="text-[12px] text-t3">This source offers no packs.</p>
+        {:else}
+          <ul class="divide-y divide-line rounded-lg border border-line">
+            {#each offers as offer (offer.document)}
+              <li class="px-3 py-3">
+                {#if offer.verified}
+                  {@const v = offer.verified}
+                  {@const keyChanged =
+                    v.pinned_fingerprint !== null &&
+                    v.pinned_fingerprint !== v.signer_fingerprint}
+                  <div class="flex flex-wrap items-start justify-between gap-x-3 gap-y-1.5">
+                    <div class="min-w-0">
+                      <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <span class="text-[12.5px] font-medium">{v.name}</span>
+                        <span class="num text-t2">v{v.version}</span>
+                        <Badge
+                          tone="neutral"
+                          dot={false}
+                          label={kindLabel[v.kind] ?? v.kind}
+                        />
+                        <Badge tone="neutral" dot={false} label={v.region ?? "global"} />
+                      </div>
+                      <p class="mt-1 font-mono text-[10.5px] text-t3">{v.pack_id}</p>
+                    </div>
+                    <Badge
+                      tone={v.action === "refuse"
+                        ? "danger"
+                        : v.action === "upgrade"
+                          ? "accent"
+                          : "success"}
+                      label={v.action === "refuse"
+                        ? "refused"
+                        : v.action === "upgrade"
+                          ? `upgrade ${v.installed_version} → ${v.version}`
+                          : "new install"}
+                    />
+                  </div>
+
+                  <p
+                    class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]"
+                  >
+                    <span class="flex items-center gap-1.5 text-t3">
+                      <Icon name="key" size={11} />
+                      <span class="font-mono text-[12px]">{v.signer_fingerprint}</span>
+                    </span>
+                    {#if v.trusted_as}
+                      <Badge tone="success" label="trusted as {v.trusted_as}" />
+                    {:else}
+                      <Badge tone="warning" label="never seen here" />
+                    {/if}
+                  </p>
+
+                  {#if keyChanged}
+                    <!-- The refusal this pin exists for. Nothing on this
+                         screen can wave it through, and it does not pretend
+                         otherwise. -->
+                    <p
+                      class="mt-2 rounded-lg border border-danger/30 bg-danger/10 p-2.5 text-[11.5px] leading-relaxed text-danger"
+                    >
+                      <span class="font-semibold">
+                        The publisher key for this pack changed.
+                      </span>
+                      <span class="font-mono">{v.pack_id}</span> is pinned to
+                      <span class="font-mono">{v.pinned_fingerprint}</span> and this
+                      copy is signed by
+                      <span class="font-mono">{v.signer_fingerprint}</span>. A pack
+                      id stays bound to the key that first signed it, so this will
+                      not install — not from a source you trust, and not with any
+                      option here.
+                    </p>
+                  {:else if v.refusal}
+                    <p
+                      class="mt-2 flex items-start gap-1.5 rounded-lg border border-danger/25 bg-danger/10 p-2.5 text-[11.5px] text-danger"
+                    >
+                      <Icon name="alert-circle" size={12} class="mt-0.5 shrink-0" />
+                      {v.refusal}
+                    </p>
+                  {/if}
+
+                  {#if v.action !== "refuse"}
+                    {#if v.needs_signer_acceptance}
+                      <!-- Trust-on-first-use, made into an actual decision.
+                           The pack did not become trustworthy by arriving;
+                           comparing the fingerprint is the entire content of
+                           the word "trust" here. -->
+                      <label
+                        class="mt-2.5 flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/10 p-2.5 text-[11.5px] leading-relaxed text-t2"
+                      >
+                        <input
+                          type="checkbox"
+                          class="mt-0.5 shrink-0"
+                          checked={acceptedSigners[offer.document] === true}
+                          onchange={(e) =>
+                            (acceptedSigners = {
+                              ...acceptedSigners,
+                              [offer.document]: e.currentTarget.checked,
+                            })}
+                        />
+                        <span>
+                          I have compared
+                          <span class="font-mono">{v.signer_fingerprint}</span>
+                          against
+                          {v.author ? `"${v.author}"'s` : "the publisher's"} own
+                          channel. Installing records this key as trusted and pins
+                          <span class="font-mono">{v.pack_id}</span> to it forever.
+                        </span>
+                      </label>
+                    {/if}
+                    <div class="mt-2.5 flex flex-wrap items-center gap-2">
+                      <button
+                        class="btn btn-primary h-7"
+                        disabled={!canPull(offer) || pullBusy === offer.document}
+                        onclick={() => pull(offer)}
+                      >
+                        <Icon name="download" size={13} />
+                        {pullBusy === offer.document
+                          ? "Installing…"
+                          : v.action === "upgrade"
+                            ? `Upgrade to ${v.version}`
+                            : v.needs_signer_acceptance
+                              ? "Accept signer & install"
+                              : `Install ${v.version}`}
+                      </button>
+                      <span class="num text-[11px] text-t3">
+                        {v.categories} categories · {v.merchant_rules} merchant · {v.keyword_rules}
+                        keyword
+                      </span>
+                    </div>
+                  {/if}
+                {:else}
+                  <!-- One unreadable file must not hide the rest of a shared
+                       folder, and it must not be quietly dropped either. -->
+                  <div class="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <span class="text-[12.5px] font-medium text-t2">
+                      {offer.name ?? offer.pack_id}
+                    </span>
+                    <Badge tone="danger" label="not verified" />
+                  </div>
+                  <p class="mt-1 font-mono text-[10.5px] text-t3">{offer.document}</p>
+                  <p class="mt-1 text-[11.5px] text-danger">{offer.error}</p>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
   </section>
 {/if}
 
@@ -817,6 +1302,10 @@
           <Icon name="package" size={14} />
           Use the built-in seeds
         </button>
+        <button class="btn" onclick={toggleSources}>
+          <Icon name="folder" size={14} />
+          Add a source
+        </button>
       {/snippet}
     </EmptyState>
   </div>
@@ -885,10 +1374,14 @@
   </p>
 {/if}
 
-<p class="mt-3 flex items-center gap-1.5 text-[11px] text-t3">
-  <Icon name="shield" size={12} />
-  SlipScan never fetches a pack. Packs are files you obtain however you like,
-  and everything on this screen happens on this machine.
+<p class="mt-3 flex items-start gap-1.5 text-[11px] leading-relaxed text-t3">
+  <Icon name="shield" size={12} class="mt-0.5 shrink-0" />
+  <span>
+    SlipScan fetches packs only from sources you have added yourself — there is
+    no registry and no default endpoint, so with no source configured nothing
+    here touches a network. Verification, trust and installation happen on this
+    machine either way, and nothing about your book is ever sent to a source.
+  </span>
 </p>
 
 <!-- ---------------------------------------------------------------------

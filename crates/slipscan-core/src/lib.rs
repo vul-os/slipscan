@@ -11,6 +11,9 @@
 pub mod csv;
 pub mod datadir;
 pub mod db;
+/// Device identity and accountless pairing — **identity only, nothing
+/// syncs** (docs/NODES.md).
+pub mod device;
 pub mod domain;
 pub mod error;
 pub mod fx;

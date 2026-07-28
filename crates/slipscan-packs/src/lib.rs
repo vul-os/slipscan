@@ -20,12 +20,26 @@
 //! * [`benchmark`] — read-side peer comparison: pure local math over public
 //!   aggregate packs (reading is perfectly private; contribution is a
 //!   separate opt-in pipeline that does not live here).
+//! * [`mailrules`] — bank-alert email formats as data: sender gates plus
+//!   field extractors that turn "your card was used" mail into statement
+//!   lines. Applying them lives in `slipscan-ingest`; the format, its
+//!   validation and its conservatism contract live here.
+//! * [`transport`] — **how a pack gets here**: local file, watched folder or
+//!   USB stick, a git remote, plain HTTPS — and the seam a p2p transport
+//!   would slot into without reopening anything. The same signed bytes over
+//!   any channel, because the signature is what is trusted, not the channel.
 //! * [`builtin`] — embedded seed packs: the SA region pair (`za-personal`,
 //!   `za-business-vat`, region `ZA`) and the global `intl-starter` (no
 //!   region). Regions are data on the pack manifest, never code.
 //!
-//! Everything is offline: this crate performs no network access of any kind.
-//! Packs are files; fetch them however you like.
+//! # Network
+//!
+//! Everything except [`transport`] is offline, and [`transport`] ships **no
+//! HTTP client and no URL**: its one network verb ([`transport::PackHttp`]) is
+//! injected by a surface, and its sources ([`transport::SourceStore`]) start
+//! empty and are only ever written by the user. There is no registry, no
+//! default endpoint and no discovery — a fresh install makes zero network
+//! calls about packs until somebody names a source.
 
 pub mod benchmark;
 pub mod builtin;
@@ -35,7 +49,9 @@ pub mod error;
 pub mod format;
 mod hex;
 pub mod install;
+pub mod mailrules;
 pub mod model;
+pub mod transport;
 pub mod trust;
 pub mod verify;
 
@@ -44,9 +60,19 @@ pub use engine::{register_classifier, Classifier, PackClassifier};
 pub use error::{PackError, PackResult};
 pub use format::{ManifestSignature, Pack};
 pub use install::{InstallOutcome, InstallReport, InstalledPack, Installer, LEGACY_SIGNER};
+pub use mailrules::{
+    AmountSpec, AmountStyle, CurrencySpec, DateSpec, Direction, DirectionSpec, Extractor, MailPart,
+    MailRule, MailRuleSet, ReferenceSpec, DEFAULT_MAX_DATE_DRIFT_DAYS,
+};
 pub use model::{
     BenchmarkCohort, BenchmarkSet, BenchmarkStat, KeywordRule, MatchKind, MerchantRule,
     PackCategory, PackKind, PackMeta, PackPayload, Semver, VatHint,
+};
+pub use transport::{
+    discover, fetch, install_bundle, install_verified, open as open_source, plan, plan_bundle,
+    publish, BlobStore, CatalogEntry, FetchedBundle, HttpBlob, PackHttp, PackPlan, PackSource,
+    PackSourceRow, PlannedAction, PublishReport, SignerDecision, SourceKind, SourceStore,
+    TransportContext,
 };
 pub use trust::{TrustStatus, TrustStore, TrustedSigner};
 pub use verify::{key_fingerprint, sign_pack, verify_detached, Provenance, VerifiedPack};

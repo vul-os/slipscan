@@ -13,7 +13,7 @@ crates/
   slipscan-ingest/         # email inbound (IMAP), file import/watch, bank-scraper framework
   slipscan-packs/          # signed classification/category packs: format, ed25519 verify, import/export
   slipscan-server/         # axum headless server (self-host mode), thin wrapper over core services
-  slipscan-cli/            # clap CLI: init, import, extract, mail-sync, recon, report, pack, vault, serve, list
+  slipscan-cli/            # clap CLI: init, import, extract, mail-sync, recon, report, pack, vault, device, serve, list
   slipscan-sync/           # DMTAP Sync merge-algebra mapping ONLY — nothing else depends on it,
                            # and nothing syncs between devices yet (see below)
 apps/
@@ -54,6 +54,7 @@ docs/                      # this file, guides
 - `report` — spending breakdowns, income/expense, VAT summary, trial balance, CSV export
 - `audit` — append-only local audit log of mutations
 - `settings` — provider configs (LLM, mailbox, scrapers); secret material referenced by keychain entry name
+- `device` — this device's ed25519 identity (public key = device id, private half in the vault), pinned peers, and the accountless pairing ceremony. **Identity only — nothing syncs** ([NODES.md](NODES.md))
 
 Legacy SQL schemas (reference only, cloud concepts like orgs/billing/auth must NOT return) are in the session scratchpad, not the repo.
 
@@ -69,9 +70,21 @@ Legacy SQL schemas (reference only, cloud concepts like orgs/billing/auth must N
 
 - **What it is.** A translation between a SlipScan row change and a substrate op, and back. Editable rows (accounts, categories, budgets, members, merchant mappings, transactions) map to §4.4 last-writer-wins registers, one register per row because the repo layer writes whole rows. Posted journals and journal lines map to a §4.3 OR-Set that never mints a remove — SlipScan's ledger is immutable by construction and a correction is a reversal journal, so the mapping is an identity on existing behaviour rather than a new one to re-validate against the books. Money crosses as canonical decimal text; the substrate bans floats and that costs SlipScan nothing.
 - **What it is not.** No oplog, no identity, no transport, no storage. It opens no socket and touches no file. The convergence rules live in `dmtap-sync` and are deliberately not re-derived here.
-- **Therefore: nothing syncs between devices today.** There is no device pairing, no replication loop, and no code path that ships an op anywhere. Sharing a book still means what [Data location](#data-location--backup--your-folder-your-cloud-your-responsibility) and [Household members](#household-members--per-person-attribution) say it means: a synced data folder, or the self-host server with other surfaces as clients.
+- **Therefore: nothing syncs between devices today.** There is now device identity and pairing ([NODES.md](NODES.md)) — two devices can learn and pin each other's keys — but there is still **no oplog, no replication loop, and no code path that ships an op anywhere**. Pairing changes nothing about your data. Sharing a book still means what [Data location](#data-location--backup--your-folder-your-cloud-your-responsibility) and [Household members](#household-members--per-person-attribution) say it means: a synced data folder, or the self-host server with other surfaces as clients.
 - **An ordinary workspace member, on a published engine.** The mapping lives behind the `sync-dmtap` feature (now on by default) and depends on `kotva-sync` from crates.io — the same compiled algebra Ofisi and FlowStock run, consumed under its old name via cargo's dependency-rename so this crate's source never moved. It was previously `exclude`d from the workspace, and that was load-bearing rather than tidiness: the dependency was a *git* dep, and Cargo resolves every optional dependency's source during workspace resolution regardless of active features, so a plain `cargo build` still reached out to a git remote. A registry dependency resolves from the committed `Cargo.lock` with no network at all, so the exclusion is gone and `cargo build --workspace --offline --locked` is green. The property that mattered is unchanged and still enforced: a bare `git clone && cargo build` of SlipScan fetches nothing from anywhere.
 - Nothing else in the workspace depends on this crate. Enabling the feature changes no other behaviour.
+
+## Nodes — device identity and pairing; still nothing syncs
+
+Phase 1 of the node model is implemented in `slipscan-core::device`: **identity and pairing only**. Full model, limits and gap list in [NODES.md](NODES.md).
+
+- **No accounts, ever.** No email, no password, no username, no login, no server that decides who you are. A device generates an ed25519 keypair on itself; the **public key is the device id**, and the private half lives in the write-only credential vault (below) with no read path — set, rotate, revoke, use; never view.
+- **Human-verifiable fingerprints.** A public key renders as a **key-name**: 8 words of a BLAKE3 digest plus a checksum word, from `kotva-core` — the same encoding Kotva identities use, not a scheme invented here. Hex fingerprints are not compared by real people; nine checksummed words are, and a mistyped one fails closed.
+- **Pairing is a local, human-in-the-loop ceremony.** Invite → accept → confirm, with the blobs carried out of band by the user (QR, paste, USB). SlipScan opens **no socket** to pair. The invite's claim token is ≥128 bits, stored hashed, single-use and short-lived.
+- **A key change is a refusal, never a silent re-pin.** The peer key is accepted at exactly one moment and thereafter only a deliberate *local* reset can change it — the discipline copied from AQL's `proto/PAIRING-PROFILE.md`, and the same trust-on-first-use rule [packs](#classification-packs--one-install-pipeline) already applies to signers. Revocation leaves a **tombstone** so a revoked device cannot let itself back in; identity rotation must be **signed by the key it replaces**. A structural test asserts the *set* of code paths that write a pinned key, because what breaks a rule like this later is a new call site, not a changed behaviour.
+- **Nothing is load-bearing.** Laptop, home server and rented cloud box are the same binary with no roles between them: **no coordinator, no directory, no rendezvous, no default endpoint** — absent, not disabled. A pairing blob carries no hostname, port or URL.
+- **HTTP split.** Reading identity and revoking a peer are served; creating or rotating a key, forgetting a pin, and the whole pairing ceremony are local-only and answer 403 naming the local command — the same rule that keeps vault writes and webhook secrets off the wire.
+- **Therefore: still nothing syncs between devices.** Pairing two devices changes nothing about your data. There is no oplog, no transport, no reachability story, and no authorisation model; the merge algebra above has never been driven by a real peer. The honest gap list is [NODES.md](NODES.md#what-is-still-missing).
 
 ## Design system
 
@@ -95,7 +108,8 @@ Inbound email is a first-class ingestion source. One `MailboxConnector` trait, m
 | Proton Mail | via local **Proton Bridge** (IMAP to 127.0.0.1) | IMAP IDLE against the bridge |
 
 - OAuth refresh tokens, client secrets, and app passwords live in the credential vault (below) — write-only, never displayed.
-- Connectors normalise everything into the same document-import pipeline (attachments, receipt-like bodies), with per-mailbox filters (folder/label, sender allowlist).
+- Connectors normalise everything into one `InboundMessage`, with per-mailbox filters (folder/label, sender allowlist). From there mail takes **two paths**: attachments and receipt-like bodies go to the document-import pipeline, and **bank alerts become transactions** — parsed into statement lines and fed through the *same* `import_statement_lines` a CSV or scraper import uses, so dedupe, description-derived categorisation, and the payment-detection hook inside `transaction_create` are inherited rather than reimplemented. A message may produce both, either, or neither.
+- **No bank's alert format is code.** Formats are `mailrules` packs (below) — signed, versioned data — because alert layouts differ per bank *and* per country (decimal comma vs point, day-first vs month-first, month names by language), and hardcoding any of it would violate [regions are data, not code](#global-by-default--regions-are-data-not-code). The engine's rule is that ambiguity **declines with a reason**: a wrongly-parsed transaction corrupts the books *and* trains the learning loop, so it is strictly worse than an unparsed one.
 - No SlipScan-hosted middleman of any kind; adding a provider must never require our infrastructure.
 
 ## Credential vault (bank / IMAP / API secrets)
@@ -122,7 +136,13 @@ SlipScan is a **worldwide product**. No jurisdiction may be hardcoded into core 
 
 ## Classification packs — one install pipeline
 
-Packs are the only channel by which community knowledge reaches a book, and they carry **rules, never data** (mantra #5). `crates/slipscan-packs` owns the format, signing, trust, installation and the classification engine, and performs no network access of any kind — packs are files, fetched however the user likes.
+Packs are the only channel by which community knowledge reaches a book, and they carry **rules, never data** (mantra #5). `crates/slipscan-packs` owns the format, signing, trust, installation, the classification engine — and the transports a pack arrives over.
+
+**A transport grants no authority.** A pack may now come off a local file, a watched folder or USB stick, a git remote, or plain HTTPS: *the same signed bytes over any channel, because the signature is what is trusted, not the channel.* Every transport ends at raw bytes whose only exit is `verify_detached`, and the installer still accepts nothing but a `VerifiedPack`, so fetching cannot reach installed state without passing every gate. Adding one (p2p, DMTAP) means implementing a two-method `BlobStore`; nothing above the seam changes. Full model and rationale in [PACKS.md](PACKS.md#getting-a-pack).
+
+**There is no registry and no default endpoint**, and that is structural rather than a policy: the source list starts empty and only a user writes to it, and the crate itself contains no URL and no HTTP client — the one network verb is a trait a surface injects, exactly as core injects `FxTransport`. A fresh install makes zero network calls about packs until somebody names a source, and nothing about a book is ever sent to one.
+
+**A pack's kind is derived from its content, never declared**, so the stored `kind` cannot disagree with the payload: `taxonomy` (categories, merchant/keyword rules, VAT hints), `benchmark` (aggregate cohort statistics — [above](#insights-nudges--anonymous-peer-benchmarks)), and `mailrules` (bank-alert email formats — [above](#email-connectivity)). The latter two are *pure*: validation refuses one that also carries taxonomy content, which is what keeps the derivation honest. All three install through the one Installer described below, so signing, TOFU pinning, semver ordering and the audit trail are identical for every kind; only what an install *writes* differs (a taxonomy maps categories and rules, the other two are stored payloads read back whole). Adding a kind is therefore a payload-section change plus a reader, not a new pipeline.
 
 **Two install pipelines existed, and that was the defect.** The crate grew a second, richer path without the first being retired, so "the packs installed in this book" meant different things depending on which surface you asked:
 

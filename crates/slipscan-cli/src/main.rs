@@ -17,6 +17,7 @@ mod extractor;
 use anyhow::{anyhow, bail, Context};
 use clap::{Parser, Subcommand, ValueEnum};
 use slipscan_core::datadir::{self, DataDirResolver, MoveStep};
+use slipscan_core::device::pairing::{KeynameCheck, DEFAULT_INVITE_TTL_SECONDS};
 use slipscan_core::domain::{
     Account, Book, BookKind, DocumentSource, Member, MemberPatch, NewBook, NewMember,
     NewPayEndpoint, NewPayWatch, PayDeliveryState, PayEndpointWithSecret, SplitShare,
@@ -31,11 +32,14 @@ use slipscan_ingest::email::graph::{
 };
 use slipscan_ingest::email::imap::{connect_tls, ImapConfig, ImapConnector};
 use slipscan_ingest::email::oauth::begin_loopback_flow;
-use slipscan_ingest::email::{sync_mailbox, MailboxFilter, MailboxSyncOutcome};
+use slipscan_ingest::email::{
+    sync_mailbox_with_alerts, AlertRules, AlertSync, MailboxFilter, MailboxSyncOutcome,
+};
 use slipscan_ingest::http::ReqwestHttpClient;
 use slipscan_ingest::import::{import_document_file, FileImport};
 use slipscan_ingest::watch::{import_paths, scan_folder, FolderImportOutcome, FolderWatcher};
 use slipscan_ingest::{IngestError, SettingsCursorStore};
+use slipscan_server::devices::DeviceHandle;
 use slipscan_server::vault::VaultHandle;
 use slipscan_server::{ops, AuthToken, ServerConfig};
 use std::net::SocketAddr;
@@ -242,6 +246,17 @@ enum Command {
         /// `documents/` store, or `<db dir>/slipscan-documents` with --db).
         #[arg(long)]
         storage_dir: Option<PathBuf>,
+        /// Also turn bank-alert emails ("a card purchase of … was made at …")
+        /// into transactions, using the `mailrules` packs installed in this
+        /// book. Requires --account: alerts are booked there, and an alert
+        /// whose account hint contradicts it is declined, never rehomed.
+        /// Off by default — without it a sync imports documents only, exactly
+        /// as before.
+        #[arg(long, requires = "account")]
+        alerts: bool,
+        /// Account (id or name) that parsed bank alerts are booked to.
+        #[arg(long)]
+        account: Option<String>,
     },
     /// Reconciliation: suggest and confirm matches.
     Recon {
@@ -324,6 +339,12 @@ enum Command {
     Vault {
         #[command(subcommand)]
         action: VaultAction,
+    },
+    /// Device identity and accountless pairing. **Identity only — nothing
+    /// syncs between devices yet** (docs/NODES.md).
+    Device {
+        #[command(subcommand)]
+        action: DeviceAction,
     },
     /// The movable data folder: where the database and documents live, and
     /// how to move it (your folder, your cloud, your responsibility).
@@ -530,6 +551,82 @@ enum PackAction {
         #[arg(long)]
         period: String,
     },
+    /// Manage where packs may be fetched from.
+    ///
+    /// There is no registry and no default source. SlipScan makes no
+    /// outbound request about packs until you add one here.
+    Source {
+        #[command(subcommand)]
+        action: PackSourceAction,
+    },
+    /// List what a source offers, and what installing each would do.
+    ///
+    /// Installs nothing. This is where you see a publisher's fingerprint —
+    /// check it against their own channel before you accept it.
+    Fetch {
+        /// Source name (see `pack source list`).
+        source: String,
+    },
+    /// Fetch one pack from a source and install it into a book.
+    ///
+    /// The signature is checked on the bytes before anything touches the
+    /// database, and a signer you have never seen here is refused until you
+    /// pass its fingerprint with --accept-signer. A pack id whose publisher
+    /// key has changed is refused outright — there is no flag for that.
+    Pull {
+        /// Source name (see `pack source list`).
+        source: String,
+        /// Pack id, e.g. `za-personal` (see `pack fetch <source>`).
+        pack_id: String,
+        /// Accept this signer fingerprint on first sight (the `ab12-cd34-…`
+        /// shown by `pack fetch`). Compare it against the publisher's own
+        /// channel first — that comparison is what makes this mean anything.
+        #[arg(long)]
+        accept_signer: Option<String>,
+        /// Exact document name from `pack fetch`, when a source offers more
+        /// than one copy of the same pack id (two publishers, say).
+        #[arg(long)]
+        document: Option<String>,
+    },
+    /// Publish a signed pack into a folder: source — a synced folder, a USB
+    /// stick, or a git checkout you then commit.
+    ///
+    /// Writes into a directory named for your key's fingerprint, so two
+    /// publishers sharing one folder never write the same path and a
+    /// file-sync service never sees a conflict.
+    Publish {
+        /// Folder source to write into (see `pack source list`).
+        source: String,
+        /// Path to the pack document (the exact signed bytes).
+        manifest: PathBuf,
+        /// Detached ed25519 signature: hex, or @file (hex or raw 64 bytes).
+        #[arg(long)]
+        signature: String,
+        /// Publisher verifying key: hex, or @file (hex or raw 32 bytes).
+        #[arg(long)]
+        public_key: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PackSourceAction {
+    /// Add a source. Nothing is contacted by adding one.
+    ///
+    /// URI forms: `file:<path>` (one pack), `folder:<path>` (a directory, a
+    /// synced share, a USB stick), `git:<url>[#ref]`, or `https://<url>`.
+    /// Plain `http://` is refused: the signature is what is trusted, but a
+    /// plaintext fetch still tells the network which packs you run.
+    Add {
+        /// Short handle you will refer to it by.
+        name: String,
+        /// The source URI.
+        uri: String,
+    },
+    /// Forget a source. Installed packs are untouched.
+    Remove { name: String },
+    /// List configured sources. Empty on a fresh install, and that is the
+    /// whole privacy story: no source, no request.
+    List,
 }
 
 #[derive(Debug, Subcommand)]
@@ -605,6 +702,108 @@ enum VaultAction {
     Revoke { name: String },
     /// List credential metadata (never material).
     List,
+}
+
+/// Device identity and pairing — **identity only; nothing syncs yet**
+/// (docs/NODES.md).
+///
+/// There are no accounts: this device's ed25519 public key *is* its id, and
+/// its private half lives in the write-only vault. Pairing is a local,
+/// human-in-the-loop ceremony carried out of band — SlipScan opens no socket
+/// to do it and there is no coordinator, directory or default endpoint.
+#[derive(Debug, Subcommand)]
+enum DeviceAction {
+    /// Generate this device's keypair. Refused if one already exists.
+    Init {
+        /// Cosmetic name for this device, e.g. "laptop" or "home server".
+        /// Not an identity: two devices may share a label.
+        #[arg(long, default_value = "this device")]
+        label: String,
+    },
+    /// Show this device's id and key-name (its human-comparable
+    /// fingerprint) — what the other person must see match.
+    Show,
+    /// List paired devices, including revoked tombstones.
+    List,
+    /// Show the key-name of a device id (this device's, if none is given).
+    Fingerprint {
+        /// Device id (hex public key). Defaults to this device.
+        device_id: Option<String>,
+    },
+    /// Mint a single-use pairing invite to carry to the other device.
+    /// The printed blob contains a claim token — treat it as a credential
+    /// until it is redeemed or expires.
+    Invite {
+        /// Cosmetic label for the device you expect to pair with.
+        #[arg(long, default_value = "a device")]
+        label: String,
+        /// Invite lifetime in seconds.
+        #[arg(long, default_value_t = DEFAULT_INVITE_TTL_SECONDS)]
+        ttl: i64,
+    },
+    /// Redeem an invite from another device: pins it, and prints the
+    /// acceptance blob to carry back.
+    Accept {
+        /// The `ss-pair1.…` blob from `slipscan device invite`.
+        blob: String,
+        /// The key-name shown on the other device. **This comparison is the
+        /// authentication** — a mismatch is refused.
+        #[arg(
+            long,
+            conflicts_with = "unverified",
+            required_unless_present = "unverified"
+        )]
+        expect_keyname: Option<String>,
+        /// Skip the key-name comparison. You are then trusting whatever the
+        /// blob carried, with nothing checking it came from the right
+        /// device.
+        #[arg(long)]
+        unverified: bool,
+    },
+    /// Redeem the acceptance blob that came back, completing the pairing.
+    /// Burns the invite's single-use claim token.
+    Confirm {
+        /// The `ss-pair1.…` blob from `slipscan device accept`.
+        blob: String,
+        /// The key-name shown on the other device (see `accept`).
+        #[arg(
+            long,
+            conflicts_with = "unverified",
+            required_unless_present = "unverified"
+        )]
+        expect_keyname: Option<String>,
+        /// Skip the key-name comparison (see `accept`).
+        #[arg(long)]
+        unverified: bool,
+    },
+    /// List invites this device has minted. Never shows a claim token.
+    Invites,
+    /// Withdraw an unredeemed invite.
+    CancelInvite { id: String },
+    /// Revoke a paired device. The pin becomes a tombstone, so the key
+    /// cannot silently pair again.
+    Revoke {
+        /// Device id (hex public key).
+        device_id: String,
+    },
+    /// Drop a device's pin entirely, tombstone included — the deliberate
+    /// local reset that lets a revoked key pair again.
+    Forget {
+        /// Device id (hex public key).
+        device_id: String,
+    },
+    /// Rotate this device's key. Signed by the key it replaces; the device
+    /// id changes, so peers must pair again.
+    Rotate,
+    /// Show this device's rotation chain.
+    Rotations,
+    /// Destroy this device's key and identity — the deliberate local reset.
+    /// Peer pins are kept; use `forget` for those.
+    Reset {
+        /// Required: this destroys the private key and cannot be undone.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -739,6 +938,21 @@ fn require_range<'a>(
     }
 }
 
+/// Turn the CLI's `--expect-keyname` / `--unverified` pair into the core's
+/// explicit check.
+///
+/// Clap already guarantees exactly one of them is present, so the `None`
+/// arm is unreachable in practice — but it resolves to the *safe* side
+/// anyway rather than silently skipping the comparison that authenticates a
+/// pairing.
+fn keyname_check(expect: &Option<String>, unverified: bool) -> KeynameCheck<'_> {
+    match expect {
+        Some(name) => KeynameCheck::Expect(name),
+        None if unverified => KeynameCheck::ConfirmedByHuman,
+        None => KeynameCheck::Expect(""),
+    }
+}
+
 fn emit<T: serde::Serialize>(
     json_mode: bool,
     value: &T,
@@ -827,6 +1041,29 @@ fn read_secret(prompt: &str) -> anyhow::Result<SecretString> {
 
 fn runtime() -> anyhow::Result<tokio::runtime::Runtime> {
     tokio::runtime::Runtime::new().context("starting async runtime")
+}
+
+/// Transport capabilities for one pack-source read: where git checkouts are
+/// cached, and the HTTPS client.
+///
+/// Built **only** when a pack-source command runs, and it still reaches
+/// nowhere on its own — slipscan-packs has no URL, and every request goes to
+/// a base the user added with `pack source add`. Local `file:` and `folder:`
+/// sources never touch either capability.
+fn pack_transport_context(
+    env: &DataEnv,
+) -> anyhow::Result<slipscan_packs::transport::TransportContext> {
+    // Cache git checkouts beside the data the user already chose to keep,
+    // so "my data folder" stays the one thing to back up or delete.
+    let cache = env
+        .db
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let http = slipscan_ingest::packs::ReqwestPackHttp::new().map_err(|e| anyhow!(e))?;
+    Ok(slipscan_packs::transport::TransportContext::new()
+        .with_cache_dir(cache)
+        .with_http(std::sync::Arc::new(http)))
 }
 
 /// API keys for BYO-key providers come from the credential vault — the
@@ -1496,6 +1733,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             provider,
             login,
             ref storage_dir,
+            alerts,
+            ref account,
         } => {
             let svc = open_service(&env.db)?;
             if login {
@@ -1509,6 +1748,31 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             // has no configuration key, so the CLI syncs the whole configured
             // folder/label (provider-side rules still apply).
             let filter = MailboxFilter::default();
+
+            // Bank-alert parsing is opt-in and needs somewhere to book to.
+            // Rules come only from installed `mailrules` packs — SlipScan
+            // ships none, so this does nothing until the user installs one.
+            let alert_target = match (alerts, account.as_deref()) {
+                (true, Some(selector)) => {
+                    let account = resolve_account(&svc, &book.id, selector)?;
+                    let rules = AlertRules::load(&svc, &book.id)?;
+                    if rules.is_empty() {
+                        bail!(
+                            "--alerts is on, but this book has no `mailrules` pack \
+                             installed, so no bank-alert format is known. Install one \
+                             with `slipscan pack install`; SlipScan ships no bank \
+                             patterns of its own (see docs/EMAIL.md)."
+                        );
+                    }
+                    Some((rules, account))
+                }
+                _ => None,
+            };
+
+            let alert_sync = alert_target.as_ref().map(|(rules, account)| AlertSync {
+                rules,
+                account_id: &account.id,
+            });
 
             let rt = runtime()?;
             let synced: MailboxSyncOutcome = match provider {
@@ -1537,7 +1801,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         let transport = connect_tls(&config, &password).await?;
                         let cursors = SettingsCursorStore::new(&svc);
                         let mut connector = ImapConnector::new(config.clone(), transport, cursors);
-                        sync_mailbox(&mut connector, &svc, &book.id, &dir, &filter).await
+                        sync_mailbox_with_alerts(
+                            &mut connector,
+                            &svc,
+                            &book.id,
+                            &dir,
+                            &filter,
+                            alert_sync,
+                        )
+                        .await
                     })?;
                     drop(password);
                     synced
@@ -1554,8 +1826,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         &mut cursors,
                         &vault,
                     );
-                    rt.block_on(sync_mailbox(&mut connector, &svc, &book.id, &dir, &filter))
-                        .map_err(|e| vault_entry_hint(e, provider))?
+                    rt.block_on(sync_mailbox_with_alerts(
+                        &mut connector,
+                        &svc,
+                        &book.id,
+                        &dir,
+                        &filter,
+                        alert_sync,
+                    ))
+                    .map_err(|e| vault_entry_hint(e, provider))?
                 }
                 MailProvider::Graph => {
                     let config: GraphConfig =
@@ -1569,8 +1848,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         &mut cursors,
                         &vault,
                     );
-                    rt.block_on(sync_mailbox(&mut connector, &svc, &book.id, &dir, &filter))
-                        .map_err(|e| vault_entry_hint(e, provider))?
+                    rt.block_on(sync_mailbox_with_alerts(
+                        &mut connector,
+                        &svc,
+                        &book.id,
+                        &dir,
+                        &filter,
+                        alert_sync,
+                    ))
+                    .map_err(|e| vault_entry_hint(e, provider))?
                 }
             };
             let (fetched, imported, duplicates) = (
@@ -1593,12 +1879,30 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 .filter(|d| d.state == PayDeliveryState::Delivered)
                 .count();
 
+            // Bank alerts. Declines are reported, never swallowed: a rule
+            // that claimed a message and then could not read it is the pack
+            // author's bug, and silence would hide it.
+            let declines: Vec<serde_json::Value> = synced
+                .alert_declines
+                .iter()
+                .map(|(message_id, decline)| {
+                    serde_json::json!({
+                        "message": message_id,
+                        "reason": decline.to_string(),
+                    })
+                })
+                .collect();
+
             let out = serde_json::json!({
                 "provider": provider.as_str(),
                 "messages": fetched,
                 "documents_imported": imported,
                 "duplicates": duplicates,
                 "storage_dir": dir.display().to_string(),
+                "alerts_enabled": alert_target.is_some(),
+                "transactions_imported": synced.transactions.len(),
+                "transaction_duplicates": synced.transaction_duplicates,
+                "alerts_declined": declines,
                 "webhooks_attempted": webhooks.len(),
                 "webhooks_delivered": webhooks_delivered,
             });
@@ -1608,6 +1912,19 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                      {duplicates} duplicate(s).",
                     provider.as_str()
                 );
+                if let Some((rules, account)) = &alert_target {
+                    println!(
+                        "Bank alerts ({} rule(s)) -> {}: {} transaction(s) imported, \
+                         {} duplicate(s).",
+                        rules.rule_count(),
+                        account.name,
+                        synced.transactions.len(),
+                        synced.transaction_duplicates,
+                    );
+                    for (message_id, decline) in &synced.alert_declines {
+                        println!("declined\tmessage {message_id}\t{decline}");
+                    }
+                }
                 if !webhooks.is_empty() {
                     println!(
                         "Webhooks: {webhooks_delivered} of {} due delivery(ies) delivered \
@@ -2084,6 +2401,183 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         }
                     })
                 }
+
+                // -- pack sources: the fetch half (docs/PACKS.md) ----------
+                //
+                // No source exists until one is added here. `fetch` reads and
+                // shows; `pull` verifies then installs; nothing between them
+                // can skip a gate, because both go through the one
+                // `slipscan_packs::transport` path.
+                PackAction::Source { action } => match action {
+                    PackSourceAction::Add { name, uri } => {
+                        let added = ops::pack_source_add(&svc, name, uri)?;
+                        emit(cli.json, &added, || {
+                            println!(
+                                "Added pack source {} -> {} ({}). {}",
+                                added.name,
+                                added.uri,
+                                added.kind,
+                                if added.network {
+                                    "Nothing has been contacted; it is read when you \
+                                     run `pack fetch`."
+                                } else {
+                                    "Local only — nothing here touches a network."
+                                }
+                            );
+                        })
+                    }
+                    PackSourceAction::Remove { name } => {
+                        let removed = ops::pack_source_remove(&svc, name)?;
+                        emit(
+                            cli.json,
+                            &serde_json::json!({ "name": name, "removed": removed }),
+                            || {
+                                if removed {
+                                    println!(
+                                        "Removed pack source {name}. Installed packs are \
+                                         untouched."
+                                    );
+                                } else {
+                                    println!("No pack source named {name}.");
+                                }
+                            },
+                        )
+                    }
+                    PackSourceAction::List => {
+                        let sources = ops::pack_source_list(&svc)?;
+                        emit(cli.json, &sources, || {
+                            if sources.is_empty() {
+                                println!(
+                                    "No pack sources configured — SlipScan makes no outbound \
+                                     request about packs. Add one with \
+                                     `slipscan pack source add <name> <uri>`."
+                                );
+                            }
+                            for source in &sources {
+                                println!(
+                                    "{}\t{}\t{}\tadded {}\tlast read {}",
+                                    source.name,
+                                    source.uri,
+                                    if source.network { "network" } else { "local" },
+                                    source.added_at,
+                                    source.last_synced_at.as_deref().unwrap_or("never"),
+                                );
+                            }
+                        })
+                    }
+                },
+                PackAction::Fetch { source } => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let ctx = pack_transport_context(&env)?;
+                    let offers = ops::pack_source_fetch(&svc, &book.id, source, &ctx)?;
+                    emit(cli.json, &offers, || {
+                        if offers.is_empty() {
+                            println!("{source} offers no packs.");
+                        }
+                        for offer in &offers {
+                            match (&offer.verified, &offer.error) {
+                                (Some(plan), _) => {
+                                    println!(
+                                        "{}\t{}\t{}\t{}\tsigner {}\t{}",
+                                        plan.pack_id,
+                                        plan.version,
+                                        plan.kind,
+                                        plan.region.as_deref().unwrap_or("global"),
+                                        plan.signer_fingerprint,
+                                        match plan.trusted_as.as_deref() {
+                                            Some(label) => format!("trusted as {label}"),
+                                            None => "NEW SIGNER — check this fingerprint \
+                                                     out-of-band"
+                                                .to_string(),
+                                        },
+                                    );
+                                    match plan.refusal.as_deref() {
+                                        Some(why) => println!("  would refuse: {why}"),
+                                        None => println!(
+                                            "  would {}{}: {} categories, {} merchant rules, \
+                                             {} keyword rules",
+                                            plan.action,
+                                            plan.installed_version
+                                                .as_deref()
+                                                .map(|v| format!(" from {v}"))
+                                                .unwrap_or_default(),
+                                            plan.categories,
+                                            plan.merchant_rules,
+                                            plan.keyword_rules,
+                                        ),
+                                    }
+                                }
+                                // One unreadable file must not hide the rest
+                                // of a shared folder.
+                                (None, Some(err)) => println!(
+                                    "{}\t{}\tUNVERIFIED ({}): {err}",
+                                    offer.pack_id, offer.version, offer.document
+                                ),
+                                (None, None) => {}
+                            }
+                        }
+                    })
+                }
+                PackAction::Pull {
+                    source,
+                    pack_id,
+                    accept_signer,
+                    document,
+                } => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let ctx = pack_transport_context(&env)?;
+                    let result = ops::pack_source_install(
+                        &svc,
+                        &book.id,
+                        source,
+                        pack_id,
+                        document.as_deref(),
+                        accept_signer.as_deref(),
+                        &ctx,
+                    )?;
+                    emit(cli.json, &result, || {
+                        println!(
+                            "Installed {} {} from {} into {}: {} categories created, \
+                             {} reused, {} rules",
+                            result.name,
+                            result.version,
+                            source,
+                            book.name,
+                            result.categories_created,
+                            result.categories_existing,
+                            result.rules
+                        );
+                    })
+                }
+                PackAction::Publish {
+                    source,
+                    manifest,
+                    signature,
+                    public_key,
+                } => {
+                    let bytes = std::fs::read(manifest)
+                        .with_context(|| format!("reading {}", manifest.display()))?;
+                    let sig = read_bytes_arg(signature, 64, "signature")?;
+                    let key = read_bytes_arg(public_key, 32, "public key")?;
+                    let report = ops::pack_source_publish(&svc, source, &bytes, &sig, &key)?;
+                    emit(cli.json, &report, || {
+                        if report.unchanged {
+                            println!(
+                                "{} {} is already published to {} under {} — identical bytes, \
+                                 nothing rewritten.",
+                                report.pack_id, report.version, report.source, report.fingerprint
+                            );
+                        } else {
+                            println!(
+                                "Published {} {} to {} under {}:",
+                                report.pack_id, report.version, report.source, report.fingerprint
+                            );
+                        }
+                        for path in &report.written {
+                            println!("  {path}");
+                        }
+                    })
+                }
             }
         }
 
@@ -2312,6 +2806,272 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
+        // Device identity & pairing (docs/NODES.md). Identity only: no
+        // oplog, no transport, no endpoint — nothing here syncs anything.
+        // The whole ceremony is local, which is why it lives here in full
+        // while the server serves only the read and revoke halves.
+        Command::Device { ref action } => {
+            ensure_parent_dir(&env.db)?;
+            let devices = DeviceHandle::open(&env.db)
+                .with_context(|| format!("opening device identity in {}", env.db.display()))?;
+            match action {
+                DeviceAction::Init { label } => {
+                    let identity = devices.initialize(label)?;
+                    emit(cli.json, &identity, || {
+                        println!("This device is {}", identity.label);
+                        println!("  device id  {}", identity.public_key);
+                        println!("  key-name   {}", identity.keyname);
+                        println!();
+                        println!(
+                            "The key-name is what you compare out loud when pairing. \
+                             Nothing syncs yet — this is identity only."
+                        );
+                    })
+                }
+                DeviceAction::Show => {
+                    let identity = devices.identity()?;
+                    emit(cli.json, &identity, || match &identity {
+                        Some(identity) => {
+                            println!("This device is {}", identity.label);
+                            println!("  device id  {}", identity.public_key);
+                            println!("  key-name   {}", identity.keyname);
+                            if let Some(rotated) = &identity.rotated_at {
+                                println!("  rotated    {rotated}");
+                            }
+                        }
+                        None => println!(
+                            "This device has no identity yet — run `slipscan device init`."
+                        ),
+                    })
+                }
+                DeviceAction::Fingerprint { device_id } => {
+                    let (id, name) = match device_id {
+                        Some(id) => (id.clone(), slipscan_core::device::keyname(id)?),
+                        None => {
+                            let identity = devices.identity()?.context(
+                                "this device has no identity yet — run `slipscan device init`",
+                            )?;
+                            (identity.public_key, identity.keyname)
+                        }
+                    };
+                    emit(
+                        cli.json,
+                        &serde_json::json!({ "device_id": id, "keyname": name }),
+                        || {
+                            println!("{name}");
+                            println!("({id})");
+                        },
+                    )
+                }
+                DeviceAction::List => {
+                    let peers = devices.peer_list()?;
+                    emit(cli.json, &peers, || {
+                        if peers.is_empty() {
+                            println!(
+                                "No paired devices. `slipscan device invite` starts a pairing."
+                            );
+                        }
+                        for peer in &peers {
+                            println!(
+                                "{}\t{}\t{}\tpaired {}\t{}",
+                                peer.label,
+                                peer.keyname,
+                                peer.public_key,
+                                peer.paired_at,
+                                match &peer.revoked_at {
+                                    Some(at) => format!("REVOKED {at}"),
+                                    None => "active".to_string(),
+                                }
+                            );
+                        }
+                        if !peers.is_empty() {
+                            println!();
+                            println!("Paired, but nothing syncs yet — this is identity only.");
+                        }
+                    })
+                }
+                DeviceAction::Invite { label, ttl } => {
+                    let invite = devices.invite_create(label, *ttl)?;
+                    emit(cli.json, &invite, || {
+                        println!("{}", invite.blob);
+                        println!();
+                        println!("Carry that to the other device and run:");
+                        println!(
+                            "  slipscan device accept <blob> --expect-keyname {}",
+                            invite.keyname
+                        );
+                        println!();
+                        println!("This device's key-name is {}", invite.keyname);
+                        println!("Expires {} — single use.", invite.expires_at);
+                        println!(
+                            "The blob contains a one-time claim token: treat it as a credential."
+                        );
+                    })
+                }
+                DeviceAction::Accept {
+                    blob,
+                    expect_keyname,
+                    unverified,
+                } => {
+                    let accepted =
+                        devices.pair_accept(blob, keyname_check(expect_keyname, *unverified))?;
+                    emit(cli.json, &accepted, || {
+                        println!("Pinned {} ({})", accepted.peer.label, accepted.peer.keyname);
+                        if *unverified {
+                            println!(
+                                "  WARNING: --unverified — nothing checked this key came from \
+                                 the device you meant."
+                            );
+                        }
+                        println!();
+                        println!("{}", accepted.blob);
+                        println!();
+                        println!("Carry that back to the inviting device and run:");
+                        println!(
+                            "  slipscan device confirm <blob> --expect-keyname <its key-name>"
+                        );
+                    })
+                }
+                DeviceAction::Confirm {
+                    blob,
+                    expect_keyname,
+                    unverified,
+                } => {
+                    let peer =
+                        devices.pair_confirm(blob, keyname_check(expect_keyname, *unverified))?;
+                    emit(cli.json, &peer, || {
+                        println!("Pinned {} ({})", peer.label, peer.keyname);
+                        println!("  device id {}", peer.public_key);
+                        if *unverified {
+                            println!(
+                                "  WARNING: --unverified — nothing checked this key came from \
+                                 the device you meant."
+                            );
+                        }
+                        println!();
+                        println!(
+                            "Both devices are now paired. Nothing syncs yet: there is no oplog \
+                             and no transport (docs/NODES.md)."
+                        );
+                    })
+                }
+                DeviceAction::Invites => {
+                    let invites = devices.invite_list()?;
+                    emit(cli.json, &invites, || {
+                        if invites.is_empty() {
+                            println!("No invites.");
+                        }
+                        for invite in &invites {
+                            println!(
+                                "{}\t{}\texpires {}\t{}",
+                                invite.id,
+                                invite.label,
+                                invite.expires_at,
+                                match &invite.redeemed_at {
+                                    Some(at) => format!("redeemed {at}"),
+                                    None => "outstanding".to_string(),
+                                }
+                            );
+                        }
+                    })
+                }
+                DeviceAction::CancelInvite { id } => {
+                    let cancelled = devices.invite_cancel(id)?;
+                    emit(
+                        cli.json,
+                        &serde_json::json!({ "cancelled": cancelled }),
+                        || {
+                            if cancelled {
+                                println!("Withdrew invite {id}.");
+                            } else {
+                                println!(
+                                    "No outstanding invite {id} (already redeemed, or unknown)."
+                                );
+                            }
+                        },
+                    )
+                }
+                DeviceAction::Revoke { device_id } => {
+                    let peer = devices.peer_revoke(device_id)?;
+                    emit(cli.json, &peer, || {
+                        println!("Revoked {} ({}).", peer.label, peer.keyname);
+                        println!(
+                            "The pin is kept as a tombstone, so this key cannot pair again by \
+                             itself. Use `slipscan device forget {}` if you really mean to let \
+                             it back in.",
+                            peer.public_key
+                        );
+                    })
+                }
+                DeviceAction::Forget { device_id } => {
+                    let forgotten = devices.peer_forget(device_id)?;
+                    emit(
+                        cli.json,
+                        &serde_json::json!({ "forgotten": forgotten }),
+                        || {
+                            if forgotten {
+                                println!("Dropped the pin for {device_id}. It may pair again.");
+                            } else {
+                                println!("No pinned device {device_id}.");
+                            }
+                        },
+                    )
+                }
+                DeviceAction::Rotate => {
+                    let (identity, rotation) = devices.rotate()?;
+                    emit(
+                        cli.json,
+                        &serde_json::json!({ "identity": identity, "rotation": rotation }),
+                        || {
+                            println!("Rotated this device's key.");
+                            println!("  was  {}", rotation.old_public_key);
+                            println!("  now  {}", identity.public_key);
+                            println!("  key-name {}", identity.keyname);
+                            println!();
+                            println!(
+                                "The device id changed, so peers still hold the old key: pair \
+                                 again with each of them."
+                            );
+                        },
+                    )
+                }
+                DeviceAction::Rotations => {
+                    let chain = devices.rotations()?;
+                    emit(cli.json, &chain, || {
+                        if chain.is_empty() {
+                            println!("This device's key has never been rotated.");
+                        }
+                        for entry in &chain {
+                            println!(
+                                "{}\t{} -> {}\t{}",
+                                entry.rotated_at,
+                                entry.old_public_key,
+                                entry.new_public_key,
+                                if entry.verify() {
+                                    "verified"
+                                } else {
+                                    "INVALID"
+                                }
+                            );
+                        }
+                    })
+                }
+                DeviceAction::Reset { yes } => {
+                    if !yes {
+                        bail!(
+                            "`device reset` destroys this device's private key and its identity. \
+                             Pass --yes if that is what you mean."
+                        );
+                    }
+                    devices.reset()?;
+                    emit(cli.json, &serde_json::json!({ "reset": true }), || {
+                        println!("Destroyed this device's key and identity.");
+                        println!("Peer pins were kept — use `slipscan device forget` for those.");
+                    })
+                }
+            }
+        }
+
         Command::Serve {
             listen,
             lan,
@@ -2366,15 +3126,40 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         as Box<dyn slipscan_core::pay::WebhookTransport>,
                 )
             });
+            // Pack transport for the pack_source_* routes: a git checkout
+            // cache beside the data folder, plus an HTTPS client. It has no
+            // endpoint of its own — every request goes to a source the user
+            // added, and with no source added none is ever made.
+            let pack_cache = env
+                .db
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            let pack_transport: slipscan_server::PackTransportFactory =
+                std::sync::Arc::new(move || {
+                    let http = slipscan_ingest::packs::ReqwestPackHttp::new()
+                        .map_err(slipscan_core::CoreError::FxTransport)?;
+                    Ok(slipscan_packs::transport::TransportContext::new()
+                        .with_cache_dir(pack_cache.clone())
+                        .with_http(std::sync::Arc::new(http)))
+                });
             // The data_status route only makes sense when the served
             // database *is* the managed folder's; with an explicit --db the
             // route answers 503 instead of describing the wrong folder.
             let data_dir = env.managed.then(|| env.resolver.clone());
+            // Device identity for the read-only device routes and peer
+            // revocation. Attaching it exposes no key material and no claim
+            // token: the ceremony and every key-minting op stay local (see
+            // slipscan_server::devices), and nothing here syncs anything.
+            let devices = DeviceHandle::open(&env.db)
+                .with_context(|| format!("opening device identity in {}", env.db.display()))?;
             runtime()?.block_on(slipscan_server::serve(
                 svc,
                 Some(vault),
+                Some(devices),
                 Some(fx_transport),
                 Some(pay_transport),
+                Some(pack_transport),
                 data_dir,
                 ServerConfig { addr, require_auth },
             ))?;
@@ -2633,12 +3418,44 @@ mod tests {
                 provider,
                 login,
                 storage_dir,
+                alerts,
+                account,
             } => {
-                // Existing invocations are unchanged: imap, no login.
+                // Existing invocations are unchanged: imap, no login, and
+                // bank-alert parsing off unless it is asked for.
                 assert_eq!(provider, MailProvider::Imap);
                 assert!(!login);
                 assert_eq!(storage_dir, Some(PathBuf::from("/tmp/docs")));
+                assert!(!alerts);
+                assert_eq!(account, None);
             }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mail_sync_alerts_requires_an_account_to_book_to() {
+        // Alerts become transactions, so there is no sensible default target
+        // and clap refuses the combination rather than guessing one.
+        assert!(Cli::try_parse_from(["slipscan", "mail-sync", "--alerts"]).is_err());
+
+        let cli = Cli::try_parse_from(["slipscan", "mail-sync", "--alerts", "--account", "Cheque"])
+            .unwrap();
+        match cli.command {
+            Command::MailSync {
+                alerts, account, ..
+            } => {
+                assert!(alerts);
+                assert_eq!(account.as_deref(), Some("Cheque"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // --account on its own is harmless: it simply names an account that
+        // nothing books to yet.
+        let cli = Cli::try_parse_from(["slipscan", "mail-sync", "--account", "Cheque"]).unwrap();
+        match cli.command {
+            Command::MailSync { alerts, .. } => assert!(!alerts),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -3093,6 +3910,165 @@ mod tests {
         assert!(err.contains("--account"), "{err}");
     }
 
+    /// Bank-alert mail rules end to end through the CLI, exactly as a user
+    /// meets them: author a `mailrules` pack as JSON, sign it, install it
+    /// with `slipscan pack install`, and see it listed as its own kind.
+    ///
+    /// The JSON below is the on-disk format contract — if a field is renamed
+    /// or a tag changes shape, this test is what notices.
+    #[test]
+    fn mailrules_pack_installs_through_the_cli_and_arms_mail_sync() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("alerts.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let run_cli = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_cli(&["init", "--name", "Alerts", "--currency", "zar"]).unwrap();
+        run_cli(&["account", "add", "Card"]).unwrap();
+
+        // A wholly invented bank. SlipScan ships no bank patterns; this is a
+        // fixture, which is the point of the pack kind.
+        let payload = r#"{
+  "meta": {
+    "id": "fixture-bank-alerts",
+    "name": "Fixture bank alerts",
+    "version": "1.0.0",
+    "author": "cli test"
+  },
+  "mailrules": {
+    "rules": [
+      {
+        "id": "card-purchase",
+        "description": "Card purchase notification",
+        "from_patterns": ["meridian.example"],
+        "subject_patterns": ["(?i)card purchase"],
+        "amount": {
+          "part": "body",
+          "pattern": "(?i)purchase of ZAR ([\\d.,]+) at",
+          "group": 1,
+          "style": "point"
+        },
+        "currency": { "kind": "fixed", "code": "ZAR" },
+        "date": { "kind": "received" },
+        "merchant": {
+          "part": "body",
+          "pattern": "(?i) at (.+?) on your card",
+          "group": 1
+        },
+        "direction": { "kind": "fixed", "direction": "debit" },
+        "account_hint": {
+          "part": "body",
+          "pattern": "card ending (\\d{4})",
+          "group": 1
+        }
+      }
+    ]
+  }
+}"#;
+        let payload_path = dir.path().join("payload.json");
+        std::fs::write(&payload_path, payload).unwrap();
+
+        let key = SigningKey::from_bytes(&[42u8; 32]);
+        let signature: String = key
+            .sign(payload.as_bytes())
+            .to_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let public_key: String = key
+            .verifying_key()
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+
+        // Install through the same library calls `ops::pack_install` makes —
+        // verify the detached signature over the exact file bytes, trust the
+        // signer on first use, install — rather than `run_cli(["pack",
+        // "install", …])`. That is deliberate and not a shortcut: the pack
+        // install *op* registers the process-wide classifier `OnceLock` as a
+        // side effect, and `startup_hook_applies_contains_rules_without_\
+        // installing_a_pack` in this same test binary asserts it is the first
+        // to register. The install path itself is covered end to end in
+        // slipscan-packs' `pack_flow` suite; what this test is here for is
+        // the hand-authored JSON above, and what the CLI does with the result.
+        let svc = CoreService::open(&db).unwrap();
+        let book = svc.book_list().unwrap().remove(0);
+        let sig_bytes = read_bytes_arg(&signature, 64, "signature").unwrap();
+        let key_bytes = read_bytes_arg(&public_key, 32, "public key").unwrap();
+        let verified = slipscan_packs::verify_detached(
+            &std::fs::read(&payload_path).unwrap(),
+            &sig_bytes,
+            &key_bytes,
+        )
+        .unwrap();
+        svc.with_connection(|conn| -> anyhow::Result<()> {
+            slipscan_packs::TrustStore::open(conn)?.trust(verified.signer(), "cli test")?;
+            slipscan_packs::Installer::open(conn)?.install(&book.id, &verified)?;
+            Ok(())
+        })
+        .unwrap();
+
+        // It installed as its own kind, and created no categories or rules.
+        let installed = svc
+            .with_connection(|conn| slipscan_packs::Installer::open(conn)?.list(&book.id))
+            .unwrap();
+        let pack = installed
+            .iter()
+            .find(|p| p.pack_id == "fixture-bank-alerts")
+            .expect("pack installed");
+        assert_eq!(pack.kind, slipscan_packs::PackKind::MailRules);
+        assert_eq!(pack.version, "1.0.0");
+        assert!(svc.category_tree(&book.id).unwrap().is_empty());
+
+        // The rules load and compile for the sync path.
+        let rules = slipscan_ingest::email::AlertRules::load(&svc, &book.id).unwrap();
+        assert_eq!(rules.rule_count(), 1);
+        drop(svc);
+
+        // With rules installed, `mail-sync --alerts` gets past rule loading
+        // and stops on the thing that really is missing: a mailbox.
+        let err = run_cli(&["mail-sync", "--alerts", "--account", "Card"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mail.imap.config"), "{err}");
+
+        // A tampered payload never verifies, however well-formed it is: the
+        // signature covers the exact bytes, and a mailrules pack is not
+        // special-cased anywhere in that.
+        let tampered = payload.replace("1.0.0", "1.0.1");
+        assert!(
+            slipscan_packs::verify_detached(tampered.as_bytes(), &sig_bytes, &key_bytes).is_err()
+        );
+    }
+
+    /// Turning alerts on in a book with no `mailrules` pack must say so
+    /// plainly rather than silently importing nothing forever.
+    #[test]
+    fn mail_sync_alerts_without_a_pack_explains_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("bare.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let run_cli = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_cli(&["init", "--name", "Bare"]).unwrap();
+        run_cli(&["account", "add", "Card"]).unwrap();
+
+        let err = run_cli(&["mail-sync", "--alerts", "--account", "Card"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("mailrules"), "{err}");
+        assert!(err.contains("pack install"), "{err}");
+    }
+
     /// Household members end-to-end through the CLI: add members, default
     /// attribution follows the owning account, override + split via the
     /// CLI, per-member reports come out right, and remove is refused until
@@ -3418,6 +4394,216 @@ mod tests {
         assert!(Cli::try_parse_from(["slipscan", "pack", "benchmark"]).is_err());
     }
 
+    #[test]
+    fn parses_pack_source_actions() {
+        match Cli::try_parse_from([
+            "slipscan",
+            "pack",
+            "source",
+            "add",
+            "team",
+            "git:https://example.org/packs.git#stable",
+        ])
+        .unwrap()
+        .command
+        {
+            Command::Pack {
+                action:
+                    PackAction::Source {
+                        action: PackSourceAction::Add { name, uri },
+                    },
+            } => {
+                assert_eq!(name, "team");
+                assert_eq!(uri, "git:https://example.org/packs.git#stable");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["slipscan", "pack", "source", "list"]).is_ok());
+        // Both arguments are mandatory: a half-typed source must not become
+        // one with a guessed URI.
+        assert!(Cli::try_parse_from(["slipscan", "pack", "source", "add", "team"]).is_err());
+        assert!(Cli::try_parse_from(["slipscan", "pack", "source", "remove"]).is_err());
+
+        match Cli::try_parse_from([
+            "slipscan",
+            "pack",
+            "pull",
+            "team",
+            "za-personal",
+            "--accept-signer",
+            "ab12-cd34-ef56-7890",
+        ])
+        .unwrap()
+        .command
+        {
+            Command::Pack {
+                action:
+                    PackAction::Pull {
+                        source,
+                        pack_id,
+                        accept_signer,
+                        document,
+                    },
+            } => {
+                assert_eq!(source, "team");
+                assert_eq!(pack_id, "za-personal");
+                assert_eq!(accept_signer.as_deref(), Some("ab12-cd34-ef56-7890"));
+                assert!(document.is_none());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // Accepting a signer is opt-in; without it an unknown one refuses.
+        assert!(Cli::try_parse_from(["slipscan", "pack", "pull", "team", "za-personal"]).is_ok());
+        assert!(Cli::try_parse_from(["slipscan", "pack", "pull", "team"]).is_err());
+        assert!(Cli::try_parse_from(["slipscan", "pack", "fetch"]).is_err());
+        assert!(Cli::try_parse_from(["slipscan", "pack", "fetch", "team"]).is_ok());
+    }
+
+    /// The fetch half, driven through `run()` exactly as a user would: add a
+    /// folder source, publish a signed pack into it, read it back, and see
+    /// the preflight verify the signature and report the signer.
+    ///
+    /// Deliberately stops short of `pack pull`: installing registers the
+    /// process-wide pack classifier, and
+    /// `startup_hook_applies_contains_rules_without_installing_a_pack` below
+    /// depends on being the test that registers it. The install leg is proved
+    /// against a real database in `slipscan_server::ops` and in
+    /// slipscan-packs' `transport_flow` integration test.
+    #[test]
+    fn pack_sources_add_publish_and_read_through_the_cli() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("packs.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let share = dir.path().join("share");
+        std::fs::create_dir_all(&share).unwrap();
+
+        let run_pack = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json", "pack"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+
+        // A book to install into (and the one `pack fetch` preflights against).
+        let svc = CoreService::open(&db).unwrap();
+        svc.book_create(NewBook {
+            name: "Personal".into(),
+            kind: BookKind::Personal,
+            currency: None,
+            country: Some("ZA".into()),
+            region: None,
+        })
+        .unwrap();
+        drop(svc);
+
+        // Nothing configured is a valid, quiet state — and it is the state
+        // every install starts in.
+        run_pack(&["source", "list"]).unwrap();
+
+        // Plaintext and un-schemed strings are refusals, never guesses.
+        assert!(run_pack(&["source", "add", "plain", "http://packs.example"]).is_err());
+        assert!(run_pack(&["source", "add", "guessy", "/tmp/packs"]).is_err());
+
+        let share_uri = format!("folder:{}", share.display());
+        run_pack(&["source", "add", "share", &share_uri]).unwrap();
+        // A name is taken once.
+        assert!(run_pack(&["source", "add", "share", &share_uri]).is_err());
+
+        // Publish a signed pack into the folder, through the CLI.
+        let payload = serde_json::json!({
+            "meta": {
+                "id": "za-cli", "name": "CLI pack", "version": "1.0.0",
+                "region": "ZA", "author": "cli tests"
+            },
+            "categories": [{ "key": "food", "name": "Food", "kind": "expense" }],
+            "merchant_rules": [{
+                "match": "contains", "pattern": "pick n pay",
+                "category_key": "food", "confidence": 0.9
+            }]
+        });
+        let document = serde_json::to_vec_pretty(&payload).unwrap();
+        let doc_path = dir.path().join("za-cli.json");
+        std::fs::write(&doc_path, &document).unwrap();
+        let key = SigningKey::from_bytes(&[21u8; 32]);
+        let signature: String = key
+            .sign(&document)
+            .to_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let public_key: String = key
+            .verifying_key()
+            .as_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+
+        run_pack(&[
+            "publish",
+            "share",
+            doc_path.to_str().unwrap(),
+            "--signature",
+            &signature,
+            "--public-key",
+            &public_key,
+        ])
+        .unwrap();
+
+        // The layout on disk is the one every reader expects: a directory
+        // owned by this publisher's fingerprint, and nothing outside it.
+        let fingerprint = slipscan_packs::key_fingerprint(&public_key);
+        let pub_dir = share.join(&fingerprint);
+        assert!(pub_dir.join("za-cli-1.0.0.pack.json").is_file());
+        assert!(pub_dir.join("za-cli-1.0.0.pack.json.sig").is_file());
+        assert!(pub_dir.join("signer.pub").is_file());
+        assert!(pub_dir.join("index.json").is_file());
+        assert_eq!(
+            std::fs::read(pub_dir.join("za-cli-1.0.0.pack.json")).unwrap(),
+            document,
+            "the bytes on the share are the bytes that were signed"
+        );
+
+        // Reading verifies and preflights, and writes nothing to the book.
+        run_pack(&["fetch", "share"]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        assert!(
+            ops::pack_list(&svc).unwrap().is_empty(),
+            "reading a source installs nothing"
+        );
+        drop(svc);
+
+        // Publishing the same bytes again is a no-op rather than an edit —
+        // which is what keeps a synced folder conflict-free.
+        run_pack(&[
+            "publish",
+            "share",
+            doc_path.to_str().unwrap(),
+            "--signature",
+            &signature,
+            "--public-key",
+            &public_key,
+        ])
+        .unwrap();
+
+        // Publishing needs a folder; an https source is refused rather than
+        // half-attempted.
+        run_pack(&["source", "add", "web", "https://packs.example/pub"]).unwrap();
+        assert!(run_pack(&[
+            "publish",
+            "web",
+            doc_path.to_str().unwrap(),
+            "--signature",
+            &signature,
+            "--public-key",
+            &public_key,
+        ])
+        .is_err());
+
+        run_pack(&["source", "remove", "share"]).unwrap();
+        run_pack(&["source", "list"]).unwrap();
+    }
+
     /// The gap this guards: `register_classifier`'s contract is "call it once
     /// at startup, in every binary that imports transactions", and for a long
     /// time the only caller was the *install* path. A CLI run that did not
@@ -3432,9 +4618,11 @@ mod tests {
     ///
     /// NOTE for future edits: the classifier is a process-wide `OnceLock`. No
     /// other test in this binary may call `ops::pack_install`,
-    /// `ops::pack_install_seeds`, or `run()` with a `pack install`/`pack seed`
-    /// command — any of those would register it as a side effect and this
-    /// test would fail on its `assert!(register_pack_classifier())`.
+    /// `ops::pack_install_seeds`, `ops::pack_source_install`, or `run()` with
+    /// a `pack install` / `pack seed` / `pack pull` command — any of those
+    /// would register it as a side effect and this test would fail on its
+    /// `assert!(register_pack_classifier())`. (`pack source` and `pack fetch`
+    /// are safe: reading a source installs nothing and registers nothing.)
     #[test]
     fn startup_hook_applies_contains_rules_without_installing_a_pack() {
         use slipscan_core::domain::{AccountKind, NewAccount, NewTransaction};
@@ -3533,6 +4721,114 @@ mod tests {
         assert!(Cli::try_parse_from(["slipscan", "vault", "replace", "name", "s3cret"]).is_err());
         assert!(Cli::try_parse_from(["slipscan", "vault", "list"]).is_ok());
         assert!(Cli::try_parse_from(["slipscan", "vault", "revoke", "name"]).is_ok());
+    }
+
+    /// The key-name comparison is what authenticates a pairing, so skipping
+    /// it must be impossible to do by accident: `accept`/`confirm` refuse to
+    /// parse unless the user either supplies the key-name they read off the
+    /// other device or spells out `--unverified`.
+    #[test]
+    fn pairing_cannot_skip_the_keyname_check_by_omission() {
+        for verb in ["accept", "confirm"] {
+            assert!(
+                Cli::try_parse_from(["slipscan", "device", verb, "ss-pair1.x"]).is_err(),
+                "{verb} must not default to skipping the comparison"
+            );
+            assert!(Cli::try_parse_from([
+                "slipscan",
+                "device",
+                verb,
+                "ss-pair1.x",
+                "--expect-keyname",
+                "suba-gome-gina-delu-vosu-vazo-poti-kofi-zidu",
+            ])
+            .is_ok());
+            assert!(Cli::try_parse_from([
+                "slipscan",
+                "device",
+                verb,
+                "ss-pair1.x",
+                "--unverified"
+            ])
+            .is_ok());
+            // Asking for both at once is contradictory, not a precedence
+            // puzzle to resolve silently.
+            assert!(Cli::try_parse_from([
+                "slipscan",
+                "device",
+                verb,
+                "ss-pair1.x",
+                "--unverified",
+                "--expect-keyname",
+                "x",
+            ])
+            .is_err());
+        }
+    }
+
+    /// `--expect-keyname` always wins over the skip flag if both somehow
+    /// arrive, and an absent pair resolves to a comparison that cannot
+    /// succeed rather than to "skip it".
+    #[test]
+    fn the_keyname_check_resolves_to_the_safe_side() {
+        assert!(matches!(
+            keyname_check(&Some("abc".to_string()), true),
+            KeynameCheck::Expect("abc")
+        ));
+        assert!(matches!(
+            keyname_check(&None, true),
+            KeynameCheck::ConfirmedByHuman
+        ));
+        // Neither flag: never a silent skip.
+        assert!(matches!(
+            keyname_check(&None, false),
+            KeynameCheck::Expect("")
+        ));
+    }
+
+    /// Wiping the trust root is deliberate: `device reset` needs `--yes`.
+    #[test]
+    fn resetting_a_device_identity_needs_an_explicit_yes() {
+        let cli = Cli::try_parse_from(["slipscan", "device", "reset"]).unwrap();
+        match cli.command {
+            Command::Device {
+                action: DeviceAction::Reset { yes },
+            } => assert!(!yes, "reset must not default to yes"),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["slipscan", "device", "reset", "--yes"]).is_ok());
+    }
+
+    /// There are no accounts: every device subcommand addresses a device by
+    /// its public key, and nothing takes an email, user or password.
+    #[test]
+    fn device_commands_have_no_account_concepts() {
+        use clap::CommandFactory;
+        let mut device = Cli::command();
+        let device = device
+            .get_subcommands_mut()
+            .find(|sub| sub.get_name() == "device")
+            .expect("a `device` subcommand exists");
+
+        let mut seen = 0;
+        for sub in device.get_subcommands() {
+            for arg in sub.get_arguments() {
+                seen += 1;
+                let name = arg.get_id().as_str();
+                for forbidden in ["email", "user", "username", "password", "account", "login"] {
+                    assert!(
+                        !name.contains(forbidden),
+                        "`device {}` takes a {forbidden} argument ({name})",
+                        sub.get_name()
+                    );
+                }
+            }
+        }
+        // Assert the scan actually walked something.
+        assert!(
+            seen > 5,
+            "the scan is broken, not the code: {seen} args seen"
+        );
     }
 
     #[test]

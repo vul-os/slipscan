@@ -1293,6 +1293,14 @@ pub struct PackVerificationDto {
     /// Set only when `action == "refuse"`: the installer's own wording for
     /// why, so the preflight and the attempt can never disagree.
     pub refusal: Option<String>,
+    /// Whether installing needs the user to accept this fingerprint first.
+    /// Always false for a file the user picked with its key in hand — passing
+    /// the key *is* the decision there. True for a pack that arrived over a
+    /// transport, where nothing was hand-carried.
+    pub needs_signer_acceptance: bool,
+    /// Where the bytes came from, when they came from a source rather than a
+    /// file the user picked.
+    pub origin: Option<String>,
 }
 
 /// What an install did.
@@ -1376,68 +1384,10 @@ fn verify_request(query: &PackDocumentRequest) -> Result<slipscan_packs::Verifie
     slipscan_packs::verify_detached(&document, &signature, &public_key).map_err(err)
 }
 
-/// The refusal `Installer::install` would return for this pack, if any,
-/// checked in the installer's own order — so the preflight can never promise
-/// something the attempt then refuses. The `PackError` values are the real
-/// ones, carried out to the UI as their own Display text.
-fn install_refusal(
-    verified: &slipscan_packs::VerifiedPack,
-    offered: slipscan_packs::Semver,
-    trusted: bool,
-    pinned: Option<&str>,
-    installed_version: Option<&str>,
-) -> Result<Option<slipscan_packs::PackError>, String> {
-    use slipscan_packs::{builtin, key_fingerprint, PackError, Semver};
-
-    let pack_id = || verified.payload().meta.id.clone();
-
-    // A pack id is bound to the key that first signed it, forever. Another
-    // key offering "a newer version" is the attack this pin exists for.
-    if let Some(pinned) = pinned.filter(|k| *k != verified.signer()) {
-        return Ok(Some(PackError::SignerChanged {
-            pack_id: pack_id(),
-            pinned_fingerprint: key_fingerprint(pinned),
-        }));
-    }
-    // Trusting the signer on first use is what installing would do next, and
-    // for the well-known builtin seed key the trust store refuses outright.
-    if !trusted && verified.signer() == builtin::seed_public_key_hex() {
-        return Ok(Some(PackError::SignerNotTrustable));
-    }
-    let Some(installed) = installed_version else {
-        return Ok(None);
-    };
-    let current: Semver = installed.parse().map_err(err)?;
-    if offered == current {
-        return Ok(Some(PackError::AlreadyInstalled {
-            pack_id: pack_id(),
-            version: installed.to_string(),
-        }));
-    }
-    if offered < current {
-        return Ok(Some(PackError::Downgrade {
-            pack_id: pack_id(),
-            installed: installed.to_string(),
-            offered: offered.to_string(),
-        }));
-    }
-    Ok(None)
-}
-
-/// The label a first-use trust decision is recorded under: the pack's own
-/// author when it declares one, else the signer's fingerprint. Same rule the
-/// server's ops layer uses, so a book shared between surfaces reads the same.
-fn signer_label(verified: &slipscan_packs::VerifiedPack) -> String {
-    verified
-        .payload()
-        .meta
-        .author
-        .as_deref()
-        .map(str::trim)
-        .filter(|author| !author.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("publisher {}", verified.fingerprint()))
-}
+/// The label a first-use trust decision is recorded under. Comes from
+/// slipscan-packs so the CLI, the server and this screen record the same
+/// thing: the pack's own author when it declares one, else the fingerprint.
+use slipscan_packs::transport::signer_label;
 
 #[tauri::command]
 pub async fn pack_list(
@@ -1488,81 +1438,49 @@ pub async fn pack_list(
 /// surface the signer's fingerprint for the out-of-band check that makes
 /// trust-on-first-use mean anything, and report what installing would do.
 ///
-/// The three refusals — a changed publisher key, the version already
-/// installed, a downgrade — are reported here in the installer's own words,
-/// carried from the very same `PackError` values `install` would return. A
-/// key change is a refusal, not a silent success: the pack id is pinned to
-/// the key that first signed it, and no other key can take the id over.
+/// The refusals — a changed publisher key, the version already installed, a
+/// downgrade — come from `slipscan_packs::transport::plan`, the single
+/// preflight the CLI, the HTTP routes and this screen all share, so the
+/// preview can never promise something the attempt then refuses. A key change
+/// is a refusal, not a silent success: the pack id is pinned to the key that
+/// first signed it, and no other key can take the id over.
 #[tauri::command]
 pub async fn pack_verify(
     state: State<'_, AppState>,
     query: PackDocumentRequest,
 ) -> Result<PackVerificationDto, String> {
-    use slipscan_packs::{key_fingerprint, Installer, Semver, TrustStatus, TrustStore};
-
     let verified = verify_request(&query)?;
     let service = state.service()?;
     book_by_id(&service, &query.book_id)?;
-
-    let payload = verified.payload();
-    let meta = &payload.meta;
-    let offered: Semver = meta.semver().map_err(err)?;
-
     service.with_connection(|conn| {
-        let (trusted_as, pinned, installed_version) =
-            match Installer::open_readonly(conn).map_err(err)? {
-                // No pack has ever been installed here, so there is nothing
-                // pinned, nothing trusted and nothing to upgrade.
-                None => (None, None, None),
-                Some(installer) => {
-                    let trust = TrustStore::open(conn).map_err(err)?;
-                    let trusted_as = match trust.status(verified.signer()).map_err(err)? {
-                        TrustStatus::Trusted { label } => Some(label),
-                        TrustStatus::Unknown { .. } => None,
-                    };
-                    (
-                        trusted_as,
-                        trust.pinned_signer(&meta.id).map_err(err)?,
-                        installer
-                            .get(&query.book_id, &meta.id)
-                            .map_err(err)?
-                            .map(|p| p.version),
-                    )
-                }
-            };
-
-        let refusal = install_refusal(
-            &verified,
-            offered,
-            trusted_as.is_some(),
-            pinned.as_deref(),
-            installed_version.as_deref(),
-        )?;
-
-        let action = match (&refusal, &installed_version) {
-            (Some(_), _) => "refuse",
-            (None, Some(_)) => "upgrade",
-            (None, None) => "install",
-        };
-
-        Ok(PackVerificationDto {
-            pack_id: meta.id.clone(),
-            name: meta.name.clone(),
-            version: offered.to_string(),
-            kind: payload.kind().as_str().to_string(),
-            region: meta.region.clone(),
-            author: meta.author.clone(),
-            signer_fingerprint: verified.fingerprint(),
-            trusted_as,
-            pinned_fingerprint: pinned.as_deref().map(key_fingerprint),
-            installed_version,
-            categories: payload.categories.len(),
-            merchant_rules: payload.merchant_rules.len(),
-            keyword_rules: payload.keyword_rules.len(),
-            action: action.to_string(),
-            refusal: refusal.map(|e| e.to_string()),
-        })
+        let plan =
+            slipscan_packs::transport::plan(conn, &query.book_id, &verified, None).map_err(err)?;
+        Ok(PackVerificationDto::from(plan))
     })
+}
+
+impl From<slipscan_packs::transport::PackPlan> for PackVerificationDto {
+    fn from(plan: slipscan_packs::transport::PackPlan) -> Self {
+        Self {
+            action: plan.action.as_str().to_string(),
+            needs_signer_acceptance: plan.needs_signer_acceptance(),
+            pack_id: plan.pack_id,
+            name: plan.name,
+            version: plan.version,
+            kind: plan.kind,
+            region: plan.region,
+            author: plan.author,
+            signer_fingerprint: plan.signer_fingerprint,
+            trusted_as: plan.trusted_as,
+            pinned_fingerprint: plan.pinned_fingerprint,
+            installed_version: plan.installed_version,
+            categories: plan.categories,
+            merchant_rules: plan.merchant_rules,
+            keyword_rules: plan.keyword_rules,
+            refusal: plan.refusal,
+            origin: plan.origin,
+        }
+    }
 }
 
 /// Verify and install (or upgrade) a signed pack into a book.
@@ -1683,6 +1601,305 @@ pub async fn pack_uninstall(
             .map_err(err)?
             .uninstall(&query.book_id, &query.pack_id)
             .map_err(err)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// pack sources — the FETCH half (docs/PACKS.md "Getting a pack").
+//
+// A transport grants no authority. Every path below hands raw bytes to
+// `slipscan_packs::transport`, which checks the signature before the database
+// is touched, and then to the same `Installer` a hand-picked file goes
+// through. There is no second install path and no way to reach one.
+//
+// Two things this surface exists to make legible, on top of what the install
+// screen already shows:
+//
+// * **arriving is not accepting.** A signer this machine has never seen is
+//   refused until the user accepts that exact fingerprint. Naming a source is
+//   not consent to everything it will ever serve.
+// * **there is no registry.** The source list starts empty and only the user
+//   writes to it, so a fresh install makes no outbound pack request at all.
+// ---------------------------------------------------------------------------
+
+/// One configured source.
+#[derive(serde::Serialize)]
+pub struct PackSourceDto {
+    pub name: String,
+    /// Canonical URI: `file:`, `folder:`, `git:` or `https://`.
+    pub uri: String,
+    pub kind: String,
+    /// Whether reading it can put packets on a network.
+    pub network: bool,
+    pub added_at: String,
+    pub last_synced_at: Option<String>,
+}
+
+/// One pack a source offers: the catalogue's claim, plus the verified
+/// preflight when the bytes check out. The two are separate fields because
+/// only the second is derived from a checked signature.
+#[derive(serde::Serialize)]
+pub struct PackOfferDto {
+    /// Claimed id (catalogue — a hint, not a fact).
+    pub pack_id: String,
+    /// Claimed version (catalogue).
+    pub version: String,
+    /// Claimed display name (catalogue).
+    pub name: Option<String>,
+    /// Blob name within the source; the handle `pack_source_install` takes.
+    pub document: String,
+    /// The verified preflight, present iff the signature verified.
+    pub verified: Option<PackVerificationDto>,
+    /// Why this entry could not be verified. One unreadable file in a shared
+    /// folder must not hide the rest of the catalogue.
+    pub error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct PackSourceAddRequest {
+    pub name: String,
+    /// `file:<path>`, `folder:<path>`, `git:<url>[#ref]` or `https://<url>`.
+    pub uri: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct PackSourceNameRequest {
+    pub name: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct PackSourceFetchRequest {
+    pub book_id: String,
+    pub source: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct PackSourceInstallRequest {
+    pub book_id: String,
+    pub source: String,
+    pub pack_id: String,
+    /// Exact document name from `pack_source_fetch`, when one source offers
+    /// the same pack id from more than one publisher.
+    #[serde(default)]
+    pub document: Option<String>,
+    /// The trust-on-first-use answer: the fingerprint the user compared
+    /// against the publisher's own channel. Omit and an unknown signer
+    /// refuses. Never an override for a changed publisher key.
+    #[serde(default)]
+    pub accept_signer: Option<String>,
+}
+
+/// Transport capabilities for one source read: the git checkout cache (kept
+/// inside the user's own data folder, so it is part of the one thing they
+/// back up or delete) and the HTTPS client.
+///
+/// Built per call and only for a pack-source command. It carries no endpoint
+/// — slipscan-packs has none — so every request goes to a base URL the user
+/// added, and with no source added, none is ever made.
+fn pack_transport_context(
+    state: &AppState,
+) -> Result<slipscan_packs::transport::TransportContext, String> {
+    let cache = state.data_dir()?;
+    let http = slipscan_ingest::packs::ReqwestPackHttp::new()?;
+    Ok(slipscan_packs::transport::TransportContext::new()
+        .with_cache_dir(cache)
+        .with_http(std::sync::Arc::new(http)))
+}
+
+fn to_source_dto(row: slipscan_packs::transport::PackSourceRow) -> PackSourceDto {
+    PackSourceDto {
+        uri: row.source.uri(),
+        kind: row.source.kind().as_str().to_string(),
+        network: row.source.is_network(),
+        name: row.name,
+        added_at: row.added_at,
+        last_synced_at: row.last_synced_at,
+    }
+}
+
+/// Add a pack source. Nothing is contacted by adding one — the source is read
+/// when the user asks for it. This is the **only** way a source ever exists.
+#[tauri::command]
+pub async fn pack_source_add(
+    state: State<'_, AppState>,
+    query: PackSourceAddRequest,
+) -> Result<PackSourceDto, String> {
+    use slipscan_packs::transport::{PackSource, SourceStore};
+
+    let source = PackSource::parse(&query.uri).map_err(err)?;
+    let service = state.service()?;
+    service.with_connection(|conn| {
+        let row = SourceStore::open(conn)
+            .map_err(err)?
+            .add(&query.name, &source)
+            .map_err(err)?;
+        Ok(to_source_dto(row))
+    })
+}
+
+/// Forget a source. Installed packs are untouched: where a pack came from is
+/// history, not a dependency. `false` = there was no source by that name.
+#[tauri::command]
+pub async fn pack_source_remove(
+    state: State<'_, AppState>,
+    query: PackSourceNameRequest,
+) -> Result<bool, String> {
+    let service = state.service()?;
+    service.with_connection(|conn| {
+        slipscan_packs::transport::SourceStore::open(conn)
+            .map_err(err)?
+            .remove(&query.name)
+            .map_err(err)
+    })
+}
+
+/// Configured sources. Empty on a fresh install — and empty is what makes
+/// "no outbound request until you name a source" true rather than promised.
+#[tauri::command]
+pub async fn pack_source_list(state: State<'_, AppState>) -> Result<Vec<PackSourceDto>, String> {
+    let service = state.service()?;
+    service.with_connection(|conn| {
+        // Nothing to read, and nothing to create on a read path, until a
+        // source has actually been added.
+        let Some(store) =
+            slipscan_packs::transport::SourceStore::open_readonly(conn).map_err(err)?
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(store
+            .list()
+            .map_err(err)?
+            .into_iter()
+            .map(to_source_dto)
+            .collect())
+    })
+}
+
+/// Read a source's catalogue and preflight every pack it offers against the
+/// book. **Installs nothing.** This is where a publisher's fingerprint is put
+/// in front of the user, before any decision is possible.
+#[tauri::command]
+pub async fn pack_source_fetch(
+    state: State<'_, AppState>,
+    query: PackSourceFetchRequest,
+) -> Result<Vec<PackOfferDto>, String> {
+    use slipscan_packs::transport::{self, SourceStore};
+
+    // Reading a folder, a git remote or an HTTPS base is synchronous and can
+    // be slow: hop off Tauri's async workers rather than blocking one, the
+    // same way the explicit FX fetch does.
+    tokio::task::block_in_place(|| {
+        let ctx = pack_transport_context(&state)?;
+        let service = state.service()?;
+        book_by_id(&service, &query.book_id)?;
+
+        let row = service.with_connection(|conn| {
+            SourceStore::open_readonly(conn)
+                .map_err(err)?
+                .ok_or_else(|| format!("no pack source named {:?}", query.source))?
+                .require(&query.source)
+                .map_err(err)
+        })?;
+
+        let store = transport::open(&row.source, &ctx).map_err(err)?;
+        let entries = transport::discover(store.as_ref()).map_err(err)?;
+
+        let mut offers = Vec::with_capacity(entries.len());
+        for entry in &entries {
+            let (verified, error) = match transport::fetch(store.as_ref(), entry) {
+                Ok(bundle) => match service
+                    .with_connection(|conn| transport::plan_bundle(conn, &query.book_id, &bundle))
+                {
+                    Ok(plan) => (Some(PackVerificationDto::from(plan)), None),
+                    Err(e) => (None, Some(e.to_string())),
+                },
+                Err(e) => (None, Some(e.to_string())),
+            };
+            offers.push(PackOfferDto {
+                pack_id: entry.id.clone(),
+                version: entry.version.clone(),
+                name: entry.name.clone(),
+                document: entry.document.clone(),
+                verified,
+                error,
+            });
+        }
+        service.with_connection(|conn| {
+            SourceStore::open(conn)
+                .map_err(err)?
+                .touch(&row.name)
+                .map_err(err)
+        })?;
+        Ok(offers)
+    })
+}
+
+/// Fetch one pack from a source and install it.
+///
+/// The signature is checked on the bytes before the database is touched, and
+/// the catalogue's claims are cross-checked against the signed payload, so a
+/// source cannot list one pack and deliver another. An unknown signer is
+/// refused unless `accept_signer` carries the fingerprint the user was shown
+/// and checked — and a pack id whose publisher key has changed is refused
+/// regardless of what is passed, because the pin is not overridable.
+#[tauri::command]
+pub async fn pack_source_install(
+    state: State<'_, AppState>,
+    query: PackSourceInstallRequest,
+) -> Result<PackInstallDto, String> {
+    use slipscan_packs::transport::{self, SignerDecision, SourceStore};
+    use slipscan_packs::InstallOutcome;
+
+    tokio::task::block_in_place(|| {
+        let ctx = pack_transport_context(&state)?;
+        let service = state.service()?;
+        book_by_id(&service, &query.book_id)?;
+        // Installing a pack is also where this process picks up the
+        // classifier (idempotent — startup already did it).
+        slipscan_packs::engine::register_classifier();
+
+        let row = service.with_connection(|conn| {
+            SourceStore::open_readonly(conn)
+                .map_err(err)?
+                .ok_or_else(|| format!("no pack source named {:?}", query.source))?
+                .require(&query.source)
+                .map_err(err)
+        })?;
+
+        let store = transport::open(&row.source, &ctx).map_err(err)?;
+        let entries = transport::discover(store.as_ref()).map_err(err)?;
+        let entry = entries
+            .iter()
+            .find(|e| match query.document.as_deref() {
+                Some(doc) => e.document == doc,
+                None => e.id == query.pack_id,
+            })
+            .ok_or_else(|| format!("{} does not offer {:?}", row.name, query.pack_id))?;
+
+        let bundle = transport::fetch(store.as_ref(), entry).map_err(err)?;
+        let decision = match query.accept_signer.as_deref() {
+            Some(fp) => SignerDecision::Accept(fp),
+            None => SignerDecision::RequireKnown,
+        };
+
+        let report = service.with_connection(|conn| {
+            transport::install_bundle(conn, &query.book_id, &bundle, decision).map_err(err)
+        })?;
+        let (outcome, upgraded_from) = match report.outcome {
+            InstallOutcome::Installed => ("installed", None),
+            InstallOutcome::Upgraded { from } => ("upgraded", Some(from)),
+        };
+        Ok(PackInstallDto {
+            pack_id: report.pack.pack_id,
+            name: report.pack.name,
+            version: report.pack.version,
+            region: report.pack.region,
+            outcome: outcome.to_string(),
+            upgraded_from,
+            categories_created: report.categories_created,
+            categories_reused: report.categories_reused,
+            rules_installed: report.rules_installed,
+        })
     })
 }
 

@@ -35,6 +35,7 @@ pub mod email;
 pub mod fx;
 pub mod http;
 pub mod import;
+pub mod packs;
 pub mod pay;
 pub mod state;
 pub mod vault;
@@ -64,6 +65,13 @@ pub enum IngestError {
 
     #[error("parse error: {0}")]
     Parse(String),
+
+    /// A `mailrules` pack would not load or compile. Deliberately **not**
+    /// [`IngestError::Parse`]: that variant means "this one message is
+    /// unreadable, skip it" ([`MailboxConnector::fetch_unseen`]), and a
+    /// broken rule set is a configuration problem about every message.
+    #[error("mail rules: {0}")]
+    MailRules(String),
 
     #[error("unsupported file: {0}")]
     UnsupportedFile(String),

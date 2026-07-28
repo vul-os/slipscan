@@ -14,6 +14,7 @@
   <a href="#screenshots">Screenshots</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#documentation">Docs</a> ·
+  <a href="PARITY.md">Parity</a> ·
   <a href="ROADMAP.md">Roadmap</a>
 </p>
 
@@ -37,7 +38,9 @@
 
 ## What is SlipScan?
 
-SlipScan gives you what Vault22 / 22seven does for personal finance and what Xero does for small-business accounting — bank transactions, receipts, budgets, categorised spending, double-entry ledger, reconciliation, tax — with one fundamental difference: **there is no central server**. A Rust core over a plain SQLite file, wrapped in a Tauri desktop app. It is a standalone product: no account, no cloud, no telemetry, and it never depends on any hosted service.
+SlipScan is aiming at what Vault22 / 22seven does for personal finance and what Xero does for small-business accounting — bank transactions, receipts, budgets, categorised spending, double-entry ledger, reconciliation, tax — with one fundamental difference: **there is no central server**. A Rust core over a plain SQLite file, wrapped in a Tauri desktop app. It is a standalone product: no account, no cloud, no telemetry, and it never depends on any hosted service.
+
+**How much of that is actually built?** [PARITY.md](PARITY.md) scores all 24 capabilities on both axes — Built / Partial / Not built, each with a file-level citation. The short version: the personal-finance loop is real (accounts, categorisation that learns, budgets, household attribution), and the accounting side is a ledger, not yet an accounting product — **there is no invoicing, and no quotes, bills, contacts, aged receivables, fixed assets or payroll**. Nothing in that document is rounded up.
 
 It is also **global by default**: nothing country-specific is hardcoded — chart-of-accounts seeds, tax rates and return labels, bank CSV presets, and merchant packs all ship as **region profiles** (data you pick, [contract](docs/ARCHITECTURE.md#global-by-default--regions-are-data-not-code)). South Africa is the first region profile; a generic profile covers any country from day one.
 
@@ -77,7 +80,8 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
 
 - **Get paid by reference (Payments)** — watch an EFT reference code, and when the matching payment lands in your books (from any source) SlipScan fires an HMAC-signed webhook to endpoints you register. Signing secrets are vault-held and shown exactly once; payloads carry the reference and amount, never account numbers; deliveries retry until your box has network. Inbox in, webhook out, no central infrastructure ([guide](docs/PAYMENTS.md))
 - **Movable data folder, your own backup** — your books and documents live in one folder you can see, relocate from Settings or `slipscan data move` (verified copy + atomic switch), and back up by syncing it with your own cloud (iCloud / Dropbox / Syncthing / NAS). SlipScan ships no backup service, and the keychain key never travels with the folder ([data &amp; backup](docs/CONFIGURATION.md))
-- Ingestion from your own mailbox — always your accounts, [never our infrastructure](docs/EMAIL.md); generic IMAP, Gmail, and Microsoft Graph all sync one-shot from `slipscan mail-sync` today (`--login` runs the provider's own OAuth grant into the vault); the push loop (IMAP IDLE) is built but not yet wired to a surface
+- Ingestion from your own mailbox — always your accounts, [never our infrastructure](docs/EMAIL.md); generic IMAP, Gmail, and Microsoft Graph all sync one-shot from `slipscan mail-sync` today (`--login` runs the provider's own OAuth grant into the vault); the push loop (IMAP IDLE) is built but not yet wired to a surface, and Graph push is unsupported by design outside self-host mode
+- **Bank alert emails become transactions** — "your card was used for R 184.50 at…" is parsed into a statement line and imported through the same path a CSV statement uses, so dedupe, your own categorisation corrections, and the Payments detection hook all apply. The formats are **data, not code**: they ship as signed `mailrules` [packs](docs/PACKS.md#mailrules-packs), so the community maintains each bank's rules without a bank-specific line in the product — SlipScan ships none of its own. Deliberately conservative: a rule that matches but cannot read a field cleanly declines and reports why, because a wrongly-parsed transaction is worse than an unparsed one. CLI today (`slipscan mail-sync --alerts --account <account>`); no desktop UI yet ([guide](docs/EMAIL.md#bank-alert-emails--transactions))
 - Open-source, local bank-scraper framework — adapters run in your session, first adapters in progress ([framework](docs/BANK-ADAPTERS.md))
 - Write-only credential vault rooted in the OS keychain — secrets can be set, rotated, revoked, and used, never viewed ([threat model](docs/THREAT-MODEL.md))
 - Opt-in multi-currency FX via [OpenRate](https://github.com/vul-os/openrate) — self-hosted, provenance-graded rates. Decimal-only rate math (floats never touch money), a local rate cache, and every conversion recording the exact rate, quality grade, and as-of age it used — surfaced on the CLI (`slipscan fx`), the HTTP server, and the desktop Settings screen; converted report views are still landing (Phase 4.7). No endpoint configured means zero FX network calls ([contract](docs/ARCHITECTURE.md#exchange-rates--openrate))
@@ -167,7 +171,7 @@ flowchart LR
         direction LR
         subgraph sources["sources"]
             bank["Bank scrapers<br/>(open-source, your session)"]
-            mail["Email inbound<br/>(your IMAP / Gmail / Graph / Proton)"]
+            mail["Email inbound<br/>(your IMAP / Gmail / Graph / Proton)<br/>receipts &amp; bank alerts"]
             files["Slips &amp; files<br/>(import today; drag-drop &amp; watch planned)"]
         end
         core["Rust core<br/>(slipscan-core services:<br/>categorise, budget, ledger, recon)"]
@@ -183,7 +187,7 @@ flowchart LR
     openrate -.->|"rates + provenance,<br/>cached locally"| core
 ```
 
-Between machines there is no hub — every node is a self-hosted peer. The only things that ever cross the network are **signed packs** (taxonomies and rules, verified with ed25519 on install) and, for users who opt in, **differentially-private aggregates** — category-level statistics noised on-device before they leave it. Aggregators are community-run and untrusted by design; transactions, merchants, and credentials never appear on any edge:
+Between machines there is no hub — every node is a self-hosted peer. The only things that ever cross the network are **signed packs** (taxonomies, classification rules, and bank-alert mail rules — verified with ed25519 on install) and, for users who opt in, **differentially-private aggregates** — category-level statistics noised on-device before they leave it. Aggregators are community-run and untrusted by design; transactions, merchants, and credentials never appear on any edge:
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-monospace, SFMono-Regular, Menlo, monospace','primaryColor':'transparent','primaryBorderColor':'#14b8a6','primaryTextColor':'#8f969e','lineColor':'#8a8f98','nodeBorder':'#5f8f8a','edgeLabelBackground':'transparent','clusterBorder':'#3f8f86','clusterBkg':'transparent'}}}%%
@@ -217,17 +221,18 @@ Settings live in SQLite, secrets live in the OS keychain, and there is no requir
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | The binding contract: layout, tech decisions, domain model, vault spec, non-negotiables |
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Settings model, data locations, environment |
 | [API.md](docs/API.md) | One service surface, two transports — Tauri IPC and the `/api/v1` HTTP server |
-| [EMAIL.md](docs/EMAIL.md) | Email ingestion: IMAP IDLE, Gmail, Microsoft Graph, Proton Bridge — your accounts, no middleman |
+| [EMAIL.md](docs/EMAIL.md) | Email ingestion: IMAP IDLE, Gmail, Microsoft Graph, Proton Bridge — your accounts, no middleman; and bank alerts → transactions |
 | [PAYMENTS.md](docs/PAYMENTS.md) | Payments — reference watches and signed webhooks: watch a payment reference, get a signed webhook when the EFT lands; setup, receiver verification, delivery and retry semantics |
 | [BANK-ADAPTERS.md](docs/BANK-ADAPTERS.md) | The local, open-source bank-scraper framework and how to write an adapter |
-| [PACKS.md](docs/PACKS.md) | Signed classification packs: format, signing, verification, distribution |
+| [PACKS.md](docs/PACKS.md) | Signed packs — classification, benchmark, and bank-alert `mailrules` kinds: format, signing, verification, distribution |
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | Nudges and anonymous peer benchmarks: local DP, cohorts, honest limits |
 | [SELFHOST.md](docs/SELFHOST.md) | Running the core headless on a NAS / home server |
 | [THREAT-MODEL.md](docs/THREAT-MODEL.md) | What protects your credentials, what an attacker gets, residual risks |
 | [SCREENSHOTS.md](docs/SCREENSHOTS.md) | Annotated tour of every screen in the shipped app |
 | [FAQ.md](docs/FAQ.md) | Straight answers to the questions everyone asks |
+| [PARITY.md](PARITY.md) | Feature parity vs Xero and Vault22 / 22seven, measured: 24 capabilities scored Built / Partial / Not built, every row cited to a file |
 
-Also: [ROADMAP.md](ROADMAP.md) (phases, with honest partial-status notes; parity matrices are planned there but not yet written), [SECURITY.md](SECURITY.md) (vulnerability reporting), [CHANGELOG.md](CHANGELOG.md).
+Also: [ROADMAP.md](ROADMAP.md) (phases, with honest partial-status notes), [SECURITY.md](SECURITY.md) (vulnerability reporting), [CHANGELOG.md](CHANGELOG.md).
 
 ## Development
 

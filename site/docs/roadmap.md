@@ -59,7 +59,7 @@ Vault22/22seven-class intelligence, decentralized (design in [docs/ARCHITECTURE.
 - [ ] Optional OS notifications (local only)
 - [ ] Benchmark packs: signed aggregate-statistics packs; local peer comparison ("you vs households like yours") *(partial: pack format, comparison math and the read path all ship — `ops::pack_benchmark`, `slipscan pack benchmark`, `POST /api/v1/pack_benchmark`. Missing: any published benchmark pack to compare against — publishing one needs contributors, which is the line below)*
 - [ ] Opt-in anonymous contribution: local differential privacy, coarse k-anonymous cohorts, anonymous transport, off by default *(not started: no differential-privacy code exists anywhere in the tree)*
-- [ ] **Parity matrices**: tracked feature-by-feature vs Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency) and Vault22/22seven (net worth, goals, nudges, peer comparison) — each gap becomes an issue
+- [ ] **Parity matrices**: tracked feature-by-feature vs Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency) and Vault22/22seven (net worth, goals, nudges, peer comparison) — each gap becomes an issue *(written: [PARITY.md](PARITY.md) scores 24 capabilities Built / Partial / Not built with a file-level citation for every row — 2 built, 10 partial, 12 not built. Still missing: the gaps are not filed as issues, and nothing re-scores the matrix automatically)*
 
 ## Phase 4.7 — Global by default + OpenRate FX
 
@@ -114,7 +114,7 @@ No fabricated credential scrapers. Real, testable, ToS-respecting integrations p
 
 Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Feature parity". Every screen held to the design-system bar.
 
-- [ ] **Parity matrices** written and tracked: Vault22/22seven (net worth, accounts, goals, nudges, household, peer comparison) and Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency, reconciliation)
+- [ ] **Parity matrices** written and tracked: Vault22/22seven (net worth, accounts, goals, nudges, household, peer comparison) and Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency, reconciliation) *(written — [PARITY.md](PARITY.md), and it is blunt: **zero of Xero's 14 core capabilities are built**, including no invoicing of any kind. Not tracked: no issue per gap yet. The ranked gap list at the end of that document is what the rest of this phase has to close)*
 - [ ] Xero-side gaps: invoicing + quotes, fixed-asset register, multi-currency converted views (OpenRate FX already wired)
 - [ ] Vault22-side gaps: net-worth over time, goals, the remaining nudge tiers
 - [ ] UI/UX parity pass: deep design-system CSS across every screen, responsive, both themes — no screen ships below the bar

@@ -39,6 +39,9 @@ import type {
   PackDocumentRequest,
   PackInstallOutcome,
   PackKind,
+  PackOffer,
+  PackSourceInfo,
+  PackSourceKind,
   PackVerification,
   PayDelivery,
   PayEndpoint,
@@ -953,6 +956,108 @@ let installedPacks: InstalledPackInfo[] = [
 const packPins = new Map<string, string>(
   installedPacks.map((p) => [p.pack_id, p.signer_fingerprint]),
 );
+/**
+ * Configured pack sources. **Starts empty, and that is the point**: there is
+ * no registry and no default endpoint, so a fresh install has nowhere to
+ * fetch from until the user adds one. Seeding a demo source here would make
+ * the harness lie about the one property this design exists to keep.
+ */
+let packSources: PackSourceInfo[] = [];
+
+const MOCK_SOURCE_SCHEMES = new Set(["file", "folder", "git", "https", "http"]);
+
+function mockSourceKind(uri: string): PackSourceKind {
+  if (uri.startsWith("file:")) return "file";
+  if (uri.startsWith("folder:")) return "folder";
+  if (uri.startsWith("git:")) return "git";
+  if (uri.startsWith("https://")) return "https";
+  if (uri.startsWith("http://"))
+    throw new Error(
+      `refusing the plaintext source "${uri}": use https://. The signature is what is trusted, but a plaintext fetch still tells the network which packs you run`,
+    );
+  throw new Error(
+    `unsupported pack source "${uri}"; use file:<path>, folder:<path>, git:<url>, or https://<url>`,
+  );
+}
+
+/**
+ * What any configured source offers in this harness — one pack from a signer
+ * already trusted here, one from a signer that is NOT (so the accept-the-
+ * fingerprint step is exercised), one that would be a downgrade, and one file
+ * that does not verify at all (so "one bad file must not hide the catalogue"
+ * is visible in the UI, not just asserted in Rust).
+ */
+const NEWCOMER_FP = "5c1a-9e02-7b44-d310";
+
+const mockCatalogue: {
+  pack_id: string;
+  version: string;
+  name: string;
+  document: string;
+  kind: PackKind;
+  region: string | null;
+  author: string | null;
+  signer_fingerprint: string;
+  categories: number;
+  merchant_rules: number;
+  keyword_rules: number;
+  broken?: string;
+}[] = [
+  {
+    pack_id: "za-retail-base",
+    version: "1.6.0",
+    name: "South African retail merchants",
+    document: `${COMMUNITY_FP}/za-retail-base-1.6.0.pack.json`,
+    kind: "taxonomy",
+    region: "ZA",
+    author: "SlipScan Community",
+    signer_fingerprint: COMMUNITY_FP,
+    categories: 28,
+    merchant_rules: 164,
+    keyword_rules: 12,
+  },
+  {
+    pack_id: "intl-groceries",
+    version: "2.0.0",
+    name: "Worldwide grocery chains",
+    document: `${NEWCOMER_FP}/intl-groceries-2.0.0.pack.json`,
+    kind: "taxonomy",
+    region: null,
+    author: "hazel",
+    signer_fingerprint: NEWCOMER_FP,
+    categories: 9,
+    merchant_rules: 74,
+    keyword_rules: 0,
+  },
+  {
+    pack_id: "za-benchmarks-2026",
+    version: "0.2.0",
+    name: "ZA household benchmarks · 2026",
+    document: `${COMMUNITY_FP}/za-benchmarks-2026-0.2.0.pack.json`,
+    kind: "benchmark",
+    region: "ZA",
+    author: "SlipScan Community",
+    signer_fingerprint: COMMUNITY_FP,
+    categories: 0,
+    merchant_rules: 0,
+    keyword_rules: 0,
+  },
+  {
+    pack_id: "za-fuel",
+    version: "1.0.0",
+    name: "SA fuel stations",
+    document: `${COMMUNITY_FP}/za-fuel-1.0.0.pack.json`,
+    kind: "taxonomy",
+    region: "ZA",
+    author: "SlipScan Community",
+    signer_fingerprint: COMMUNITY_FP,
+    categories: 0,
+    merchant_rules: 0,
+    keyword_rules: 0,
+    broken: "signature verification failed",
+  },
+];
+
 /** signer fingerprint → trust label (trust-on-first-use). */
 const trustedSigners = new Map<string, string>([[COMMUNITY_FP, "SlipScan Community"]]);
 
@@ -2240,6 +2345,10 @@ export const mockApi = {
       keyword_rules: doc.keyword_rules,
       action: refusal ? "refuse" : installed ? "upgrade" : "install",
       refusal,
+      // A file the user picked comes with the publisher's key in hand, so
+      // passing it *is* the trust decision — nothing further to accept.
+      needs_signer_acceptance: false,
+      origin: null,
     };
   },
 
@@ -2292,6 +2401,201 @@ export const mockApi = {
       categories_created: upgradedFrom ? 0 : doc.categories,
       categories_reused: upgradedFrom ? doc.categories : 0,
       rules_installed: doc.merchant_rules + doc.keyword_rules,
+    };
+  },
+
+  // -- pack sources: the fetch half. Same shape as the real thing: a source
+  // list that starts EMPTY (no registry, no default endpoint), a read that
+  // installs nothing and shows fingerprints, and an install that refuses an
+  // unseen signer until it is accepted by fingerprint. --
+
+  pack_source_list: async (): Promise<PackSourceInfo[]> => clone(packSources),
+
+  pack_source_add: async (q: { name: string; uri: string }): Promise<PackSourceInfo> => {
+    const name = q.name.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name) || MOCK_SOURCE_SCHEMES.has(name))
+      throw new Error(`pack source name "${q.name}" is invalid`);
+    if (packSources.some((s) => s.name === name))
+      throw new Error(`a pack source named "${name}" already exists`);
+    const uri = q.uri.trim();
+    const kind = mockSourceKind(uri);
+    packSources.push({
+      name,
+      uri,
+      kind,
+      network: kind === "git" || kind === "https",
+      added_at: new Date().toISOString(),
+      last_synced_at: null,
+    });
+    return clone(packSources[packSources.length - 1]);
+  },
+
+  pack_source_remove: async (q: { name: string }): Promise<boolean> => {
+    const before = packSources.length;
+    packSources = packSources.filter((s) => s.name !== q.name.trim().toLowerCase());
+    return packSources.length < before;
+  },
+
+  pack_source_fetch: async (q: {
+    book_id: string;
+    source: string;
+  }): Promise<PackOffer[]> => {
+    const source = packSources.find((s) => s.name === q.source);
+    if (!source) throw new Error(`no pack source named "${q.source}"`);
+    source.last_synced_at = new Date().toISOString();
+    return clone(
+      mockCatalogue.map((entry) => {
+        if (entry.broken)
+          return {
+            pack_id: entry.pack_id,
+            version: entry.version,
+            name: entry.name,
+            document: entry.document,
+            verified: null,
+            error: entry.broken,
+          };
+        const installed = installedPacks.find(
+          (p) => p.book_id === q.book_id && p.pack_id === entry.pack_id,
+        );
+        const pinned = packPins.get(entry.pack_id) ?? null;
+        const refusal =
+          pinned && pinned !== entry.signer_fingerprint
+            ? `pack ${entry.pack_id} was previously signed by a different key (pinned signer ${pinned}); refusing to install`
+            : installed
+              ? packRefusal(
+                  {
+                    id: entry.pack_id,
+                    name: entry.name,
+                    version: entry.version,
+                    region: entry.region,
+                    author: entry.author,
+                    kind: entry.kind,
+                    categories: entry.categories,
+                    merchant_rules: entry.merchant_rules,
+                    keyword_rules: entry.keyword_rules,
+                  },
+                  entry.signer_fingerprint,
+                  installed,
+                )
+              : null;
+        const trusted = trustedSigners.get(entry.signer_fingerprint) ?? null;
+        return {
+          pack_id: entry.pack_id,
+          version: entry.version,
+          name: entry.name,
+          document: entry.document,
+          error: null,
+          verified: {
+            pack_id: entry.pack_id,
+            name: entry.name,
+            version: entry.version,
+            kind: entry.kind,
+            region: entry.region,
+            author: entry.author,
+            signer_fingerprint: entry.signer_fingerprint,
+            trusted_as: trusted,
+            pinned_fingerprint: pinned,
+            installed_version: installed?.version ?? null,
+            categories: entry.categories,
+            merchant_rules: entry.merchant_rules,
+            keyword_rules: entry.keyword_rules,
+            action: refusal ? "refuse" : installed ? "upgrade" : "install",
+            refusal,
+            needs_signer_acceptance: !trusted && !pinned,
+            origin: `${source.uri} (${entry.document})`,
+          },
+        };
+      }),
+    );
+  },
+
+  pack_source_install: async (q: {
+    book_id: string;
+    source: string;
+    pack_id: string;
+    document?: string;
+    accept_signer?: string;
+  }): Promise<PackInstallOutcome> => {
+    const source = packSources.find((s) => s.name === q.source);
+    if (!source) throw new Error(`no pack source named "${q.source}"`);
+    const entry = mockCatalogue.find((e) =>
+      q.document ? e.document === q.document : e.pack_id === q.pack_id,
+    );
+    if (!entry || entry.broken)
+      throw new Error(`pack "${q.pack_id}" is not offered by source "${q.source}"`);
+
+    // The pin comes before the trust decision, exactly as it does for real:
+    // a changed publisher key must not leave a newly-trusted signer behind.
+    const pinned = packPins.get(entry.pack_id) ?? null;
+    if (pinned && pinned !== entry.signer_fingerprint)
+      throw new Error(
+        `pack ${entry.pack_id} was previously signed by a different key (pinned signer ${pinned}); refusing to install`,
+      );
+    if (!trustedSigners.has(entry.signer_fingerprint)) {
+      if (q.accept_signer !== entry.signer_fingerprint)
+        throw new Error(
+          `signer ${entry.signer_fingerprint} for pack ${entry.pack_id} has never been seen here; check the fingerprint against the publisher's own channel and accept it explicitly`,
+        );
+      trustedSigners.set(
+        entry.signer_fingerprint,
+        entry.author?.trim() || `publisher ${entry.signer_fingerprint}`,
+      );
+    }
+    packPins.set(entry.pack_id, entry.signer_fingerprint);
+
+    const existing = installedPacks.find(
+      (p) => p.book_id === q.book_id && p.pack_id === entry.pack_id,
+    );
+    const refusal = packRefusal(
+      {
+        id: entry.pack_id,
+        name: entry.name,
+        version: entry.version,
+        region: entry.region,
+        author: entry.author,
+        kind: entry.kind,
+        categories: entry.categories,
+        merchant_rules: entry.merchant_rules,
+        keyword_rules: entry.keyword_rules,
+      },
+      entry.signer_fingerprint,
+      existing,
+    );
+    if (refusal) throw new Error(refusal);
+
+    const now = new Date().toISOString();
+    const upgradedFrom = existing?.version ?? null;
+    if (existing) {
+      existing.version = entry.version;
+      existing.name = entry.name;
+      existing.signer_fingerprint = entry.signer_fingerprint;
+      existing.signer_label = trustedSigners.get(entry.signer_fingerprint) ?? null;
+      existing.updated_at = now;
+    } else {
+      installedPacks.push({
+        pack_id: entry.pack_id,
+        book_id: q.book_id,
+        name: entry.name,
+        version: entry.version,
+        kind: entry.kind,
+        region: entry.region,
+        signer_fingerprint: entry.signer_fingerprint,
+        signer_label: trustedSigners.get(entry.signer_fingerprint) ?? null,
+        installed_at: now,
+        updated_at: now,
+      });
+    }
+    source.last_synced_at = now;
+    return {
+      pack_id: entry.pack_id,
+      name: entry.name,
+      version: entry.version,
+      region: entry.region,
+      outcome: upgradedFrom ? "upgraded" : "installed",
+      upgraded_from: upgradedFrom,
+      categories_created: upgradedFrom ? 0 : entry.categories,
+      categories_reused: upgradedFrom ? entry.categories : 0,
+      rules_installed: entry.merchant_rules + entry.keyword_rules,
     };
   },
 

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use slipscan_core::domain::CategoryKind;
 
 use crate::error::{PackError, PackResult};
+use crate::mailrules::MailRuleSet;
 
 // ---------------------------------------------------------------------------
 // Semver
@@ -210,6 +211,8 @@ pub enum PackKind {
     Taxonomy,
     /// Aggregate cohort statistics for local peer comparison.
     Benchmark,
+    /// Bank-alert email parsing rules (see [`crate::mailrules`]).
+    MailRules,
 }
 
 impl PackKind {
@@ -217,6 +220,7 @@ impl PackKind {
         match self {
             PackKind::Taxonomy => "taxonomy",
             PackKind::Benchmark => "benchmark",
+            PackKind::MailRules => "mailrules",
         }
     }
 }
@@ -228,6 +232,7 @@ impl FromStr for PackKind {
         match s {
             "taxonomy" => Ok(PackKind::Taxonomy),
             "benchmark" => Ok(PackKind::Benchmark),
+            "mailrules" => Ok(PackKind::MailRules),
             other => Err(PackError::Validation(format!(
                 "unknown pack kind {other:?}"
             ))),
@@ -251,6 +256,9 @@ pub struct PackPayload {
     /// Present only in benchmark packs; a benchmark pack carries nothing else.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub benchmarks: Option<BenchmarkSet>,
+    /// Present only in mailrules packs; a mailrules pack carries nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mailrules: Option<MailRuleSet>,
 }
 
 impl PackPayload {
@@ -260,11 +268,15 @@ impl PackPayload {
         Ok(payload)
     }
 
-    /// Derived pack kind: benchmark iff a benchmark section is present
-    /// (validation guarantees benchmark packs carry nothing else).
+    /// Derived pack kind: benchmark iff a benchmark section is present,
+    /// mailrules iff a mailrules section is present. Validation guarantees
+    /// those sections are mutually exclusive and carry nothing else, so this
+    /// cannot disagree with the payload.
     pub fn kind(&self) -> PackKind {
         if self.benchmarks.is_some() {
             PackKind::Benchmark
+        } else if self.mailrules.is_some() {
+            PackKind::MailRules
         } else {
             PackKind::Taxonomy
         }
@@ -385,12 +397,21 @@ impl PackPayload {
             }
         }
 
+        // A pack's kind is derived from which section it carries, so the
+        // sections have to stay mutually exclusive — otherwise `kind()` would
+        // have to pick a winner and the stored `kind` column would disagree
+        // with half the payload.
+        let taxonomy_content = !self.categories.is_empty()
+            || !self.merchant_rules.is_empty()
+            || !self.keyword_rules.is_empty()
+            || !self.vat_hints.is_empty();
+
+        if self.benchmarks.is_some() && self.mailrules.is_some() {
+            return fail("a pack carries either benchmark stats or mail rules, never both".into());
+        }
+
         if let Some(set) = &self.benchmarks {
-            if !self.categories.is_empty()
-                || !self.merchant_rules.is_empty()
-                || !self.keyword_rules.is_empty()
-                || !self.vat_hints.is_empty()
-            {
+            if taxonomy_content {
                 return fail(
                     "benchmark packs must carry only aggregate stats — \
                      no categories, rules, or vat hints"
@@ -398,6 +419,19 @@ impl PackPayload {
                 );
             }
             validate_benchmarks(set)?;
+        }
+
+        if let Some(set) = &self.mailrules {
+            if taxonomy_content {
+                return fail(
+                    "mailrules packs must carry only mail rules — no categories, \
+                     rules, or vat hints. Install a taxonomy pack alongside; the \
+                     transactions a mail rule produces go through the same \
+                     categorisation cascade as any statement line."
+                        .into(),
+                );
+            }
+            crate::mailrules::validate_mailrules(set)?;
         }
 
         Ok(())
@@ -535,6 +569,26 @@ mod tests {
                 note: Some("standard rate".into()),
             }],
             benchmarks: None,
+            mailrules: None,
+        }
+    }
+
+    fn mailrules_payload() -> PackPayload {
+        PackPayload {
+            meta: PackMeta {
+                id: "fixture-bank-alerts".into(),
+                name: "Fixture bank alerts".into(),
+                version: "1.0.0".into(),
+                region: None,
+                author: Some("tests".into()),
+                description: None,
+            },
+            categories: vec![],
+            merchant_rules: vec![],
+            keyword_rules: vec![],
+            vat_hints: vec![],
+            benchmarks: None,
+            mailrules: Some(crate::mailrules::sample_set()),
         }
     }
 
@@ -570,6 +624,7 @@ mod tests {
                     mean_minor: Some(512_300),
                 }],
             }),
+            mailrules: None,
         }
     }
 
@@ -736,6 +791,70 @@ mod tests {
         let mut payload = benchmark_payload();
         payload.benchmarks.as_mut().unwrap().stats[0].sample_size = 20;
         assert!(payload.validate().is_err(), "sample below pack k_floor");
+    }
+
+    #[test]
+    fn mailrules_payload_validates_and_reports_kind() {
+        let payload = mailrules_payload();
+        payload.validate().unwrap();
+        assert_eq!(payload.kind(), PackKind::MailRules);
+        assert_eq!(PackKind::MailRules.as_str(), "mailrules");
+        assert_eq!(
+            PackKind::from_str("mailrules").unwrap(),
+            PackKind::MailRules
+        );
+    }
+
+    #[test]
+    fn mailrules_payload_round_trips_through_json() {
+        let payload = mailrules_payload();
+        let bytes = serde_json::to_vec_pretty(&payload).unwrap();
+        let parsed = PackPayload::from_json(&bytes).unwrap();
+        assert_eq!(parsed, payload);
+    }
+
+    #[test]
+    fn mailrules_pack_must_be_pure() {
+        let mut payload = mailrules_payload();
+        payload.categories = minimal_payload().categories;
+        assert!(matches!(payload.validate(), Err(PackError::Validation(_))));
+    }
+
+    #[test]
+    fn a_pack_cannot_be_both_benchmark_and_mailrules() {
+        let mut payload = mailrules_payload();
+        payload.benchmarks = benchmark_payload().benchmarks;
+        assert!(matches!(payload.validate(), Err(PackError::Validation(_))));
+    }
+
+    #[test]
+    fn mailrule_validation_runs_through_the_payload() {
+        // The section's own rules are enforced on any parse of a pack, not
+        // only when someone calls into the mailrules module directly.
+        let mut payload = mailrules_payload();
+        payload.mailrules.as_mut().unwrap().rules[0]
+            .merchant
+            .pattern = "(unclosed".into();
+        assert!(matches!(
+            payload.validate(),
+            Err(PackError::InvalidRegex { .. })
+        ));
+    }
+
+    /// A payload written before mailrules existed must still parse, and must
+    /// still serialize to the same bytes — pack signatures are taken over the
+    /// exact payload bytes, so a new optional section that leaked into the
+    /// JSON would invalidate every pack already signed.
+    #[test]
+    fn absent_mailrules_section_is_omitted_from_json() {
+        let payload = minimal_payload();
+        let bytes = serde_json::to_vec_pretty(&payload).unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(!text.contains("mailrules"), "{text}");
+
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(value.get("mailrules").is_none());
+        assert_eq!(PackPayload::from_json(&bytes).unwrap(), payload);
     }
 
     #[test]

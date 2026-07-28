@@ -234,6 +234,7 @@ mod tests {
             keyword_rules: vec![],
             vat_hints: vec![],
             benchmarks: None,
+            mailrules: None,
         }
     }
 
