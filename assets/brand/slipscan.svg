@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 280" width="680" height="280" role="img">
+  <title>SlipScan mark, lime slash version</title>
+  <desc>A dark receipt slip with a torn zigzag bottom edge, cut diagonally by a bright lime slash carried over from the existing wordmark.</desc>
+  <path d="M 280 74 a 14 14 0 0 1 14 -14 h 92 a 14 14 0 0 1 14 14 v 146 l -20 -12 l -20 12 l -20 -12 l -20 12 l -20 -12 l -20 12 Z" fill="#1F2A1A"/>
+  <path d="M 372 45 L 392 45 L 320 240 L 300 240 Z" fill="#D8FF33"/>
+</svg>
