@@ -5,6 +5,7 @@
     "docs:sync": "node scripts/sync-docs.mjs",
     "docs:check": "node scripts/sync-docs.mjs --check",
     "screenshots:sync": "node scripts/sync-screenshots.mjs",
-    "screenshots:check": "node scripts/sync-screenshots.mjs --check"
+    "screenshots:check": "node scripts/sync-screenshots.mjs --check",
+    "site:check": "node scripts/check-site.mjs"
   }
 }
