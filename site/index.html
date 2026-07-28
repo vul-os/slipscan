@@ -728,9 +728,10 @@ h1 .slash{color:var(--accent-text)}
           <p>Give a customer an EFT reference to quote. When a payment carrying it turns up in your
             books, an address you registered receives a signed message saying so — enough to release
             an order, mark an invoice paid, or just tell you.</p>
-          <p>Detection runs on transactions as they are created, which today means statement imports
-            and entries you make yourself. Reading the alert email your bank sends is
-            <a href="#honest" style="color:var(--accent-text);text-decoration:underline;text-underline-offset:2px">not built yet</a>.</p>
+          <p>Detection runs on transactions as they are created — statement imports, entries you make
+            yourself, and now the alert emails your bank sends, once you have installed
+            <a href="#honest" style="color:var(--accent-text);text-decoration:underline;text-underline-offset:2px">rules for your bank</a>.
+            That last path is command-line only today.</p>
           <div class="meta">HMAC-signed · reference and amount only, never account numbers · retries 1m, 5m, 30m, 2h, 12h, then daily</div>
         </div>
 
@@ -914,6 +915,10 @@ h1 .slash{color:var(--accent-text)}
           <div class="ds">Watch an EFT reference; when a matching payment lands in your books, endpoints you registered receive an HMAC-signed delivery. Secrets are vault-held and shown once; payloads carry reference and amount, never account numbers. Retries back off 1m, 5m, 30m, 2h, 12h, then daily.</div></div>
         <div class="row"><div class="nm">Mailbox sync <span class="chip chip-built">Built</span> <span class="chip chip-note">push not surfaced</span></div>
           <div class="ds">Generic IMAP, Gmail and Microsoft Graph all sync one-shot from <code>slipscan mail-sync</code>; <code>--login</code> runs the provider's own OAuth grant straight into the vault. The IMAP IDLE push loop is built but is not yet wired to a surface.</div></div>
+        <div class="row"><div class="nm">Xero / Vault22 parity matrices <span class="chip chip-built">Built</span></div>
+          <div class="ds">A feature-by-feature comparison against both, in <a href="./docs.html#parity">PARITY.md</a>. Every row cites the file that proves it, and a row nobody could cite is marked not built — so it reads as a list of gaps as much as a list of features. SlipScan has no invoicing at all, for instance, and the matrix says so.</div></div>
+        <div class="row"><div class="nm">Bank-alert emails into transactions <span class="chip chip-built">Built</span> <span class="chip chip-note">CLI only · you supply the formats</span></div>
+          <div class="ds">The SMS-style alert your bank emails you becomes a transaction, through <code>slipscan mail-sync --alerts</code>. The formats are <em>data</em>, not code: they arrive as signed <code>mailrules</code> packs, so any bank in any country can be supported without shipping bank-specific logic — but <b>no bank patterns ship with SlipScan</b>, so this reads your bank only once rules for it exist. Alerts join the same path statement imports use, so dedupe, categorisation and payment detection all apply. No desktop or server surface yet.</div></div>
         <div class="row"><div class="nm">Watched drop folder <span class="chip chip-built">Built</span></div>
           <div class="ds"><code>slipscan watch ./inbox</code> imports everything ingestable already in a folder, then keeps watching it. The closest thing to drag-and-drop that actually exists today.</div></div>
         <div class="row"><div class="nm">Signed packs, TOFU-pinned <span class="chip chip-built">Built</span></div>
@@ -942,10 +947,14 @@ h1 .slash{color:var(--accent-text)}
         <div class="not">
           <div>
             <h3>Device-to-device sync <span class="chip chip-planned">Planned</span></h3>
-            <p>The merge algebra is real and tested: <code>slipscan-sync</code> expresses replicated
-              state in the shared DMTAP algebra — editable rows as last-writer-wins registers, the
-              posted ledger as an add-only set, money on the wire as an exact decimal. The oplog,
-              device identity and transport do not exist. <b>Nothing syncs between devices.</b></p>
+            <p>Two of the three pieces now exist. The merge algebra is real and tested:
+              <code>slipscan-sync</code> expresses replicated state in the shared algebra — editable
+              rows as last-writer-wins registers, the posted ledger as an add-only set, money on the
+              wire as an exact decimal. Device identity and pairing are real too: each device holds
+              its own key, a paired key is pinned and a changed key is refused rather than accepted.
+              What is missing is the part in between — there is no oplog and no transport, so
+              <b>nothing syncs between devices.</b> Pairing two devices today proves who they are and
+              then does nothing else.</p>
           </div>
           <div class="today"><div class="h">what you have today</div>
             <p>One machine holds the book. Move the data folder, or point your own sync tool at it — the same folder that already backs up.</p></div>
@@ -962,16 +971,6 @@ h1 .slash{color:var(--accent-text)}
             <p>Peer comparison against a benchmark pack you installed — arithmetic done here against a public file, which discloses nothing about your finances.</p></div>
         </div>
 
-        <div class="not">
-          <div>
-            <h3>Bank-alert emails into transactions <span class="chip chip-planned">Planned</span></h3>
-            <p>Reading a payment out of the SMS-style alert your bank emails you is not implemented.
-              Payment detection runs on transactions as they are created — <b>which today means
-              statement imports and entries you make yourself</b>, and the Payments screen states that
-              where you would otherwise assume it.</p>
-          </div>
-          <div class="today"><div class="h">what you have today</div>
-            <p>Mailbox sync pulls receipt attachments out of your inbox and into your books. It is the attachment that lands, not the alert text.</p></div>
         </div>
 
         <div class="not">
@@ -996,15 +995,6 @@ h1 .slash{color:var(--accent-text)}
             <p><code>slipscan fx</code> on the CLI, the same surface over <code>/api/v1</code>, and rate status in desktop Settings.</p></div>
         </div>
 
-        <div class="not">
-          <div>
-            <h3>Xero / Vault22 parity matrices <span class="chip chip-planned">Planned</span></h3>
-            <p>The roadmap says a feature-by-feature comparison against Xero and Vault22 will be
-              published. <b>It has not been written.</b> Until it is, "Xero-class" on this page means
-              the shape of the ledger, not a claim of parity you can hold anyone to.</p>
-          </div>
-          <div class="today"><div class="h">what you have today</div>
-            <p>The capability table above, and a <a href="./docs.html#roadmap" style="color:var(--accent-text);text-decoration:underline;text-underline-offset:2px">roadmap</a> that carries its own partial-status notes.</p></div>
         </div>
       </div>
     </section>
@@ -1257,7 +1247,7 @@ var SHOTS=[
   {f:'reconcile.png',t:'Reconcile',
    c:'<b>Reconcile.</b> Scored matches between bank transactions and slips. Anything ambiguous lands in Needs review with its evidence spelled out and a one-key confirm or reject.'},
   {f:'payments.png',t:'Payments',
-   c:'<b>Payments.</b> Watch codes are the EFT references you gave customers; endpoints receive HMAC-signed deliveries with a visible retry queue. Reading a payment out of a bank-alert email is <em>not</em> implemented, and the screen says so.'},
+   c:'<b>Payments.</b> Watch codes are the EFT references you gave customers; endpoints receive HMAC-signed deliveries with a visible retry queue. Reading a payment out of a bank-alert email works from the command line once you install rules for your bank; no screen surfaces it yet.'},
   {f:'reports.png',t:'Reports',
    c:'<b>Reports.</b> Income vs expense by month, spending by category, the tax summary your region profile names, per-member breakdowns and CSV export. Exchange rates read <code>not configured</code> rather than quietly mixing currencies.'},
   {f:'packs.png',t:'Packs',
