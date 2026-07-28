@@ -36,14 +36,27 @@ description = "SlipScan's replicated state expressed in the shared DMTAP Sync al
 # an already-committed Cargo.lock. That's why this crate is additionally
 # `exclude`d from the root workspace (see root Cargo.toml) rather than relying
 # on `optional` + a default-off feature by itself.
-dmtap-sync = { git = "https://github.com/vul-os/envoir", rev = "12526123cb37e459df5717c2ce243bbecbf5ac23", optional = true }
+# The one shared implementation of the substrate merge algebra, now PUBLISHED to crates.io
+# from the KOTVA substrate repo. Consumer source keeps saying `dmtap_sync::` via cargo's
+# dependency-rename, so nothing in this crate had to move when the engine did.
+#
+# A REGISTRY dep is what lets this crate rejoin the workspace: cargo resolves a crates.io
+# dependency from the committed Cargo.lock without touching the network, whereas a git dep
+# is fetched during resolution regardless of which features are active. That difference is
+# the entire reason this crate used to be `exclude`d from the workspace.
+dmtap-sync = { package = "kotva-sync", version = "0.1.0", optional = true }
 
 rust_decimal = "1"
 serde_json = "1"
 thiserror = "2"
 
 [features]
-default = []
+# ON by default since the engine was published. It was default-off only because the dependency
+# was a GIT dep, which cargo fetches during resolution regardless of features and which broke
+# a bare offline build. A registry dep resolves from the committed Cargo.lock with no network,
+# so keeping the mapping off by default would now only mean its 7 tests never run — the
+# vacuous-gate pattern this repo has been removing everywhere else.
+default = ["sync-dmtap"]
 # Additive DMTAP Sync mapping (substrate/SYNC.md capability ③). Enabling this
 # changes NO behaviour of the rest of SlipScan — nothing else in the workspace
 # depends on this crate — it only makes `op_for_write`/`parse_row_value` and

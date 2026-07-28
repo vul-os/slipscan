@@ -14,8 +14,8 @@ crates/
   slipscan-packs/          # signed classification/category packs: format, ed25519 verify, import/export
   slipscan-server/         # axum headless server (self-host mode), thin wrapper over core services
   slipscan-cli/            # clap CLI: init, import, extract, mail-sync, recon, report, pack, vault, serve, list
-  slipscan-sync/           # DMTAP Sync merge-algebra mapping ONLY — excluded from the workspace,
-                           # default-off, nothing else depends on it (see below)
+  slipscan-sync/           # DMTAP Sync merge-algebra mapping ONLY — nothing else depends on it,
+                           # and nothing syncs between devices yet (see below)
 apps/
   desktop/                 # Tauri 2 + Svelte 5 + TypeScript + Vite + Tailwind v4
     src/                   # Svelte frontend
@@ -70,7 +70,7 @@ Legacy SQL schemas (reference only, cloud concepts like orgs/billing/auth must N
 - **What it is.** A translation between a SlipScan row change and a substrate op, and back. Editable rows (accounts, categories, budgets, members, merchant mappings, transactions) map to §4.4 last-writer-wins registers, one register per row because the repo layer writes whole rows. Posted journals and journal lines map to a §4.3 OR-Set that never mints a remove — SlipScan's ledger is immutable by construction and a correction is a reversal journal, so the mapping is an identity on existing behaviour rather than a new one to re-validate against the books. Money crosses as canonical decimal text; the substrate bans floats and that costs SlipScan nothing.
 - **What it is not.** No oplog, no identity, no transport, no storage. It opens no socket and touches no file. The convergence rules live in `dmtap-sync` and are deliberately not re-derived here.
 - **Therefore: nothing syncs between devices today.** There is no device pairing, no replication loop, and no code path that ships an op anywhere. Sharing a book still means what [Data location](#data-location--backup--your-folder-your-cloud-your-responsibility) and [Household members](#household-members--per-person-attribution) say it means: a synced data folder, or the self-host server with other surfaces as clients.
-- **Default-off and out of the workspace.** The mapping is behind the `sync-dmtap` feature (default off — with it off the crate compiles to an empty, dependency-free no-op), and the crate is `exclude`d from the root workspace. `exclude` is load-bearing, not tidiness: Cargo resolves every *optional* dependency's source into the lockfile for the whole workspace regardless of active features, so a plain `cargo build` would still reach out to the `envoir` git remote. A bare `git clone && cargo build` of SlipScan must never require — or fetch — anything from envoir. Build the mapping on its own with `cargo build --manifest-path crates/slipscan-sync/Cargo.toml --features sync-dmtap`.
+- **An ordinary workspace member, on a published engine.** The mapping lives behind the `sync-dmtap` feature (now on by default) and depends on `kotva-sync` from crates.io — the same compiled algebra Ofisi and FlowStock run, consumed under its old name via cargo's dependency-rename so this crate's source never moved. It was previously `exclude`d from the workspace, and that was load-bearing rather than tidiness: the dependency was a *git* dep, and Cargo resolves every optional dependency's source during workspace resolution regardless of active features, so a plain `cargo build` still reached out to a git remote. A registry dependency resolves from the committed `Cargo.lock` with no network at all, so the exclusion is gone and `cargo build --workspace --offline --locked` is green. The property that mattered is unchanged and still enforced: a bare `git clone && cargo build` of SlipScan fetches nothing from anywhere.
 - Nothing else in the workspace depends on this crate. Enabling the feature changes no other behaviour.
 
 ## Design system
