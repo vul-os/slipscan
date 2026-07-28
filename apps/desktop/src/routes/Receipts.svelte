@@ -18,6 +18,7 @@
    */
   import { tick } from "svelte";
   import { api } from "../lib/api/client";
+  import { requireBook } from "../lib/book";
   import { routeCache } from "../lib/loadCache";
   import { takeIntent } from "../lib/intent.svelte";
   import { requestIntent } from "../lib/intent.svelte";
@@ -74,8 +75,7 @@
     if (!background) loading = true;
     loadError = null;
     try {
-      const [book] = await api.bookList();
-      if (!book) throw new Error("no book configured");
+      const book = requireBook(await api.bookList());
       bookId = book.id;
       [docs, suggestions] = await Promise.all([
         api.documentList({ book_id: book.id }),

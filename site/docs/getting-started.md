@@ -48,7 +48,11 @@ The CLI covers headless use: `init` (create a book), `import` (files → documen
 
 A **book** is one ledgerable context — "Personal" or "My Business". Books live in a plain SQLite database file at a path you can see, back up, and move ([CONFIGURATION.md](CONFIGURATION.md#data-locations)).
 
-The desktop app seeds a **Personal** book automatically on first run — on the neutral **generic** region profile (no jurisdiction is assumed), with its chart of accounts, one configurable tax rate, and a starter category set included. (There is no in-app "New book" flow yet; additional or business books are created from the CLI.) The kind decides which features matter — a personal book leads with budgets and spending; a business book adds the chart of accounts, journals, VAT, and reconciliation.
+The desktop app opens on an empty database with **no book**, and asks. First-run setup walks you through a region profile and a currency and then creates the book with them — chart of accounts, tax rate table and tax-report labels all come from the profile you picked. Nothing is created before you answer, because the region a book is created with cannot be changed afterwards.
+
+It is reachable again at any time: press <kbd>⌘K</kbd> / <kbd>Ctrl-K</kbd> and choose **Set up a new book**, or use **Create a book** in Settings › General. The kind decides which features matter — a personal book leads with budgets and spending; a business book adds the chart of accounts, journals, VAT, and reconciliation.
+
+One limitation worth knowing: the desktop screens work with the **first** book in a database and there is no book switcher yet, so a second book is reachable from the CLI (`slipscan --book <id-or-name>`) and the HTTP API rather than from the app. Settings › General lists every book and marks which one the screens are showing.
 
 From the CLI:
 
@@ -56,7 +60,7 @@ From the CLI:
 slipscan init --name "Personal" --kind personal
 ```
 
-Every book carries a **region profile** — the data bundle (chart-of-accounts seeds, tax rates, tax-report labels, default currency) that makes it country-specific ([CONFIGURATION.md](CONFIGURATION.md#region-profiles)). Pick one at creation with `slipscan init --region <id>` (`slipscan init --list-regions` shows what ships built-in — South Africa's `za` profile with VAT rates, VAT201 labels and ZAR, and the worldwide `generic` profile: neutral chart, one configurable tax rate, USD default). With no region given — including the desktop's first-run book — you get the **generic** profile; no jurisdiction is ever assumed. Existing databases migrate automatically: books that were implicitly South African come out on the `za` profile.
+Every book carries a **region profile** — the data bundle (chart-of-accounts seeds, tax rates, tax-report labels, default currency) that makes it country-specific ([CONFIGURATION.md](CONFIGURATION.md#region-profiles)). Pick one at creation with `slipscan init --region <id>` (`slipscan init --list-regions` shows what ships built-in — South Africa's `za` profile with VAT rates, VAT201 labels and ZAR, and the worldwide `generic` profile: neutral chart, one configurable tax rate, USD default). With no region given you get the **generic** profile; no jurisdiction is ever assumed. Existing databases migrate automatically: books that were implicitly South African come out on the `za` profile.
 
 Data locations are documented in [CONFIGURATION.md](CONFIGURATION.md#data-locations).
 

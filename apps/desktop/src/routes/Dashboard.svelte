@@ -15,6 +15,7 @@
    * it so.
    */
   import { api } from "../lib/api/client";
+  import { requireBook } from "../lib/book";
   import {
     fmtDate,
     fmtMoney,
@@ -139,8 +140,7 @@
   }
 
   async function load() {
-    const [book] = await api.bookList();
-    if (!book) throw new Error("no book configured");
+    const book = requireBook(await api.bookList());
     const [
       accounts,
       categories,

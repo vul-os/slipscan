@@ -31,6 +31,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount, type Component } from "svelte";
 import App from "../App.svelte";
+import { mockApi } from "../lib/api/mock";
+import { firstRun, FIRST_RUN_KEY } from "../lib/onboarding.svelte";
 import { router, ROUTES, type RouteId } from "../lib/router.svelte";
 import Budgets from "../routes/Budgets.svelte";
 import Dashboard from "../routes/Dashboard.svelte";
@@ -561,6 +563,80 @@ describe("app shell · chrome", () => {
       expect(document.querySelector('[role="dialog"]')).toBeNull();
       expect(fatal, `runtime errors: ${fatal.join(" | ")}`).toEqual([]);
     } finally {
+      dispose();
+    }
+  }, 30_000);
+
+  /**
+   * The regression this whole area exists for.
+   *
+   * First-run setup was complete, typed and unit-tested, and no user could
+   * reach it: the desktop backend seeded a book at startup, so `book_list`
+   * was never empty and the gate below never opened. Asserting the flow is
+   * *built* would have passed throughout. These two assert it is *reached* —
+   * once by the shell on an empty install, and once on demand afterwards,
+   * because the shell only ever offers it once.
+   */
+  it("greets an install with no book by opening setup", async () => {
+    const empty = vi.spyOn(mockApi, "book_list").mockResolvedValue([]);
+    try {
+      const { target, dispose } = render(App as Component);
+      try {
+        await settle(target);
+        expect(
+          text(target),
+          "a fresh install did not reach first-run setup",
+        ).toContain("Set up SlipScan");
+        expect(fatal, `runtime errors: ${fatal.join(" | ")}`).toEqual([]);
+      } finally {
+        dispose();
+      }
+    } finally {
+      empty.mockRestore();
+      // Module singleton shared with the suites below.
+      firstRun.open = false;
+      localStorage.removeItem(FIRST_RUN_KEY);
+    }
+  }, 30_000);
+
+  it("lets the palette bring setup back once a book exists", async () => {
+    // No mocking here: the dataset has a book, exactly like a real install
+    // after setup — the state in which the flow used to be unreachable.
+    const { target, dispose } = render(App as Component);
+    try {
+      await settle(target);
+      expect(text(target)).not.toContain("Set up SlipScan");
+
+      // Driven through the shipped keyboard shell and the palette's own
+      // ranking, not by calling `firstRun.reopen()` — the point is that a
+      // person can get there.
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }),
+      );
+      flushSync();
+      const input = document.querySelector<HTMLInputElement>("#palette-input");
+      expect(input, "the palette did not open").not.toBeNull();
+
+      input!.value = "new book";
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+      flushSync();
+      const top = document.querySelector('[role="option"]');
+      expect(top?.textContent).toContain("Set up a new book");
+
+      input!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      );
+      flushSync();
+      await settle(target);
+
+      expect(
+        text(target),
+        "the palette command did not reach first-run setup",
+      ).toContain("Set up SlipScan");
+      expect(fatal, `runtime errors: ${fatal.join(" | ")}`).toEqual([]);
+    } finally {
+      firstRun.open = false;
+      localStorage.removeItem(FIRST_RUN_KEY);
       dispose();
     }
   }, 30_000);

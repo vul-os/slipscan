@@ -15,6 +15,7 @@
    */
   import { tick } from "svelte";
   import { api } from "../lib/api/client";
+  import { requireBook } from "../lib/book";
   import {
     fmtDate,
     fmtMoney,
@@ -55,8 +56,7 @@
   }
 
   async function load(): Promise<Data> {
-    const [b] = await api.bookList();
-    if (!b) throw new Error("no book configured");
+    const b = requireBook(await api.bookList());
     book = b;
     const from = `${month}-01`;
     const to = monthEnd(month);

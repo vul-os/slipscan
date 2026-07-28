@@ -33,6 +33,7 @@
     shiftMonth,
   } from "../lib/format";
   import { api } from "../lib/api/client";
+  import { requireBook } from "../lib/book";
   import type {
     BenchmarkReport,
     Book,
@@ -55,8 +56,7 @@
   async function load() {
     loadError = null;
     try {
-      const [b] = await api.bookList();
-      if (!b) throw new Error("no book configured");
+      const b = requireBook(await api.bookList());
       book = b;
       packs = await api.packList({ book_id: b.id });
     } catch (err) {

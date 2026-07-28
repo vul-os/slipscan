@@ -11,6 +11,7 @@
    * was ever a setting.
    */
   import { api } from "../lib/api/client";
+  import { currentBook } from "../lib/book";
   import type { Book, Settings } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
@@ -22,6 +23,8 @@
   import Vault from "./settings/Vault.svelte";
 
   let s = $state<Settings | null>(null);
+  /** Every book in the database; `book` is the one the screens work with. */
+  let books = $state<Book[]>([]);
   let book = $state<Book | null>(null);
   let saving = $state(false);
   let savedAt = $state<number | null>(null);
@@ -46,12 +49,13 @@
   async function load() {
     loadError = null;
     try {
-      const [settings, books] = await Promise.all([
+      const [settings, allBooks] = await Promise.all([
         api.settingsGet(),
         api.bookList(),
       ]);
       s = settings;
-      book = books[0] ?? null;
+      books = allBooks;
+      book = currentBook(allBooks);
     } catch (err) {
       loadError = String(err);
     }
@@ -138,7 +142,7 @@
   </div>
 
   {#if tab === "general"}
-    <General bind:settings={s} {book} />
+    <General bind:settings={s} {book} {books} onbookcreated={load} />
   {:else if tab === "data"}
     <Data bind:moving={dataMoving} onmoved={load} />
   {:else if tab === "connections"}

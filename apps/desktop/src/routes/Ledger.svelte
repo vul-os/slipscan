@@ -16,6 +16,7 @@
    */
   import { tick } from "svelte";
   import { api } from "../lib/api/client";
+  import { requireBook } from "../lib/book";
   import {
     fmtDate,
     fmtMoney,
@@ -72,8 +73,7 @@
   let bookCurrency = $state("");
 
   async function load() {
-    const [book] = await api.bookList();
-    if (!book) throw new Error("no book configured");
+    const book = requireBook(await api.bookList());
     bookId = book.id;
     bookCurrency = book.currency;
     const [accounts, journal, trial] = await Promise.all([

@@ -106,22 +106,26 @@ function fakeDeps(): {
   intents: string[];
   themes: string[];
   searches: string[];
+  setUps: number[];
 } {
   const went: string[] = [];
   const intents: string[] = [];
   const themes: string[] = [];
   const searches: string[] = [];
+  const setUps: number[] = [];
   return {
     went,
     intents,
     themes,
     searches,
+    setUps,
     deps: {
       go: (route) => went.push(route),
       requestIntent: (intent) => intents.push(intent.kind),
       setTheme: (mode) => themes.push(mode),
       themeMode: "system",
       searchTransactions: (query) => searches.push(query),
+      setUpBook: () => setUps.push(1),
     },
   };
 }

@@ -2,10 +2,11 @@
   /**
    * First-run setup.
    *
-   * Shown only when `book_list` comes back empty and the user has not
-   * already dismissed it (see onboarding.svelte.ts, which owns that gate and
-   * the persistence). Escape, the scrim and "Skip setup" all close it for
-   * good; it never blocks the app.
+   * Offered by itself only when `book_list` comes back empty and the user
+   * has not already dismissed it (see onboarding.svelte.ts, which owns that
+   * gate and the persistence), and openable on demand from the command
+   * palette's "Set up a new book". Escape, the scrim and "Skip setup" all
+   * close it; it never blocks the app.
    *
    * The region step creates the book: `book_create` is a registered IPC
    * command, so the region and currency chosen here become an actual book —
@@ -21,6 +22,7 @@
    * code, so there is no hardcoded jurisdiction anywhere in this file.
    */
   import { api } from "../api/client";
+  import { bookEpoch } from "../books.svelte";
   import { fmtBytes } from "../format";
   import { requestIntent } from "../intent.svelte";
   import {
@@ -45,6 +47,9 @@
   let moving = $state(false);
   let moved = $state(false);
   let loaded = false;
+  /** Books already in the database, so the flow can say plainly whether this
+   * will be the first one or an additional one. */
+  let existingBooks = $state<Book[]>([]);
 
   /** Load on first open, never on boot: a dialog nobody sees costs nothing. */
   $effect(() => {
@@ -66,6 +71,25 @@
         target = status.data_dir;
       })
       .catch((err) => (dataError = String(err)));
+  });
+
+  /**
+   * Each run starts clean. The dialog is mounted for the whole session, so
+   * without this a second visit through the palette would open still showing
+   * the book the first visit created and offer no way to make another.
+   */
+  let seenSession = -1;
+  $effect(() => {
+    if (firstRun.session === seenSession) return;
+    seenSession = firstRun.session;
+    createdBook = null;
+    bookError = null;
+    bookName = "Personal";
+    bookKind = "personal";
+    void api
+      .bookList()
+      .then((list) => (existingBooks = list))
+      .catch(() => (existingBooks = []));
   });
 
   const selectedRegion = $derived(
@@ -91,8 +115,11 @@
   async function createBook() {
     creating = true;
     bookError = null;
+    // See General.svelte: only the first book invalidates the screens behind
+    // this dialog, and only then is a remount worth the state it discards.
+    const wasEmpty = existingBooks.length === 0;
     try {
-      createdBook = await api.bookCreate({
+      const made = await api.bookCreate({
         name: bookName.trim(),
         kind: bookKind,
         // Both come straight from the profile the user picked. Core rejects
@@ -100,6 +127,11 @@
         region: firstRun.region ?? undefined,
         currency: firstRun.currency.trim().toUpperCase(),
       });
+      createdBook = made;
+      existingBooks = [...existingBooks, made];
+      // Every screen behind this dialog loaded against a database with no
+      // book; tell the shell to run them again.
+      if (wasEmpty) bookEpoch.bump();
     } catch (err) {
       bookError = String(err);
     } finally {
@@ -300,6 +332,25 @@
             </p>
           </div>
         {:else}
+          {#if existingBooks.length > 0}
+            <!-- Honest, because this flow is reachable from the palette at
+                 any time: the desktop screens read the first book in the
+                 database, so an additional one is real but not what they
+                 show. Settings › General lists every book and says the same. -->
+            <p
+              class="mt-4 flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2.5 text-[12px] leading-relaxed text-warning"
+            >
+              <Icon name="alert-circle" size={14} class="mt-px shrink-0" />
+              <span>
+                This database already holds
+                {existingBooks.length === 1
+                  ? `a book (“${existingBooks[0]!.name}”)`
+                  : `${existingBooks.length} books`}. SlipScan's screens work
+                with the first book in a database, so creating another adds it
+                for the CLI and server without changing what you see here.
+              </span>
+            </p>
+          {/if}
           <div class="mt-4 grid gap-3 sm:grid-cols-2">
             <label class="block">
               <span class="mb-1.5 block text-[12px] font-medium">Book name</span>

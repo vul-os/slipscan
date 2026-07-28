@@ -17,6 +17,11 @@ export const routeCache = {
   set<T>(key: string, value: T): void {
     cache.set(key, value);
   },
+  /** Drop everything. For a mutation that invalidates every screen at once
+   * — creating the first book is the only one today. */
+  clear(): void {
+    cache.clear();
+  },
 };
 
 /**

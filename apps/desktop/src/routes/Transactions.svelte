@@ -27,6 +27,7 @@
    */
   import { tick } from "svelte";
   import { api } from "../lib/api/client";
+  import { requireBook } from "../lib/book";
   import { router } from "../lib/router.svelte";
   import { globalSearch } from "../lib/search.svelte";
   import { takeIntent } from "../lib/intent.svelte";
@@ -124,8 +125,7 @@
     if (!background) loading = true;
     loadError = null;
     try {
-      const [b] = await api.bookList();
-      if (!b) throw new Error("no book configured");
+      const b = requireBook(await api.bookList());
       book = b;
       [accounts, categories, members, transactions] = await Promise.all([
         api.accountList({ book_id: b.id }),

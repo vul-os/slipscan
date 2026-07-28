@@ -10,7 +10,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use slipscan_core::datadir::{self, DataDirResolver};
-use slipscan_core::domain::{AuditEntry, Book, BookKind, CategoryKind, NewBook, NewCategory};
+use slipscan_core::domain::{AuditEntry, Book, CategoryKind, NewCategory};
 use slipscan_core::secrets::{KeyringSecretStore, MemorySecretStore};
 use slipscan_core::util::{new_id, now_iso};
 use slipscan_core::{repo, CoreResult, CoreService, Db};
@@ -52,8 +52,10 @@ impl std::fmt::Debug for AppState {
 }
 
 impl AppState {
-    /// Resolve the data folder through `resolver`, open (creating if needed)
-    /// the database there, and seed the default book on first run.
+    /// Resolve the data folder through `resolver` and open (creating if
+    /// needed) the database there. It does **not** invent a book: a fresh
+    /// database opens with none, and first-run setup, the command palette or
+    /// Settings › General create the first one (see `seed_book_contents`).
     pub fn open(resolver: DataDirResolver) -> Result<Self, String> {
         let data_dir = resolver.resolve().map_err(err)?;
         std::fs::create_dir_all(datadir::documents_dir(&data_dir))
@@ -61,7 +63,6 @@ impl AppState {
         let db_path = datadir::db_path(&data_dir);
 
         let service = CoreService::open(&db_path).map_err(err)?;
-        ensure_seeded(&service).map_err(err)?;
         let vault_db = open_vault_db(&db_path)?;
 
         Ok(Self {
@@ -138,8 +139,9 @@ impl AppState {
         };
 
         // Reopen at the location the pointer now names. An adopted database
-        // may be fresh (e.g. created by the CLI without books) — reopening
-        // runs the same idempotent seed as at startup.
+        // may be fresh (e.g. created by the CLI without books); it stays
+        // that way — nothing is written into a folder the user just pointed
+        // at, and the empty state is recoverable from the UI.
         match (moved, reopen(&self.resolver)) {
             (moved, Ok((new_service, new_vault_db, new_dir))) => {
                 *service = new_service;
@@ -172,13 +174,13 @@ fn closed_placeholders() -> CoreResult<(CoreService, Db)> {
 }
 
 /// Open service + vault connections on whichever folder the shared pointer
-/// currently names, seeding a fresh database on first use.
+/// currently names. An adopted folder keeps exactly the books it already
+/// holds — including none.
 fn reopen(resolver: &DataDirResolver) -> Result<(CoreService, Db, PathBuf), String> {
     let dir = resolver.resolve().map_err(err)?;
     let db = datadir::db_path(&dir);
     let service = CoreService::open(&db)
         .map_err(|e| format!("opening the database at {} failed: {e}", dir.display()))?;
-    ensure_seeded(&service).map_err(err)?;
     let vault_db = open_vault_db(&db)?;
     Ok((service, vault_db, dir))
 }
@@ -257,36 +259,28 @@ fn open_vault_db(db_path: &Path) -> Result<Db, String> {
     Ok(vault_db)
 }
 
-/// First-run seed: a Personal book on the **generic** region profile (global
-/// by default — no jurisdiction is ever hardcoded; existing databases keep
-/// whatever region their book already has), the profile's chart of accounts
-/// and tax rates, and a starter category set. Idempotent — a populated
-/// database is left untouched.
-pub fn ensure_seeded(service: &CoreService) -> CoreResult<Book> {
-    if let Some(book) = service.book_list()?.into_iter().next() {
-        return Ok(book);
-    }
-    let book = service.book_create(NewBook {
-        name: "Personal".to_string(),
-        kind: BookKind::Personal,
-        currency: None,
-        country: None,
-        region: None, // core resolves this to the generic profile
-    })?;
-    seed_book_contents(service, &book)?;
-    Ok(book)
-}
-
 /// Fill a just-created book with the two things that make it usable on day
 /// one: the chart of accounts its **own region profile** prescribes (core's
 /// `coa_seed` reads the book's region and kind — no jurisdiction is decided
 /// here) and the starter category set above.
 ///
-/// Shared by [`ensure_seeded`] and the `book_create` IPC command, so a book
-/// made in first-run setup is seeded exactly like the one a fresh install
-/// gets. The desktop exposes no separate `coa_seed` command, so a bare
-/// create would otherwise hand back a book with an empty ledger and no
-/// categories to classify into.
+/// The `book_create` IPC command is the only caller, because creating a book
+/// is the only moment this is correct. The desktop exposes no separate
+/// `coa_seed` command, so a bare create would otherwise hand back a book
+/// with an empty ledger and no categories to classify into.
+///
+/// **Opening a database no longer creates a book.** It used to: startup ran
+/// an `ensure_seeded` that quietly wrote a "Personal" book on the *generic*
+/// profile before the user had said anything. That made the region and
+/// currency questions unanswerable rather than merely unasked — `book_list`
+/// is `ORDER BY created_at`, every desktop screen reads the first row, and
+/// core has no way to re-region a book once `coa_seed` has run against the
+/// old profile. A book created afterwards could therefore never become the
+/// one on screen, so first-run setup had nothing it could usefully do and
+/// was never shown. An empty database is now an honest empty state that
+/// first-run setup, the command palette and Settings › General can all
+/// resolve — the same posture the CLI has always had (`slipscan init`
+/// creates a book only when given `--name`).
 pub fn seed_book_contents(service: &CoreService, book: &Book) -> CoreResult<()> {
     service.coa_seed(&book.id)?;
     for &(name, kind, icon) in DEFAULT_CATEGORIES {
@@ -305,30 +299,70 @@ pub fn seed_book_contents(service: &CoreService, book: &Book) -> CoreResult<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Book creation is a test-only concern in this module now that startup
+    // no longer does it; the `book_create` command owns it in commands.rs.
+    use slipscan_core::domain::{BookKind, NewBook};
     use slipscan_core::secrets::MemorySecretStore;
 
+    /// The precondition for first-run setup being reachable at all.
+    ///
+    /// The frontend opens setup only when `book_list` comes back empty
+    /// (`shouldRunFirstRun` in src/lib/onboarding.svelte.ts). Startup used to
+    /// write a book before anyone asked, so that gate could never be
+    /// satisfied and the whole flow was unreachable — wired, tested, and
+    /// dead. This asserts the backend leaves the question open.
     #[test]
-    fn seed_creates_book_categories_and_coa_once() {
-        let service = CoreService::new(
-            Db::open_in_memory().unwrap(),
-            Box::new(MemorySecretStore::new()),
+    fn opening_a_fresh_database_creates_no_book() {
+        let root = tmp_root("fresh");
+        let state = AppState::open(resolver_in(&root)).unwrap();
+        let service = state.service().unwrap();
+        assert!(
+            service.book_list().unwrap().is_empty(),
+            "startup invented a book, which puts first-run setup out of reach"
         );
-        let book = ensure_seeded(&service).unwrap();
-        assert_eq!(book.kind, BookKind::Personal);
-        // Global by default: the first-run book is generic, never a
-        // hardcoded jurisdiction.
-        assert_eq!(book.region, "generic");
-        let tree = service.category_tree(&book.id).unwrap();
-        assert_eq!(tree.len(), DEFAULT_CATEGORIES.len());
-        assert!(!service.coa_list(&book.id).unwrap().is_empty());
+        drop(service);
 
-        // Second call is a no-op returning the same book.
-        let again = ensure_seeded(&service).unwrap();
-        assert_eq!(again.id, book.id);
+        // Re-opening the same folder must not change its mind either.
+        drop(state);
+        let again = AppState::open(resolver_in(&root)).unwrap();
+        assert!(again.service().unwrap().book_list().unwrap().is_empty());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// And the empty state is resolvable through the one command the UI has:
+    /// `book_create` + the seed, after which the app has everything a book
+    /// needs. This is the path first-run setup, the palette command and
+    /// Settings › General all take.
+    #[test]
+    fn creating_the_first_book_leaves_it_immediately_usable() {
+        let root = tmp_root("first-book");
+        let state = AppState::open(resolver_in(&root)).unwrap();
+        let service = state.service().unwrap();
+
+        let book = service
+            .book_create(NewBook {
+                name: "Household".to_string(),
+                kind: BookKind::Personal,
+                currency: Some("ZAR".to_string()),
+                country: None,
+                region: None, // core resolves this to the generic profile
+            })
+            .unwrap();
+        seed_book_contents(&service, &book).unwrap();
+
+        // Global by default: with no region asked for, the book is generic —
+        // never a hardcoded jurisdiction.
+        assert_eq!(book.region, "generic");
+        assert_eq!(service.book_list().unwrap().len(), 1);
         assert_eq!(
             service.category_tree(&book.id).unwrap().len(),
             DEFAULT_CATEGORIES.len()
         );
+        assert!(!service.coa_list(&book.id).unwrap().is_empty());
+        drop(service);
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// The seed the `book_create` command runs takes its chart of accounts
@@ -374,6 +408,23 @@ mod tests {
         }
     }
 
+    /// A book in `state`'s current database — what startup used to conjure.
+    /// The move tests need one to prove the data survived the move.
+    fn create_book_in(state: &AppState) -> Book {
+        let service = state.service().unwrap();
+        let book = service
+            .book_create(NewBook {
+                name: "Household".to_string(),
+                kind: BookKind::Personal,
+                currency: Some("ZAR".to_string()),
+                country: None,
+                region: None,
+            })
+            .unwrap();
+        seed_book_contents(&service, &book).unwrap();
+        book
+    }
+
     fn tmp_root(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("slipscan-state-{tag}-{}", new_id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -390,6 +441,7 @@ mod tests {
     fn move_data_dir_relocates_repoints_and_reopens() {
         let root = tmp_root("move");
         let state = AppState::open(resolver_in(&root)).unwrap();
+        create_book_in(&state);
         let old_dir = state.data_dir().unwrap();
         std::fs::write(
             datadir::documents_dir(&old_dir).join("slip.pdf"),
@@ -413,8 +465,9 @@ mod tests {
         assert!(!datadir::documents_dir(&old_dir).exists());
         assert_eq!(state.resolver.resolve().unwrap(), new_dir);
 
-        // The live service now runs against the new file (seeded book still
-        // there, writes work again), and the move is in the audit log.
+        // The live service now runs against the new file (the book made
+        // above is still there, writes work again), and the move is in the
+        // audit log.
         let service = state.service().unwrap();
         assert!(!service.book_list().unwrap().is_empty());
         assert!(!service.is_read_only());
@@ -432,6 +485,7 @@ mod tests {
     fn move_data_dir_refusal_leaves_everything_writable_in_place() {
         let root = tmp_root("refuse");
         let state = AppState::open(resolver_in(&root)).unwrap();
+        create_book_in(&state);
         let old_dir = state.data_dir().unwrap();
 
         let err = state
@@ -458,6 +512,7 @@ mod tests {
     fn move_data_dir_use_existing_adopts_without_copying_or_deleting() {
         let root = tmp_root("adopt");
         let state = AppState::open(resolver_in(&root)).unwrap();
+        create_book_in(&state);
         let old_dir = state.data_dir().unwrap();
 
         // A second, pre-existing SlipScan folder (e.g. restored from the
@@ -465,7 +520,16 @@ mod tests {
         let other = tmp_root("adopt-other");
         {
             let svc = CoreService::open(datadir::db_path(&other)).unwrap();
-            ensure_seeded(&svc).unwrap();
+            let book = svc
+                .book_create(NewBook {
+                    name: "Restored".to_string(),
+                    kind: BookKind::Personal,
+                    currency: Some("ZAR".to_string()),
+                    country: None,
+                    region: None,
+                })
+                .unwrap();
+            seed_book_contents(&svc, &book).unwrap();
         }
 
         // A plain move refuses the occupied folder with the offer-open

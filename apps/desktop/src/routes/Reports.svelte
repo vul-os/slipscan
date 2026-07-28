@@ -18,6 +18,7 @@
    * is a number pretending to be a fact.
    */
   import { api } from "../lib/api/client";
+  import { requireBook } from "../lib/book";
   import { fmtDate, fmtMoney, fmtMonth, fmtPct } from "../lib/format";
   import { swrLoad } from "../lib/loadCache";
   import { csvMoney, downloadCsv, toCsv } from "../lib/csv";
@@ -46,8 +47,7 @@
   let range = $state<DateRange>(datePresets()[0]!.range);
 
   async function load() {
-    const [book] = await api.bookList();
-    if (!book) throw new Error("no book configured");
+    const book = requireBook(await api.bookList());
     const { from, to } = range;
     const [spending, incomeExpense, vat, members, settleUp, memberCategory, fx] =
       await Promise.all([

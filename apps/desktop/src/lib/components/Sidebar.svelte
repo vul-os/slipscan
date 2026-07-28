@@ -5,6 +5,8 @@
   import { router } from "../router.svelte";
   import { theme, type ThemeMode } from "../theme.svelte";
   import { api, isTauri } from "../api/client";
+  import { bookEpoch } from "../books.svelte";
+  import { currentBook } from "../book";
   import { apiStatus } from "../api/status.svelte";
   import { NAV_GROUPS } from "../nav";
   import { palette } from "../palette.svelte";
@@ -31,9 +33,21 @@
   ];
 
   let book = $state<Book | null>(null);
+  /** Distinguishes "still fetching" from "there is genuinely no book" — the
+   * chip used to read "Loading…" forever in the second case. */
+  let bookLoaded = $state(false);
   let health = $state<Health | null>(null);
 
-  api.bookList().then((books) => (book = books[0] ?? null));
+  // Re-read whenever a book is created: the chip has nothing to name until
+  // the first one exists.
+  $effect(() => {
+    void bookEpoch.value;
+    api
+      .bookList()
+      .then((books) => (book = currentBook(books)))
+      .catch(() => (book = null))
+      .finally(() => (bookLoaded = true));
+  });
   api.health().then((h) => (health = h));
 
   // `?screenshot=1` (scripts/screenshot.mjs) hides the mock badge so docs
@@ -89,10 +103,14 @@
     </span>
     <span class="min-w-0 flex-1 leading-tight">
       <span class="block truncate text-[12.5px] font-medium">
-        {book?.name ?? "Loading…"}
+        {book?.name ?? (bookLoaded ? "No book yet" : "Loading…")}
       </span>
       <span class="block truncate text-[11px] text-t3">
-        {book ? `${book.kind} · ${book.currency}` : ""}
+        {book
+          ? `${book.kind} · ${book.currency}`
+          : bookLoaded
+            ? "⌘K › Set up a new book"
+            : ""}
       </span>
     </span>
   </div>

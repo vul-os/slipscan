@@ -1,20 +1,36 @@
 <script lang="ts">
   /**
-   * General tab: appearance, the book this machine holds, and the privacy
+   * General tab: appearance, the books this database holds, and the privacy
    * contract. `settings` is bound because the theme buttons write straight
-   * into the blob the shell saves; `book` is read-only here.
+   * into the blob the shell saves.
+   *
+   * Books are creatable here and not only in first-run setup. That is the
+   * point: setup is a one-time flow behind a gate, and "I need a book" is
+   * not a one-time need. Region and currency come from `region_list` — no
+   * jurisdiction is chosen in this file or below it.
    */
+  import { api } from "../../lib/api/client";
+  import { currentBook } from "../../lib/book";
+  import { bookEpoch } from "../../lib/books.svelte";
+  import { currencyForRegion, currencyOptions } from "../../lib/onboarding.svelte";
   import { theme, type ThemeMode } from "../../lib/theme.svelte";
-  import type { Book, Settings } from "../../lib/api/types";
+  import type { Book, BookKind, RegionInfo, Settings } from "../../lib/api/types";
   import Badge from "../../lib/components/Badge.svelte";
   import Icon from "../../lib/components/Icon.svelte";
 
   let {
     settings = $bindable(),
     book,
+    books = [],
+    onbookcreated,
   }: {
     settings: Settings;
+    /** The book the screens work with — `books[0]`, or null when empty. */
     book: Book | null;
+    /** Every book in the database, so an extra one is never invisible. */
+    books?: Book[];
+    /** Tell the shell to reload, so a new book reaches the rest of the app. */
+    onbookcreated?: () => void;
   } = $props();
 
   const themeModes: Array<{ mode: ThemeMode; label: string }> = [
@@ -22,6 +38,86 @@
     { mode: "light", label: "Light" },
     { mode: "dark", label: "Dark" },
   ];
+
+  // -- create a book --------------------------------------------------------
+
+  let showForm = $state(false);
+  let regions = $state<RegionInfo[]>([]);
+  let regionsError = $state<string | null>(null);
+  let newName = $state("Personal");
+  let newKind = $state<BookKind>("personal");
+  let newRegion = $state<string | null>(null);
+  let newCurrency = $state("");
+  let creating = $state(false);
+  let createError = $state<string | null>(null);
+  let createdName = $state<string | null>(null);
+
+  const bookKinds: Array<{ id: BookKind; label: string }> = [
+    { id: "personal", label: "Personal" },
+    { id: "business", label: "Business" },
+  ];
+
+  const suggestedCurrencies = $derived(currencyOptions(regions));
+
+  /** Profiles load when the form opens, not on tab load: a form nobody
+   * opened should not cost a round trip. */
+  async function openForm() {
+    showForm = true;
+    createError = null;
+    createdName = null;
+    if (regions.length > 0) return;
+    try {
+      regions = await api.regionList();
+    } catch (err) {
+      regionsError = String(err);
+    }
+  }
+
+  /** Picking a profile fills in its currency unless one was typed. */
+  function chooseRegion(id: string) {
+    const previous = currencyForRegion(regions, newRegion);
+    const untouched = newCurrency === "" || newCurrency === previous;
+    newRegion = id;
+    if (untouched) newCurrency = currencyForRegion(regions, id) ?? "";
+  }
+
+  const createIssue = $derived.by(() => {
+    if (newName.trim() === "") return "Name the book to create it.";
+    if (!newRegion) return "Choose a region profile.";
+    if (!/^[A-Za-z]{3}$/.test(newCurrency.trim()))
+      return "Enter a three-letter ISO-4217 currency code.";
+    return null;
+  });
+
+  async function createBook() {
+    if (createIssue) return;
+    creating = true;
+    createError = null;
+    // Only the *first* book invalidates what is already on screen. An
+    // additional one changes nothing the app displays (it reads the first
+    // book), so remounting over it would only throw away this form's own
+    // "Created …" confirmation.
+    const wasEmpty = books.length === 0;
+    try {
+      const made = await api.bookCreate({
+        name: newName.trim(),
+        kind: newKind,
+        region: newRegion ?? undefined,
+        currency: newCurrency.trim().toUpperCase(),
+      });
+      createdName = made.name;
+      if (wasEmpty) bookEpoch.bump();
+      showForm = false;
+      newName = "Personal";
+      newRegion = null;
+      newCurrency = "";
+      onbookcreated?.();
+    } catch (err) {
+      createError = String(err);
+    } finally {
+      creating = false;
+    }
+  }
 </script>
 
 <div class="space-y-4">
@@ -61,10 +157,176 @@
 
   <!-- book -->
   <section class="card p-4">
-    <h2 class="mb-3 flex items-center gap-2 text-[13px] font-semibold">
-      <Icon name="ledger" size={15} class="text-t3" />
-      Book
-    </h2>
+    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <h2 class="flex items-center gap-2 text-[13px] font-semibold">
+        <Icon name="ledger" size={15} class="text-t3" />
+        Book
+      </h2>
+      <button class="btn h-7" onclick={openForm} disabled={showForm}>
+        <Icon name="plus" size={13} />
+        Create a book
+      </button>
+    </div>
+
+    {#if createdName}
+      <p
+        class="animate-fade-in mb-3 flex items-center gap-1.5 rounded-lg border border-success/30 bg-success/10 px-3 py-2 text-[12px] text-success"
+        role="status"
+      >
+        <Icon name="check-circle" size={13} />
+        Created “{createdName}”.
+      </p>
+    {/if}
+
+    {#if showForm}
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions --
+           Escape-to-close only; interaction lives on the inputs/buttons. -->
+      <form
+        class="animate-slide-up mb-4 rounded-lg border border-line bg-sunken p-3"
+        onsubmit={(e) => {
+          e.preventDefault();
+          createBook();
+        }}
+        onkeydown={(e) => {
+          if (e.key === "Escape") showForm = false;
+        }}
+      >
+        <h3 class="mb-2 text-[12.5px] font-semibold">New book</h3>
+        {#if regionsError}
+          <p
+            class="mb-2 flex items-center gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+            role="alert"
+          >
+            <Icon name="alert-circle" size={13} />
+            Could not read the region profiles: {regionsError}
+          </p>
+        {/if}
+        <div class="grid gap-3 sm:grid-cols-2">
+          <label class="block">
+            <span class="mb-1 block text-[11.5px] font-medium text-t2">Name</span>
+            <input class="input" bind:value={newName} autocomplete="off" required />
+          </label>
+          <div class="block">
+            <span class="mb-1 block text-[11.5px] font-medium text-t2">Kind</span>
+            <div class="flex items-center gap-1.5" role="radiogroup" aria-label="Book kind">
+              {#each bookKinds as k (k.id)}
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={newKind === k.id}
+                  class="flex-1 rounded-lg border px-2.5 py-1.5 text-[12px] transition-colors
+                    {newKind === k.id
+                    ? 'border-accent-ring bg-accent/10 font-medium dark:border-accent/50'
+                    : 'border-line hover:border-line-2 hover:bg-panel'}"
+                  onclick={() => (newKind = k.id)}
+                >
+                  {k.label}
+                </button>
+              {/each}
+            </div>
+          </div>
+          <div class="block sm:col-span-2">
+            <span class="mb-1 block text-[11.5px] font-medium text-t2">
+              Region profile — decides the chart of accounts, tax rates and
+              report labels
+            </span>
+            <div class="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Region profile">
+              {#each regions as r (r.id)}
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={newRegion === r.id}
+                  class="rounded-lg border px-2.5 py-1.5 text-left text-[12px] transition-colors
+                    {newRegion === r.id
+                    ? 'border-accent-ring bg-accent/10 font-medium dark:border-accent/50'
+                    : 'border-line hover:border-line-2 hover:bg-panel'}"
+                  onclick={() => chooseRegion(r.id)}
+                >
+                  {r.display_name}
+                  <span class="ml-1 text-t3">{r.tax_report_name}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
+          <label class="block">
+            <span class="mb-1 block text-[11.5px] font-medium text-t2">
+              Currency (ISO-4217)
+            </span>
+            <input
+              class="input w-32 uppercase"
+              maxlength="3"
+              autocapitalize="characters"
+              autocomplete="off"
+              spellcheck="false"
+              list="general-book-currencies"
+              bind:value={newCurrency}
+            />
+            <datalist id="general-book-currencies">
+              {#each suggestedCurrencies as code (code)}
+                <option value={code}></option>
+              {/each}
+            </datalist>
+          </label>
+        </div>
+        {#if createError}
+          <p
+            class="mt-2 flex items-start gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+            role="alert"
+          >
+            <Icon name="alert-circle" size={13} class="mt-px shrink-0" />
+            {createError}
+          </p>
+        {/if}
+        <div class="mt-3 flex items-center gap-2">
+          <button
+            class="btn btn-primary h-7"
+            type="submit"
+            disabled={creating || createIssue !== null}
+            title={createIssue ?? undefined}
+          >
+            {creating ? "Creating…" : "Create book"}
+          </button>
+          <button
+            class="btn btn-ghost h-7"
+            type="button"
+            onclick={() => (showForm = false)}
+          >
+            Cancel
+          </button>
+          {#if createIssue}
+            <span class="text-[11.5px] text-t3">{createIssue}</span>
+          {/if}
+        </div>
+      </form>
+    {/if}
+
+    {#if books.length > 1}
+      <!-- Every book, so one made here is never invisible. The desktop reads
+           the first book in the database and has no switcher yet; saying so
+           is the difference between a limitation and a disappearing book. -->
+      <ul class="mb-3 divide-y divide-line rounded-lg border border-line">
+        {#each books as b (b.id)}
+          <li class="flex flex-wrap items-center gap-2 px-3 py-2 text-[12px]">
+            <span class="font-medium">{b.name}</span>
+            <span class="num text-t3">{b.currency}</span>
+            <span class="text-t3">{b.region_name}</span>
+            <span class="ml-auto">
+              {#if b.id === currentBook(books)?.id}
+                <Badge tone="accent" label="Shown in the app" dot={false} />
+              {:else}
+                <Badge tone="neutral" label="CLI and server only" dot={false} />
+              {/if}
+            </span>
+          </li>
+        {/each}
+      </ul>
+      <p class="mb-3 text-[11px] text-t3">
+        SlipScan's screens work with the first book in the database. The
+        others are real — <code class="num">slipscan --book</code> and the
+        HTTP API reach them — but there is no book switcher in the app yet.
+      </p>
+    {/if}
+
     {#if book}
       <dl class="grid grid-cols-[9rem_1fr] gap-y-2 text-[12.5px]">
         <dt class="text-t3">Name</dt>
@@ -89,8 +351,16 @@
         Regions are data, not code: the region profile picked at book
         creation drives the chart of accounts, tax rates and report labels.
       </p>
-    {:else}
-      <p class="text-[12.5px] text-t3">No book configured.</p>
+    {:else if !showForm}
+      <p class="text-[12.5px] text-t2">
+        This database holds no book yet. SlipScan does not invent one — the
+        region profile and currency a book is created with decide its chart
+        of accounts and tax rates, and those are yours to choose.
+      </p>
+      <button class="btn btn-primary mt-3" onclick={openForm}>
+        <Icon name="plus" size={13} />
+        Create the first book
+      </button>
     {/if}
   </section>
 

@@ -25,6 +25,7 @@
   } from "../commands";
   import { highlight } from "../fuzzy";
   import { requestIntent } from "../intent.svelte";
+  import { firstRun } from "../onboarding.svelte";
   import { optionId, palette } from "../palette.svelte";
   import { router } from "../router.svelte";
   import { globalSearch } from "../search.svelte";
@@ -49,6 +50,9 @@
     searchTransactions: (query) => {
       globalSearch.query = query;
     },
+    // The palette closes itself before running a command, so the setup
+    // dialog does not open behind this one.
+    setUpBook: () => firstRun.reopen(),
   });
 
   const commands = $derived([

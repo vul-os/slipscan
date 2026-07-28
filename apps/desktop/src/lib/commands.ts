@@ -49,6 +49,15 @@ export interface CommandDeps {
   themeMode: ThemeMode;
   /** Hand a free-text query to the Transactions filter. */
   searchTransactions: (query: string) => void;
+  /**
+   * Open first-run setup on demand.
+   *
+   * Not an intent, because setup is not a screen — it is a dialog over
+   * whatever screen you are on, and it is the only way to reach the flow
+   * once the "no book at all" gate has been answered. Injected like every
+   * other effect so the catalogue stays runnable without a DOM.
+   */
+  setUpBook: () => void;
 }
 
 /** Every destination in the rail, in rail order, with its jump chord. */
@@ -103,6 +112,20 @@ export function actionCommands(deps: CommandDeps): Command[] {
   });
 
   return [
+    // Not an `action(…)`: setup opens in place instead of navigating, so it
+    // has no intent and no destination. It is first in the catalogue because
+    // on a database with no book it is the only command that leads anywhere.
+    {
+      id: "action:set-up-book",
+      kind: "action" as const,
+      group: "Actions",
+      label: "Set up a new book",
+      detail: "Pick a region profile and currency, and create the book",
+      keywords:
+        "create make first book onboarding setup start region currency profile chart of accounts new",
+      icon: "ledger" as IconName,
+      run: () => deps.setUpBook(),
+    },
     action(
       "import-receipt",
       "Import a receipt",

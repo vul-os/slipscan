@@ -4,6 +4,7 @@
   import CommandPalette from "./lib/components/CommandPalette.svelte";
   import FirstRun from "./lib/components/FirstRun.svelte";
   import { api } from "./lib/api/client";
+  import { bookEpoch } from "./lib/books.svelte";
   import { GOTO_KEYS } from "./lib/nav";
   import { firstRun } from "./lib/onboarding.svelte";
   import { isPaletteChord, palette } from "./lib/palette.svelte";
@@ -121,7 +122,9 @@
     id="main"
     tabindex="-1"
   >
-    {#key router.current}
+    <!-- The epoch is in the key so creating the first book re-runs the
+         current screen's load, which had nothing to load before it. -->
+    {#key `${router.current}:${bookEpoch.value}`}
       <div class="route-enter mx-auto max-w-[1060px] px-5 py-6 rail:px-8 rail:py-7">
         <Screen />
       </div>

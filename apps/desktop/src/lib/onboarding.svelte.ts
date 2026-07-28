@@ -6,11 +6,18 @@
  * for the first time had nothing telling them those choices were theirs to
  * make, or where they live.
  *
- * WHEN IT APPEARS: only when `book_list` comes back empty. That is the
- * honest definition of "nothing set up yet", and it is the one state where
- * the rest of the app has nothing to show anyway. It is skippable from every
- * step, Escape dismisses it, and dismissal is remembered — it never blocks
- * the app and never comes back on its own.
+ * WHEN IT APPEARS BY ITSELF: only when `book_list` comes back empty. That is
+ * the honest definition of "nothing set up yet", and it is the one state
+ * where the rest of the app has nothing to show anyway. It is skippable from
+ * every step, Escape dismisses it, and dismissal is remembered — it never
+ * blocks the app and never comes back on its own.
+ *
+ * HOW IT IS REACHED OTHERWISE: `reopen()`, from the command palette's "Set
+ * up a new book". That matters more than it looks. Until the desktop stopped
+ * seeding a book at startup, `book_list` was never empty, the gate above was
+ * never satisfied, and this flow was unreachable in the shipped app — wired,
+ * tested, and dead. An explicit entry point is what keeps that from
+ * recurring the moment the first book exists.
  *
  * WHAT IT DOES: the region step creates the book. `book_create` is a
  * registered IPC command (src-tauri `commands::book_create`), so the region
@@ -199,6 +206,13 @@ export function stepIssue(
 class FirstRun {
   /** The dialog is on screen. */
   open = $state(false);
+  /**
+   * Bumped every time the flow is opened afresh. The dialog keeps per-run
+   * state (the book it created, an error it hit) and is mounted for the
+   * whole session, so it needs a signal that "this is a new run" — otherwise
+   * a second visit opens still showing the first visit's result.
+   */
+  session = $state(0);
   step = $state<FirstRunStep>("welcome");
   region = $state<string | null>(null);
   currency = $state("");
@@ -222,6 +236,7 @@ class FirstRun {
       this.step = "welcome";
       this.region = this.#record.region;
       this.currency = this.#record.currency ?? "";
+      this.session += 1;
       this.open = true;
     }
   }
@@ -256,14 +271,16 @@ class FirstRun {
   }
 
   /**
-   * Re-open on demand. The seam for a "run setup again" control in Settings;
-   * nothing calls it yet, which is why the flow's closing copy does not
-   * promise one.
+   * Re-open on demand — the command palette's "Set up a new book".
+   *
+   * This is what makes the flow reachable at all once the first book exists:
+   * `consider` only ever fires on an empty database, and it fires once.
    */
   reopen(): void {
     this.step = "welcome";
     this.region = this.#record.region;
     this.currency = this.#record.currency ?? "";
+    this.session += 1;
     this.open = true;
   }
 

@@ -21,6 +21,7 @@
    */
   import { onDestroy, tick } from "svelte";
   import { api } from "../lib/api/client";
+  import { requireBook } from "../lib/book";
   import { routeCache } from "../lib/loadCache";
   import { fmtMoney, fmtPct } from "../lib/format";
   import { takeIntent } from "../lib/intent.svelte";
@@ -62,8 +63,7 @@
     if (!background) loading = true;
     error = null;
     try {
-      const [book] = await api.bookList();
-      if (!book) throw new Error("no book configured");
+      const book = requireBook(await api.bookList());
       bookId = book.id;
       suggestions = await api.reconSuggest({ book_id: book.id });
       cacheSnapshot();
