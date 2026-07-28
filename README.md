@@ -39,15 +39,18 @@ branches that traded while disconnected always converge to the same totals.
 - 🔄 **Leaderless offline-first sync** — hybrid-logical-clock oplog; catalog
   merges last-writer-wins, stock movements + goods receipts merge by union; any
   topology (pair, hub-and-spoke, mesh); authenticated, fail-closed
-- 🧩 **Merges with the shared DMTAP Sync engine** — FlowStock does not carry a
-  private CRDT any more. Conflicts are resolved by the Vulos suite's one
-  specified, vector-verified implementation of
-  [`substrate/SYNC.md`](https://github.com/vul-os/dmtap) — the *same compiled
-  engine* Ofisi runs, not a second implementation that agrees most of the time.
-  Every op is individually signed, so a replicated change is verified on its own
-  rather than trusted for arriving over an authenticated connection. Nodes
-  advertise their merge engine in the handshake and refuse to sync across a
-  mismatch, because two algebras in one mesh converge only by luck
+- 🧩 **Optionally merges with the shared DMTAP Sync engine** — an opt-in build
+  (`-tags dmtap`, not what a release ships) swaps FlowStock's own CRDT for the
+  Vulos suite's one specified, vector-verified implementation of
+  [`substrate/SYNC.md`](https://github.com/vul-os/dmtap) — the _same compiled
+  engine_ Diwan runs, not a second implementation that agrees most of the time.
+  Every op is then individually signed, and two branches can prove they agree by
+  comparing a 33-byte state root rather than two screens. It costs 2.6 MiB of
+  binary, so it is worth building only when you need byte-identical merge
+  semantics with a peer running the same engine — see
+  [Choosing an engine](docs/SYNC.md#choosing-an-engine). Nodes advertise their
+  merge engine in the handshake and refuse to sync across a mismatch, because
+  two algebras in one mesh converge only by luck
 - 🏷️ **Self-describing workspaces** — every row and op carries a workspace
   `org_id`; cross-workspace ops are rejected, and a new device _pairs in_ by
   adopting the workspace rather than starting its own
@@ -72,7 +75,7 @@ branches that traded while disconnected always converge to the same totals.
   accounts; CSV export everywhere
 - 🧪 **Demo mode** — the UI runs in a plain browser with seeded data
   (`npm run dev`), so you can try everything with zero setup
-- 🌓 Light & dark themes; single ~15 MB binary; runs on a laptop, server, NAS
+- 🌓 Light & dark themes; single ~12 MB release binary; runs on a laptop, server, NAS
   or Raspberry Pi
 
 ## Screenshots
@@ -158,17 +161,18 @@ oplog, so sync is stateless and any node can relay any other node's changes.
 The same ops can travel over HTTP **or** a shared folder (Dropbox/Syncthing/USB),
 and one-click compaction snapshots state and prunes acknowledged history.
 
-**Which write wins is decided by the shared DMTAP Sync engine**, not by
-FlowStock. Storage, transport and identity are unchanged — SQLite, the
+**Which write wins is decided by FlowStock's own CRDT** in the binary a release
+ships. A `-tags dmtap` build hands that job to the shared DMTAP Sync engine
+instead: storage, transport and identity are unchanged — SQLite, the
 mutual-Ed25519 HTTP pull and the folder path, the per-node key — and the
-substrate supplies only the algebra: catalog rows map to its last-writer-wins
-register, the two ledgers to its add-only set, which is exactly the behaviour
-described above. FlowStock's own CRDT is still carried and still tested, and
-`substrate_sync: false` pins a node to it. Because the two break an exact
+substrate supplies only the algebra, catalog rows mapping to its
+last-writer-wins register and the two ledgers to its add-only set, which is
+exactly the behaviour described above. Because the two engines break an exact
 timestamp tie differently, the merge engine is part of the sync handshake and a
 round across a mismatch is refused rather than allowed to diverge in silence.
-Full details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
-[docs/SYNC.md](docs/SYNC.md).
+When the extra 2.6 MiB is worth it is spelled out in
+[Choosing an engine](docs/SYNC.md#choosing-an-engine); full details in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/SYNC.md](docs/SYNC.md).
 
 ## Configuration
 

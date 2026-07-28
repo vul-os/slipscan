@@ -19,6 +19,10 @@ module.exports = {
     "backend",
     "node_modules",
     "scripts",
+    // A snapshot of the served static site, reverse-populated from
+    // vulos-static — including a vendored, minified marked.umd.js that this
+    // config has no business having an opinion about.
+    "site",
     "*.config.js",
     "*.cjs",
   ],

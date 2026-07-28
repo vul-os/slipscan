@@ -24,6 +24,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export const ROOT = resolve(__dirname, "..", "..");
 export const BIN = process.env.FLOWSTOCK_BIN || join(ROOT, "flowstock");
 
+// The shared DMTAP sync engine is an opt-in build (`-tags dmtap`), so the
+// default binary cannot run it — forcing FLOWSTOCK_SUBSTRATE_SYNC=1 on it is
+// fatal at startup, by design. substrate-sync.spec.js therefore drives a second
+// binary, built alongside the first by global-setup.js.
+export const DMTAP_BIN =
+  process.env.FLOWSTOCK_DMTAP_BIN || join(ROOT, "flowstock-dmtap");
+
 /** Ask the OS for a free port. */
 async function freePort() {
   return new Promise((res, rej) => {
@@ -51,17 +58,21 @@ export class FlowStockNode {
     this.logs = [];
   }
 
-  /** Boot a node on a free port against a fresh temp data dir. */
+  /**
+   * Boot a node on a free port against a fresh temp data dir. `opts.bin`
+   * selects a different build (DMTAP_BIN); everything else is the default one.
+   */
   static async start(opts = {}) {
-    if (!existsSync(BIN)) {
+    const bin = opts.bin || BIN;
+    if (!existsSync(bin)) {
       throw new Error(
-        `flowstock binary not found at ${BIN} — run \`npm run build:all\` (global setup does this automatically)`,
+        `flowstock binary not found at ${bin} — run \`npm run build:all\` (global setup does this automatically)`,
       );
     }
     const port = opts.port || (await freePort());
     const dataDir =
       opts.dataDir || mkdtempSync(join(tmpdir(), "flowstock-e2e-"));
-    const proc = spawn(BIN, [], {
+    const proc = spawn(bin, [], {
       cwd: dataDir, // keeps config-file discovery away from the repo
       env: {
         ...process.env,

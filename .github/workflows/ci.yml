@@ -35,10 +35,22 @@ jobs:
       - name: Go tests
         run: npm run test:go
 
+      # The shared DMTAP sync engine is an opt-in build, so the substrate
+      # package has to be compiled and tested under its own tag or nothing
+      # covers it.
+      - name: Go tests (-tags dmtap)
+        run: go test -tags dmtap ./backend/...
+
       # Builds the single binary with the frontend embedded — the same artifact
       # the end-to-end tests drive, so a build break fails here with a clear message.
       - name: Build (frontend + binary)
         run: npm run build:all
+
+      # And the -tags dmtap build of the same thing, which is the only binary
+      # e2e/substrate-sync.spec.js can run against: the default build exits at
+      # startup rather than pretend it has an engine.
+      - name: Build (frontend + binary, -tags dmtap)
+        run: npm run build:dmtap
 
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
@@ -46,7 +58,7 @@ jobs:
       - name: End-to-end tests
         run: npm run test:e2e
         env:
-          # The binary was just built by the step above.
+          # Both binaries were just built by the steps above.
           FLOWSTOCK_SKIP_BUILD: "1"
 
       - name: Upload Playwright report

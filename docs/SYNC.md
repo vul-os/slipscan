@@ -215,10 +215,14 @@ key that inbound requests are then verified against.
 
 FlowStock's merge rules — last-writer-wins for catalog rows, union for the
 ledgers — were written for FlowStock. The Vulos suite now has one specified
-implementation of those rules that several products share, and FlowStock uses it:
-the shared engine is the merge authority by default. The built-in CRDT is still
-carried, still tested, and still reachable with `substrate_sync: false` (see
-[Configuration](CONFIGURATION.md)).
+implementation of those rules that several products share, and FlowStock can use
+it instead of its own.
+
+**It is an optional build, not the default one.** The engine is compiled in only
+with `-tags dmtap`; the binary a release ships carries the built-in CRDT and
+nothing else. Everything below describes the `-tags dmtap` build. The
+built-in CRDT is not a legacy path being tolerated — it is what almost every
+install runs, and it is fully tested either way.
 
 Because the two engines break ties differently, a node **advertises which engine
 it merges by** in the sync handshake, and refuses a round with a peer that
@@ -253,6 +257,39 @@ address over the whole replicated state, including tombstones and other things
 no screen shows. Two branches that have converged return byte-identical roots.
 Comparing screens tells you the visible part matches; comparing roots tells you
 everything matches.
+
+### Choosing an engine
+
+Building with `-tags dmtap` grows the shipped binary by **2.6 MiB**: on
+linux/amd64, built the way the release workflow builds it
+(`-tags embed_frontend -trimpath -ldflags "-s -w"`), 12,005,560 → 14,766,264
+bytes. A plain `go build` with no frontend embedded pays a little more, 3.57
+MiB, because nothing is stripped. Almost none of that is the
+engine — the WebAssembly module is 426 KB. The rest is
+[wazero](https://wazero.io), the compiler that has to be embedded alongside
+anything that runs WebAssembly. There is also a one-off ~120 ms compile at first
+start, which drops to ~6 ms once the compiled-code cache under the data dir is
+warm.
+
+The criterion for paying it is narrow:
+
+> **Pay it when you need byte-identical merge semantics with a peer running the
+> same engine.** Two replicas of the _same specified implementation_ resolve
+> every tie the same way and agree on a `state_root` — 33 bytes that cover every
+> register, set element and tombstone. That is the guarantee, and it is worth
+> 2.6 MiB when something depends on it: a FlowStock branch replicating with a
+> different Vulos product over the same algebra, or a deployment that has to
+> _prove_ two branches agree rather than eyeball two screens.
+
+> **Do not pay it when you merely need a CRDT.** For "branches trade offline and
+> converge", the built-in engine is already correct and already convergent — it
+> is what the two-node offline-divergence tests in `backend/internal/sync/` run
+> against, and it costs nothing extra. Buying the shared engine here purchases
+> agreement with a peer you do not have.
+
+Two engines in one mesh converge only by luck, so this is a fleet-wide decision:
+see [Configuration](CONFIGURATION.md#substrate_sync--the-shared-merge-engine)
+for the handshake that enforces it.
 
 ## Conflict examples
 

@@ -9,31 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **The shared DMTAP sync engine is now the merge authority** (`substrate_sync`,
-  **default on**): the suite-wide engine decides how concurrent writes merge,
+- **The shared DMTAP sync engine, as an opt-in build** (`-tags dmtap` plus
+  `substrate_sync`): the suite-wide engine decides how concurrent writes merge,
   instead of FlowStock's own CRDT. Storage, transport and identity are
   unchanged; the per-node Ed25519 key additionally signs every op, so replicated
   changes are individually verified rather than trusted for arriving over an
   authenticated connection. `GET /api/substrate` reports a `state_root` — a
   content address over the whole replicated state — so two branches can be
-  checked for agreement over everything, not just what is on screen. FlowStock's
-  built-in CRDT is still carried and still tested; `substrate_sync: false` pins a
-  node to it.
+  checked for agreement over everything, not just what is on screen. The default
+  build carries no engine at all and merges with FlowStock's own CRDT, which is
+  what a release ships; the engine costs 2.6 MiB of binary, and when that is
+  worth paying is [Choosing an engine](docs/SYNC.md#choosing-an-engine).
 - **The merge engine is part of the sync handshake.** Both engines converge but
   break an exact timestamp tie differently (node id vs author public key), so a
   mesh running both can pick different winners for the same pair of concurrent
-  writes — silently, with every node reporting a healthy sync. `GET
-  /api/sync/vector` now advertises `merge_engine`, and a round between two nodes
-  that disagree is refused with an error naming both. A peer too old to send the
-  field reads as the built-in engine.
+  writes — silently, with every node reporting a healthy sync.
+  `GET /api/sync/vector` now advertises `merge_engine`, and a round between two
+  nodes that disagree is refused with an error naming both. A peer too old to
+  send the field reads as the built-in engine.
 
 ### Upgrading
 
-- **Rolling upgrade pauses sync between mismatched pairs**, by design: upgraded
-  nodes refuse rounds with nodes still on the built-in engine, and resume on
-  their own once every node is upgraded. To avoid the pause entirely, set
-  `substrate_sync: false` across the fleet first, upgrade, then remove the
-  setting node by node.
+- **Switching engines pauses sync between mismatched pairs**, by design: a node
+  on the DMTAP engine refuses rounds with a node still on the built-in one, and
+  they resume on their own once the whole fleet has switched. Upgrading alone
+  changes nothing — the default build keeps merging with the built-in engine.
 
 - **Self-describing workspaces**: every synced row and op carries an `org_id`
   (generated on first run). Cross-workspace ops are rejected on apply and a
@@ -79,6 +79,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`install.sh` now verifies the download against the release's
+  `SHA256SUMS.txt`, and fails closed.** It previously downloaded a binary and
+  ran `chmod +x` on it without checking anything — the release published a
+  checksum file that nothing consumed, which documents what the bytes should
+  have been while installing whatever arrived. A missing sums file, a sums file
+  with no line for this archive, a digest mismatch, or a machine with no SHA-256
+  tool are now all fatal, and nothing is written to `./flowstock` on any of
+  them. It also downloaded the wrong asset name entirely
+  (`flowstock-<os>-<arch>`, which the release workflow never produced).
+- **The release workflow could never publish.** Its build step copied a
+  `LICENSE` file into every archive; the repo is dual-licensed and carries
+  `LICENSE-MIT` and `LICENSE-APACHE`, so `cp` failed and took the job with it.
 - Joining a workspace now records the joined peer's identity and acknowledged
   vector on the real peer row (previously written to a throwaway id and lost).
 - **`POST /api/sync/settings` no longer clears the shared secret when the

@@ -17,10 +17,16 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { FlowStockNode, pairNodes } from "./helpers/node.js";
+import { FlowStockNode, DMTAP_BIN, pairNodes } from "./helpers/node.js";
 import { seedProduct, onHand } from "./helpers/seed.js";
 
+// The engine is an opt-in build, so this is the only spec that does not drive
+// the default binary: it drives flowstock-dmtap, built alongside it by
+// global-setup.js. The default build has no engine compiled in and exits at
+// startup when FLOWSTOCK_SUBSTRATE_SYNC=1 forces one on, which is the intended
+// behaviour and would fail every test below with a confusing message.
 const SUBSTRATE = { FLOWSTOCK_SUBSTRATE_SYNC: "1" };
+const startNode = () => FlowStockNode.start({ bin: DMTAP_BIN, env: SUBSTRATE });
 
 test.describe("two-node sync on the shared substrate engine", () => {
   test.slow(); // two processes, each compiling the engine at startup
@@ -28,10 +34,7 @@ test.describe("two-node sync on the shared substrate engine", () => {
   let a, b;
 
   test.beforeEach(async () => {
-    [a, b] = await Promise.all([
-      FlowStockNode.start({ env: SUBSTRATE }),
-      FlowStockNode.start({ env: SUBSTRATE }),
-    ]);
+    [a, b] = await Promise.all([startNode(), startNode()]);
   });
 
   test.afterEach(async () => {

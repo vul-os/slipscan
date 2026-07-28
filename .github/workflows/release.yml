@@ -51,6 +51,9 @@ jobs:
         with:
           go-version: "1.25"
       - run: go test ./backend/...
+      # The substrate package only compiles under its own tag; without this the
+      # release would ship having never built it.
+      - run: go test -tags dmtap ./backend/...
 
   frontend:
     name: build frontend
@@ -105,7 +108,11 @@ jobs:
           go build -tags embed_frontend -trimpath \
             -ldflags "-s -w -X main.Version=${version}" \
             -o "dist/${name}/flowstock" ./backend/cmd/flowstock
-          cp README.md CHANGELOG.md LICENSE flowstock.config.example.json "dist/${name}/"
+          # The repo is dual-licensed and carries no plain LICENSE file; naming
+          # one here made `cp` fail, which failed this job, which is why no
+          # release archive has ever been produced.
+          cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE \
+             flowstock.config.example.json "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
 
       - uses: actions/upload-artifact@v4
@@ -124,9 +131,13 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # install.sh downloads this file and refuses to install anything it does
+      # not cover, so the glob is spelled out rather than left as `*`: the
+      # archives are what needs a digest, and naming them keeps the sums file
+      # from ever listing itself.
       - name: Checksums
         working-directory: dist
-        run: sha256sum -- * > SHA256SUMS.txt && cat SHA256SUMS.txt
+        run: sha256sum -- *.tar.gz > SHA256SUMS.txt && cat SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -134,7 +145,7 @@ jobs:
           generate_release_notes: true
           files: dist/*
           body: |
-            Single self-contained `flowstock` binary (frontend embedded) for each platform, plus `SHA256SUMS.txt` covering every attached file.
+            Single self-contained `flowstock` binary (frontend embedded) for each platform, plus `SHA256SUMS.txt` covering every archive attached here. `install.sh` verifies against it and refuses to install on a mismatch.
 
             Container image: build `Dockerfile` yourself with `--build-arg VERSION=${{ github.ref_name }}`, or watch for a published `ghcr.io` tag if this repo wires that up separately.
         env:

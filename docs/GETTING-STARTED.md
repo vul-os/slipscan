@@ -2,14 +2,20 @@
 
 ## Install
 
-**From a release** — download the `flowstock` binary for your platform from
-[GitHub Releases](https://github.com/vul-os/flowstock/releases) and run it:
+**From a release** — download the archive for your platform from
+[GitHub Releases](https://github.com/vul-os/flowstock/releases), unpack it, and
+run it:
 
 ```bash
 ./flowstock            # serves http://127.0.0.1:8787
 ```
 
 Open http://localhost:8787 in your browser.
+
+Every release also attaches `SHA256SUMS.txt` covering each archive. Check yours
+against it before running the binary — `install.sh` in this repo does exactly
+that and refuses to install on a mismatch, a missing sums file, or a machine
+with no SHA-256 tool to check with.
 
 **With Docker:**
 

@@ -5,3 +5,8 @@ backend/cmd/flowstock/dist
 package-lock.json
 test-results
 playwright-report
+
+# site/ is a snapshot of the currently-served static content, reverse-populated
+# from vulos-static rather than authored here. Reformatting it would make the
+# copy differ from what is actually deployed, which is the one thing it is for.
+site

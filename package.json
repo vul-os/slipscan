@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "vite build",
     "build:all": "vite build && cp -r dist backend/cmd/flowstock/dist && go build -tags embed_frontend -ldflags \"-X main.Version=$npm_package_version\" -o flowstock ./backend/cmd/flowstock && rm -rf backend/cmd/flowstock/dist",
+    "build:dmtap": "vite build && cp -r dist backend/cmd/flowstock/dist && go build -tags \"embed_frontend dmtap\" -ldflags \"-X main.Version=$npm_package_version\" -o flowstock-dmtap ./backend/cmd/flowstock && rm -rf backend/cmd/flowstock/dist",
     "lint": "eslint . --ext js,jsx --max-warnings 0",
     "preview": "vite preview",
     "dev:app": "go run ./backend/cmd/flowstock",
@@ -18,8 +19,7 @@
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:report": "playwright show-report",
     "test": "npm run test:go && npm run test:e2e",
-    "screenshots": "node scripts/screenshots.mjs",
-    "demo-screenshots": "node scripts/screenshots.mjs"
+    "screenshots": "node scripts/screenshots.mjs"
   },
   "dependencies": {
     "@fontsource-variable/archivo": "^5.3.0",
@@ -36,13 +36,10 @@
     "@radix-ui/react-slot": "^1.1.0",
     "@radix-ui/react-tabs": "^1.1.1",
     "@radix-ui/react-toast": "^1.2.1",
-    "@tabler/icons-react": "^2.39.0",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.0.0",
-    "date-fns": "^3.6.0",
     "lucide-react": "^0.441.0",
     "react": "^18.2.0",
-    "react-day-picker": "^8.10.1",
     "react-dom": "^18.2.0",
     "react-hook-form": "^7.53.2",
     "react-router-dom": "^6.17.0",

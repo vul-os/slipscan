@@ -3,6 +3,7 @@ dist
 .DS_Store
 backend/cmd/flowstock/dist
 /flowstock
+/flowstock-dmtap
 flowstock.config.json
 test-results
 playwright-report

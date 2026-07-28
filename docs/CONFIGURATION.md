@@ -18,24 +18,31 @@ resolve in the order **config file → environment variable → default**.
 }
 ```
 
-| Key                    | Env                              | Default        | Notes                                                                                                                                                                                                                                                                                  |
-| ---------------------- | -------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `port`                 | `FLOWSTOCK_PORT`                 | `8787`         | HTTP listen port (also serves the sync mesh)                                                                                                                                                                                                                                           |
-| `host`                 | `FLOWSTOCK_HOST`                 | `127.0.0.1`    | bind interface — set `0.0.0.0` so other branches can reach this one                                                                                                                                                                                                                    |
-| `data_dir`             | `FLOWSTOCK_DATA_DIR`             | `~/.flowstock` | holds `flowstock.db` (and `snapshot.json` after a Compact)                                                                                                                                                                                                                             |
-| `password`             | `FLOWSTOCK_PASSWORD`             | _(empty)_      | if set, gates the app + data API behind an owner password                                                                                                                                                                                                                              |
-| `frame_ancestors`      | `FLOWSTOCK_FRAME_ANCESTORS`      | _(empty)_      | origins allowed to iframe FlowStock, e.g. `https://vulos.org` (for the Vulos OS shell)                                                                                                                                                                                                 |
-| `sync_secret_fallback` | `FLOWSTOCK_SYNC_SECRET_FALLBACK` | `false`        | when `true`, lets an already-enrolled sync peer authenticate with the shared secret alone instead of a request signature — a compatibility escape hatch for mixed-version fleets. Default `false` = mutual key auth is required once a peer has enrolled a key (the mesh fails closed) |
-| `substrate_sync`       | `FLOWSTOCK_SUBSTRATE_SYNC`       | `true`         | the shared DMTAP sync engine decides how concurrent writes merge. Set it to `false` to pin a node to FlowStock's own CRDT. **Set it the same way on every node in a workspace** — see below                                                                                            |
+| Key                    | Env                              | Default         | Notes                                                                                                                                                                                                                                                                                  |
+| ---------------------- | -------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `port`                 | `FLOWSTOCK_PORT`                 | `8787`          | HTTP listen port (also serves the sync mesh)                                                                                                                                                                                                                                           |
+| `host`                 | `FLOWSTOCK_HOST`                 | `127.0.0.1`     | bind interface — set `0.0.0.0` so other branches can reach this one                                                                                                                                                                                                                    |
+| `data_dir`             | `FLOWSTOCK_DATA_DIR`             | `~/.flowstock`  | holds `flowstock.db` (and `snapshot.json` after a Compact)                                                                                                                                                                                                                             |
+| `password`             | `FLOWSTOCK_PASSWORD`             | _(empty)_       | if set, gates the app + data API behind an owner password                                                                                                                                                                                                                              |
+| `frame_ancestors`      | `FLOWSTOCK_FRAME_ANCESTORS`      | _(empty)_       | origins allowed to iframe FlowStock, e.g. `https://vulos.org` (for the Vulos OS shell)                                                                                                                                                                                                 |
+| `sync_secret_fallback` | `FLOWSTOCK_SYNC_SECRET_FALLBACK` | `false`         | when `true`, lets an already-enrolled sync peer authenticate with the shared secret alone instead of a request signature — a compatibility escape hatch for mixed-version fleets. Default `false` = mutual key auth is required once a peer has enrolled a key (the mesh fails closed) |
+| `substrate_sync`       | `FLOWSTOCK_SUBSTRATE_SYNC`       | build-dependent | whether the shared DMTAP sync engine decides how concurrent writes merge. Defaults to `false` in a plain build (which carries no engine) and `true` in a `-tags dmtap` build. **Set it the same way on every node in a workspace** — see below                                         |
 
 The `--port` flag overrides the port; `--version` prints the version.
 
 ### `substrate_sync` — the shared merge engine
 
-FlowStock merges with the suite-wide [DMTAP sync engine](SYNC.md#the-shared-substrate-engine)
-rather than its own hand-rolled CRDT. Storage, transport and identity are
-unchanged; only the algebra that decides a conflict changes. The built-in engine
-remains fully supported and is reachable with `substrate_sync: false`.
+FlowStock can merge with the suite-wide
+[DMTAP sync engine](SYNC.md#the-shared-substrate-engine) instead of its own CRDT.
+Storage, transport and identity are unchanged; only the algebra that decides a
+conflict changes.
+
+**It is not in the default build.** The engine is compiled in only with
+`-tags dmtap`; a plain `go build` (which is what `npm run build:all` and the
+release workflow run) carries no DMTAP binding at all, defaults this setting to
+`false`, and **exits at startup** with `substrate: this binary was built without
+dmtap support` if you force it on anyway. Which build you want, and what the
+engine costs, is [Choosing an engine](SYNC.md#choosing-an-engine).
 
 **It is a deployment-wide switch, not a per-node preference.** Both engines
 converge, but they do not share a total order: FlowStock breaks a tie between
@@ -49,11 +56,12 @@ engine in `GET /api/sync/vector`, and a round between two nodes that disagree is
 **refused** with an error naming both engines. A node old enough not to send the
 field is read as the built-in engine.
 
-**Upgrading a live mesh.** Nodes that have upgraded stop syncing with nodes that
-have not, and resume by themselves once the rollout finishes — no operator step
-beyond upgrading every node. To move a fleet with no sync pause, set
-`substrate_sync: false` everywhere first, upgrade, then remove the setting node
-by node — sync pauses only between the mixed pair, never across the whole mesh.
+**Switching a live mesh.** A node that has switched engines stops syncing with
+one that has not, and they resume by themselves once every node has switched —
+no operator step beyond rolling the change out. Sync pauses only between a
+mismatched pair, never across the whole mesh, so a node-by-node rollout is safe;
+it just leaves the not-yet-switched nodes talking only to each other until it
+finishes.
 
 `GET /api/substrate` reports `legacy_ops`: ops in this node's own history that
 predate the switch and so carry no signed envelope. It also returns
@@ -61,8 +69,10 @@ predate the switch and so carry no signed envelope. It also returns
 branches that have converged return the identical 66-character root, which is a
 far stronger check than comparing what the two screens show.
 
-The engine costs about 3.6 MB of binary size and ~120 ms at first start
-(~6 ms afterwards, from a compiled-code cache under the data dir).
+The engine costs **2.6 MiB** of binary size in a release build (3.57 MiB for a
+plain unstripped `go build`) and ~120 ms at first start (~6 ms afterwards, from
+a compiled-code cache under the data dir). See
+[Choosing an engine](SYNC.md#choosing-an-engine) for when that is worth paying.
 
 ## In-app settings (Settings page)
 

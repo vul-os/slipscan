@@ -17,6 +17,21 @@ invariants, HLC ordering, snapshots) and `backend/internal/sync/` (the sync
 protocol, signed batches, folder transport, workspace isolation and pairing).
 These are fast and need no browser.
 
+The shared DMTAP sync engine is an opt-in build, so its tests only compile under
+its own tag:
+
+```bash
+go test -tags dmtap ./backend/...   # adds backend/internal/substrate/
+```
+
+Two guards in `backend/internal/substrate/vendor_drift_test.go` run in **both**
+builds, because they are about the vendored engine's bytes rather than the
+engine: `TestVendoredTreeMatchesManifest` checks every file in
+`third_party/dmtapsync/` against the digests in its `SHA256SUMS.txt` and fails
+if the manifest is missing, and `TestVendoredMatchesPinnedUpstream` compares
+against the upstream commit `VENDOR.md` pins when a sibling `envoir` checkout is
+present (`FLOWSTOCK_ENVOIR_DIR`).
+
 ## Browser tests
 
 `npm run test:e2e` runs Playwright against **the real binary**, not the demo
@@ -46,22 +61,33 @@ creates prerequisites — a workspace, a catalog, a customer — over the API, s
 each spec spends its time on the flow it is actually testing. **The flow under
 test is always driven through the browser.**
 
-The binary is built by `e2e/global-setup.js` before the suite runs, and the
-build is skipped when the binary is already newer than every source file.
-Set `FLOWSTOCK_SKIP_BUILD=1` to skip it outright, or point `FLOWSTOCK_BIN` at a
-prebuilt binary (CI builds it as its own step).
+Two binaries are built by `e2e/global-setup.js` before the suite runs, and the
+build is skipped when both are already newer than every source file:
+
+| Binary            | Built by              | Driven by                       |
+| ----------------- | --------------------- | ------------------------------- |
+| `flowstock`       | `npm run build:all`   | every spec except the one below |
+| `flowstock-dmtap` | `npm run build:dmtap` | `substrate-sync.spec.js` only   |
+
+The second exists because the DMTAP engine is an opt-in build: the default
+binary carries no engine and **exits at startup** if `FLOWSTOCK_SUBSTRATE_SYNC=1`
+forces one on, so the substrate spec has nothing to run against without it.
+
+Set `FLOWSTOCK_SKIP_BUILD=1` to skip both builds, or point `FLOWSTOCK_BIN` /
+`FLOWSTOCK_DMTAP_BIN` at prebuilt binaries (CI builds them as its own steps).
 
 ### What is covered
 
-| Spec                    | What it proves                                                                                                                                                                                                                                                                      |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `catalog.spec.js`       | Creating a product and a variant through the UI, persisted to SQLite and surviving reload                                                                                                                                                                                           |
-| `stock.spec.js`         | A recorded movement updates stock on hand and appears in the ledger; a transfer writes paired out/in movements sharing one `ref_id`                                                                                                                                                 |
-| `orders.spec.js`        | Confirming a sales order deducts stock via a `sale` movement; receiving a purchase order twice appends two `po_receipts` rows summing to the total, with `received_quantity` derived at read time and over-receipt refused                                                          |
-| `setup-pairing.spec.js` | First run creates a workspace; a second device joins using the secret shown in the first device's Settings — entirely through the browser, no API calls                                                                                                                             |
-| `sync-two-node.spec.js` | **The core claim.** Two processes, two databases, divergent offline edits, then convergence asserted in both UIs. Includes concurrent movements at the _same_ branch, which must union-merge rather than clobber, and an unreachable-peer round that delivers once the peer returns |
-| `folder-sync.spec.js`   | The zero-infrastructure path: with all network peers deleted, two nodes converge purely through `ops-<node>.jsonl` files in a shared folder, idempotently                                                                                                                           |
-| `ui-guards.spec.js`     | Every route renders in **both** themes with readable headings (computed WCAG contrast against the real backdrop), a clean console, and working navigation                                                                                                                           |
+| Spec                     | What it proves                                                                                                                                                                                                                                                                      |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `catalog.spec.js`        | Creating a product and a variant through the UI, persisted to SQLite and surviving reload                                                                                                                                                                                           |
+| `stock.spec.js`          | A recorded movement updates stock on hand and appears in the ledger; a transfer writes paired out/in movements sharing one `ref_id`                                                                                                                                                 |
+| `orders.spec.js`         | Confirming a sales order deducts stock via a `sale` movement; receiving a purchase order twice appends two `po_receipts` rows summing to the total, with `received_quantity` derived at read time and over-receipt refused                                                          |
+| `setup-pairing.spec.js`  | First run creates a workspace; a second device joins using the secret shown in the first device's Settings — entirely through the browser, no API calls                                                                                                                             |
+| `sync-two-node.spec.js`  | **The core claim.** Two processes, two databases, divergent offline edits, then convergence asserted in both UIs. Includes concurrent movements at the _same_ branch, which must union-merge rather than clobber, and an unreachable-peer round that delivers once the peer returns |
+| `folder-sync.spec.js`    | The zero-infrastructure path: with all network peers deleted, two nodes converge purely through `ops-<node>.jsonl` files in a shared folder, idempotently                                                                                                                           |
+| `ui-guards.spec.js`      | Every route renders in **both** themes with readable headings (computed WCAG contrast against the real backdrop), a clean console, and working navigation                                                                                                                           |
+| `substrate-sync.spec.js` | The same convergence claim on the `-tags dmtap` build, asserted on the engine's 33-byte `state_root` rather than on rendered rows, plus that a deleted product survives an ordinary re-create                                                                                       |
 
 ### Conventions
 
@@ -96,6 +122,7 @@ failure, set `FLOWSTOCK_KEEP_DATA=1` and the temp data dirs are left in place.
 
 ## CI
 
-`.github/workflows/ci.yml` runs lint, the Go tests, the embedded build, and the
-browser suite on every push to `main` and every pull request. The Playwright
-HTML report is uploaded as an artifact when the suite fails.
+`.github/workflows/ci.yml` runs lint, the Go tests in both builds
+(plain and `-tags dmtap`), both embedded builds, and the browser suite on every
+push to `main` and every pull request. The Playwright HTML report is uploaded as
+an artifact when the suite fails.
