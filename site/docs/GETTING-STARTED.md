@@ -2,14 +2,20 @@
 
 ## Install
 
-**From a release** — download the `flowstock` binary for your platform from
-[GitHub Releases](https://github.com/vul-os/flowstock/releases) and run it:
+**From a release** — download the archive for your platform from
+[GitHub Releases](https://github.com/vul-os/flowstock/releases), unpack it, and
+run it:
 
 ```bash
 ./flowstock            # serves http://127.0.0.1:8787
 ```
 
 Open http://localhost:8787 in your browser.
+
+Every release also attaches `SHA256SUMS.txt` covering each archive. Check yours
+against it before running the binary — `install.sh` in this repo does exactly
+that and refuses to install on a mismatch, a missing sums file, or a machine
+with no SHA-256 tool to check with.
 
 **With Docker:**
 
@@ -47,13 +53,13 @@ A sensible first path through the app:
 
 1. **Products** — create categories, products and variations (SKU, price,
    cost price, reorder point).
-2. **Stock** — capture opening stock with an *Adjust stock* (kind: receive)
+2. **Stock** — capture opening stock with an _Adjust stock_ (kind: receive)
    per variant, or receive your first purchase order instead.
 3. **Partners** — add customers and suppliers.
-4. **Purchase orders** — order from a supplier, *Send* it, then *Receive
-   goods* when the delivery arrives (stock goes up).
-5. **Orders** — capture a customer order and *Confirm* it (stock goes down).
-   Mark it *Paid* when settled, or record part-payments under
+4. **Purchase orders** — order from a supplier, _Send_ it, then _Receive
+   goods_ when the delivery arrives (stock goes up).
+5. **Orders** — capture a customer order and _Confirm_ it (stock goes down).
+   Mark it _Paid_ when settled, or record part-payments under
    **Creditors & Debtors**.
 6. **Reports** — valuation, movements, low stock, sales, accounts; every
    report exports CSV.
@@ -66,9 +72,13 @@ Each branch is its own FlowStock install with its own database. To link them:
    (or `"host": "0.0.0.0"` in the config) so it accepts connections from other
    machines.
 2. On **Settings → Sync**, set the **same shared secret** on every branch
-   (use *Generate* on one, copy it to the others).
+   (use _Generate_ on one, copy it to the others). The secret pairs the branches
+   the first time they sync; from then on they authenticate each other by
+   Ed25519 key, so the secret is a one-time bootstrap rather than a standing
+   password.
 3. On one branch, add the others as **peers** — name + URL, e.g.
-   `http://192.168.1.20:8787` — and press *Test connection*, then *Sync now*.
+   `http://192.168.1.20:8787` (the same address the branch serves FlowStock on;
+   sync shares the app port) — and press _Test connection_, then _Sync now_.
 
 Branches sync automatically once a minute when reachable. A branch that goes
 offline keeps trading normally and converges the next time it can reach any

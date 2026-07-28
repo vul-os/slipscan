@@ -24,13 +24,50 @@ its own tag:
 go test -tags dmtap ./backend/...   # adds backend/internal/substrate/
 ```
 
+The race detector is clean and CI runs it, in both tag configurations:
+
+```bash
+npm run test:race   # go test -race ./backend/... , then again with -tags dmtap
+```
+
+## Vendored-engine provenance
+
 Two guards in `backend/internal/substrate/vendor_drift_test.go` run in **both**
 builds, because they are about the vendored engine's bytes rather than the
-engine: `TestVendoredTreeMatchesManifest` checks every file in
-`third_party/dmtapsync/` against the digests in its `SHA256SUMS.txt` and fails
-if the manifest is missing, and `TestVendoredMatchesPinnedUpstream` compares
-against the upstream commit `VENDOR.md` pins when a sibling `envoir` checkout is
-present (`FLOWSTOCK_ENVOIR_DIR`).
+engine:
+
+- **`TestVendoredTreeMatchesManifest`** checks every file in
+  `third_party/dmtapsync/` against the digests in its `SHA256SUMS.txt`, fails if
+  the manifest is missing, and needs nothing but this repo.
+- **`TestVendoredMatchesPinnedUpstream`** compares each vendored file against
+  `git show <pinned commit>:bindings/go/<file>` in an `envoir` checkout
+  (`FLOWSTOCK_ENVOIR_DIR`, or `../envoir`), reading the pin out of `VENDOR.md`.
+  This is the only guard that catches drift **laundered through a regenerated
+  manifest** — bytes changed and `SHA256SUMS.txt` re-run over them.
+
+Because the second one is the load-bearing guard, it is not allowed to quietly
+do nothing. CI checks `vul-os/envoir` out at the pinned commit and sets
+`FLOWSTOCK_REQUIRE_UPSTREAM_VENDOR_CHECK=1`, which turns every "could not
+compare" path into a **failure**; the release workflow does the same. Locally,
+with no checkout, it skips — but prints what was not verified and how many files
+went uncompared, and it asserts it compared all ten when it does run.
+
+## Published docs
+
+`site/` is the product site this repo ships (vulos-static collects it at build
+time), and `site/docs/*.md` must be **byte-identical** to `docs/*.md`:
+
+```bash
+npm run docs:check   # gate, runs in CI
+npm run docs:sync    # rewrite site/docs/ from docs/ after editing docs/
+```
+
+`scripts/docs-mirror.mjs` reads the `const DOCS = [...]` manifest in
+`site/docs.html` to learn what the site publishes, then requires a byte-identical
+`docs/` source for each page, refuses any unaccounted-for file in `site/docs/`,
+asserts the published count against a floor, and scans the hand-authored shells
+(`site/*.html`) for claims that were published and were wrong. It has no skip
+path: both trees are in this repo.
 
 ## Browser tests
 

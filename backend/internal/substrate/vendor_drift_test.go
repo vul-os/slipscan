@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,27 +121,66 @@ func TestVendoredTreeMatchesManifest(t *testing.T) {
 	}
 }
 
+// requireUpstreamEnv, when set to "1", turns every skip in
+// TestVendoredMatchesPinnedUpstream into a failure. CI sets it, and CI also
+// checks the upstream repo out at the pinned commit — so in CI the comparison
+// either happens or the job goes red. It must never report success for a
+// comparison it did not make.
+//
+// It is opt-in rather than always-on because a developer laptop legitimately
+// has no envoir checkout, and the manifest guard above still runs there.
+const requireUpstreamEnv = "FLOWSTOCK_REQUIRE_UPSTREAM_VENDOR_CHECK"
+
+// notVerified is the exact sentence a skip has to print: what was *not* checked,
+// and how many files went unchecked. A skip that does not say what it gave up on
+// reads like a pass in a log.
+func notVerified(reason string) string {
+	return fmt.Sprintf(
+		"NOT VERIFIED: %s. The %d vendored files were NOT compared against upstream — "+
+			"only their digests in SHA256SUMS.txt were checked (TestVendoredTreeMatchesManifest), "+
+			"which cannot detect a manifest regenerated over drifted bytes. "+
+			"Set %s=1 to make this a failure instead of a skip.",
+		reason, len(vendoredFiles), requireUpstreamEnv)
+}
+
+// skipOrFail reports a comparison that could not be made: loudly, and fatally
+// wherever the caller has declared the comparison mandatory.
+func skipOrFail(t *testing.T, reason string) {
+	t.Helper()
+	msg := notVerified(reason)
+	if os.Getenv(requireUpstreamEnv) == "1" {
+		t.Fatalf("%s is set, so this is a failure: %s", requireUpstreamEnv, msg)
+	}
+	t.Skip(msg)
+}
+
 // TestVendoredMatchesPinnedUpstream compares the vendored tree against the
 // upstream commit VENDOR.md pins, read out of git so the comparison is
 // deterministic regardless of what state the sibling checkout is left in.
 //
-// It skips only when there is no sibling checkout to read, which is a genuine
-// "nothing here to compare against" — and the manifest guard above has already
-// run by then.
+// Where it can skip — no sibling checkout, or a checkout that has not fetched
+// the pin — it says so in the words of notVerified() above, naming what went
+// unchecked and how many files that was. Under FLOWSTOCK_REQUIRE_UPSTREAM_VENDOR_CHECK=1
+// (which CI sets, alongside checking envoir out at the pinned commit) there is
+// no skip path at all.
 func TestVendoredMatchesPinnedUpstream(t *testing.T) {
 	upstream := findUpstream()
 	if upstream == "" {
-		t.Skip("no sibling envoir checkout; set FLOWSTOCK_ENVOIR_DIR to compare against the pinned commit")
+		skipOrFail(t, "no envoir checkout found (set FLOWSTOCK_ENVOIR_DIR, or place one at ../envoir)")
 	}
 	commit := pinnedCommit(t)
 
-	// A pinned commit the sibling checkout does not have is not drift — it is a
-	// checkout that has not fetched. Say which, rather than report a mismatch.
+	// A pinned commit the checkout does not have is not drift — it is a checkout
+	// that has not fetched. Say which, rather than report a mismatch.
 	if err := exec.Command("git", "-C", upstream, "cat-file", "-e", commit+"^{commit}").Run(); err != nil {
-		t.Skipf("the envoir checkout at %s does not have the pinned commit %s; fetch it to enable this check",
-			upstream, commit)
+		skipOrFail(t, fmt.Sprintf("the envoir checkout at %s does not have the pinned commit %s (fetch it)", upstream, commit))
 	}
 
+	// compared counts files this run actually read from upstream *and* diffed.
+	// Asserted against the manifest at the end, so a run that silently covered
+	// half the tree — a renamed upstream path, an unreadable vendored file —
+	// fails rather than passes on partial work.
+	compared := 0
 	for _, name := range sortedKeys(vendoredFiles) {
 		upPath := vendoredFiles[name]
 		want, err := exec.Command("git", "-C", upstream, "show", commit+":"+upPath).Output()
@@ -158,7 +198,22 @@ func TestVendoredMatchesPinnedUpstream(t *testing.T) {
 				"  refresh it and update third_party/dmtapsync/VENDOR.md and SHA256SUMS.txt",
 				name, upPath, commit[:7], sum(want), sum(got))
 		}
+		compared++
 	}
+
+	if compared != len(vendoredFiles) {
+		t.Errorf("compared %d of %d vendored files against upstream %s — the drift check did not cover the whole tree",
+			compared, len(vendoredFiles), commit[:7])
+	}
+	// A floor as well as an equality: if someone empties vendoredFiles, the
+	// equality above still holds at 0==0 and this gate would pass by doing
+	// nothing. The vendored module is ten files; fewer means the map was gutted.
+	if compared < 10 {
+		t.Fatalf("only %d vendored file(s) are covered by vendoredFiles; the vendored module is 10 files, "+
+			"so this check has been narrowed to near-nothing", compared)
+	}
+	t.Logf("compared %d/%d vendored files against upstream %s at %s",
+		compared, len(vendoredFiles), upstream, commit[:7])
 }
 
 // pinnedCommit reads the commit VENDOR.md records, so the pin is written down

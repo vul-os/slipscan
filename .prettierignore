@@ -6,7 +6,14 @@ package-lock.json
 test-results
 playwright-report
 
-# site/ is a snapshot of the currently-served static content, reverse-populated
-# from vulos-static rather than authored here. Reformatting it would make the
-# copy differ from what is actually deployed, which is the one thing it is for.
+# site/ is FlowStock's own product site, and this repo is its source: vulos-static
+# collects site/ at build time (its public/products/flowstock/ is gitignored
+# there), so what is served at /products/flowstock/ is whatever is here.
+#
+# site/docs/*.md are byte-identical copies of docs/*.md, produced and enforced by
+# scripts/docs-mirror.mjs (`npm run docs:check`, run in CI). Prettier must not
+# touch them: docs/ is formatted, site/docs/ is a copy, and reformatting only the
+# copy would break the byte-identity the gate is built on. The hand-authored
+# shells (index.html, docs.html) are excluded for the same reason — one file, one
+# owner.
 site

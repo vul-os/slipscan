@@ -79,6 +79,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The published docs contradicted the code on authentication, in the weaker
+  direction.** `site/` is the product site this repo ships, and its docs pages
+  had gone stale: they described sync as authenticated by a bearer secret long
+  after the code required **mutual Ed25519** signatures, and omitted the
+  `org_id` workspace isolation, `substrate_sync`, `sync_secret_fallback` and the
+  `SHA256SUMS.txt` verification instructions entirely. A reader plans a threat
+  model around a published security claim, so this was the worst kind of doc
+  bug. `site/docs/*.md` are now byte-identical copies of `docs/*.md` — enforced
+  by `npm run docs:check` (`scripts/docs-mirror.mjs`) in CI, which also scans
+  the hand-authored `site/*.html` shells for the specific claims that shipped
+  and were wrong. The landing page's sync diagram said `(Bearer)` and its
+  binary-size claim said `~15 MB` against a measured 11.45 MiB; both corrected.
+- **The vendored-engine provenance check silently skipped in CI.**
+  `TestVendoredMatchesPinnedUpstream` compares `third_party/dmtapsync/` against
+  the upstream commit `VENDOR.md` pins, which needs an `envoir` checkout that CI
+  never made — so the one guard that catches drift laundered through a
+  regenerated `SHA256SUMS.txt` reported success for work it did not do. CI (and
+  the release workflow) now check `vul-os/envoir` out at the pinned commit and
+  set `FLOWSTOCK_REQUIRE_UPSTREAM_VENDOR_CHECK=1`, which turns every remaining
+  "could not compare" path into a failure. Where it can still skip (a laptop
+  with no checkout) it names what was not verified and how many files went
+  uncompared, and it asserts it compared all ten when it runs.
+- **CI now runs the race detector** (`go test -race`, in both tag
+  configurations). It was clean locally, but nothing in CI stood behind that.
+- `Makefile`'s `.PHONY` list omitted `test-e2e`.
 - **`install.sh` now verifies the download against the release's
   `SHA256SUMS.txt`, and fails closed.** It previously downloaded a binary and
   ran `chmod +x` on it without checking anything — the release published a

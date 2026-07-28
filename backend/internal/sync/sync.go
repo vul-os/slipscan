@@ -73,9 +73,9 @@ type Engine struct {
 	// by luck. Empty is treated as MergeBuiltin.
 	MergeEngine string
 	NodeID      string
-	client              *http.Client
-	nonces              *nonceCache
-	mu                  sync.Mutex // serializes outbound rounds
+	client      *http.Client
+	nonces      *nonceCache
+	mu          sync.Mutex // serializes outbound rounds
 }
 
 func New(s *store.Store, secretFn func() string) *Engine {

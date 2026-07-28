@@ -45,11 +45,34 @@ jobs:
     name: go test
     needs: version-guard
     runs-on: ubuntu-latest
+    # A release is the moment the vendored engine's provenance matters most, so
+    # the upstream comparison is mandatory here too — same flag, same checkout
+    # as .github/workflows/ci.yml. Skipping it would mean shipping a .wasm blob
+    # nothing had tied back to the commit VENDOR.md claims it came from.
+    env:
+      FLOWSTOCK_REQUIRE_UPSTREAM_VENDOR_CHECK: "1"
+      FLOWSTOCK_ENVOIR_DIR: ${{ github.workspace }}/.upstream-envoir
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
+      - name: Read the pinned upstream commit
+        id: pin
+        run: |
+          sha="$(grep -m1 '^| Commit' third_party/dmtapsync/VENDOR.md | grep -oE '[0-9a-f]{40}' | head -1)"
+          if [ -z "$sha" ]; then
+            echo "::error::third_party/dmtapsync/VENDOR.md has no 40-character commit in its 'Commit' row"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "pinned upstream commit: $sha"
+      - name: Check out envoir at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          repository: vul-os/envoir
+          ref: ${{ steps.pin.outputs.sha }}
+          path: .upstream-envoir
       - run: go test ./backend/...
       # The substrate package only compiles under its own tag; without this the
       # release would ship having never built it.

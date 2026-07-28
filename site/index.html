@@ -204,7 +204,7 @@
       <div class="card"><div class="ico">↔️</div><h3>Adjustments &amp; transfers</h3><p>Stock counts, write-offs and between-branch transfers — every change is an audited movement in the ledger.</p></div>
       <div class="card"><div class="ico">💰</div><h3>Creditors &amp; debtors</h3><p>Balances computed from orders, purchase orders and recorded payments. Know who owes what at a glance.</p></div>
       <div class="card"><div class="ico">📊</div><h3>Dashboard &amp; reports</h3><p>Sales, inventory valuation, movements, low stock and accounts — all computed live, all exportable to CSV.</p></div>
-      <div class="card"><div class="ico">🔒</div><h3>Yours, private by default</h3><p>One ~15 MB binary with a local SQLite database. No cloud dependency, no subscription, no account required.</p></div>
+      <div class="card"><div class="ico">🔒</div><h3>Yours, private by default</h3><p>One ~12 MB binary with a local SQLite database. No cloud dependency, no subscription, no account required.</p></div>
     </div>
   </div>
 </section>
@@ -218,14 +218,14 @@
     <div class="sync">
       <ol class="steps">
         <li><span class="n">1</span><div><h4>Every branch is its own node</h4><p>Run FlowStock on a laptop, a shop PC, a server, a NAS or a Raspberry Pi. Each keeps a full local database.</p></div></li>
-        <li><span class="n">2</span><div><h4>Pair with a shared secret</h4><p>Point one branch at another over the LAN, a VPN, or a Ephor tunnel. A new device adopts the existing workspace and pulls its history.</p></div></li>
+        <li><span class="n">2</span><div><h4>Pair once, then sign every request</h4><p>Point one branch at another over the LAN, a VPN, or a Ephor tunnel. A shared secret bootstraps the pairing; after that the two branches authenticate each other by Ed25519 key. A new device adopts the existing workspace and pulls its history.</p></div></li>
         <li><span class="n">3</span><div><h4>Keep trading, online or not</h4><p>An offline branch never stops working. When it can reach a peer again, changes replay both ways — and merge without conflict.</p></div></li>
         <li><span class="n">4</span><div><h4>Everyone converges</h4><p>Catalog edits resolve last-writer-wins; stock movements merge by union. Any topology works: a pair, a hub, or a full mesh.</p></div></li>
       </ol>
       <div class="diagram">   Johannesburg            Cape Town
    ┌──────────┐           ┌──────────┐
    │ FlowStock│◀─ sync ──▶│ FlowStock│
-   │  SQLite  │  (Bearer) │  SQLite  │
+   │  SQLite  │ (Ed25519) │  SQLite  │
    └────▲─────┘           └────▲─────┘
         │      ┌──────────┐    │
         └─────▶│ Durban   │◀───┘

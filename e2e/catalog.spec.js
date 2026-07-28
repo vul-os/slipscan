@@ -40,8 +40,9 @@ test.describe("catalog", () => {
     await variantDialog.getByRole("button", { name: "Create" }).click();
     await expect(variantDialog).toBeHidden();
 
-    // The row badge counts variations without a reload.
-    await expect(row).toContainText("1 variations");
+    // The row badge counts variations without a reload. It pluralises, so the
+    // first variation reads "1 variation" (singular) — see product-table.jsx.
+    await expect(row).toContainText("1 variation");
 
     // Expand the product to see the variant itself.
     await row.getByRole("button").first().click();

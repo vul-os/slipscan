@@ -78,7 +78,11 @@ test.describe("folder sync", () => {
     // One file per node, named for its author — so nothing ever write-conflicts.
     const files = readdirSync(shared).sort();
     expect(files).toHaveLength(2);
-    expect(files.every((f) => /^ops-[A-Z0-9]+\.jsonl$/.test(f))).toBe(true);
+    // A fresh node's id is its lowercase-hex Ed25519 public key (store.Open);
+    // databases created before that change kept their uppercase ULID. Accept
+    // either — the claim under test is one file per author, not the id's
+    // alphabet.
+    expect(files.every((f) => /^ops-[A-Za-z0-9]+\.jsonl$/.test(f))).toBe(true);
     const bootA = await a.bootstrap();
     expect(files).toContain(`ops-${bootA.node_id}.jsonl`);
 
