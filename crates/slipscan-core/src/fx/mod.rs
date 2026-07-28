@@ -378,6 +378,82 @@ mod tests {
             .any(|a| a.entity_type == "fx_conversion" && a.action == "convert_at"));
     }
 
+    #[tokio::test]
+    async fn a_truncated_200_caches_nothing_and_leaves_no_rate_behind() {
+        // The hazard from the OpenRate side: the response header goes out
+        // before JSON encoding finishes, so a failure mid-encode publishes a
+        // 200 with a short body and no transport error. It must not become a
+        // cached rate — nor evict the good rate already cached.
+        let svc = svc();
+        svc.fx_configure("https://fx.example.org").unwrap();
+        let good = convert_body("USD", "ZAR", "18.074219053", "2026-07-17T16:00:00Z", "A");
+        let transport = MockFxTransport::new().route("/convert", 200, &good);
+        svc.fx_fetch_rate(&transport, "USD", "ZAR").await.unwrap();
+
+        for cut in [0, 1, 12, good.len() / 2, good.len() - 2, good.len() - 1] {
+            let transport = MockFxTransport::new().route("/convert", 200, &good[..cut]);
+            let err = svc
+                .fx_fetch_rate(&transport, "USD", "ZAR")
+                .await
+                .unwrap_err();
+            assert!(matches!(err, CoreError::FxParse(_)), "cut {cut}: {err}");
+        }
+        // The good rate is still the cached one, untouched.
+        let status = svc.fx_status().unwrap();
+        assert_eq!(status.cached_rates.len(), 1);
+        assert_eq!(status.cached_rates[0].rate.to_string(), "18.074219053");
+        // And a conversion still uses it, not a defaulted zero.
+        assert_eq!(
+            svc.fx_convert("USD", "ZAR", 10_000)
+                .unwrap()
+                .converted_minor,
+            180_742
+        );
+    }
+
+    /// Decimal-only, pinned across the *whole* chain: wire token → client →
+    /// SQLite cache (TEXT) → conversion → serialized payload. A regression to
+    /// `f64` anywhere on that path loses digits this test asserts.
+    #[tokio::test]
+    async fn the_rate_stays_decimal_from_wire_through_cache_to_payload() {
+        const TOKEN: &str = "0.0526315789473684210526315789"; // 28 significant digits
+        let via_f64 = TOKEN.parse::<f64>().expect("parses as a float too");
+        assert_ne!(
+            via_f64.to_string(),
+            TOKEN,
+            "test premise: f64 must lose these digits"
+        );
+
+        let svc = svc();
+        svc.fx_configure("https://fx.example.org").unwrap();
+        let body = convert_body("IDR", "USD", TOKEN, "2026-07-17T16:00:00Z", "A");
+        let transport = MockFxTransport::new().route("/convert", 200, &body);
+
+        let quote = svc.fx_fetch_rate(&transport, "IDR", "USD").await.unwrap();
+        assert_eq!(quote.rate.to_string(), TOKEN, "client kept the token exact");
+
+        // Through the SQLite cache (stored as TEXT, re-parsed on read).
+        let status = svc.fx_status().unwrap();
+        assert_eq!(status.cached_rates[0].rate.to_string(), TOKEN);
+
+        // Into a conversion, and out as JSON — as a *string*, never a float.
+        let conversion = svc.fx_convert("IDR", "USD", 1_000_000_000_000_000).unwrap();
+        assert_eq!(conversion.rate.to_string(), TOKEN);
+        assert_eq!(conversion.converted_minor, 52_631_578_947_368);
+        for payload in [
+            serde_json::to_value(&conversion).unwrap(),
+            serde_json::to_value(&status.cached_rates[0]).unwrap(),
+            serde_json::to_value(&quote).unwrap(),
+        ] {
+            assert!(
+                payload["rate"].is_string(),
+                "rate must cross the wire as a string, got {}",
+                payload["rate"]
+            );
+            assert_eq!(payload["rate"], serde_json::json!(TOKEN));
+        }
+    }
+
     #[test]
     fn convert_without_a_cached_rate_is_not_found_not_a_fetch() {
         let svc = svc();

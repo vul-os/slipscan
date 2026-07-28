@@ -5,7 +5,8 @@ This document is the **binding contract** for the codebase. Changes to it are de
 ## Layout
 
 ```
-Cargo.toml                 # workspace (crates/* only; desktop src-tauri is its own crate)
+Cargo.toml                 # workspace: members = crates/*, minus the excluded slipscan-sync
+                           # (desktop src-tauri is its own crate too)
 crates/
   slipscan-core/           # domain model, SQLite storage, migrations, services — everything depends on this
   slipscan-extract/        # document extraction: slip-v2 schema, OCR/LLM providers (BYO key), provider trait
@@ -13,6 +14,8 @@ crates/
   slipscan-packs/          # signed classification/category packs: format, ed25519 verify, import/export
   slipscan-server/         # axum headless server (self-host mode), thin wrapper over core services
   slipscan-cli/            # clap CLI: init, import, extract, mail-sync, recon, report, pack, vault, serve, list
+  slipscan-sync/           # DMTAP Sync merge-algebra mapping ONLY — excluded from the workspace,
+                           # default-off, nothing else depends on it (see below)
 apps/
   desktop/                 # Tauri 2 + Svelte 5 + TypeScript + Vite + Tailwind v4
     src/                   # Svelte frontend
@@ -58,7 +61,17 @@ Legacy SQL schemas (reference only, cloud concepts like orgs/billing/auth must N
 
 - Tauri commands and axum routes expose the **same core services**, same names: `book_list`, `transaction_list`, `transaction_categorize`, `document_import`, `document_get`, `budget_upsert`, `journal_post`, `recon_suggest`, `recon_confirm`, `report_spending`, `settings_get/set`, `pack_install`, …
 - All payloads serde JSON. TypeScript mirrors are hand-maintained in `apps/desktop/src/lib/api/types.ts` — update both sides in the same change.
-- This parity is the contract; the current implementation does not fully meet it yet (the desktop IPC exposes a subset, with two divergent names). The honest gap list lives in [API.md](API.md) and closing it is on the roadmap.
+- This parity is the contract; the current implementation does not fully meet it yet (the desktop IPC exposes a subset, with three divergent names). The honest gap list lives in [API.md](API.md) and closing it is on the roadmap. The three sets — HTTP routes, registered IPC commands, and the names the frontend client calls — are kept machine-readable in [parity.json](parity.json), derived from `routes.rs`, `src-tauri/src/lib.rs` and `client.ts`; regenerate it in the same change as any route or command you add.
+
+## Sync — an algebra mapping only; nothing syncs between devices
+
+`crates/slipscan-sync` expresses SlipScan's replicated state in the shared **DMTAP Sync** merge algebra (the VulOS substrate's `SYNC.md` capability ③). It is a **mapping and nothing else**, and the boundary is the point:
+
+- **What it is.** A translation between a SlipScan row change and a substrate op, and back. Editable rows (accounts, categories, budgets, members, merchant mappings, transactions) map to §4.4 last-writer-wins registers, one register per row because the repo layer writes whole rows. Posted journals and journal lines map to a §4.3 OR-Set that never mints a remove — SlipScan's ledger is immutable by construction and a correction is a reversal journal, so the mapping is an identity on existing behaviour rather than a new one to re-validate against the books. Money crosses as canonical decimal text; the substrate bans floats and that costs SlipScan nothing.
+- **What it is not.** No oplog, no identity, no transport, no storage. It opens no socket and touches no file. The convergence rules live in `dmtap-sync` and are deliberately not re-derived here.
+- **Therefore: nothing syncs between devices today.** There is no device pairing, no replication loop, and no code path that ships an op anywhere. Sharing a book still means what [Data location](#data-location--backup--your-folder-your-cloud-your-responsibility) and [Household members](#household-members--per-person-attribution) say it means: a synced data folder, or the self-host server with other surfaces as clients.
+- **Default-off and out of the workspace.** The mapping is behind the `sync-dmtap` feature (default off — with it off the crate compiles to an empty, dependency-free no-op), and the crate is `exclude`d from the root workspace. `exclude` is load-bearing, not tidiness: Cargo resolves every *optional* dependency's source into the lockfile for the whole workspace regardless of active features, so a plain `cargo build` would still reach out to the `envoir` git remote. A bare `git clone && cargo build` of SlipScan must never require — or fetch — anything from envoir. Build the mapping on its own with `cargo build --manifest-path crates/slipscan-sync/Cargo.toml --features sync-dmtap`.
+- Nothing else in the workspace depends on this crate. Enabling the feature changes no other behaviour.
 
 ## Design system
 
@@ -107,6 +120,29 @@ SlipScan is a **worldwide product**. No jurisdiction may be hardcoded into core 
 - **South Africa is the first region profile** — fully supported, never special-cased. Adding a country must never require touching core.
 - A **generic profile** (neutral CoA, single configurable tax rate, custom CSV column mapping) makes SlipScan usable in any country on day one, before its dedicated profile exists.
 
+## Classification packs — one install pipeline
+
+Packs are the only channel by which community knowledge reaches a book, and they carry **rules, never data** (mantra #5). `crates/slipscan-packs` owns the format, signing, trust, installation and the classification engine, and performs no network access of any kind — packs are files, fetched however the user likes.
+
+**Two install pipelines existed, and that was the defect.** The crate grew a second, richer path without the first being retired, so "the packs installed in this book" meant different things depending on which surface you asked:
+
+| | Legacy flat manifest | Installer |
+|---|---|---|
+| Format | one flat JSON manifest + a detached signature (`compat::verify_pack`, `PackManifest`) | `pack.toml` manifest + JSON payload, the payload bytes being exactly what gets ed25519-signed (`format::Pack` → `verify::VerifiedPack`) |
+| Installed state | a JSON array in **one settings key**, `packs.installed` | SQL tables: `pack_installs`, `pack_category_map`, `pack_rules` |
+| Trust | valid signature only — any key is accepted | TOFU signer store with per-pack-id pinning: a pack id stays bound to its first signer forever |
+| Versioning | none; re-installing appends another entry | strict semver — same version is a no-op error, downgrades are rejected, upgrades re-map without touching user data |
+| Category mapping | re-derived on every install | `pack_category_map` remembers pack key → local category id, so user renames and upgrades are both safe |
+| Merchant rules | written straight through | seeded into `merchant_mappings` with `source = 'pack'`, never clobbering a user's own mapping — corrections always win |
+| Audit | none | every install/upgrade/uninstall in the append-only audit log |
+| Reached by | `slipscan-server`'s ops layer, and through it the HTTP `pack_*` routes and the CLI `slipscan pack` subcommand | the same ops layer (`pack_install`, `pack_install_seeds`, `pack_uninstall`, `pack_benchmark`), the desktop's own `pack_*` IPC commands, and the classification engine — which every binary now switches on at startup |
+
+The visible consequence: a book seeded at `init` recorded its packs in SQL, and a pack the user installed afterwards recorded itself in a settings key — two answers to one question, with only one of them versioned, pinned or audited.
+
+**The contract is one pipeline: the Installer.** Every path that installs or lists a pack goes through `VerifiedPack` + `Installer`, so trust pinning, semver ordering, safe category re-mapping and the audit trail apply to every pack regardless of which surface asked. `compat` and `INSTALLED_PACKS_SETTING` are retired with it; no new code may reference either. The legacy settings key is *left in place* in books that already have one — it is an inert settings row, and tidying it is not worth a migration against databases users already hold ([Non-negotiables](#non-negotiables-the-mantra)); it simply stops being read.
+
+*Status:* the server ops layer still consumes the legacy surface (`slipscan-server/src/ops.rs`, `INSTALLED_PACKS_SETTING`) at the time of writing. The paragraph above is the architecture of record for where this lands, not a claim that it has landed.
+
 ## Exchange rates — OpenRate
 
 Multi-currency conversion comes from **[OpenRate](https://github.com/vul-os/openrate)** (MIT, Go, self-hostable — the VulOS family's open FX engine), consumed over its HTTP JSON API from a **user-configured endpoint** (their own self-hosted instance, or any instance they choose to trust).
@@ -116,6 +152,22 @@ Multi-currency conversion comes from **[OpenRate](https://github.com/vul-os/open
 - **Rates are cached locally** (rate, `as_of`, quality grade, fetch time) in SQLite. OpenRate serves **latest rates only** (no history), so every conversion used in a report or posting **records the rate it used** at booking time — reports reproduce offline and never silently re-rate.
 - **Provenance surfaces to the user.** OpenRate's quality grade and staleness (`age_sec`) are shown wherever a converted amount is; a stale weekend rate says so.
 - Refresh is user-triggered or an explicit schedule the user turns on — never a default background call.
+
+### A 200 is not proof of a complete body
+
+OpenRate (like more than one Go engine in this suite) writes its response header **before** it finishes encoding JSON — the encode result is discarded after `WriteHeader` has already gone out. An encode or write failure part-way therefore publishes a **success status with a short body**. The truncated response is still a complete, well-formed HTTP message, so nothing at the transport layer — content length, chunk terminator, TLS close — can flag it. **The parse is the only place it can be caught.** A hand-written client that treats "2xx" as "good poll" would book a partial response as a rate.
+
+SlipScan's side is built so a partial body can only ever become an error, never a number:
+
+- **One door for every body.** `fx::client::decode_body` is the single decode path for `/api/v1/convert` and `/api/v1/meta`. It rejects an empty body outright and names truncation explicitly when the body ends mid-JSON, so the failure is actionable rather than a bare `EOF while parsing at line 1 column 0`. `serde_json` also rejects trailing content after the value, so the whole body must be exactly one JSON document.
+- **Nothing load-bearing defaults.** A field with `#[serde(default)]` is a field a truncated body can silently supply, so `rate`, `as_of` and `quality.grade` are all required on the wire, as is `/meta`'s `currencies` (a missing list is a malformed response, not an instance that quotes nothing). The two deliberate exceptions — `age_sec` and `sources` — default to *unknown*, never to a value that could pass for good data: omitted staleness stays `None` rather than becoming a fresh-looking `0`.
+- **Non-positive rates are refused at the client boundary**, not only where they would be cached. A zero rate would silently convert every amount to zero and a negative one would poison every later conversion, so `OpenRateClient::convert_one` rejects both before any caller sees them; the cache layer re-checks as defence in depth.
+- **`/healthz` is status-only** by design — no value is read out of its body, so a truncated health body cannot mislead anything. It must not grow a body-derived return value without going through `decode_body`.
+- Tests drive every prefix of a good convert and `/meta` body through the mock transport and assert each one errors, so a future edit that adds a `default` or relaxes a required field fails the suite rather than shipping.
+
+The same hazard applies wherever SlipScan parses a body it did not produce: `slipscan-ingest`'s `HttpResponse::json` (OAuth/Gmail/Graph/Pub-Sub) and `slipscan-extract`'s `providers::decode_response_body` (LLM envelopes) carry the same empty/truncated checks. A truncated body is deliberately **not** retryable in the extraction path — quietly re-asking would hide a server publishing a wrong result. Webhook *delivery* is unaffected: `WebhookTransport` records the receiver's status and never reads its body.
+
+The decimal contract holds across all of this: the `rate` token is captured verbatim as a `serde_json` `RawValue` and parsed with `Decimal::from_str` — never through `f64` — and stays decimal through the SQLite cache (TEXT) and out to IPC/HTTP as a JSON **string**. Tests pin the exact digits of a 28-significant-digit rate at each hop, and assert the serialized form is a string, so a regression to `f64` (including `rust_decimal`'s `serde-float` feature being switched on anywhere in the dependency graph, which Cargo feature unification would apply workspace-wide) fails loudly.
 
 ## Data location & backup — your folder, your cloud, your responsibility
 
@@ -147,8 +199,8 @@ SlipScan's north star is genuine parity with the two products it stands in for, 
 Target: the full Vault22/22seven experience — nudges, spending insights, peer comparison — without anyone learning who you are.
 
 - **Nudges are 100% local.** A rules + stats engine over your own data: budget drift, category spikes vs your own history, recurring-subscription detection, duplicate charges, bank-fee creep, VAT deadlines, unreviewed slips. Nudges surface in-app (and optional OS notifications); nothing leaves the machine.
-- **Peer comparison via benchmark packs.** Community-published, signed packs containing aggregate statistics only (e.g. "median groceries spend, ZA, household 2, income band C"). Comparing yourself = downloading a pack and computing locally — **reading is perfectly private**.
-- **Contributing is opt-in, anonymous, and lossy by design:**
+- **Peer comparison via benchmark packs.** Community-published, signed packs containing aggregate statistics only (e.g. "median groceries spend, ZA, household 2, income band C"). Comparing yourself = downloading a pack and computing locally — **reading is perfectly private**. The read side exists today (`ops::pack_benchmark`, `slipscan pack benchmark`, `POST /api/v1/pack_benchmark`, and the desktop Packs screen).
+- **Contributing is opt-in, anonymous, and lossy by design** — and **none of it is implemented**: there is no contribution code, no noise generation and no transport anywhere in the tree. What follows is the design the eventual implementation must satisfy, written down so the bar cannot quietly slip ([BENCHMARKS.md](BENCHMARKS.md)):
   - Only category-level aggregates for a period — never transactions, merchants, or free text.
   - **Local differential privacy**: calibrated noise is added on-device before anything leaves it.
   - Coarse cohort buckets only (region, rough income band, household size) — chosen so every cohort clears a k-anonymity floor; submissions carrying no identifiers, no account, no stable pseudonym.

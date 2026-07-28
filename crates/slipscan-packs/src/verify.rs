@@ -54,6 +54,57 @@ pub fn sign_pack(pack: &Pack, signing_key: &SigningKey) -> Pack {
     signed
 }
 
+/// Verify a **detached** ed25519 signature over the exact bytes of a pack
+/// document, and adopt the result as a [`VerifiedPack`] the installer will
+/// accept.
+///
+/// This is the three-input form users actually hold — document, signature,
+/// publisher key — as `slipscan pack install` and the server's `pack_install`
+/// take them. Both pack document shapes are accepted, and the signature is
+/// checked over the bytes exactly as given, before either is interpreted:
+///
+/// * the current [`PackPayload`] JSON — kept byte-for-byte, signature block
+///   attached, so the installed pack is what was signed and stays verifiable;
+/// * the legacy flat manifest ([`crate::PackManifest`]) — converted to a
+///   payload only after its own bytes verified. The stored payload is a
+///   re-encoding, so it carries no signature block of its own; the integrity
+///   claim is what it always was for those files, checked here at install.
+pub fn verify_detached(
+    document: &[u8],
+    signature: &[u8],
+    public_key: &[u8],
+) -> PackResult<VerifiedPack> {
+    let key_arr: &[u8; 32] = public_key
+        .try_into()
+        .map_err(|_| PackError::InvalidPublicKey)?;
+    let key = VerifyingKey::from_bytes(key_arr).map_err(|_| PackError::InvalidPublicKey)?;
+    let sig = Signature::from_slice(signature).map_err(|_| PackError::InvalidSignature)?;
+    key.verify(document, &sig)
+        .map_err(|_| PackError::VerificationFailed)?;
+    let signer = hex::encode(key_arr);
+
+    // Shape check, not a fallback chain: `meta` is the payload's own envelope
+    // and the legacy manifest has no such key, so each document is parsed
+    // once, as itself, and reports its own errors.
+    let document_json: serde_json::Value = serde_json::from_slice(document)?;
+    let pack = if document_json.get("meta").is_some() {
+        let payload = PackPayload::from_json(document)?;
+        Pack::from_signed_payload(
+            document.to_vec(),
+            payload,
+            Some(ManifestSignature {
+                algorithm: SIGNATURE_ALGORITHM.to_string(),
+                public_key: signer.clone(),
+                signature: hex::encode(&sig.to_bytes()),
+            }),
+        )
+    } else {
+        Pack::build(&crate::compat::PackManifest::from_json(document)?.into_payload()?)?
+    };
+
+    Ok(VerifiedPack::new(pack, signer, Provenance::External))
+}
+
 /// Where a verified pack came from — drives the trust check on install.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provenance {
@@ -267,6 +318,90 @@ mod tests {
         assert!(matches!(
             short_sig.verify(),
             Err(PackError::InvalidSignature)
+        ));
+    }
+
+    #[test]
+    fn verify_detached_takes_both_document_shapes() {
+        let signing = key(7);
+        let signer_hex = hex::encode(signing.verifying_key().as_bytes());
+
+        // Current form: payload JSON, signature handed over separately. The
+        // bytes are kept exactly, and the result stays verifiable on its own.
+        let payload_bytes = serde_json::to_vec_pretty(&payload()).unwrap();
+        let signature = signing.sign(&payload_bytes);
+        let verified = verify_detached(
+            &payload_bytes,
+            &signature.to_bytes(),
+            signing.verifying_key().as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(verified.signer(), signer_hex);
+        assert_eq!(verified.provenance(), Provenance::External);
+        assert_eq!(verified.pack().payload_bytes(), payload_bytes);
+        verified.pack().verify().unwrap();
+
+        // Legacy form: the flat manifest, converted after its own bytes
+        // verified.
+        let legacy = serde_json::json!({
+            "id": "za-verify-test",
+            "name": "Verify test",
+            "version": "1.0.0",
+            "categories": [
+                { "key": "groceries", "name": "Groceries", "kind": "expense" }
+            ],
+            "rules": [
+                { "match_type": "merchant_contains", "pattern": "checkers",
+                  "category_key": "groceries", "confidence": 0.95 }
+            ],
+        });
+        let legacy_bytes = serde_json::to_vec(&legacy).unwrap();
+        let signature = signing.sign(&legacy_bytes);
+        let verified = verify_detached(
+            &legacy_bytes,
+            &signature.to_bytes(),
+            signing.verifying_key().as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(verified.signer(), signer_hex);
+        assert_eq!(verified.payload().meta.id, "za-verify-test");
+        assert_eq!(verified.payload().merchant_rules.len(), 1);
+    }
+
+    #[test]
+    fn verify_detached_rejects_tampering_before_it_interprets_anything() {
+        let signing = key(7);
+        let bytes = serde_json::to_vec_pretty(&payload()).unwrap();
+        let signature = signing.sign(&bytes).to_bytes();
+        let verifying = signing.verifying_key();
+        let public = verifying.as_bytes();
+
+        let mut tampered = bytes.clone();
+        let idx = tampered.len() - 2;
+        tampered[idx] ^= 0x01;
+        assert!(matches!(
+            verify_detached(&tampered, &signature, public),
+            Err(PackError::VerificationFailed)
+        ));
+        assert!(matches!(
+            verify_detached(&bytes, &signature, key(9).verifying_key().as_bytes()),
+            Err(PackError::VerificationFailed)
+        ));
+        assert!(matches!(
+            verify_detached(&bytes, &signature, &[1, 2, 3]),
+            Err(PackError::InvalidPublicKey)
+        ));
+        assert!(matches!(
+            verify_detached(&bytes, &[0u8; 10], public),
+            Err(PackError::InvalidSignature)
+        ));
+
+        // Signed, but not a pack: reported as the parse failure it is.
+        let junk = b"{\"nope\":true}".to_vec();
+        let signature = signing.sign(&junk).to_bytes();
+        assert!(matches!(
+            verify_detached(&junk, &signature, public),
+            Err(PackError::PayloadParse(_))
         ));
     }
 

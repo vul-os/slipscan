@@ -87,7 +87,7 @@ impl Default for ServerConfig {
 pub type FxTransportFactory =
     Arc<dyn Fn() -> Result<Box<dyn FxTransport>, CoreError> + Send + Sync>;
 
-/// Builds a [`WebhookTransport`] for one ShapePay delivery pass. Same shape
+/// Builds a [`WebhookTransport`] for one payment delivery pass. Same shape
 /// and rationale as [`FxTransportFactory`]: the factory is `Send + Sync`, the
 /// `?Send` transport it builds lives and dies on the thread that called it.
 ///
@@ -102,7 +102,7 @@ pub type PayTransportFactory =
 /// this cadence only bounds the extra latency on top of it.
 pub const PAY_DELIVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// One ShapePay delivery pass: POST every due pending delivery. Blocking —
+/// One payment delivery pass: POST every due pending delivery. Blocking —
 /// core's `?Send` dispatch future is driven on a self-contained
 /// current-thread runtime, exactly like the FX fetch route. Returns how many
 /// deliveries were acted on. The service mutex is held for the whole pass
@@ -303,7 +303,7 @@ pub fn stored_token_hash(service: &CoreService) -> Result<Option<[u8; 32]>, Serv
 /// routes work; with `None` they answer 503. Pass an [`FxTransportFactory`]
 /// so the explicit `fx_fetch_rate` route works; with `None` it answers 503
 /// (all other FX routes are purely local). Pass a [`PayTransportFactory`] to
-/// run the ShapePay delivery loop (due webhook deliveries flushed every
+/// run the payment delivery loop (due webhook deliveries flushed every
 /// [`PAY_DELIVERY_INTERVAL`], honoring each delivery's `next_attempt_at`);
 /// with `None` the queue only moves when a local `slipscan pay deliver` /
 /// `mail-sync` flushes it. Pass the [`DataDirResolver`] when (and only when)

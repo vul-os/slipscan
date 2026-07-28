@@ -63,6 +63,7 @@ img{max-width:100%;display:block}
 .docs-main{min-width:0}
 .markdown{font-size:16px}
 .markdown>*:first-child{margin-top:0}
+.markdown :is(h1,h2,h3,h4,h5,h6){scroll-margin-top:84px}
 .markdown h1{font-size:34px;letter-spacing:-.03em;margin:.2em 0 .5em;border-bottom:1px solid var(--border);padding-bottom:.3em}
 .markdown h2{font-size:25px;letter-spacing:-.02em;margin:1.6em 0 .6em;border-bottom:1px solid var(--border);padding-bottom:.25em}
 .markdown h3{font-size:19px;margin:1.4em 0 .5em}
@@ -119,6 +120,8 @@ img{max-width:100%;display:block}
         <a data-slug="faq" href="#faq">FAQ</a>
         <a data-slug="roadmap" href="#roadmap">Roadmap</a>
         <a data-slug="changelog" href="#changelog">Changelog</a>
+        <a data-slug="contributing" href="#contributing">Contributing</a>
+        <a data-slug="security" href="#security">Security policy</a>
   </aside>
   <main class="docs-main">
     <div class="docs-title" id="crumb"></div>
@@ -151,10 +154,94 @@ const DOCS = [
   {"slug":"screenshots","title":"Screenshots","path":"./docs/screenshots.md"},
   {"slug":"faq","title":"FAQ","path":"./docs/faq.md"},
   {"slug":"roadmap","title":"Roadmap","path":"./docs/roadmap.md"},
-  {"slug":"changelog","title":"Changelog","path":"./docs/changelog.md"}
+  {"slug":"changelog","title":"Changelog","path":"./docs/changelog.md"},
+  {"slug":"contributing","title":"Contributing","path":"./docs/contributing.md"},
+  {"slug":"security","title":"Security policy","path":"./docs/security.md"}
 ];
 const bySlug = Object.fromEntries(DOCS.map(d=>[d.slug,d]));
-const byFile = Object.fromEntries(DOCS.map(d=>[d.path.split('/').pop().toLowerCase(),d]));
+// Served file name -> slug. The chapters are mirrored under their lowercased
+// repo name (GETTING-STARTED.md -> getting-started.md), so a cross-doc link
+// written against the repo layout looks up directly once lowercased.
+const FILE_TO_SLUG = Object.fromEntries(DOCS.map(d=>[d.path.split('/').pop().toLowerCase(),d.slug]));
+
+/* @shared:docs-links — scripts/sync-docs.mjs extracts everything between these
+   two markers and runs it verbatim, so the published viewer and the `--check`
+   link audit can never disagree about where a link points. Keep this block
+   pure: no DOM, no fetch, no closures over page state. */
+const REPO_BLOB = 'https://github.com/vul-os/slipscan/blob/main/';
+const REPO_RAW  = 'https://github.com/vul-os/slipscan/raw/main/';
+
+// Data files that scripts/sync-docs.mjs mirrors out of the repo into site/docs/
+// alongside the chapters, keyed by the name the site serves under ./docs/.
+// docs/API.md and docs/ARCHITECTURE.md cite parity.json as the machine-readable
+// half of the API contract, so the site serves the actual bytes rather than
+// bouncing the reader to GitHub for them.
+const DOC_ASSETS = { 'parity.json': true };
+
+// GitHub-compatible heading slug: lowercase, drop everything that is not a
+// letter, digit, space, hyphen or underscore, then spaces to hyphens. marked
+// v16 does not emit heading ids at all, and every anchor already written into
+// the docs (#ipc--api-surface, #data-folder) assumes exactly this algorithm.
+function slugifyHeading(text){
+  return String(text).trim().toLowerCase().replace(/[^\p{L}\p{N} _-]/gu,'').replace(/ /g,'-');
+}
+
+// Repeated headings get -1, -2 … in document order, as GitHub does.
+function headingId(text, seen){
+  const base = slugifyHeading(text);
+  const n = seen.get(base) || 0;
+  seen.set(base, n + 1);
+  return n ? base + '-' + n : base;
+}
+
+/* Resolve one link/image target from a chapter to what the site actually serves.
+   ctx: { slug: the chapter being rendered, docs: FILE_TO_SLUG, isImage }
+   Every branch returns a `kind`, and `unresolved` is a hard failure rather than
+   a pass-through, so a target that matches no rule cannot slip out as a 404. */
+function resolveDocsLink(href, ctx){
+  const raw = String(href == null ? '' : href).trim();
+  if(!raw) return { kind:'unresolved', href:raw, why:'empty target' };
+  if(/^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(raw)) return { kind:'external', href:raw };
+  if(raw.charAt(0) === '#'){
+    const anchor = raw.slice(1);
+    if(!anchor) return { kind:'unresolved', href:raw, why:'bare "#" target' };
+    // An in-page anchor still has to carry its chapter, or the hashchange
+    // handler reads it as a slug and navigates away from the page it is on.
+    return { kind:'chapter', slug:ctx.slug, anchor, href:'#'+ctx.slug+':'+anchor };
+  }
+
+  const bare = raw.replace(/^(?:\.\.\/)+/,'').replace(/^\.\//,'');
+  const cut = bare.indexOf('#');
+  const path = cut === -1 ? bare : bare.slice(0, cut);
+  const anchor = cut === -1 ? '' : bare.slice(cut + 1);
+  if(!path) return { kind:'unresolved', href:raw, why:'target has no path' };
+
+  const shot = path.match(/^(?:docs\/)?screenshots\/(.+)$/i);
+  if(shot) return { kind:'screenshot', file:shot[1], href:'./screenshots/'+shot[1] };
+
+  if(!ctx.isImage){
+    const md = path.match(/^(?:docs\/)?([^/]+\.md)$/i);
+    if(md){
+      const slug = ctx.docs[md[1].toLowerCase()];
+      if(slug) return { kind:'chapter', slug, anchor, href:'#'+slug+(anchor?':'+anchor:'') };
+    } else {
+      const asset = path.match(/^(?:docs\/)?([^/]+)$/);
+      if(asset && Object.prototype.hasOwnProperty.call(DOC_ASSETS, asset[1])){
+        return { kind:'asset', file:asset[1], href:'./docs/'+asset[1] };
+      }
+    }
+  }
+
+  // Anything the site does not publish — LICENSE-MIT, LICENSE-APACHE,
+  // README.md, an unpublished chapter — stays readable by pointing at the file
+  // in the repo instead of at a path the site never serves.
+  return {
+    kind:'repo', path, anchor,
+    href:(ctx.isImage ? REPO_RAW : REPO_BLOB) + path + (anchor && !ctx.isImage ? '#'+anchor : '')
+  };
+}
+/* @end:docs-links */
+
 const content = document.getElementById('content');
 const crumb = document.getElementById('crumb');
 let mermaidReady = false;
@@ -179,8 +266,30 @@ async function renderMermaid(){
   if(nodes.length){ try { await mermaid.run({ nodes }); } catch(e){ console.warn('mermaid', e); } }
 }
 
-async function load(slug){
-  const doc = bySlug[slug] || DOCS[0];
+// Routes are "#slug" or "#slug:anchor"; an unknown slug falls back to the first
+// chapter, as it always has.
+function route(){
+  let h = (location.hash||'').replace(/^#/,'');
+  try { h = decodeURIComponent(h); } catch(e){}
+  const cut = h.indexOf(':');
+  const slug = cut === -1 ? h : h.slice(0, cut);
+  const anchor = cut === -1 ? '' : h.slice(cut + 1);
+  return bySlug[slug] ? {slug, anchor} : {slug: DOCS[0].slug, anchor:''};
+}
+
+function jump(anchor){
+  if(!anchor){ window.scrollTo({top:0}); return; }
+  let el = null;
+  try { el = content.querySelector('#'+CSS.escape(anchor)); } catch(e){}
+  if(el) el.scrollIntoView({block:'start'}); else window.scrollTo({top:0});
+}
+
+let rendered = null;
+
+async function load(){
+  const {slug, anchor} = route();
+  if(rendered === slug){ jump(anchor); return; }   // same chapter, anchor only
+  const doc = bySlug[slug];
   setActive(doc.slug);
   crumb.textContent = doc.title;
   content.innerHTML = 'Loading…';
@@ -189,31 +298,37 @@ async function load(slug){
     if(!res.ok) throw new Error('HTTP '+res.status);
     const md = await res.text();
     content.innerHTML = marked.parse(md);
-    content.querySelectorAll('img').forEach(img=>{
-      const s=img.getAttribute('src')||'';
-      if(/^https?:/i.test(s)) return;
-      const m=s.match(/(?:\.\.\/)*(?:docs\/)?screenshots\/(.+)$/);
-      if(m) img.setAttribute('src','./screenshots/'+m[1]);
+
+    // marked v16 emits no heading ids, so every #anchor in the docs would land
+    // on nothing. Mint them here with the same slugger the link audit uses.
+    const seen = new Map();
+    content.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(h=>{ h.id = headingId(h.textContent, seen); });
+
+    // Rewrite every repo-relative target to what the site serves: screenshots
+    // to ./screenshots/, cross-doc .md links to sidebar routes, mirrored data
+    // files to ./docs/, and anything unpublished to the file in the repo.
+    const ctx = { slug: doc.slug, docs: FILE_TO_SLUG, isImage: false };
+    content.querySelectorAll('img[src]').forEach(img=>{
+      const r = resolveDocsLink(img.getAttribute('src'), { slug: doc.slug, docs: FILE_TO_SLUG, isImage: true });
+      if(r.kind !== 'external' && r.kind !== 'unresolved') img.setAttribute('src', r.href);
     });
-    // Cross-doc links (e.g. PACKS.md, ../ROADMAP.md#phase-4) become sidebar navigation.
     content.querySelectorAll('a[href]').forEach(a=>{
-      const h=a.getAttribute('href')||'';
-      if(/^(https?:|#|mailto:)/i.test(h)) return;
-      const m=h.match(/([^\/]+\.md)(#.*)?$/i);
-      const target = m && byFile[m[1].toLowerCase()];
-      if(target) a.setAttribute('href','#'+target.slug);
+      const r = resolveDocsLink(a.getAttribute('href'), ctx);
+      if(r.kind !== 'external' && r.kind !== 'unresolved') a.setAttribute('href', r.href);
     });
     content.querySelectorAll('a[href^="http"]').forEach(a=>{a.target='_blank';a.rel='noopener';});
+
     await renderMermaid();
-    window.scrollTo({top:0});
+    rendered = doc.slug;
+    jump(anchor);
   } catch(err){
+    rendered = null;
     content.innerHTML = '<div class="docs-error">Could not load <code>'+doc.path.split('/').pop()+'</code> — '+err.message+'</div>';
   }
 }
 
-function current(){ return (location.hash||'').replace('#','') || DOCS[0].slug; }
-window.addEventListener('hashchange', ()=>load(current()));
-load(current());
+window.addEventListener('hashchange', load);
+load();
 </script>
 </body>
 </html>

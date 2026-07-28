@@ -72,7 +72,7 @@ impl OllamaProvider {
 }
 
 fn response_text(body: &str) -> Result<String, ExtractError> {
-    let value: serde_json::Value = serde_json::from_str(body)?;
+    let value = super::decode_response_body("ollama", body)?;
     if let Some(error) = value["error"].as_str() {
         return Err(ExtractError::Provider(format!("ollama error: {error}")));
     }

@@ -636,3 +636,79 @@ fn benchmark_pack_installs_and_compares_locally() {
     assert_eq!(out[0].ratio_to_median, Some(1.5));
     assert_eq!(out[0].position, slipscan_packs::QuartilePosition::AboveP75);
 }
+
+/// The migration path for books installed before the installer existed: their
+/// packs are adopted into the tables — rules and all — without inventing a
+/// signature, and a real signed release of the same pack id can still take
+/// the row over, because adoption pins nothing.
+#[test]
+fn adopted_legacy_pack_becomes_live_and_stays_upgradable() {
+    let db = Db::open_in_memory().unwrap();
+    let conn = db.conn();
+    let book_id = make_book(conn);
+    let installer = Installer::open(conn).unwrap();
+
+    let report = installer
+        .adopt_legacy(&book_id, &taxonomy_payload("1.0.0"), "2026-01-01T00:00:00Z")
+        .unwrap()
+        .unwrap();
+    assert_eq!(report.categories_created, 2);
+    assert_eq!(report.rules_installed, 2);
+    assert_eq!(report.pack.signer, slipscan_packs::LEGACY_SIGNER);
+    assert_eq!(report.pack.installed_at, "2026-01-01T00:00:00Z");
+
+    // Its rules classify like any other pack's.
+    let classifier = slipscan_packs::Classifier::load(conn, &book_id).unwrap();
+    assert!(classifier.suggest("PICK N PAY FAM KENILWORTH").is_some());
+
+    // Adoption is idempotent.
+    assert!(installer
+        .adopt_legacy(&book_id, &taxonomy_payload("1.0.0"), "2026-01-01T00:00:00Z")
+        .unwrap()
+        .is_none());
+
+    // Nothing was pinned, so a properly signed upgrade is accepted and pins
+    // its real signer from then on.
+    TrustStore::open(conn)
+        .unwrap()
+        .trust(&signer_hex(7), "publisher")
+        .unwrap();
+    let report = installer
+        .install(&book_id, &signed_taxonomy("1.1.0", 7))
+        .unwrap();
+    assert_eq!(
+        report.outcome,
+        InstallOutcome::Upgraded {
+            from: "1.0.0".into()
+        }
+    );
+    // The categories the legacy install created were reused, not duplicated.
+    assert_eq!(report.categories_created, 0);
+    assert_eq!(report.categories_reused, 2);
+    assert_eq!(repo::category::list(conn, &book_id).unwrap().len(), 2);
+    assert_eq!(report.pack.signer, signer_hex(7));
+}
+
+/// A book that never installed a pack must not gain pack tables just because
+/// something asked it a classification question — categorisation runs on this
+/// path, and it may be running read-only.
+#[test]
+fn classifier_on_a_pack_free_database_reads_nothing_and_creates_nothing() {
+    let db = Db::open_in_memory().unwrap();
+    let conn = db.conn();
+    let book_id = make_book(conn);
+
+    let classifier = slipscan_packs::Classifier::load(conn, &book_id).unwrap();
+    assert_eq!(classifier.rule_count(), 0);
+    assert!(classifier.suggest("PICK N PAY").is_none());
+
+    let tables: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'pack_%'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tables, 0);
+    assert!(Installer::open_readonly(conn).unwrap().is_none());
+}

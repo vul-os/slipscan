@@ -5,6 +5,8 @@
  */
 import type {
   Account,
+  BenchmarkCohort,
+  BenchmarkReport,
   Book,
   Budget,
   BudgetUpsert,
@@ -23,6 +25,7 @@ import type {
   IncomeExpenseReport,
   JournalEntry,
   JournalPostRequest,
+  InstalledPackInfo,
   LedgerAccount,
   Member,
   MemberAmountRow,
@@ -32,6 +35,10 @@ import type {
   NewMember,
   NewPayEndpoint,
   NewPayWatch,
+  PackDocumentRequest,
+  PackInstallOutcome,
+  PackKind,
+  PackVerification,
   PayDelivery,
   PayEndpoint,
   PayEndpointWithSecret,
@@ -559,7 +566,7 @@ let reconSuggestions: ReconSuggestion[] = documents
   });
 
 // ---------------------------------------------------------------------------
-// ShapePay mock — watch codes, endpoints, matches, deliveries. Mirrors the
+// Payments mock — watch codes, endpoints, matches, deliveries. Mirrors the
 // core contract: flat watch list, vault-only endpoint secrets (generated
 // here, returned once, never stored), backoff-retried deliveries.
 // ---------------------------------------------------------------------------
@@ -813,6 +820,360 @@ function mockFingerprint(name: string, secret: string): string {
   }
   return h.toString(16).padStart(8, "0");
 }
+
+// ---------------------------------------------------------------------------
+// classification packs.
+//
+// **No signature is verified here.** This harness has no ed25519, and
+// pretending otherwise would be the one dishonest thing a mock must not do:
+// verification is the Tauri command's job, over the real crate. What the
+// mock does model faithfully is the state machine the UI has to render —
+// per-pack-id signer pinning (a changed key is a refusal), strict semver
+// (same version is an error, downgrades are rejected, upgrades re-map) and
+// trust-on-first-use labelling — so every branch of the Packs screen can be
+// exercised in a browser.
+// ---------------------------------------------------------------------------
+
+/** Fingerprint of a signer key, mock-side: stable per key and grouped like
+ * the real one, but a hash of nothing meaningful. */
+const mockSignerFingerprint = (publicKey: string): string => {
+  const raw = mockFingerprint("signer", publicKey.trim().toLowerCase());
+  return `${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(0, 4)}-${raw.slice(4, 8)}`;
+};
+
+const COMMUNITY_KEY =
+  "3ac1f0e9b7d2564a8e1c0f5b96d3a7248fe0b1c6d495a8237e6f0b1c2d3e4f50";
+const COMMUNITY_FP = mockSignerFingerprint(COMMUNITY_KEY);
+
+let installedPacks: InstalledPackInfo[] = [
+  {
+    pack_id: "za-retail-base",
+    book_id: BOOK_ID,
+    name: "South African retail merchants",
+    version: "1.4.0",
+    kind: "taxonomy",
+    region: "ZA",
+    signer_fingerprint: COMMUNITY_FP,
+    signer_label: "SlipScan Community",
+    installed_at: "2026-05-11T14:03:00Z",
+    updated_at: "2026-06-28T09:20:00Z",
+  },
+  {
+    pack_id: "za-benchmarks-2026",
+    book_id: BOOK_ID,
+    name: "ZA household benchmarks · 2026",
+    version: "0.3.1",
+    kind: "benchmark",
+    region: "ZA",
+    signer_fingerprint: COMMUNITY_FP,
+    signer_label: "SlipScan Community",
+    installed_at: "2026-07-02T11:41:00Z",
+    updated_at: "2026-07-02T11:41:00Z",
+  },
+  {
+    // A second benchmark pack in a currency this book does not use. It is
+    // here on purpose: "no FX conversion is applied" is a load-bearing
+    // property, and the only way the UI's *not compared* branch gets
+    // exercised in the browser, the smoke suite and the screenshots is if a
+    // mismatched pack exists to produce it. A fabricated zero would read as
+    // "you spend nothing on groceries", which is not what is known.
+    pack_id: "eu-benchmarks-2026",
+    book_id: BOOK_ID,
+    name: "EU household benchmarks · 2026",
+    version: "0.2.0",
+    kind: "benchmark",
+    region: "PT",
+    signer_fingerprint: COMMUNITY_FP,
+    signer_label: "SlipScan Community",
+    installed_at: "2026-07-06T08:15:00Z",
+    updated_at: "2026-07-06T08:15:00Z",
+  },
+];
+
+/** pack id → the signer fingerprint it is pinned to. The real store keeps
+ * pins across an uninstall so an id can never be taken over; so does this. */
+const packPins = new Map<string, string>(
+  installedPacks.map((p) => [p.pack_id, p.signer_fingerprint]),
+);
+/** signer fingerprint → trust label (trust-on-first-use). */
+const trustedSigners = new Map<string, string>([[COMMUNITY_FP, "SlipScan Community"]]);
+
+interface MockSemver {
+  major: number;
+  minor: number;
+  patch: number;
+}
+
+function parseSemver(raw: string): MockSemver {
+  const parts = raw.trim().split(".");
+  if (parts.length !== 3 || parts.some((p) => !/^\d+$/.test(p)))
+    throw new Error(`invalid semantic version "${raw}" (expected MAJOR.MINOR.PATCH)`);
+  const [major, minor, patch] = parts.map(Number) as [number, number, number];
+  return { major, minor, patch };
+}
+
+/** Negative / zero / positive, same ordering strict semver uses. */
+const cmpSemver = (a: MockSemver, b: MockSemver): number =>
+  a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+
+/** Canonical form the installer stores a version in. */
+const canonicalVersion = (raw: string): string => {
+  const v = parseSemver(raw);
+  return `${v.major}.${v.minor}.${v.patch}`;
+};
+
+function fromBase64(b64: string): Uint8Array {
+  const bin = atob(b64.trim());
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+interface MockPackDocument {
+  id: string;
+  name: string;
+  version: string;
+  region: string | null;
+  author: string | null;
+  kind: PackKind;
+  categories: number;
+  merchant_rules: number;
+  keyword_rules: number;
+}
+
+/** Decode and shape-check the pack document. The real path verifies the
+ * signature over these exact bytes first; here they are only parsed. */
+function readPackDocument(q: PackDocumentRequest): MockPackDocument {
+  if (!q.signature.trim()) throw new Error("signature is required");
+  if (!q.public_key.trim()) throw new Error("public key is required");
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(fromBase64(q.document_base64)));
+  } catch (err) {
+    throw new Error(`invalid payload JSON: ${err}`);
+  }
+  const meta = parsed.meta as
+    | { id?: string; name?: string; version?: string; region?: string; author?: string }
+    | undefined;
+  if (!meta?.id || !meta.name || !meta.version)
+    throw new Error(
+      "pack validation failed: meta.id, meta.name and meta.version are required",
+    );
+  const count = (key: string): number =>
+    Array.isArray(parsed[key]) ? (parsed[key] as unknown[]).length : 0;
+  return {
+    id: meta.id,
+    name: meta.name,
+    version: canonicalVersion(meta.version),
+    region: meta.region ?? null,
+    author: meta.author ?? null,
+    kind: parsed.benchmarks ? "benchmark" : "taxonomy",
+    categories: count("categories"),
+    merchant_rules: count("merchant_rules"),
+    keyword_rules: count("keyword_rules"),
+  };
+}
+
+/** The refusal the installer would return, if any — same order and same
+ * wording as the real `PackError` variants. */
+function packRefusal(
+  doc: MockPackDocument,
+  fingerprint: string,
+  installed: InstalledPackInfo | undefined,
+): string | null {
+  const pinned = packPins.get(doc.id);
+  if (pinned && pinned !== fingerprint)
+    return `pack ${doc.id} was previously signed by a different key (pinned signer ${pinned}); refusing to install`;
+  if (!installed) return null;
+  const cmp = cmpSemver(parseSemver(doc.version), parseSemver(installed.version));
+  if (cmp === 0) return `pack ${doc.id} version ${installed.version} is already installed`;
+  if (cmp < 0)
+    return `pack ${doc.id}: offered version ${doc.version} is older than installed version ${installed.version}; downgrades are rejected`;
+  return null;
+}
+
+/**
+ * The built-in seed packs, mirroring the embedded fixtures in
+ * `crates/slipscan-packs/src/fixtures/` — ids, names, versions, regions and
+ * counts are read off those files, and the crate's
+ * `seed_packs_parse_validate_and_verify` test pins the id/region list, so
+ * this cannot drift silently.
+ *
+ * Two are region-specific (`ZA`) and one is global. That asymmetry is the
+ * whole reason seeding is opt-in rather than something book creation does.
+ */
+const seedPacks: {
+  pack_id: string;
+  name: string;
+  version: string;
+  region: string | null;
+  categories: number;
+  rules: number;
+}[] = [
+  {
+    pack_id: "za-personal",
+    name: "South Africa — Personal Finance",
+    version: "1.0.0",
+    region: "ZA",
+    categories: 33,
+    rules: 91,
+  },
+  {
+    pack_id: "za-business-vat",
+    name: "South Africa — Small Business & VAT",
+    version: "1.0.0",
+    region: "ZA",
+    categories: 29,
+    rules: 56,
+  },
+  {
+    pack_id: "intl-starter",
+    name: "International Starter",
+    version: "1.0.0",
+    region: null,
+    categories: 32,
+    rules: 86,
+  },
+];
+
+/** Seeds are embedded in the binary, so there is no key to trust on first
+ * use and the TOFU store is not touched — the real installer records them
+ * under a reserved builtin signer, which is not a trust-store row. */
+const BUILTIN_SIGNER_FP = "builtin";
+
+// ---------------------------------------------------------------------------
+// benchmark packs — the READ side of peer comparison, the only half built.
+//
+// What this harness models faithfully is the shape the UI has to render:
+// a comparison resolved through the taxonomy map, keys the pack cites that
+// nothing maps to (`unmapped_keys`), and a pack in another currency coming
+// back *not compared* rather than as zeroes. The statistics themselves are
+// invented fixtures — there is no published benchmark pack to ship, which is
+// exactly what BENCHMARKS.md says. Nothing here contributes anything
+// anywhere: there is no contribution path in SlipScan at all.
+// ---------------------------------------------------------------------------
+
+/** Taxonomy key → local category, as an installed taxonomy pack's category
+ * map would resolve it. Keys are real `za-personal`/`intl-starter` keys. */
+const benchmarkKeyMap: Record<string, string> = {
+  groceries: "Groceries",
+  "eating-out": "Eating out",
+  transport: "Transport & fuel",
+  "housing.utilities": "Utilities",
+  "entertainment.streaming": "Subscriptions",
+  medical: "Health",
+};
+
+interface MockBenchmarkStat {
+  category_key: string;
+  p25_minor: number;
+  median_minor: number;
+  p75_minor: number;
+  sample_size: number;
+}
+
+interface MockBenchmarkSet {
+  pack_id: string;
+  /** The calendar year these stats cover. A real pack carries a period per
+   * statistic; the fixture collapses that to "every month of one year" so a
+   * month outside it exercises the *pack publishes nothing for this month*
+   * branch, which is a different answer from "you spent nothing". */
+  year: string;
+  currency: string;
+  cohort: BenchmarkCohort;
+  k_floor: number;
+  stats: MockBenchmarkStat[];
+}
+
+/** `insurance` and `education` are real taxonomy keys that this demo book has
+ * no category for, so they land in `unmapped_keys` — the branch that answers
+ * "why is there no row for insurance?". */
+const benchmarkSets: MockBenchmarkSet[] = [
+  {
+    pack_id: "za-benchmarks-2026",
+    year: "2026",
+    currency: "ZAR",
+    cohort: { region: "ZA", household_size: 2, income_band: "C" },
+    k_floor: 25,
+    stats: [
+      {
+        category_key: "groceries",
+        p25_minor: 310_000,
+        median_minor: 485_000,
+        p75_minor: 702_500,
+        sample_size: 412,
+      },
+      {
+        category_key: "eating-out",
+        p25_minor: 62_000,
+        median_minor: 118_000,
+        p75_minor: 214_000,
+        sample_size: 388,
+      },
+      {
+        category_key: "transport",
+        p25_minor: 90_000,
+        median_minor: 160_000,
+        p75_minor: 260_000,
+        sample_size: 380,
+      },
+      {
+        category_key: "housing.utilities",
+        p25_minor: 145_000,
+        median_minor: 198_000,
+        p75_minor: 265_000,
+        sample_size: 401,
+      },
+      {
+        category_key: "entertainment.streaming",
+        p25_minor: 18_000,
+        median_minor: 34_900,
+        p75_minor: 62_000,
+        sample_size: 297,
+      },
+      // A cohort median of zero: most households in the band spend nothing
+      // here in a given month. `ratio_to_median` is absent rather than
+      // Infinity — dividing by it would invent a number.
+      {
+        category_key: "medical",
+        p25_minor: 0,
+        median_minor: 0,
+        p75_minor: 96_000,
+        sample_size: 254,
+      },
+      {
+        category_key: "insurance",
+        p25_minor: 120_000,
+        median_minor: 214_500,
+        p75_minor: 361_000,
+        sample_size: 344,
+      },
+      {
+        category_key: "education",
+        p25_minor: 0,
+        median_minor: 180_000,
+        p75_minor: 640_000,
+        sample_size: 129,
+      },
+    ],
+  },
+  {
+    pack_id: "eu-benchmarks-2026",
+    year: "2026",
+    currency: "EUR",
+    cohort: { region: "PT", household_size: 2, income_band: "B" },
+    k_floor: 30,
+    stats: [
+      {
+        category_key: "groceries",
+        p25_minor: 28_000,
+        median_minor: 41_500,
+        p75_minor: 58_000,
+        sample_size: 216,
+      },
+    ],
+  },
+];
 
 // ---------------------------------------------------------------------------
 // household member reports — mirrors core's repo/report.rs member_amount /
@@ -1572,7 +1933,7 @@ export const mockApi = {
     };
   },
 
-  // -- ShapePay: same semantics as core — flat watch list, secrets returned
+  // -- Payments: same semantics as core — flat watch list, secrets returned
   // exactly once and never stored, 4xx fails fast / others retry --
 
   pay_watch_list: async (q: { book_id: string }): Promise<PayWatch[]> =>
@@ -1700,6 +2061,243 @@ export const mockApi = {
       acted.push(d);
     }
     return clone(acted);
+  },
+
+  // -- classification packs: rules, never data (no signature is checked in
+  // this harness — see the section comment above) --
+
+  pack_list: async (q: { book_id: string }): Promise<InstalledPackInfo[]> =>
+    clone(
+      installedPacks
+        .filter((p) => p.book_id === q.book_id)
+        .sort((a, b) => a.pack_id.localeCompare(b.pack_id)),
+    ),
+
+  pack_verify: async (q: PackDocumentRequest): Promise<PackVerification> => {
+    const doc = readPackDocument(q);
+    const fingerprint = mockSignerFingerprint(q.public_key);
+    const installed = installedPacks.find(
+      (p) => p.book_id === q.book_id && p.pack_id === doc.id,
+    );
+    const refusal = packRefusal(doc, fingerprint, installed);
+    const pinned = packPins.get(doc.id) ?? null;
+    return {
+      pack_id: doc.id,
+      name: doc.name,
+      version: doc.version,
+      kind: doc.kind,
+      region: doc.region,
+      author: doc.author,
+      signer_fingerprint: fingerprint,
+      trusted_as: trustedSigners.get(fingerprint) ?? null,
+      pinned_fingerprint: pinned,
+      installed_version: installed?.version ?? null,
+      categories: doc.categories,
+      merchant_rules: doc.merchant_rules,
+      keyword_rules: doc.keyword_rules,
+      action: refusal ? "refuse" : installed ? "upgrade" : "install",
+      refusal,
+    };
+  },
+
+  pack_install: async (q: PackDocumentRequest): Promise<PackInstallOutcome> => {
+    const doc = readPackDocument(q);
+    const fingerprint = mockSignerFingerprint(q.public_key);
+    const existing = installedPacks.find(
+      (p) => p.book_id === q.book_id && p.pack_id === doc.id,
+    );
+    const refusal = packRefusal(doc, fingerprint, existing);
+    if (refusal) throw new Error(refusal);
+
+    // Passing the key is the trust decision; the id pins to it from here on.
+    if (!trustedSigners.has(fingerprint))
+      trustedSigners.set(fingerprint, doc.author?.trim() || `publisher ${fingerprint}`);
+    packPins.set(doc.id, fingerprint);
+
+    const now = new Date().toISOString();
+    const upgradedFrom = existing?.version ?? null;
+    if (existing) {
+      existing.name = doc.name;
+      existing.version = doc.version;
+      existing.kind = doc.kind;
+      existing.region = doc.region;
+      existing.signer_fingerprint = fingerprint;
+      existing.signer_label = trustedSigners.get(fingerprint) ?? null;
+      existing.updated_at = now;
+    } else {
+      installedPacks.push({
+        pack_id: doc.id,
+        book_id: q.book_id,
+        name: doc.name,
+        version: doc.version,
+        kind: doc.kind,
+        region: doc.region,
+        signer_fingerprint: fingerprint,
+        signer_label: trustedSigners.get(fingerprint) ?? null,
+        installed_at: now,
+        updated_at: now,
+      });
+    }
+    return {
+      pack_id: doc.id,
+      name: doc.name,
+      version: doc.version,
+      region: doc.region,
+      outcome: upgradedFrom ? "upgraded" : "installed",
+      upgraded_from: upgradedFrom,
+      // An upgrade re-maps onto the categories it already created.
+      categories_created: upgradedFrom ? 0 : doc.categories,
+      categories_reused: upgradedFrom ? doc.categories : 0,
+      rules_installed: doc.merchant_rules + doc.keyword_rules,
+    };
+  },
+
+  pack_uninstall: async (q: {
+    book_id: string;
+    pack_id: string;
+  }): Promise<boolean> => {
+    const before = installedPacks.length;
+    installedPacks = installedPacks.filter(
+      (p) => !(p.book_id === q.book_id && p.pack_id === q.pack_id),
+    );
+    // The pin outlives the pack, exactly as it does in the real store.
+    return installedPacks.length < before;
+  },
+
+  /** Idempotent and non-clobbering, like the real one: a seed already
+   * installed at the same version is skipped and does not come back in the
+   * result, so a second call returns an empty list rather than claiming to
+   * have done work. Categories are "adopted" rather than duplicated, which
+   * shows up as `categories_reused`. */
+  pack_install_seeds: async (q: {
+    book_id: string;
+  }): Promise<PackInstallOutcome[]> => {
+    const now = new Date().toISOString();
+    const written: PackInstallOutcome[] = [];
+    for (const seed of seedPacks) {
+      const existing = installedPacks.find(
+        (p) => p.book_id === q.book_id && p.pack_id === seed.pack_id,
+      );
+      if (existing && existing.version === seed.version) continue;
+      const upgradedFrom = existing?.version ?? null;
+      if (existing) {
+        existing.version = seed.version;
+        existing.updated_at = now;
+      } else {
+        installedPacks.push({
+          pack_id: seed.pack_id,
+          book_id: q.book_id,
+          name: seed.name,
+          version: seed.version,
+          kind: "taxonomy",
+          region: seed.region,
+          // Builtin seeds carry a reserved signer, not a public key: their
+          // payload is embedded in the binary, so there is no first-use
+          // trust decision to make and no trust-store row to label.
+          signer_fingerprint: BUILTIN_SIGNER_FP,
+          signer_label: null,
+          installed_at: now,
+          updated_at: now,
+        });
+      }
+      written.push({
+        pack_id: seed.pack_id,
+        name: seed.name,
+        version: seed.version,
+        region: seed.region,
+        outcome: upgradedFrom ? "upgraded" : "installed",
+        upgraded_from: upgradedFrom,
+        categories_created: upgradedFrom ? 0 : seed.categories,
+        categories_reused: upgradedFrom ? seed.categories : 0,
+        rules_installed: seed.rules,
+      });
+    }
+    return clone(written);
+  },
+
+  /** Local peer comparison for one month. Mirrors the op's semantics: your
+   * side is the spending report for the month, no currency is ever
+   * converted (a mismatched pack is `skipped`), and a key nothing maps to is
+   * reported in `unmapped_keys` instead of vanishing. */
+  pack_benchmark: async (q: {
+    book_id: string;
+    period: string;
+  }): Promise<BenchmarkReport[]> => {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(q.period))
+      throw new Error(`period "${q.period}" must be a calendar month, YYYY-MM`);
+
+    const installedHere = installedPacks.filter((p) => p.book_id === q.book_id);
+    // Benchmark packs declare no categories of their own: the keys they cite
+    // resolve through whatever taxonomy pack is installed. With none, every
+    // key is unmapped — which is the honest answer, not an empty screen.
+    const haveTaxonomy = installedHere.some((p) => p.kind === "taxonomy");
+
+    const spending = await mockApi.report_spending({
+      book_id: q.book_id,
+      from: `${q.period}-01`,
+      // `-31` spans any month: dates are compared as strings, so a 30-day
+      // month simply has no `-31` row.
+      to: `${q.period}-31`,
+    });
+    const spendByCategoryName = new Map(
+      spending.by_category.map((r) => [r.category_name, r.amount_minor]),
+    );
+
+    const reports: BenchmarkReport[] = [];
+    for (const pack of installedHere.filter((p) => p.kind === "benchmark")) {
+      const set = benchmarkSets.find((s) => s.pack_id === pack.pack_id);
+      if (!set) continue;
+      const report: BenchmarkReport = {
+        pack_id: set.pack_id,
+        pack_name: pack.name,
+        period: q.period,
+        currency: set.currency,
+        cohort: { ...set.cohort },
+        k_floor: set.k_floor,
+        skipped: null,
+        comparisons: [],
+        unmapped_keys: [],
+      };
+      if (set.currency !== spending.currency) {
+        report.skipped = `pack is in ${set.currency} and this book is in ${spending.currency} — no conversion is applied`;
+        reports.push(report);
+        continue;
+      }
+      // Stats are filtered by period first, exactly as the op does — so a
+      // month the pack does not cover yields no comparisons AND no unmapped
+      // keys, rather than reporting every key as unmatched.
+      const stats = q.period.startsWith(`${set.year}-`) ? set.stats : [];
+      for (const stat of stats) {
+        const category = haveTaxonomy ? benchmarkKeyMap[stat.category_key] : undefined;
+        if (!category) {
+          report.unmapped_keys.push(stat.category_key);
+          continue;
+        }
+        const yours = spendByCategoryName.get(category) ?? 0;
+        report.comparisons.push({
+          category_key: stat.category_key,
+          currency: set.currency,
+          yours_minor: yours,
+          median_minor: stat.median_minor,
+          p25_minor: stat.p25_minor,
+          p75_minor: stat.p75_minor,
+          delta_minor: yours - stat.median_minor,
+          // Absent, not Infinity, when the cohort median is zero.
+          ratio_to_median:
+            stat.median_minor === 0 ? null : yours / stat.median_minor,
+          position:
+            yours < stat.p25_minor
+              ? "below_p25"
+              : yours > stat.p75_minor
+                ? "above_p75"
+                : "typical",
+          sample_size: stat.sample_size,
+        });
+      }
+      report.unmapped_keys.sort();
+      reports.push(report);
+    }
+    return clone(reports);
   },
 
   settings_get: async (): Promise<Settings> => clone(settings),

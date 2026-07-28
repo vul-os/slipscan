@@ -62,6 +62,14 @@ SlipScan scores matches between bank transactions and slips by amount, date, and
 
 ---
 
+## Payments
+
+![Payments](screenshots/payments.png)
+
+Inbox in, webhook out. Watch codes are the EFT references you gave customers — matched case-insensitively as whole tokens on inbound transactions, optionally pinned to an exact amount. Endpoints receive HMAC-signed deliveries; each signing secret lives in the credential vault and is shown exactly once, on create or rotate. The delivery queue shows attempts, HTTP status, and the retry backoff (1m, 5m, 30m, 2h, 12h, then daily). No central infrastructure is involved at any point.
+
+---
+
 ## Reports
 
 ![Reports](screenshots/reports.png)

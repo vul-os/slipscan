@@ -1,7 +1,8 @@
 //! slipscan — command-line interface.
 //!
-//! Subcommands: `init`, `import`, `extract`, `mail-sync`, `recon`, `report`,
-//! `fx`, `pack`, `vault`, `serve`, `list`, `member`, `attribute`, `split`.
+//! Subcommands: `init`, `import`, `watch`, `extract`, `mail-sync`, `recon`,
+//! `report`, `fx`, `pack`, `vault`, `serve`, `list`, `member`, `attribute`,
+//! `split`.
 //! Every command has human-readable output by default and `--json` for
 //! machines. Binaries may use anyhow.
 //!
@@ -21,21 +22,41 @@ use slipscan_core::domain::{
     NewPayEndpoint, NewPayWatch, PayDeliveryState, PayEndpointWithSecret, SplitShare,
     TransactionFilter, TransactionSource,
 };
-use slipscan_core::secrets::SecretString;
-use slipscan_core::CoreService;
+use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
+use slipscan_core::{CoreService, Db};
 use slipscan_ingest::bank::import_statement_lines;
+use slipscan_ingest::email::gmail::{GmailConfig, GmailConnector};
+use slipscan_ingest::email::graph::{
+    begin_device_login, finish_device_login, GraphConfig, GraphConnector,
+};
 use slipscan_ingest::email::imap::{connect_tls, ImapConfig, ImapConnector};
-use slipscan_ingest::email::import_message_documents;
+use slipscan_ingest::email::oauth::begin_loopback_flow;
+use slipscan_ingest::email::{sync_mailbox, MailboxFilter, MailboxSyncOutcome};
+use slipscan_ingest::http::ReqwestHttpClient;
 use slipscan_ingest::import::{import_document_file, FileImport};
-use slipscan_ingest::{IngestError, MailboxConnector, SettingsCursorStore};
+use slipscan_ingest::watch::{import_paths, scan_folder, FolderImportOutcome, FolderWatcher};
+use slipscan_ingest::{IngestError, SettingsCursorStore};
 use slipscan_server::vault::VaultHandle;
 use slipscan_server::{ops, AuthToken, ServerConfig};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Settings key holding the IMAP mailbox config JSON ([`ImapConfig`] —
 /// contains no secret material, only the vault credential name).
 const MAIL_CONFIG_SETTING: &str = "mail.imap.config";
+
+/// Settings key holding the Gmail mailbox config JSON ([`GmailConfig`] —
+/// vault entry *names* only, never the client secret or tokens).
+const GMAIL_CONFIG_SETTING: &str = "mail.gmail.config";
+
+/// Settings key holding the Microsoft Graph mailbox config JSON
+/// ([`GraphConfig`] — vault entry *names* only).
+const GRAPH_CONFIG_SETTING: &str = "mail.graph.config";
+
+/// How long `watch` blocks for filesystem activity before looping. Long
+/// enough to idle cheaply, short enough that Ctrl-C feels immediate.
+const WATCH_POLL: Duration = Duration::from_secs(5);
 
 /// Settings key naming the configured extraction provider.
 const EXTRACT_PROVIDER_SETTING: &str = "extract.provider";
@@ -86,6 +107,28 @@ impl From<CliBookKind> for BookKind {
         match kind {
             CliBookKind::Personal => BookKind::Personal,
             CliBookKind::Business => BookKind::Business,
+        }
+    }
+}
+
+/// Which mailbox connector `mail-sync` drives. `imap` is the default so
+/// existing invocations are unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum MailProvider {
+    /// Any IMAP host (Proton Bridge on 127.0.0.1 included).
+    Imap,
+    /// Gmail API `history.list` deltas, your own OAuth client.
+    Gmail,
+    /// Microsoft Graph delta queries, your own app registration.
+    Graph,
+}
+
+impl MailProvider {
+    fn as_str(self) -> &'static str {
+        match self {
+            MailProvider::Imap => "imap",
+            MailProvider::Gmail => "gmail",
+            MailProvider::Graph => "graph",
         }
     }
 }
@@ -164,14 +207,37 @@ enum Command {
         #[arg(long)]
         list_presets: bool,
     },
+    /// Watch a drop folder: import everything ingestable already in it, then
+    /// keep importing files as they land (content-hash dedup means a rescan
+    /// never double-imports). Runs until interrupted; Ctrl-C to stop.
+    Watch {
+        /// Folder to scan and watch (recursively).
+        dir: PathBuf,
+        /// Import what is already there and exit, without watching — for
+        /// cron/launchd.
+        #[arg(long)]
+        once: bool,
+    },
     /// Run extraction on pending slips via the configured provider.
     Extract {
         /// Maximum documents to process this run.
         #[arg(long, default_value_t = 25)]
         limit: usize,
     },
-    /// Poll the configured IMAP mailbox and import receipt documents.
+    /// Poll a configured mailbox and import receipt documents.
     MailSync {
+        /// Mailbox provider to sync: generic IMAP (the default, unchanged),
+        /// Gmail (history deltas), or Microsoft Graph (delta queries). Each
+        /// reads its own settings key: mail.imap.config, mail.gmail.config,
+        /// mail.graph.config.
+        #[arg(long, value_enum, default_value_t = MailProvider::Imap)]
+        provider: MailProvider,
+        /// Run the provider's user-initiated OAuth grant and exit (Gmail:
+        /// loopback + PKCE in your browser; Graph: device code). Tokens go
+        /// straight into the vault and are never displayed. Not for imap,
+        /// which authenticates with a vault password.
+        #[arg(long)]
+        login: bool,
         /// Where to store fetched attachments (default: the data folder's
         /// `documents/` store, or `<db dir>/slipscan-documents` with --db).
         #[arg(long)]
@@ -247,7 +313,7 @@ enum Command {
         #[command(subcommand)]
         action: PackAction,
     },
-    /// ShapePay: watch reference codes on inbound transactions and fire
+    /// Payments: watch reference codes on inbound transactions and fire
     /// signed webhooks to your endpoints (email in -> webhook out).
     Pay {
         #[command(subcommand)]
@@ -437,8 +503,33 @@ enum PackAction {
         #[arg(long)]
         public_key: String,
     },
+    /// Install the built-in seed packs into a book: the SA pair
+    /// (za-personal, za-business-vat) and the global intl-starter.
+    ///
+    /// Opt-in on purpose — which taxonomy a book starts from is your call,
+    /// not something book creation guesses. Safe to re-run: a seed already
+    /// installed is skipped, and categories you already have are adopted by
+    /// (parent, name), never duplicated.
+    Seed,
     /// List installed packs.
     List,
+    /// Remove an installed pack's rules from a book. Categories it created
+    /// stay (your history still points at them), and so does the signer pin.
+    Uninstall {
+        /// Pack id, e.g. `za-personal` (see `slipscan pack list`).
+        pack_id: String,
+    },
+    /// Compare a month's spend against the installed benchmark packs —
+    /// "you vs households like yours", computed entirely on this machine.
+    ///
+    /// A read, and only a read: benchmark packs are public files of cohort
+    /// aggregates and nothing is transmitted. Contribution is not
+    /// implemented at all (docs/BENCHMARKS.md).
+    Benchmark {
+        /// Calendar month to compare, `YYYY-MM`.
+        #[arg(long)]
+        period: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -517,7 +608,27 @@ enum VaultAction {
 }
 
 fn main() -> anyhow::Result<()> {
+    register_pack_classifier();
     run(Cli::parse())
+}
+
+/// Wire installed pack rules into core's categorisation, for this whole
+/// process.
+///
+/// `slipscan_packs::register_classifier`'s own contract is "call it once at
+/// startup, in every binary that imports transactions" — and this binary
+/// imports transactions (`import --preset`, `watch`, `mail-sync`, `extract`).
+/// Registering only inside the install path would mean a run that has not
+/// installed a pack *this invocation* — i.e. essentially every run — skipped
+/// every `contains`, `regex` and `keyword` rule already sitting in the
+/// database. Exact rules would still fire, because installing seeds those
+/// into core's own `merchant_mappings`, which made the gap quiet rather than
+/// absent.
+///
+/// Idempotent (the first registration in a process wins) and free until a
+/// book actually has pack rules. Returns whether this call registered.
+fn register_pack_classifier() -> bool {
+    slipscan_packs::register_classifier()
 }
 
 /// Where this invocation's data lives, resolved once per run.
@@ -787,6 +898,157 @@ fn default_storage_dir(db: &Path) -> PathBuf {
         .join("slipscan-documents")
 }
 
+/// The backing pieces of the credential vault the OAuth mailbox connectors
+/// consume: the same envelope-encrypted store `slipscan vault set` writes to
+/// and `mail-sync`'s IMAP path reads.
+///
+/// Returned unassembled because `Vault` borrows both: the caller builds it
+/// and hands connectors a `&dyn VaultAccess`, so material only ever reaches
+/// them inside `use_with`, and rotated OAuth tokens go straight back in.
+fn vault_backend(db: &Path) -> anyhow::Result<(Db, Box<dyn SecretStore>)> {
+    Ok((
+        Db::open(db).with_context(|| format!("opening the vault in {}", db.display()))?,
+        Box::new(KeyringSecretStore::default()),
+    ))
+}
+
+/// Read a mailbox connector's config JSON out of the settings table. The
+/// stored value carries vault entry *names*, never secret material.
+fn mailbox_config<T: serde::de::DeserializeOwned>(
+    svc: &CoreService,
+    provider: MailProvider,
+    key: &str,
+    fields: &str,
+) -> anyhow::Result<T> {
+    let raw = svc.settings_get(key)?.ok_or_else(|| {
+        anyhow!(
+            "no {} mailbox configured; store a config JSON under settings key {key:?} with \
+             fields {fields}",
+            provider.as_str()
+        )
+    })?;
+    serde_json::from_str(&raw).with_context(|| format!("parsing the stored {key} JSON"))
+}
+
+const GMAIL_CONFIG_FIELDS: &str = "client_id, client_secret_ref, token_ref, label_id, \
+     pubsub_topic, pubsub_subscription (the *_ref fields name vault entries, never secrets)";
+const GRAPH_CONFIG_FIELDS: &str =
+    "client_id, tenant, folder, token_ref (token_ref names a vault entry, never a secret)";
+
+/// A missing vault entry, explained as the command that fixes it.
+fn vault_entry_hint(err: IngestError, provider: MailProvider) -> anyhow::Error {
+    match err {
+        IngestError::MissingCredential(name) => anyhow!(
+            "missing vault entry {name:?}: store it with `slipscan vault set {name}`, or — if \
+             it is the token entry — complete the grant with `slipscan mail-sync --provider \
+             {} --login`",
+            provider.as_str()
+        ),
+        other => other.into(),
+    }
+}
+
+/// `mail-sync --login`: run the provider's user-initiated OAuth grant. The
+/// resulting tokens are written into the vault by the flow itself — no token
+/// material crosses back into this process.
+///
+/// Prompts go to stderr so `--json` output stays machine-readable.
+fn mail_login(
+    svc: &CoreService,
+    db: &Path,
+    provider: MailProvider,
+    json: bool,
+) -> anyhow::Result<()> {
+    let (vault_db, keychain) = vault_backend(db)?;
+    let vault = Vault::new(vault_db.conn(), &*keychain);
+    let http = ReqwestHttpClient::new()?;
+    let rt = runtime()?;
+
+    let token_ref = match provider {
+        MailProvider::Imap => bail!(
+            "imap has no OAuth grant; store the mailbox password with \
+             `slipscan vault set <password_secret_ref>`"
+        ),
+        MailProvider::Gmail => {
+            let config: GmailConfig =
+                mailbox_config(svc, provider, GMAIL_CONFIG_SETTING, GMAIL_CONFIG_FIELDS)?;
+            let oauth = config.oauth();
+            rt.block_on(async {
+                let flow = begin_loopback_flow(&oauth).await?;
+                eprintln!(
+                    "Open this URL to authorize SlipScan against your own Google OAuth \
+                     client:\n  {}",
+                    flow.authorize_url()
+                );
+                eprintln!("Waiting for the redirect to {} …", flow.redirect_uri());
+                flow.finish(&http, &vault, &oauth).await
+            })
+            .map_err(|e| vault_entry_hint(e, provider))?;
+            config.token_ref
+        }
+        MailProvider::Graph => {
+            let config: GraphConfig =
+                mailbox_config(svc, provider, GRAPH_CONFIG_SETTING, GRAPH_CONFIG_FIELDS)?;
+            rt.block_on(async {
+                let authorization = begin_device_login(&http, &config).await?;
+                eprintln!(
+                    "Open {} and enter the code {} to authorize SlipScan (the code expires in \
+                     {} minutes).",
+                    authorization.verification_uri,
+                    authorization.user_code,
+                    authorization.expires_in.as_secs() / 60
+                );
+                finish_device_login(&http, &vault, &config, authorization).await
+            })
+            .map_err(|e| vault_entry_hint(e, provider))?;
+            config.token_ref
+        }
+    };
+
+    let out = serde_json::json!({
+        "provider": provider.as_str(),
+        "login": "complete",
+        "token_ref": token_ref,
+    });
+    emit(json, &out, || {
+        println!(
+            "Connected. Tokens are in the vault under {token_ref:?} and are never displayed; \
+             sync with `slipscan mail-sync --provider {}`.",
+            provider.as_str()
+        );
+    })
+}
+
+/// One `watch` round (the startup scan, or one batch of filesystem events).
+fn report_folder_round(
+    json: bool,
+    phase: &str,
+    dir: &Path,
+    outcome: &FolderImportOutcome,
+) -> anyhow::Result<()> {
+    let out = serde_json::json!({
+        "phase": phase,
+        "dir": dir.display().to_string(),
+        "imported": outcome.imported.iter().map(|d| serde_json::json!({
+            "document_id": d.id,
+            "path": d.file_path,
+        })).collect::<Vec<_>>(),
+        "duplicates": outcome.duplicates,
+        "skipped": outcome.skipped,
+    });
+    emit(json, &out, || {
+        for doc in &outcome.imported {
+            println!("imported\t{}\t{}", doc.id, doc.file_path);
+        }
+        println!(
+            "{phase}: {} imported, {} duplicate(s), {} skipped",
+            outcome.imported.len(),
+            outcome.duplicates,
+            outcome.skipped
+        );
+    })
+}
+
 fn run(cli: Cli) -> anyhow::Result<()> {
     // One resolution per run: pointer file (or `--db` override) decides where
     // the database and documents live for every command below.
@@ -959,6 +1221,36 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     }
                 }
             })
+        }
+
+        Command::Watch { ref dir, once } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            if !dir.is_dir() {
+                bail!("{} is not a folder", dir.display());
+            }
+            // Start watching *before* the scan so a file that lands mid-scan
+            // is still seen; content-hash dedup absorbs the overlap.
+            let watcher = if once {
+                None
+            } else {
+                Some(FolderWatcher::watch(dir)?)
+            };
+            let scanned = scan_folder(&svc, &book.id, dir)?;
+            report_folder_round(cli.json, "scan", dir, &scanned)?;
+            let Some(watcher) = watcher else {
+                return Ok(());
+            };
+
+            eprintln!("Watching {} — Ctrl-C to stop.", dir.display());
+            loop {
+                let paths = watcher.next_paths(WATCH_POLL)?;
+                if paths.is_empty() {
+                    continue;
+                }
+                let outcome = import_paths(&svc, &book.id, &paths)?;
+                report_folder_round(cli.json, "watch", dir, &outcome)?;
+            }
         }
 
         Command::Account { ref action } => {
@@ -1200,53 +1492,94 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             })
         }
 
-        Command::MailSync { ref storage_dir } => {
+        Command::MailSync {
+            provider,
+            login,
+            ref storage_dir,
+        } => {
             let svc = open_service(&env.db)?;
+            if login {
+                return mail_login(&svc, &env.db, provider, cli.json);
+            }
             let book = resolve_book(&svc, cli.book.as_deref())?;
-            let raw = svc.settings_get(MAIL_CONFIG_SETTING)?.ok_or_else(|| {
-                anyhow!(
-                    "no mailbox configured; store an IMAP config JSON under settings key \
-                     {MAIL_CONFIG_SETTING:?} with fields host, port, folder, username, \
-                     password_secret_ref (the name of a vault credential)"
-                )
-            })?;
-            let config: ImapConfig =
-                serde_json::from_str(&raw).context("parsing the stored IMAP config")?;
-            let vault = VaultHandle::open(&env.db)?;
-            let password = vault
-                .use_with(&config.password_secret_ref, |secret| {
-                    Ok(SecretString::new(secret.expose_secret()))
-                })
-                .with_context(|| {
-                    format!(
-                        "loading vault credential {0:?} (store it with `slipscan vault set {0}`)",
-                        config.password_secret_ref
-                    )
-                })?;
-            drop(vault);
             // Default is the unified documents store: the managed folder's
             // `documents/`, or `<db dir>/slipscan-documents` with `--db`.
             let dir = storage_dir.clone().unwrap_or_else(|| env.docs_dir.clone());
+            // No sender allowlist on this surface yet: the per-mailbox filter
+            // has no configuration key, so the CLI syncs the whole configured
+            // folder/label (provider-side rules still apply).
+            let filter = MailboxFilter::default();
 
             let rt = runtime()?;
-            let (fetched, imported, duplicates) = rt.block_on(async {
-                let transport = connect_tls(&config, &password).await?;
-                let cursors = SettingsCursorStore::new(&svc);
-                let mut connector = ImapConnector::new(config.clone(), transport, cursors);
-                let messages = connector.fetch_unseen().await?;
-                let mut imported = 0usize;
-                let mut duplicates = 0usize;
-                for message in &messages {
-                    let outcome = import_message_documents(&svc, &book.id, &dir, message)?;
-                    imported += outcome.documents.len();
-                    duplicates += outcome.duplicates;
-                    connector.mark_processed(&message.id).await?;
+            let synced: MailboxSyncOutcome = match provider {
+                MailProvider::Imap => {
+                    let config: ImapConfig = mailbox_config(
+                        &svc,
+                        provider,
+                        MAIL_CONFIG_SETTING,
+                        "host, port, folder, username, password_secret_ref (the name of a \
+                         vault credential)",
+                    )?;
+                    let vault = VaultHandle::open(&env.db)?;
+                    let password = vault
+                        .use_with(&config.password_secret_ref, |secret| {
+                            Ok(SecretString::new(secret.expose_secret()))
+                        })
+                        .with_context(|| {
+                            format!(
+                                "loading vault credential {0:?} (store it with \
+                                 `slipscan vault set {0}`)",
+                                config.password_secret_ref
+                            )
+                        })?;
+                    drop(vault);
+                    let synced = rt.block_on(async {
+                        let transport = connect_tls(&config, &password).await?;
+                        let cursors = SettingsCursorStore::new(&svc);
+                        let mut connector = ImapConnector::new(config.clone(), transport, cursors);
+                        sync_mailbox(&mut connector, &svc, &book.id, &dir, &filter).await
+                    })?;
+                    drop(password);
+                    synced
                 }
-                anyhow::Ok((messages.len(), imported, duplicates))
-            })?;
-            drop(password);
+                MailProvider::Gmail => {
+                    let config: GmailConfig =
+                        mailbox_config(&svc, provider, GMAIL_CONFIG_SETTING, GMAIL_CONFIG_FIELDS)?;
+                    let (vault_db, keychain) = vault_backend(&env.db)?;
+                    let vault = Vault::new(vault_db.conn(), &*keychain);
+                    let mut cursors = SettingsCursorStore::new(&svc);
+                    let mut connector = GmailConnector::new(
+                        config,
+                        ReqwestHttpClient::new()?,
+                        &mut cursors,
+                        &vault,
+                    );
+                    rt.block_on(sync_mailbox(&mut connector, &svc, &book.id, &dir, &filter))
+                        .map_err(|e| vault_entry_hint(e, provider))?
+                }
+                MailProvider::Graph => {
+                    let config: GraphConfig =
+                        mailbox_config(&svc, provider, GRAPH_CONFIG_SETTING, GRAPH_CONFIG_FIELDS)?;
+                    let (vault_db, keychain) = vault_backend(&env.db)?;
+                    let vault = Vault::new(vault_db.conn(), &*keychain);
+                    let mut cursors = SettingsCursorStore::new(&svc);
+                    let mut connector = GraphConnector::new(
+                        config,
+                        ReqwestHttpClient::new()?,
+                        &mut cursors,
+                        &vault,
+                    );
+                    rt.block_on(sync_mailbox(&mut connector, &svc, &book.id, &dir, &filter))
+                        .map_err(|e| vault_entry_hint(e, provider))?
+                }
+            };
+            let (fetched, imported, duplicates) = (
+                synced.messages_seen,
+                synced.documents.len(),
+                synced.duplicates,
+            );
 
-            // Email in -> webhook out in one command: flush any due ShapePay
+            // Email in -> webhook out in one command: flush any due payment
             // deliveries the sync's ingestion enqueued (or that were already
             // waiting on their backoff). With nothing due this POSTs nowhere
             // — and when it does POST, only to the webhook endpoint URLs the
@@ -1261,6 +1594,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 .count();
 
             let out = serde_json::json!({
+                "provider": provider.as_str(),
                 "messages": fetched,
                 "documents_imported": imported,
                 "duplicates": duplicates,
@@ -1270,8 +1604,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             });
             emit(cli.json, &out, || {
                 println!(
-                    "Fetched {fetched} message(s): {imported} document(s) imported, \
-                     {duplicates} duplicate(s)."
+                    "Fetched {fetched} message(s) over {}: {imported} document(s) imported, \
+                     {duplicates} duplicate(s).",
+                    provider.as_str()
                 );
                 if !webhooks.is_empty() {
                     println!(
@@ -1640,6 +1975,97 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         );
                     })
                 }
+                PackAction::Seed => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let installed = ops::pack_install_seeds(&svc, &book.id)?;
+                    emit(cli.json, &installed, || {
+                        if installed.is_empty() {
+                            println!("Seed packs already installed in {}.", book.name);
+                        }
+                        for result in &installed {
+                            println!(
+                                "Installed {} {} into {}: {} categories created, {} reused, {} rules",
+                                result.name,
+                                result.version,
+                                book.name,
+                                result.categories_created,
+                                result.categories_existing,
+                                result.rules
+                            );
+                        }
+                    })
+                }
+                PackAction::Uninstall { pack_id } => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let removed = ops::pack_uninstall(&svc, &book.id, pack_id)?;
+                    emit(
+                        cli.json,
+                        &serde_json::json!({ "pack_id": pack_id, "removed": removed }),
+                        || {
+                            if removed {
+                                println!(
+                                    "Removed {} from {}. Categories it created were kept.",
+                                    pack_id, book.name
+                                );
+                            } else {
+                                println!("{} is not installed in {}.", pack_id, book.name);
+                            }
+                        },
+                    )
+                }
+                PackAction::Benchmark { period } => {
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
+                    let reports = ops::pack_benchmark(&svc, &book.id, period)?;
+                    emit(cli.json, &reports, || {
+                        if reports.is_empty() {
+                            println!(
+                                "No benchmark packs installed in {}. Install one with \
+                                 `slipscan pack install`.",
+                                book.name
+                            );
+                        }
+                        for report in &reports {
+                            println!(
+                                "{} — {} household {} band {}, {} ({} contributions minimum)",
+                                report.pack_id,
+                                report.cohort.region,
+                                report.cohort.household_size,
+                                report.cohort.income_band,
+                                report.currency,
+                                report.k_floor
+                            );
+                            if let Some(reason) = &report.skipped {
+                                println!("  not compared: {reason}");
+                                continue;
+                            }
+                            if report.comparisons.is_empty() {
+                                println!("  no stats for {period}.");
+                            }
+                            for c in &report.comparisons {
+                                let position = match c.position {
+                                    slipscan_packs::QuartilePosition::BelowP25 => "below p25",
+                                    slipscan_packs::QuartilePosition::Typical => "typical",
+                                    slipscan_packs::QuartilePosition::AboveP75 => "above p75",
+                                };
+                                println!(
+                                    "  {}\tyou {}\tmedian {}\t{:+}\t{}\t(n={})",
+                                    c.category_key,
+                                    c.yours_minor,
+                                    c.median_minor,
+                                    c.delta_minor,
+                                    position,
+                                    c.sample_size
+                                );
+                            }
+                            if !report.unmapped_keys.is_empty() {
+                                println!(
+                                    "  no local category for: {}",
+                                    report.unmapped_keys.join(", ")
+                                );
+                            }
+                        }
+                    })
+                }
                 PackAction::List => {
                     let installed = ops::pack_list(&svc)?;
                     emit(cli.json, &installed, || {
@@ -1930,7 +2356,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 Ok(Box::new(slipscan_ingest::fx::ReqwestFxTransport::new()?)
                     as Box<dyn slipscan_core::fx::FxTransport>)
             });
-            // ShapePay delivery loop: serve mode flushes due webhook
+            // Payment delivery loop: serve mode flushes due webhook
             // deliveries on an interval — POSTs only ever go to the
             // endpoint URLs the user registered, and an empty queue means
             // zero network activity.
@@ -2203,11 +2629,56 @@ mod tests {
         let cli =
             Cli::try_parse_from(["slipscan", "mail-sync", "--storage-dir", "/tmp/docs"]).unwrap();
         match cli.command {
-            Command::MailSync { storage_dir } => {
+            Command::MailSync {
+                provider,
+                login,
+                storage_dir,
+            } => {
+                // Existing invocations are unchanged: imap, no login.
+                assert_eq!(provider, MailProvider::Imap);
+                assert!(!login);
                 assert_eq!(storage_dir, Some(PathBuf::from("/tmp/docs")));
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_mail_sync_providers_and_login() {
+        for (arg, expected) in [
+            ("imap", MailProvider::Imap),
+            ("gmail", MailProvider::Gmail),
+            ("graph", MailProvider::Graph),
+        ] {
+            let cli = Cli::try_parse_from(["slipscan", "mail-sync", "--provider", arg, "--login"])
+                .unwrap();
+            match cli.command {
+                Command::MailSync {
+                    provider, login, ..
+                } => {
+                    assert_eq!(provider, expected);
+                    assert!(login);
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert!(Cli::try_parse_from(["slipscan", "mail-sync", "--provider", "pigeon"]).is_err());
+    }
+
+    #[test]
+    fn parses_watch_folder() {
+        let cli = Cli::try_parse_from(["slipscan", "watch", "/tmp/drop"]).unwrap();
+        match cli.command {
+            Command::Watch { dir, once } => {
+                assert_eq!(dir, PathBuf::from("/tmp/drop"));
+                assert!(!once, "watching is the default");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["slipscan", "watch", "/tmp/drop", "--once"]).unwrap();
+        assert!(matches!(cli.command, Command::Watch { once: true, .. }));
+        // The folder is required.
+        assert!(Cli::try_parse_from(["slipscan", "watch"]).is_err());
     }
 
     #[test]
@@ -2918,8 +3389,133 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         assert!(Cli::try_parse_from(["slipscan", "pack", "list"]).is_ok());
+        assert!(Cli::try_parse_from(["slipscan", "pack", "seed"]).is_ok());
         // Signature and key are mandatory for verify.
         assert!(Cli::try_parse_from(["slipscan", "pack", "verify", "pack.json"]).is_err());
+
+        match Cli::try_parse_from(["slipscan", "pack", "uninstall", "za-personal"])
+            .unwrap()
+            .command
+        {
+            Command::Pack {
+                action: PackAction::Uninstall { pack_id },
+            } => assert_eq!(pack_id, "za-personal"),
+            other => panic!("unexpected {other:?}"),
+        }
+        // A pack id is mandatory: `pack uninstall` with no argument must not
+        // be a command that could plausibly remove "everything".
+        assert!(Cli::try_parse_from(["slipscan", "pack", "uninstall"]).is_err());
+
+        match Cli::try_parse_from(["slipscan", "pack", "benchmark", "--period", "2026-06"])
+            .unwrap()
+            .command
+        {
+            Command::Pack {
+                action: PackAction::Benchmark { period },
+            } => assert_eq!(period, "2026-06"),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(Cli::try_parse_from(["slipscan", "pack", "benchmark"]).is_err());
+    }
+
+    /// The gap this guards: `register_classifier`'s contract is "call it once
+    /// at startup, in every binary that imports transactions", and for a long
+    /// time the only caller was the *install* path. A CLI run that did not
+    /// install a pack that invocation — which is essentially every run —
+    /// therefore skipped every `contains`, `regex` and `keyword` rule already
+    /// sitting in the database. Exact rules kept working (installs seed those
+    /// into core's own `merchant_mappings`), which is what made the gap quiet.
+    ///
+    /// The before/after pair is the proof: the same import is uncategorised
+    /// with no registration and categorised after `main()`'s hook runs, with
+    /// no pack installed through any *surface* in between.
+    ///
+    /// NOTE for future edits: the classifier is a process-wide `OnceLock`. No
+    /// other test in this binary may call `ops::pack_install`,
+    /// `ops::pack_install_seeds`, or `run()` with a `pack install`/`pack seed`
+    /// command — any of those would register it as a side effect and this
+    /// test would fail on its `assert!(register_pack_classifier())`.
+    #[test]
+    fn startup_hook_applies_contains_rules_without_installing_a_pack() {
+        use slipscan_core::domain::{AccountKind, NewAccount, NewTransaction};
+        use slipscan_core::secrets::MemorySecretStore;
+
+        let svc = CoreService::new(
+            Db::open_in_memory().unwrap(),
+            Box::new(MemorySecretStore::new()),
+        );
+        let book = svc
+            .book_create(NewBook {
+                name: "Test".into(),
+                kind: BookKind::Personal,
+                currency: None,
+                country: Some("ZA".into()),
+                region: None,
+            })
+            .unwrap();
+        let account = svc
+            .account_create(NewAccount {
+                book_id: book.id.clone(),
+                name: "Cheque".into(),
+                kind: AccountKind::Bank,
+                currency: "ZAR".into(),
+                institution: None,
+                account_number_masked: None,
+                opening_balance_minor: None,
+            })
+            .unwrap();
+
+        // Rules that were installed in some *earlier* session: written
+        // straight through the packs library, which is not a surface and
+        // registers nothing.
+        svc.with_connection(|conn| slipscan_packs::builtin::install_seed_packs(conn, &book.id))
+            .unwrap();
+
+        let import = |occurrence: u32| {
+            svc.transaction_create(NewTransaction {
+                book_id: book.id.clone(),
+                account_id: account.id.clone(),
+                source: TransactionSource::Import,
+                provider_txn_id: None,
+                posted_date: "2026-07-01".into(),
+                amount_minor: -45_900,
+                currency: "ZAR".into(),
+                // Matched only by za-personal's `contains "woolworths"` rule:
+                // no exact rule, so nothing was seeded into merchant_mappings
+                // for it.
+                merchant: Some("WOOLWORTHS SANDTON CITY".into()),
+                description: None,
+                notes: None,
+                category_id: None,
+                document_id: None,
+                dedupe_occurrence: occurrence,
+            })
+            .unwrap()
+        };
+
+        assert!(
+            import(0).category_id.is_none(),
+            "with no classifier registered, pack rules are invisible to core — \
+             this is exactly the bug"
+        );
+
+        assert!(
+            register_pack_classifier(),
+            "this must be the first registration in the test binary; see the \
+             note on this test"
+        );
+
+        let categorised = import(1)
+            .category_id
+            .expect("the contains rule must categorise once startup registered the classifier");
+        let groceries = svc
+            .category_tree(&book.id)
+            .unwrap()
+            .iter()
+            .find(|node| node.category.name == "Groceries")
+            .map(|node| node.category.id.clone())
+            .expect("za-personal declares a top-level Groceries category");
+        assert_eq!(categorised, groceries);
     }
 
     #[test]
@@ -3070,7 +3666,7 @@ mod tests {
         })
     }
 
-    /// The whole ShapePay flow, hermetically: watch a code (CLI) -> import a
+    /// The whole payments flow, hermetically: watch a code (CLI) -> import a
     /// matching statement line (CLI) -> match + enqueue -> deliver over the
     /// real reqwest transport to a 127.0.0.1 scratch listener -> delivered,
     /// and the signature verifies with the secret displayed at add time.

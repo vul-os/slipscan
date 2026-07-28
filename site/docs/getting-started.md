@@ -40,7 +40,7 @@ cargo test --workspace
 cargo run -p slipscan-cli -- --help
 ```
 
-The CLI covers headless use: `init` (create a book), `import` (files → documents), `extract` (run slip extraction), `mail-sync` (poll an IMAP folder), `recon`, `report` (with `--csv` on the trial balance), `pack`, `vault`, `serve` (self-host server), and `list`. (There is no separate `export` subcommand; CSV export lives on `report … --csv` and in the desktop Reports screen.)
+The CLI covers headless use: `init` (create a book), `import` (files → documents), `watch` (a drop folder → documents), `extract` (run slip extraction), `mail-sync` (poll a mailbox: IMAP, Gmail or Graph), `recon`, `report` (with `--csv` on the trial balance), `pack`, `vault`, `serve` (self-host server), and `list`. (There is no separate `export` subcommand; CSV export lives on `report … --csv` and in the desktop Reports screen.)
 
 ---
 
@@ -71,7 +71,7 @@ For the design of automatic pulls straight from your bank, see [BANK-ADAPTERS.md
 
 ## 3. Import a receipt
 
-Import a photo or PDF of a till slip with the app's **Import receipt** button (or `slipscan import`). Drag-and-drop is not wired yet — like watch-folders, it is tracked in [ROADMAP.md](../ROADMAP.md). The file becomes a **document** and moves through an extraction pipeline:
+Import a photo or PDF of a till slip with the app's **Import receipt** button (or `slipscan import`). Drag-and-drop into the desktop app is not wired yet — it is tracked in [ROADMAP.md](../ROADMAP.md). The file becomes a **document** and moves through an extraction pipeline:
 
 ```
 pending → extracted → reviewed
@@ -79,15 +79,15 @@ pending → extracted → reviewed
 
 Extraction (line items, categories, discounts, VAT) runs through the LLM/OCR provider you configure in the next step — today it is triggered from the CLI (`slipscan extract`); the desktop shows the results. Review the result, fix anything, and confirm — corrections train the local classifier, and matched receipts attach to their bank transactions in [reconciliation](../README.md#features).
 
-(A watch-folder mode — anything saved there imported automatically — is implemented as a library in `slipscan-ingest` but not yet wired to any surface.)
+**Drop folder:** `slipscan watch ~/Slips` imports every PDF, image and CSV already in the folder (recursively), then keeps importing whatever lands there until you stop it with Ctrl-C. Everything goes through the same import path as `slipscan import`, so content-hash dedup applies — rescanning, or re-saving the same file, never creates a second document. Use `--once` for a one-shot scan from cron/launchd. The desktop app has no watch-folder setting yet.
 
 ## 4. Connect a mailbox
 
 Receipts and bank alerts mostly arrive by email. Connect your own mailbox and SlipScan ingests them — no mail relay, no middleman.
 
-What works today is **generic IMAP polling via the CLI**: configure host/port/username/folder, put the app password in the [credential vault](THREAT-MODEL.md) (write-only, never displayed again), and run `slipscan mail-sync` — attachments in unseen mail become documents. Any IMAP host works, including a [lilmail](https://github.com/vul-os)-managed mailbox or a local Proton Bridge.
+The simplest path is **generic IMAP polling via the CLI**: configure host/port/username/folder, put the app password in the [credential vault](THREAT-MODEL.md) (write-only, never displayed again), and run `slipscan mail-sync` — attachments in unseen mail become documents. Any IMAP host works, including a [lilmail](https://github.com/vul-os)-managed mailbox or a local Proton Bridge.
 
-The dedicated Gmail (OAuth + Pub/Sub pull push) and Outlook/Microsoft 365 (device-code + delta) connectors are implemented in `crates/slipscan-ingest` but have no CLI/desktop surface yet, and no push loop runs anywhere yet — see the status note in [EMAIL.md](EMAIL.md) for exactly where each provider stands.
+The dedicated **Gmail** (history deltas) and **Outlook/Microsoft 365** (Graph deltas) connectors run from the same command: `slipscan mail-sync --provider gmail|graph`, after a one-time `--login` that completes the OAuth grant against **your own** app registration (browser loopback for Gmail, device code for Graph) and puts the tokens in the vault. `--provider imap` remains the default, so existing invocations are unchanged. What is still missing: no push loop runs anywhere (each `mail-sync` is one poll, so Gmail's Pub/Sub pull and `users.watch` renewal stay library-only), and the desktop app's mailbox settings are IMAP-only — see the status note in [EMAIL.md](EMAIL.md) for exactly where each provider stands.
 
 ## 5. Set an LLM provider
 

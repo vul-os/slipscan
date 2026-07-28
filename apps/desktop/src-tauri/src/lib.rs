@@ -34,8 +34,27 @@ fn health() -> Health {
     }
 }
 
+/// Wire installed pack rules into core's categorisation, for this whole
+/// process.
+///
+/// `slipscan_packs::register_classifier`'s own contract is "call it once at
+/// startup, in every binary that imports transactions" — and this binary
+/// imports them (`document_import`, and every categorisation that follows).
+/// Registering only inside `commands::pack_install` would mean a session that
+/// has not installed a pack — i.e. essentially every session — skipped every
+/// `contains`, `regex` and `keyword` rule already in the database. Exact
+/// rules would still fire, because installing seeds those into core's own
+/// `merchant_mappings`, which made the gap quiet rather than absent.
+///
+/// Idempotent (the first registration in a process wins) and free until a
+/// book actually has pack rules. Returns whether this call registered.
+pub fn register_pack_classifier() -> bool {
+    slipscan_packs::register_classifier()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    register_pack_classifier();
     tauri::Builder::default()
         .setup(|app| {
             // Core's shared resolver: pointer in the fixed per-OS config
@@ -100,6 +119,12 @@ pub fn run() {
             commands::fx_configure,
             commands::fx_fetch_rate,
             commands::fx_convert,
+            commands::pack_list,
+            commands::pack_verify,
+            commands::pack_install,
+            commands::pack_install_seeds,
+            commands::pack_uninstall,
+            commands::pack_benchmark,
             commands::settings_get,
             commands::settings_set,
             commands::vault_list,

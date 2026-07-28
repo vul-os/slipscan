@@ -378,7 +378,7 @@
 </script>
 
 <PageHeader
-  eyebrow="ShapePay"
+  eyebrow="Reference watches · signed webhooks"
   title="Payments"
   subtitle="Inbox in, webhook out: when an inbound transaction carries a reference code you watch, SlipScan fires HMAC-signed webhooks at endpoints you register. No central infrastructure."
 />

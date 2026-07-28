@@ -34,6 +34,10 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0301_region",
         include_str!("migrations/0301_region.sql"),
     ),
+    // The payments migration. Its id and filename are historical (the feature
+    // once carried a product name) — applied ids are recorded in every
+    // existing database's `schema_migrations`, so renaming one is not an
+    // option.
     (
         400,
         "0400_shapepay",

@@ -9,6 +9,16 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **Pack rules are applied on every surface, not just where a pack was installed.** `slipscan_packs::register_classifier()` documents itself as "call it once at startup, in every binary that imports transactions", and no binary did — registration only happened inside `pack_install`. A process that had not installed a pack *that run* therefore skipped every `contains`, `regex` and `keyword` rule already in the database; only `merchant_exact` rules kept working, because installs seed those into core's own `merchant_mappings`. The CLI's `main()` and the desktop's `run()` now register at startup, covered by a before/after test on each surface.
+
+### Added
+- **Seed packs are reachable.** `builtin::install_seed_packs` had no caller on any surface. It is now an explicit user action — `slipscan pack seed`, `POST /api/v1/pack_install_seeds`, and the desktop `pack_install_seeds` IPC command, surfaced on the Packs screen. Still opt-in and never automatic: which taxonomy a book starts from is the user's decision. Idempotent and non-clobbering.
+- **`pack_uninstall` and `pack_benchmark` over HTTP; `pack uninstall` and `pack benchmark` on the CLI.** Uninstall existed only as a Tauri command; the comparison math in `slipscan-packs::benchmark` had no production caller at all. `ops::pack_benchmark` now feeds it a book's own spend for a month — core's spending report resolved onto pack taxonomy keys through the map installs already write, rolling child categories into their parent's key, never converting currencies and reporting a currency mismatch instead of a fabricated zero. Reading is entirely local and transmits nothing; benchmark **contribution**, and the differential privacy it needs, remain unimplemented ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+
+### Changed
+- **Payments dropped its separate product name.** What 0.2.0 shipped as "ShapePay" is documented as what it is — **Payments: reference watches and signed webhooks** — across the README, roadmap, `docs/PAYMENTS.md`, `docs/API.md`, CLI help, and the desktop panel. Wording only: no table, column, settings key, operation, CLI subcommand, Tauri command, or type changed, and migration `0400_shapepay` keeps its id (applied migration ids are history).
+
 ## [0.2.0] — 2026-07-19
 
 - **ShapePay — email-driven payment webhooks (Phase 4.8).** Watch reference codes on inbound transactions (a flat list — whole-token matching, optional exact amount + currency) and fire HMAC-SHA256-signed webhooks (timestamp + nonce headers, receiver-verifiable, replay-safe) to endpoints you register. Signing secrets are generated locally, held write-only in the credential vault, and shown exactly once; deliveries queue in SQLite with exponential backoff (1m → daily, 20-attempt cap) and carry metadata only — never account numbers or raw bank descriptions. Surfaced as `slipscan pay` on the CLI, `pay_*` server routes (secret-bearing operations refused over HTTP), a serve-mode delivery loop, a `mail-sync` flush, and the desktop Payments panel. Guide with a receiver verification example: [docs/PAYMENTS.md](docs/PAYMENTS.md).

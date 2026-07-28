@@ -15,7 +15,8 @@
 //! * [`install`] — install/upgrade/uninstall into a book: taxonomy keys map
 //!   onto local category ids, rules feed the local engine, versions only
 //!   move forward.
-//! * [`engine`] — the local classification cascade over installed rules.
+//! * [`engine`] — the local classification cascade over installed rules, and
+//!   the [`PackClassifier`] core consults during categorisation.
 //! * [`benchmark`] — read-side peer comparison: pure local math over public
 //!   aggregate packs (reading is perfectly private; contribution is a
 //!   separate opt-in pipeline that does not live here).
@@ -28,7 +29,7 @@
 
 pub mod benchmark;
 pub mod builtin;
-mod compat;
+pub mod compat;
 pub mod engine;
 pub mod error;
 pub mod format;
@@ -39,16 +40,19 @@ pub mod trust;
 pub mod verify;
 
 pub use benchmark::{compare, Comparison, QuartilePosition};
+pub use engine::{register_classifier, Classifier, PackClassifier};
 pub use error::{PackError, PackResult};
 pub use format::{ManifestSignature, Pack};
-pub use install::{InstallOutcome, InstallReport, InstalledPack, Installer};
+pub use install::{InstallOutcome, InstallReport, InstalledPack, Installer, LEGACY_SIGNER};
 pub use model::{
     BenchmarkCohort, BenchmarkSet, BenchmarkStat, KeywordRule, MatchKind, MerchantRule,
     PackCategory, PackKind, PackMeta, PackPayload, Semver, VatHint,
 };
 pub use trust::{TrustStatus, TrustStore, TrustedSigner};
-pub use verify::{key_fingerprint, sign_pack, Provenance, VerifiedPack};
+pub use verify::{key_fingerprint, sign_pack, verify_detached, Provenance, VerifiedPack};
 
-// Legacy flat-manifest API, kept for the server ops layer. New code uses
-// `Pack` / `VerifiedPack` and the installer.
+// The legacy flat-manifest file format. Users have these files on disk, so
+// they stay readable forever — but they now install through the one installer
+// (`verify_detached` converts them). `verify_pack` remains the check-only
+// entry point behind `slipscan pack verify`.
 pub use compat::{verify_pack, MatchType, PackManifest, PackRule};

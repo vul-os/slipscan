@@ -85,7 +85,7 @@ impl OpenAiCompatProvider {
 }
 
 fn response_text(body: &str) -> Result<String, ExtractError> {
-    let value: serde_json::Value = serde_json::from_str(body)?;
+    let value = super::decode_response_body("openai", body)?;
     if let Some(message) = value["error"]["message"].as_str() {
         return Err(ExtractError::Provider(format!(
             "openai-compatible server error: {message}"

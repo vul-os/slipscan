@@ -1,0 +1,481 @@
+/**
+ * Render smoke test over every route in src/routes/.
+ *
+ * WHAT THIS CATCHES that `npm run check` and `npm run build` do not: runtime
+ * blank screens. A rune used before initialisation, a `$derived` that throws
+ * on the mock shape, a component renamed out from under an import, a loader
+ * whose promise never resolves — all type-check and bundle cleanly and all
+ * produce an empty pane at runtime.
+ *
+ * Each route is mounted for real (Svelte 5 `mount`, jsdom) against the
+ * in-memory mock dataset in src/lib/api/mock.ts — `isTauri` is false outside
+ * Tauri, so src/lib/api/client.ts serves every call from the mock and no
+ * backend, IPC or network is involved.
+ *
+ * The assertions are deliberately data-derived rather than structural. Every
+ * route is checked for strings that can only appear if its loader resolved
+ * AND its formatters ran: minor-unit money that has been through fmtMoney,
+ * mock merchant/account names, computed totals. A smoke test that only
+ * asserted "something rendered" would pass on a skeleton that never resolves,
+ * which is exactly the failure worth catching.
+ *
+ * Time is frozen inside the mock dataset's window (its transactions are dated
+ * July 2026) so the month-scoped screens — Dashboard, Budgets, Reports — have
+ * data to show no matter when the suite runs. Only `Date` is faked; timers
+ * stay real, because settling the routes depends on them.
+ *
+ * Assertions avoid rendered dates: `posted_at` is a UTC instant and CI runs
+ * in UTC while developers do not, so a date string is a timezone trap. The
+ * frozen instant (09:00Z on the 20th) is mid-July in every real zone.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushSync, mount, unmount, type Component } from "svelte";
+import App from "../App.svelte";
+import { router, ROUTES, type RouteId } from "../lib/router.svelte";
+import Budgets from "../routes/Budgets.svelte";
+import Dashboard from "../routes/Dashboard.svelte";
+import Household from "../routes/Household.svelte";
+import Ledger from "../routes/Ledger.svelte";
+import Packs from "../routes/Packs.svelte";
+import Payments from "../routes/Payments.svelte";
+import Receipts from "../routes/Receipts.svelte";
+import Reconcile from "../routes/Reconcile.svelte";
+import Reports from "../routes/Reports.svelte";
+import Settings from "../routes/Settings.svelte";
+import Transactions from "../routes/Transactions.svelte";
+
+/** An instant inside the mock dataset's July 2026 transactions. */
+const FROZEN_NOW = new Date("2026-07-20T09:00:00Z");
+
+interface RouteCase {
+  /** Exact <h1> the screen must render. */
+  heading: string;
+  /**
+   * Strings that only exist once the loader resolved and the formatters ran.
+   * Money is checked in its formatted form, which also pins fmtMoney's
+   * minor-unit arithmetic (i64 cents in, "R 1,234.56" out).
+   */
+  anchors: string[];
+}
+
+const CASES: Record<RouteId, RouteCase & { component: Component }> = {
+  dashboard: {
+    component: Dashboard as Component,
+    // greeting() is time-of-day dependent; the eyebrow and figures are not.
+    heading: "",
+    anchors: [
+      "Personal · ZAR",
+      // Net balance = 1_824_540 + 4_550_000 - 732_118 + 42_000 minor units.
+      "R 56,844.22",
+      "4 accounts",
+      "Woolworths",
+    ],
+  },
+  transactions: {
+    component: Transactions as Component,
+    heading: "Transactions",
+    anchors: [
+      "25 of 25",
+      "WOOLWORTHS 178 CLAREMONT",
+      "−R 842.35",
+      "Discovery Credit Card",
+    ],
+  },
+  receipts: {
+    component: Receipts as Component,
+    heading: "Receipts",
+    anchors: ["9 results", "sixty60-slip.pdf", "R 637.80", "97%"],
+  },
+  budgets: {
+    component: Budgets as Component,
+    heading: "Budgets",
+    anchors: ["R 15,300.00", "R 6,401.06", "Groceries", "R 2,106.95 left"],
+  },
+  household: {
+    component: Household as Component,
+    heading: "Household",
+    anchors: [
+      "Alex",
+      "Owns FNB Cheque",
+      "Settle up · July 2026",
+      "Share of category",
+    ],
+  },
+  ledger: {
+    component: Ledger as Component,
+    heading: "Ledger",
+    anchors: [
+      "1000",
+      "Bank — FNB Cheque",
+      "2200",
+      "VAT control",
+      "Trial balance",
+    ],
+  },
+  reconcile: {
+    component: Reconcile as Component,
+    heading: "Reconcile",
+    anchors: ["TAKEALOT.COM CPT", "−R 1,249.99", "93%", "Confirm"],
+  },
+  payments: {
+    component: Payments as Component,
+    heading: "Payments",
+    anchors: [
+      "RENT-12B",
+      "https://shop.example.co.za/hooks/slipscan",
+      "exactly R 4,500.00",
+    ],
+  },
+  packs: {
+    component: Packs as Component,
+    heading: "Packs",
+    anchors: [
+      "South African retail merchants",
+      "za-retail-base",
+      "SlipScan Community",
+      // Peer comparison: the read side, rendered from the mock's benchmark
+      // sets. The median is a pack constant (485_000 minor ZAR), so this
+      // also pins that benchmark money goes through fmtMoney.
+      "Peer comparison",
+      "ZA household benchmarks · 2026",
+      "R 4,850.00",
+      "k ≥ 25",
+      // The two results that must never be rendered as zeroes.
+      "Not compared",
+      "not matched",
+    ],
+  },
+  reports: {
+    component: Reports as Component,
+    heading: "Reports",
+    anchors: ["VAT201", "R 54,623.84", "Net refundable", "Trial balance (CSV)"],
+  },
+  settings: {
+    component: Settings as Component,
+    heading: "Settings",
+    // Members moved to /household and packs to /packs; what is left is the
+    // settings blob and its tabs.
+    anchors: [
+      "~/SlipScan/personal.slipscan.db",
+      "South Africa",
+      "Credential vault",
+      "No telemetry",
+    ],
+  },
+};
+
+/** Uncaught runtime failures observed while a component is mounted. */
+let fatal: string[] = [];
+let consoleError: ReturnType<typeof vi.spyOn>;
+
+function onError(e: ErrorEvent) {
+  fatal.push(`window.error: ${e.message}`);
+}
+function onRejection(e: PromiseRejectionEvent) {
+  fatal.push(`unhandledrejection: ${String(e.reason)}`);
+}
+
+beforeEach(() => {
+  fatal = [];
+  vi.useFakeTimers({ toFake: ["Date"], now: FROZEN_NOW });
+  window.addEventListener("error", onError);
+  window.addEventListener("unhandledrejection", onRejection);
+  consoleError = vi.spyOn(console, "error").mockImplementation((...args) => {
+    fatal.push(`console.error: ${args.map(String).join(" ")}`);
+  });
+});
+
+afterEach(() => {
+  window.removeEventListener("error", onError);
+  window.removeEventListener("unhandledrejection", onRejection);
+  consoleError.mockRestore();
+  vi.useRealTimers();
+  document.body.innerHTML = "";
+  window.location.hash = "";
+});
+
+/**
+ * Drive the event loop until the screen stops changing.
+ *
+ * Screens load through `{#await}` chains (swrLoad → api → mock), so settling
+ * takes an unknown number of macrotask turns. Waiting for the DOM to hold
+ * still for three consecutive turns with no `aria-busy` skeleton left is the
+ * observable definition of "finished loading"; a loader that never resolves
+ * hits the cap and fails the test rather than passing on a skeleton.
+ */
+async function settle(target: HTMLElement): Promise<void> {
+  let previous = "";
+  let stable = 0;
+  for (let turn = 0; turn < 250; turn++) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    const busy = target.querySelector('[aria-busy="true"]') !== null;
+    const text = target.textContent ?? "";
+    stable = !busy && text.length > 0 && text === previous ? stable + 1 : 0;
+    previous = text;
+    if (stable >= 3) return;
+  }
+  throw new Error(
+    `route never settled after 250 turns ` +
+      `(aria-busy present: ${target.querySelector('[aria-busy="true"]') !== null})`,
+  );
+}
+
+/**
+ * Collapse every run of whitespace to one plain space.
+ *
+ * `Intl.NumberFormat` puts U+00A0 between the currency symbol and the digits
+ * ("R 54,623.84"), and the markup wraps lines freely. Comparing against
+ * literals typed with ordinary spaces would otherwise fail for reasons that
+ * have nothing to do with the app being broken.
+ */
+function text(target: HTMLElement): string {
+  return (target.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+
+function render(component: Component): {
+  target: HTMLElement;
+  dispose: () => void;
+} {
+  const target = document.createElement("div");
+  document.body.appendChild(target);
+  const instance = mount(component, { target });
+  return {
+    target,
+    dispose: () => {
+      unmount(instance);
+      target.remove();
+    },
+  };
+}
+
+describe("route render smoke", () => {
+  it("covers every registered route", () => {
+    // Guards against a route being added to the router without a case here —
+    // otherwise this suite silently stops covering the app as it grows.
+    expect(Object.keys(CASES).sort()).toEqual([...ROUTES].sort());
+  });
+
+  for (const route of ROUTES) {
+    const { component, heading, anchors } = CASES[route];
+
+    it(`${route} renders real data with no runtime errors`, async () => {
+      const { target, dispose } = render(component);
+      try {
+        await settle(target);
+        const rendered = text(target);
+
+        expect(fatal, `runtime errors on /${route}: ${fatal.join(" | ")}`)
+          .toEqual([]);
+
+        const h1 = target.querySelector("h1");
+        expect(h1, `/${route} rendered no <h1>`).not.toBeNull();
+        if (heading) expect(h1?.textContent?.trim()).toBe(heading);
+
+        expect(
+          target.querySelectorAll('[aria-busy="true"]').length,
+          `/${route} left a skeleton on screen`,
+        ).toBe(0);
+
+        for (const anchor of anchors) {
+          expect(rendered, `/${route} is missing ${JSON.stringify(anchor)}`)
+            .toContain(anchor);
+        }
+      } finally {
+        dispose();
+      }
+    }, 20_000);
+  }
+});
+
+/** The one button whose visible text — or accessible name, for the icon-only
+ * ones — matches `label`. Going through the accessible name is deliberate:
+ * a control the keyboard and a screen reader cannot name is not reachable,
+ * and this fails rather than reaching past it. */
+function button(target: HTMLElement, label: string): HTMLButtonElement {
+  const found = [...target.querySelectorAll("button")].filter((b) =>
+    (b.getAttribute("aria-label") ?? b.textContent ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .includes(label),
+  );
+  if (found.length !== 1)
+    throw new Error(
+      `expected exactly one button containing ${JSON.stringify(label)}, found ${found.length}`,
+    );
+  return found[0]!;
+}
+
+/**
+ * Seeding built-in packs: an explicit action, never a default.
+ *
+ * `pack_install_seeds` shipped on every surface with no screen calling it.
+ * These pin the two properties that make surfacing it correct rather than
+ * merely present — the user sees which region they are taking on before they
+ * accept, and re-running is a no-op that says so instead of claiming work.
+ *
+ * NOTE: the mock dataset is module state, so this mutates it for anything
+ * that runs after it. It is placed last for that reason.
+ */
+describe("packs · built-in seeds", () => {
+  it("is an opt-in choice that shows the region, and is idempotent", async () => {
+    const { target, dispose } = render(Packs as Component);
+    try {
+      await settle(target);
+
+      // Nothing has been seeded on arrival: it is a choice, not a default.
+      expect(text(target)).not.toContain("South Africa — Personal Finance");
+
+      button(target, "Built-in seeds").click();
+      await settle(target);
+
+      // The decision is made with this book's own region profile in view.
+      const panel = text(target);
+      expect(panel).toContain("Install the built-in seed packs");
+      expect(panel).toContain("South Africa · ZAR");
+
+      button(target, "Install the built-in seeds").click();
+      await settle(target);
+
+      const after = text(target);
+      // Every seed reports the region it targets — including the global one.
+      expect(after).toContain("South Africa — Personal Finance");
+      expect(after).toContain("South Africa — Small Business & VAT");
+      expect(after).toContain("International Starter");
+      expect(after).toContain("global");
+      // And they are now listed as installed packs, not just announced.
+      expect(after).toContain("za-personal");
+      expect(fatal, `runtime errors while seeding: ${fatal.join(" | ")}`).toEqual([]);
+
+      // Re-running writes nothing and says so, rather than reporting work it
+      // did not do. This is what "idempotent" has to look like in the UI.
+      button(target, "Built-in seeds").click();
+      await settle(target);
+      button(target, "Install the built-in seeds").click();
+      await settle(target);
+      expect(text(target)).toContain(
+        "Every built-in seed was already installed at its current version",
+      );
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+});
+
+/**
+ * Peer comparison: the read side of benchmark packs.
+ *
+ * The two failure modes worth a test are the ones a lazy screen turns into
+ * zeroes — a pack in a currency this book does not use (no FX conversion is
+ * applied, ever) and a taxonomy key nothing maps to. Both must read as what
+ * they are.
+ */
+describe("packs · peer comparison", () => {
+  it("names what it could not compare instead of showing zeroes", async () => {
+    const { target, dispose } = render(Packs as Component);
+    try {
+      await settle(target);
+      const rendered = text(target);
+
+      // A real comparison, with money through fmtMoney and the k-floor shown.
+      expect(rendered).toContain("groceries");
+      expect(rendered).toContain("R 4,850.00");
+      expect(rendered).toContain("k ≥ 25");
+
+      // Currency mismatch: reported, never converted, never zeroed.
+      expect(rendered).toContain("Not compared");
+      expect(rendered).toContain(
+        "pack is in EUR and this book is in ZAR — no conversion is applied",
+      );
+
+      // Keys the pack publishes that nothing maps to are named, not dropped.
+      expect(rendered).toContain("not matched");
+      expect(rendered).toContain("insurance");
+      expect(rendered).toContain("education");
+
+      // A cohort median of zero yields no ratio rather than Infinity.
+      expect(rendered).toContain("cohort median is 0");
+
+      expect(fatal, `runtime errors on peer comparison: ${fatal.join(" | ")}`)
+        .toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 20_000);
+
+  it("steps months, and a month the pack does not cover is not a zero", async () => {
+    const { target, dispose } = render(Packs as Component);
+    try {
+      await settle(target);
+      expect(text(target)).toContain("July 2026");
+
+      button(target, "Previous month").click();
+      await settle(target);
+      expect(text(target)).toContain("June 2026");
+      expect(text(target)).toContain("R 4,850.00");
+
+      // Step out of the year the pack covers: "publishes no statistics" is a
+      // different answer from "you spent nothing", and must render as such.
+      for (let i = 0; i < 7; i++) {
+        button(target, "Next month").click();
+        await settle(target);
+      }
+      const rendered = text(target);
+      expect(rendered).toContain("January 2027");
+      expect(rendered).toContain("publishes no statistics for January 2027");
+      // The currency mismatch is decided before the period is, so it still
+      // reports as not-compared rather than as an empty month.
+      expect(rendered).toContain("Not compared");
+
+      expect(fatal, `runtime errors stepping months: ${fatal.join(" | ")}`)
+        .toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+});
+
+describe("app shell", () => {
+  it("mounts the sidebar and swaps screens when a nav link is clicked", async () => {
+    const { target, dispose } = render(App as Component);
+    try {
+      await settle(target);
+      expect(fatal, `runtime errors in the shell: ${fatal.join(" | ")}`)
+        .toEqual([]);
+
+      // Every registered route is reachable from the chrome, and the sidebar
+      // marks exactly one link as current.
+      const links = [...target.querySelectorAll<HTMLAnchorElement>("nav a")];
+      expect(links.map((a) => a.getAttribute("href"))).toEqual(
+        ROUTES.map((r) => `#/${r}`),
+      );
+      expect(
+        links.filter((a) => a.getAttribute("aria-current") === "page").length,
+      ).toBe(1);
+
+      // Default route is the dashboard, rendered with mock data.
+      expect(text(target)).toContain("Personal · ZAR");
+
+      // Click the real anchor: href → hashchange → router → keyed remount.
+      // Exercises the whole navigation path, not just the router object.
+      const ledgerLink = links[ROUTES.indexOf("ledger")]!;
+      ledgerLink.click();
+      await settle(target);
+
+      expect(window.location.hash).toBe("#/ledger");
+      expect(router.current).toBe("ledger");
+      expect(target.querySelector("h1")?.textContent?.trim()).toBe("Ledger");
+      expect(text(target)).toContain("Bank — FNB Cheque");
+      // The dashboard's screen was swapped out, not stacked underneath.
+      expect(text(target)).not.toContain("Net balance");
+
+      links[ROUTES.indexOf("dashboard")]!.click();
+      await settle(target);
+      expect(text(target)).toContain("R 56,844.22");
+      expect(fatal, `runtime errors after navigation: ${fatal.join(" | ")}`)
+        .toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+});

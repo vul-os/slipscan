@@ -17,10 +17,10 @@
 use regex::Regex;
 use rusqlite::{params, Connection};
 
+use slipscan_core::service::{CategorySuggestion, MerchantClassifier};
 use slipscan_core::util::normalize_merchant;
 
 use crate::error::{PackError, PackResult};
-use crate::install::INSTALL_SCHEMA;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuleKind {
@@ -83,9 +83,16 @@ pub struct Classifier {
 }
 
 impl Classifier {
-    /// Load and compile all installed pack rules for a book.
+    /// Load and compile all installed pack rules for a book. A book that has
+    /// never installed a pack yields an empty (always-`None`) classifier.
+    ///
+    /// Strictly read-only, including the "no packs here" case: this runs
+    /// inside core's categorisation path, which must work against a
+    /// connection the user has flagged read-only.
     pub fn load(conn: &Connection, book_id: &str) -> PackResult<Self> {
-        conn.execute_batch(INSTALL_SCHEMA)?;
+        if !rules_table_exists(conn)? {
+            return Ok(Self { rules: Vec::new() });
+        }
         let mut stmt = conn.prepare(
             "SELECT pack_id, rule_kind, pattern, category_id, confidence, position
              FROM pack_rules WHERE book_id = ?1 ORDER BY pack_id, position",
@@ -176,6 +183,58 @@ impl Classifier {
                 matched_pattern: rule.pattern.clone(),
             })
     }
+}
+
+fn rules_table_exists(conn: &Connection) -> PackResult<bool> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'pack_rules'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
+/// The classifier core consults during categorisation: the cascade above,
+/// over the rules installed packs wrote into the same database.
+///
+/// This is the concrete half of core's [`MerchantClassifier`] seam. Core
+/// reaches it only for merchants the book has no mapping for, so corrections
+/// and user mappings keep winning; see [`register_classifier`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PackClassifier;
+
+static PACK_CLASSIFIER: PackClassifier = PackClassifier;
+
+impl MerchantClassifier for PackClassifier {
+    fn suggest(
+        &self,
+        conn: &Connection,
+        book_id: &str,
+        merchant_normalized: &str,
+        description: Option<&str>,
+    ) -> Option<CategorySuggestion> {
+        // A rule set that will not load (corrupt row, uncompilable regex) is
+        // "no opinion", never a failed import: the transaction still lands,
+        // uncategorised, exactly as it would with no pack installed.
+        let hit = Classifier::load(conn, book_id)
+            .ok()?
+            .suggest_with_description(merchant_normalized, description)?;
+        Some(CategorySuggestion {
+            category_id: hit.category_id,
+            confidence: hit.confidence,
+        })
+    }
+}
+
+/// Register [`PackClassifier`] as this process's merchant classifier, so
+/// installed pack rules are consulted when core categorises a transaction.
+///
+/// Call it once at startup, in every binary that imports transactions. It is
+/// idempotent (the first registration in a process wins) and costs nothing
+/// until a book actually has pack rules. Returns whether this call is the one
+/// that registered.
+pub fn register_classifier() -> bool {
+    slipscan_core::service::register_merchant_classifier(&PACK_CLASSIFIER)
 }
 
 fn rule_matches(rule: &CompiledRule, merchant: &str, text: &str) -> bool {

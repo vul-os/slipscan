@@ -22,7 +22,7 @@ slipscan serve --listen 0.0.0.0:7151 --lan
 
 ```sh
 curl http://127.0.0.1:7151/health
-# {"status":"ok","version":"0.1.0"}
+# {"status":"ok","version":"0.2.0"}
 ```
 
 Non-negotiable #3 applies verbatim: localhost by default, no hosted SlipScan service of any kind, and the server only ever *listens* — today it makes no outbound calls at all (when connectors land in server mode, outbound calls will still go only to providers **you** configured).
@@ -62,7 +62,7 @@ The same shape works with nginx or Traefik. Rules of thumb:
 
 - **Don't port-forward SlipScan to the internet.** Your finances do not belong on the public internet, TLS or not.
 - Prefer a VPN/overlay (WireGuard, Tailscale-style) for out-of-home access — your devices join the network; nothing is exposed.
-- If you ever must expose an HTTPS endpoint, scope the proxy route to exactly that path and keep auth on everything else. (There is currently no SlipScan route that needs one — Microsoft Graph push, which would, is not implemented; see [EMAIL.md](EMAIL.md#outlook--microsoft-365--connector-implemented-no-app-surface-yet).)
+- If you ever must expose an HTTPS endpoint, scope the proxy route to exactly that path and keep auth on everything else. (There is currently no SlipScan route that needs one — Microsoft Graph push, which would, is not implemented; see [EMAIL.md](EMAIL.md#outlook--microsoft-365).)
 
 ## Exposing via your own Ephor (optional)
 

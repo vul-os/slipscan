@@ -52,6 +52,42 @@ pub(crate) async fn post_with_retry(
     Err(last_err.expect("loop ran at least once"))
 }
 
+/// Decode a provider's response envelope, failing **closed and loud** on an
+/// empty or truncated body.
+///
+/// A success status proves only that the server *began* a successful
+/// response. A server that writes its header before it finishes encoding JSON
+/// publishes a short 200 on an encode/write failure; the truncated body is
+/// still a complete, well-formed HTTP message, so no transport-level check
+/// can catch it and this parse is the only place it can be caught. Every
+/// provider routes its envelope through here rather than calling
+/// `serde_json::from_str` directly, so the failure says what happened instead
+/// of surfacing a bare "json error: EOF while parsing".
+///
+/// Deliberately **not** retryable: a truncated body is the server publishing
+/// a wrong result, and quietly re-asking would hide it.
+pub(crate) fn decode_response_body(
+    provider: &str,
+    body: &str,
+) -> Result<serde_json::Value, ExtractError> {
+    if body.trim().is_empty() {
+        return Err(ExtractError::InvalidResponse(format!(
+            "{provider} answered with a success status but an empty body — a 200 is not proof of \
+             a complete body"
+        )));
+    }
+    serde_json::from_str(body).map_err(|e| {
+        if e.is_eof() {
+            ExtractError::InvalidResponse(format!(
+                "{provider} response body ends mid-JSON ({e}) — it was truncated; a 200 is not \
+                 proof of a complete body"
+            ))
+        } else {
+            ExtractError::InvalidResponse(format!("{provider} response is not valid JSON: {e}"))
+        }
+    })
+}
+
 /// Standard base64 for inline document payloads.
 pub(crate) fn base64(bytes: &[u8]) -> String {
     BASE64.encode(bytes)
@@ -95,6 +131,39 @@ mod tests {
         let err = post_with_retry(&mock, request(), "test").await.unwrap_err();
         assert!(matches!(err, ExtractError::Transport(_)));
         assert_eq!(mock.requests().len(), 3);
+    }
+
+    #[test]
+    fn every_truncation_of_a_success_body_is_a_loud_error() {
+        // A 200 is not proof of a complete body: a server that writes its
+        // header before it finishes encoding JSON emits a short 200 that is
+        // a perfectly well-formed HTTP message.
+        let full = r#"{"choices":[{"message":{"content":"{\"total\": 34.99}"}}]}"#;
+        for cut in 0..full.len() {
+            let err = decode_response_body("test", &full[..cut])
+                .expect_err("a truncated envelope must never decode");
+            assert!(matches!(err, ExtractError::InvalidResponse(_)), "{err}");
+            assert!(
+                err.to_string().contains("not proof of a complete body"),
+                "cut {cut}: {err}"
+            );
+        }
+        assert!(decode_response_body("test", full).is_ok());
+    }
+
+    #[test]
+    fn empty_success_bodies_are_rejected() {
+        for body in ["", "   ", "\n"] {
+            let err = decode_response_body("test", body).unwrap_err();
+            assert!(err.to_string().contains("empty body"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_truncated_body_is_not_retryable() {
+        // Re-asking would hide a server publishing a wrong result.
+        let err = decode_response_body("test", r#"{"choices":["#).unwrap_err();
+        assert!(!err.is_retryable(), "{err}");
     }
 
     #[tokio::test]

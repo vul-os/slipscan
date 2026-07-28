@@ -39,6 +39,152 @@ pub fn normalize_merchant(raw: &str) -> String {
     out.trim_end().to_string()
 }
 
+/// Words that name a *banking operation*, never a merchant. A statement line
+/// made of nothing but these (plus reference numbers) names nobody, so
+/// [`merchant_key_from_description`] declines rather than invent a merchant
+/// called "monthly account fee".
+///
+/// One non-generic word anywhere in the line is enough to keep it, so this
+/// list can never suppress a real merchant — it only decides the all-generic
+/// case.
+const GENERIC_STATEMENT_WORDS: &[&str] = &[
+    "account",
+    "admin",
+    "atm",
+    "auto",
+    "balance",
+    "bank",
+    "banking",
+    "branch",
+    "brought",
+    "card",
+    "cash",
+    "charge",
+    "charges",
+    "cheque",
+    "credit",
+    "date",
+    "debit",
+    "deposit",
+    "eft",
+    "fee",
+    "fees",
+    "forward",
+    "from",
+    "immediate",
+    "instant",
+    "interest",
+    "internet",
+    "monthly",
+    "notification",
+    "online",
+    "order",
+    "orders",
+    "payment",
+    "payments",
+    "pmt",
+    "pos",
+    "purchase",
+    "ref",
+    "reference",
+    "reversal",
+    "savings",
+    "service",
+    "sms",
+    "statement",
+    "tfr",
+    "transaction",
+    "transfer",
+    "trf",
+    "unpaid",
+    "value",
+    "withdrawal",
+];
+
+/// Lowercase three-letter month abbreviations, for spotting `12jul`-style
+/// date tokens glued into a statement narrative.
+const MONTH_ABBREVIATIONS: &[&str] = &[
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+];
+
+/// Longest statement narrative we will treat as a merchant name. Beyond this
+/// the line is prose ("payment received thank you for your continued
+/// support"), not a name, and guessing at it is worse than declining.
+const MAX_DERIVED_MERCHANT_TOKENS: usize = 8;
+
+/// Derive a merchant **matching key** from a bank statement narrative, or
+/// `None` when the line does not name a merchant with enough confidence.
+///
+/// Statement lines carry a description and no merchant field, so without this
+/// they miss categorisation entirely. The output is already in
+/// [`normalize_merchant`] form — the same key space as merchants derived from
+/// slips — because a second normalisation would silently split the two paths'
+/// mappings.
+///
+/// Deliberately conservative: a key that is subtly wrong is worse than none,
+/// because it both categorises wrongly and writes a durable
+/// `merchant_mappings` row. The rule is:
+///
+/// * normalize the narrative (lowercase, alphanumerics, single spaces);
+/// * drop **volatile** tokens — anything with three or more digits (card
+///   fragments, references, account numbers) and `12jul`-style date tokens —
+///   so the same recurring line yields the same key every month;
+/// * keep every other token, in order. We never guess which word is "the
+///   brand": `pnp family kenilworth` stays whole, and pack rules
+///   (`contains`, `regex`) already match inside it;
+/// * **decline** (`None`) unless what survives contains at least one
+///   name-like token (three or more letters) that is not in
+///   [`GENERIC_STATEMENT_WORDS`], and is at most
+///   [`MAX_DERIVED_MERCHANT_TOKENS`] tokens long.
+///
+/// So `PNP FAMILY KENILWORTH`, `UBER *TRIP HELP.UBER.C`,
+/// `CARD PURCHASE 4029*1234 WOOLWORTHS GARDENS` and
+/// `DEBIT ORDER NETFLIX.COM 12JUL` all yield keys, while
+/// `MONTHLY ACCOUNT FEE`, `ATM CASH WITHDRAWAL`, `IB PAYMENT FROM 62834729183`
+/// and a sentence of prose all decline.
+pub fn merchant_key_from_description(description: &str) -> Option<String> {
+    let normalized = normalize_merchant(description);
+    if normalized.is_empty() {
+        return None;
+    }
+    let kept: Vec<&str> = normalized
+        .split(' ')
+        .filter(|token| !token.is_empty() && !is_volatile_token(token))
+        .collect();
+    if kept.is_empty() || kept.len() > MAX_DERIVED_MERCHANT_TOKENS {
+        return None;
+    }
+    let names_someone = kept
+        .iter()
+        .any(|token| is_name_like(token) && !GENERIC_STATEMENT_WORDS.contains(token));
+    if !names_someone {
+        return None;
+    }
+    Some(kept.join(" "))
+}
+
+/// A token that changes between two otherwise identical statement lines:
+/// three-or-more-digit runs (references, card fragments, account numbers) and
+/// dates glued to a month abbreviation. Short digit groups stay, because they
+/// are part of real names (`7 eleven`, `checkers sixty60`).
+fn is_volatile_token(token: &str) -> bool {
+    let digits = token.chars().filter(char::is_ascii_digit).count();
+    if digits >= 3 {
+        return true;
+    }
+    if digits == 0 {
+        return false;
+    }
+    let letters: String = token.chars().filter(char::is_ascii_alphabetic).collect();
+    MONTH_ABBREVIATIONS.contains(&letters.as_str())
+}
+
+/// Three or more letters: enough to be a name rather than an initialism,
+/// a branch code, or a stray digit group.
+fn is_name_like(token: &str) -> bool {
+    token.chars().filter(|c| c.is_alphabetic()).count() >= 3
+}
+
 /// Parse a `YYYY-MM-DD` date string.
 pub fn parse_date(s: &str) -> crate::error::CoreResult<time::Date> {
     let fmt = time::macros::format_description!("[year]-[month]-[day]");
@@ -171,6 +317,88 @@ mod tests {
         assert_eq!(merchant_similarity("ÉÉ", "éé"), 1.0);
         // Multi-char lowercase expansions must not panic (İ → i̇).
         let _ = normalize_merchant("İSTANBUL MARKET");
+    }
+
+    #[test]
+    fn merchant_key_from_noisy_statement_narratives() {
+        // Realistic SA statement narratives. The key stays in
+        // `normalize_merchant` form and keeps every non-volatile word, so
+        // pack `contains`/`regex` rules match inside it.
+        let key = |s: &str| merchant_key_from_description(s).unwrap();
+        assert_eq!(key("PNP FAMILY KENILWORTH"), "pnp family kenilworth");
+        assert_eq!(key("UBER *TRIP HELP.UBER.C"), "uber trip help uber c");
+        assert_eq!(
+            key("CHECKERS SIXTY60 RONDEBOSCH"),
+            "checkers sixty60 rondebosch",
+            "two-digit groups are part of the name, not a reference"
+        );
+        // Volatile tokens (card fragments, references, dates) are dropped so
+        // the merchant behind them is still reachable.
+        assert_eq!(
+            key("CARD PURCHASE 4029*1234 WOOLWORTHS GARDENS"),
+            "card purchase woolworths gardens"
+        );
+        assert_eq!(
+            key("DEBIT ORDER NETFLIX.COM 12JUL"),
+            "debit order netflix com"
+        );
+        assert_eq!(key("Woolworths"), "woolworths");
+    }
+
+    #[test]
+    fn merchant_key_declines_when_no_merchant_is_named() {
+        // Deriving here would be worse than deriving nothing: these lines
+        // name a banking operation, not a merchant, and a wrong key writes a
+        // durable merchant_mapping the moment the user categorises the row.
+        for narrative in [
+            "",
+            "   ",
+            "***",
+            "1234567890",
+            "R 250.00",
+            "MONTHLY ACCOUNT FEE",
+            "SERVICE FEE",
+            "ATM CASH WITHDRAWAL",
+            "IB PAYMENT FROM 62834729183",
+            "POS PURCHASE 4029123456789",
+            "INTERNET TRF TO SAVINGS",
+            "VALUE DATE 20260712",
+            // Prose, not a name.
+            "PAYMENT RECEIVED THANK YOU FOR YOUR CONTINUED SUPPORT AND BUSINESS",
+        ] {
+            assert_eq!(
+                merchant_key_from_description(narrative),
+                None,
+                "should decline: {narrative:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn merchant_key_is_stable_across_months() {
+        // The learning loop only pays off if the same recurring line yields
+        // the same key: a mapping keyed on a reference number never hits
+        // twice and just grows the table.
+        assert_eq!(
+            merchant_key_from_description("CHECKERS SIXTY60 REF 88374621 12JUL"),
+            merchant_key_from_description("CHECKERS SIXTY60 REF 90021755 09AUG"),
+        );
+        assert_eq!(
+            merchant_key_from_description("CHECKERS SIXTY60 REF 88374621 12JUL").unwrap(),
+            "checkers sixty60 ref"
+        );
+    }
+
+    #[test]
+    fn merchant_key_agrees_with_merchant_normalization() {
+        // Same key space as the slip path: a description that *is* just a
+        // merchant name derives exactly what `normalize_merchant` would.
+        for name in ["Pick n Pay", "CAFÉ ÉTOILE", "Dis-Chem Pharmacies"] {
+            assert_eq!(
+                merchant_key_from_description(name).as_deref(),
+                Some(normalize_merchant(name).as_str())
+            );
+        }
     }
 
     #[test]

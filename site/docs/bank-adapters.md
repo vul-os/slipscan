@@ -23,6 +23,14 @@ pub trait BankAdapter {
 
 Adapters produce `StatementLine` values — posted date, description, amount in **minor units** (never floats; money out negative), optional running balance, the bank's own transaction id when it exposes one, and an optional currency (defaulting to the account's). The pipeline deduplicates by `(account, provider_txn_id | content hash)`, so overlapping fetches are always safe.
 
+### Imported lines are categorised
+
+A statement line has a narrative and no merchant field — banks do not send one — so an adapter must **not** invent one. The categorisation key is derived from the description inside core (`merchant_key_from_description`), which puts imported lines through exactly the same cascade as slips: your own corrections and learned mappings first, [pack](PACKS.md) rules only for a merchant your book has no opinion about yet. Correcting one imported line teaches the book, and the next statement carrying that narrative classifies itself.
+
+The derivation is deliberately conservative, because a key that is subtly wrong is worse than none — it both categorises wrongly and writes a durable mapping the moment you correct the row. It normalises the narrative, drops volatile tokens (three-or-more-digit references, card fragments, account numbers, `12JUL`-style dates) so the same recurring line yields the same key every month, and keeps every other word in order rather than guessing which one is "the brand" — `PNP FAMILY KENILWORTH` stays whole, and pack `contains`/`regex` rules match inside it. It **declines** when nothing distinctive survives: `MONTHLY ACCOUNT FEE`, `ATM CASH WITHDRAWAL`, `IB PAYMENT FROM 62834729183` and narrative prose derive no key at all and import uncategorised, exactly as before.
+
+Two consequences worth knowing. Statement-derived keys are per-narrative, so `CARD PURCHASE WOOLWORTHS GARDENS` and a slip that says `Woolworths` are different keys and learn separately. And the dedupe hash is taken over the merchant the *source* reported, never the derived key, so rows imported by earlier versions still deduplicate against re-imports; nothing is rewritten on upgrade. Transactions already stored with no merchant stay uncategorised until you categorise them or re-import that statement — there is no implicit backfill.
+
 What an adapter is **not** allowed to do:
 
 - Load credentials itself. Credentials come from the [vault](THREAT-MODEL.md) via `vault.use_with(name, |secret| ...)` — the adapter receives the secret inside a closure, uses it to authenticate, and it is zeroized on drop. No adapter code path can persist, log, or return it.

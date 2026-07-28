@@ -11,9 +11,13 @@
 #     (apps/desktop/src-tauri has its own [workspace]); explicit steps keep
 #     that layout obvious.
 #
-# Maintainer flow: bump VERSION + tauri.conf.json + package.json + workspace
-# version, push a matching tag (e.g. v0.1.0). A *draft* release appears under
-# GitHub → Releases with generated notes and all assets; review and publish.
+# Maintainer flow: bump every version file — VERSION, tauri.conf.json,
+# apps/desktop/package.json, apps/desktop/src-tauri/Cargo.toml,
+# [workspace.package] in the root Cargo.toml, crates/slipscan-sync/Cargo.toml
+# (excluded from the workspace, so it does not inherit) — then push a matching
+# tag (e.g. v0.1.0). The first build step checks all six against the tag. A
+# *draft* release appears under GitHub → Releases with generated notes and all
+# assets; review and publish.
 #
 # ── Signing (not configured; all artifacts ship unsigned until then) ─────────
 # macOS  — add repo secrets and uncomment the env lines in "Build desktop
@@ -61,16 +65,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.2
 
-      - name: Check tag matches VERSION and tauri.conf.json
+      - name: Check tag matches every declared version
         shell: bash
+        # Every file that carries the product version. They drifted once
+        # (package.json and src-tauri/Cargo.toml sat at 0.1.0 through the
+        # 0.2.0 cycle) because only VERSION and tauri.conf.json were checked;
+        # each one that ships a version string is checked here now.
         run: |
           tag="${GITHUB_REF_NAME#v}"
           ver="$(tr -d '[:space:]' < VERSION)"
           conf="$(python3 -c "import json;print(json.load(open('apps/desktop/src-tauri/tauri.conf.json'))['version'])")"
+          pkg="$(python3 -c "import json;print(json.load(open('apps/desktop/package.json'))['version'])")"
+          # First `version = "…"` under [package]; the file has no other
+          # version key before it.
+          desktop="$(grep -m1 '^version = ' apps/desktop/src-tauri/Cargo.toml | cut -d'"' -f2)"
+          root="$(python3 -c "import re;print(re.search(r'\[workspace\.package\][^\[]*?^version = \"([^\"]+)\"', open('Cargo.toml').read(), re.M|re.S).group(1))")"
+          sync="$(grep -m1 '^version = ' crates/slipscan-sync/Cargo.toml | cut -d'"' -f2)"
           base="${tag%%-*}"   # v0.1.0-rc1 dry-runs build against base version 0.1.0
-          echo "tag=$tag base=$base VERSION=$ver tauri.conf.json=$conf"
-          [ "$base" = "$ver" ] && [ "$base" = "$conf" ] || {
-            echo "::error::Version mismatch — bump VERSION and tauri.conf.json before tagging"; exit 1; }
+          echo "tag=$tag base=$base VERSION=$ver tauri.conf.json=$conf package.json=$pkg src-tauri/Cargo.toml=$desktop workspace=$root slipscan-sync=$sync"
+          bad=0
+          for pair in "VERSION:$ver" "tauri.conf.json:$conf" "apps/desktop/package.json:$pkg" \
+                      "apps/desktop/src-tauri/Cargo.toml:$desktop" "Cargo.toml [workspace.package]:$root" \
+                      "crates/slipscan-sync/Cargo.toml:$sync"; do
+            name="${pair%%:*}"; got="${pair##*:}"
+            [ "$got" = "$base" ] || { echo "::error::$name is $got, expected $base"; bad=1; }
+          done
+          [ "$bad" = 0 ] || {
+            echo "::error::Version mismatch — bump every file above before tagging"; exit 1; }
 
       - uses: actions/setup-node@v4.2.0
         with:

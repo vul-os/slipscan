@@ -78,7 +78,7 @@ impl GeminiProvider {
 }
 
 fn response_text(body: &str) -> Result<String, ExtractError> {
-    let value: serde_json::Value = serde_json::from_str(body)?;
+    let value = super::decode_response_body("gemini", body)?;
     if let Some(reason) = value["promptFeedback"]["blockReason"].as_str() {
         return Err(ExtractError::Provider(format!(
             "gemini blocked the request: {reason}"

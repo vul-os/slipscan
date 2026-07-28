@@ -569,6 +569,13 @@ export interface ScraperAdapter {
   keychain_entry: string | null;
 }
 
+/**
+ * The pre-Installer pack index the desktop settings blob still carries. It
+ * is written by nothing and read by nothing — the Packs screen reads the
+ * `pack_*` tables through `packList`. Kept because the field is part of the
+ * stored `desktop.settings` JSON on disk and dropping it from the type would
+ * silently drop it on the next save.
+ */
 export interface InstalledPack {
   id: string;
   name: string;
@@ -585,6 +592,164 @@ export interface Settings {
   mailbox: MailboxSettings;
   scrapers: ScraperAdapter[];
   packs: InstalledPack[];
+}
+
+// ---------------------------------------------------------------------------
+// classification packs — the one install pipeline (ARCHITECTURE.md
+// "Classification packs — one install pipeline"). Packs carry rules, never
+// data. Every install goes through signature verification, a TOFU signer
+// store that pins a pack id to the key that first signed it, and strict
+// semver; the pack tables are the only thing read here.
+// ---------------------------------------------------------------------------
+
+/** `taxonomy` packs carry categories + classification rules; `benchmark`
+ * packs carry anonymous aggregate statistics and touch neither. */
+export type PackKind = "taxonomy" | "benchmark";
+
+/** One pack installed into a book. Metadata only — the signed payload never
+ * crosses IPC, and a signer is a public key, never secret material. */
+export interface InstalledPackInfo {
+  pack_id: string;
+  book_id: string;
+  name: string;
+  version: string;
+  kind: PackKind;
+  /** ISO 3166-1 alpha-2 the pack targets; `null` = global. */
+  region: string | null;
+  /** Short fingerprint of the signer's key, for the out-of-band check. */
+  signer_fingerprint: string;
+  /** The trust store's label for this signer, or `null` if it is not (or no
+   * longer) trusted — revoking a signer leaves its packs installed. */
+  signer_label: string | null;
+  installed_at: string;
+  updated_at: string;
+}
+
+/** A signed pack as the user holds it: the exact signed document, its
+ * detached signature and the publisher's key — the three inputs `slipscan
+ * pack install` takes. Base64 is transport encoding only; the bytes are
+ * verified exactly as given. */
+export interface PackDocumentRequest {
+  book_id: string;
+  document_base64: string;
+  /** 128 hex characters, or base64 of the 64 signature bytes. */
+  signature: string;
+  /** 64 hex characters, or base64 of the 32 public-key bytes. */
+  public_key: string;
+}
+
+/** What installing this file would do — `refuse` included. */
+export type PackAction = "install" | "upgrade" | "refuse";
+
+/** Preflight for an install: what the file is, who signed it, and what
+ * installing would do. Verification happens here; nothing is written. */
+export interface PackVerification {
+  pack_id: string;
+  name: string;
+  version: string;
+  kind: PackKind;
+  region: string | null;
+  author: string | null;
+  /** Check this out-of-band before accepting the signer — it is the whole
+   * point of trust-on-first-use. */
+  signer_fingerprint: string;
+  /** Trust label if this key is already trusted; `null` on first use. */
+  trusted_as: string | null;
+  /** Fingerprint the pack id is pinned to, when it has been installed
+   * before. Differs from `signer_fingerprint` exactly when the publisher key
+   * changed — which is a refusal, never a silent success. */
+  pinned_fingerprint: string | null;
+  /** Version of this pack id currently installed in the book, if any. */
+  installed_version: string | null;
+  categories: number;
+  merchant_rules: number;
+  keyword_rules: number;
+  action: PackAction;
+  /** Set only when `action === "refuse"`: the installer's own wording. */
+  refusal: string | null;
+}
+
+export interface PackInstallOutcome {
+  pack_id: string;
+  name: string;
+  version: string;
+  /** ISO 3166-1 alpha-2 the pack targets; `null` = global. Present so a
+   * screen can show *whose* chart of accounts it just took on. */
+  region: string | null;
+  outcome: "installed" | "upgraded";
+  /** The version replaced, when `outcome === "upgraded"`. */
+  upgraded_from: string | null;
+  categories_created: number;
+  categories_reused: number;
+  rules_installed: number;
+}
+
+// ---------------------------------------------------------------------------
+// benchmark packs — the READ side of anonymous peer comparison, and the only
+// half that exists (BENCHMARKS.md). A benchmark pack is a public file of a
+// cohort's published aggregate statistics; the comparison is arithmetic done
+// on this machine against your own spend, and nothing is transmitted.
+//
+// The *contribution* half — and the local differential privacy that design
+// requires — is NOT BUILT: no contribution code, no noise generation, no
+// transport, no settings surface. Nothing typed here may be described in a
+// way that implies otherwise.
+// ---------------------------------------------------------------------------
+
+/** Where your spend sits relative to the cohort's quartiles. */
+export type QuartilePosition = "below_p25" | "typical" | "above_p75";
+
+/** The cohort a benchmark set describes — deliberately coarse, and a
+ * property of the pack, never of you. */
+export interface BenchmarkCohort {
+  /** ISO 3166-1 alpha-2, e.g. `ZA`. */
+  region: string;
+  household_size: number;
+  /** Short community-defined band label, e.g. `C`. */
+  income_band: string;
+}
+
+/** One taxonomy key placed against the cohort's quartiles. Amounts are
+ * integer minor units in the set's currency — never converted. */
+export interface BenchmarkComparison {
+  category_key: string;
+  currency: string;
+  /** Your total for the key this period, descendants included. */
+  yours_minor: number;
+  median_minor: number;
+  p25_minor: number;
+  p75_minor: number;
+  /** `yours - median`; positive means you spend more than the median. */
+  delta_minor: number;
+  /** `yours / median`, `null` when the cohort median is zero. */
+  ratio_to_median: number | null;
+  position: QuartilePosition;
+  /** Contributions behind the stat — always >= the pack's `k_floor`. */
+  sample_size: number;
+}
+
+/** One installed benchmark pack compared against this book's own spend for
+ * one calendar month. */
+export interface BenchmarkReport {
+  pack_id: string;
+  pack_name: string;
+  /** The calendar month `YYYY-MM` compared. */
+  period: string;
+  /** The pack's own currency. **Never converted** — see `skipped`. */
+  currency: string;
+  cohort: BenchmarkCohort;
+  /** The k-anonymity floor the pack's aggregator enforced. */
+  k_floor: number;
+  /** Why nothing was compared, when nothing was — a currency mismatch, or no
+   * spend at all in the pack's currency. `null` on a real comparison, which
+   * may still be empty if the pack has no stat for the period. Never render
+   * this as zeroes: a silently-zero benchmark is a lie. */
+  skipped: string | null;
+  comparisons: BenchmarkComparison[];
+  /** Taxonomy keys the pack has a stat for that nothing installed maps to a
+   * local category. Shown rather than dropped, so "why is groceries
+   * missing?" has an answer. */
+  unmapped_keys: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -619,7 +784,7 @@ export interface VaultReplaceRequest {
 }
 
 // ---------------------------------------------------------------------------
-// ShapePay — watch reference codes on inbound transactions, fire signed
+// Payments — watch reference codes on inbound transactions, fire signed
 // webhooks. Deliberately simple: watch codes are a flat list (`enabled` is
 // the only state, an optional exact amount the only filter), endpoint signing
 // secrets are vault-held (shown exactly once at creation/rotation), and

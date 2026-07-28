@@ -8,7 +8,7 @@ Easier for the vendor. A finance aggregator is a honeypot: one service holding b
 
 ## How does this compare to 22seven / Vault22? To Xero?
 
-Same feature targets, inverted architecture. Vault22/22seven-class personal finance (accounts, categorisation, budgets, nudges, peer comparison) and Xero-class small-business accounting (double-entry ledger, VAT, reconciliation) — with no server-side aggregation, no credential custody, and no subscription. Peer comparison, their most "requires-a-cloud" feature, is *designed* to work here through [anonymous, differentially-private benchmark packs](BENCHMARKS.md) — the comparison math exists in the packs crate, but no UI surfaces it yet and contribution is not implemented. Feature-by-feature parity matrices are planned for [ROADMAP.md](../ROADMAP.md) (Phase 4.5 — they do not exist yet); gaps are issues, not surprises.
+Same feature targets, inverted architecture. Vault22/22seven-class personal finance (accounts, categorisation, budgets, nudges, peer comparison) and Xero-class small-business accounting (double-entry ledger, VAT, reconciliation) — with no server-side aggregation, no credential custody, and no subscription. Peer comparison, their most "requires-a-cloud" feature, works here through [anonymous benchmark packs](BENCHMARKS.md) — reading is built and reachable (`slipscan pack benchmark`, `POST /api/v1/pack_benchmark`, and the desktop Packs screen), and the differentially-private *contribution* half is designed but not implemented. Feature-by-feature parity matrices are planned for [ROADMAP.md](../ROADMAP.md) (Phase 4.5 — they do not exist yet); gaps are issues, not surprises.
 
 ## Does this work outside South Africa?
 

@@ -6,7 +6,7 @@ Phase contracts for the old (removed) cloud stack live only in git history, alon
 
 ## Phase 0 — Consolidation ✅
 
-- [x] Fold every prior repo into one history on `main` — frontend, supabase, the ShapePay repos (frontend, supabase, scraper-go), and slipsnap-mono — each secret-scrubbed and re-authored before grafting (heritage only; their files live in history, not the current tree)
+- [x] Fold every prior repo into one history on `main` — frontend, supabase, the legacy payments repos (frontend, supabase, scraper-go), and slipsnap-mono — each secret-scrubbed and re-authored before grafting (heritage only; their files live in history, not the current tree)
 - [x] MIT license, README, roadmap, contribution guidelines
 - [x] Single repo `vul-os/slipscan`; `main` and `dev` kept in lockstep, no other branches
 
@@ -31,7 +31,7 @@ The foundation everything else plugs into.
 
 - [ ] **Bank scraper framework**: one open-source adapter per bank type, sandboxed, credentials stored in the OS keychain, sessions run locally *(partial: `BankAdapter` trait + statement pipeline + SA CSV presets implemented as a library; no surface wiring, no live adapter)*
 - [ ] First adapters (South African banks first — FNB, Capitec, Standard Bank, Nedbank, Absa)
-- [ ] **Email inbound**: connect your own mailbox over IMAP; parse receipts, statements, and bank alert emails locally *(partial: one-shot generic-IMAP poll via `slipscan mail-sync` works; Gmail/Graph connectors implemented but unwired; no push loop; bank-alert parsing not implemented)*
+- [ ] **Email inbound**: connect your own mailbox over IMAP; parse receipts, statements, and bank alert emails locally *(partial: one-shot generic-IMAP, Gmail, and Graph syncs all run from `slipscan mail-sync`, with `--login` for the OAuth providers' grants; no push loop; bank-alert parsing not implemented)*
 - [ ] Optional self-hosted SMTP receiving mode (you run the mail endpoint, not us)
 - [x] Dedupe + reconciliation between imported, emailed, and captured sources *(occurrence-indexed dedupe + scored recon in core)*
 
@@ -39,10 +39,17 @@ The foundation everything else plugs into.
 
 Share the smarts, not the data.
 
-- [ ] **Classification packs**: category taxonomies, merchant→category mappings, and classification rules as signed, versioned packs *(partial: format, ed25519 sign/verify, and install ship; installed rules are not yet consulted during categorisation)*
+- [ ] **Classification packs**: category taxonomies, merchant→category mappings, and classification rules as signed, versioned packs *(partial: format, ed25519 sign/verify, install, seed, uninstall and list all ship on CLI + HTTP + desktop IPC, and every binary registers the pack classifier at startup, so `contains`/`regex`/`keyword` rules apply on every surface. Missing: a `pack sign` helper and mapping export)*
 - [ ] Distribution with no central registry: git remotes and/or p2p, verified by signature
 - [ ] Opt-in, privacy-preserving contribution flow (rules only — never transactions)
 - [ ] Device-to-device sync (your own devices, end-to-end encrypted)
+  - [x] Merge algebra: `slipscan-sync` maps SlipScan's replicated state onto the
+        shared DMTAP Sync engine (`substrate/SYNC.md` ③) rather than a private
+        CRDT — editable rows as §4.4 LWW registers, the posted ledger as a §4.3
+        add-only set. Same compiled core Diwan and FlowStock use; as a native
+        Rust product SlipScan takes it as a plain crate dependency.
+  - [ ] Oplog: record each repo write as a signed op (nothing mints ops yet)
+  - [ ] Per-device identity from the existing vault, and a transport
 
 ## Phase 4.5 — Insights, nudges & anonymous benchmarks
 
@@ -50,8 +57,8 @@ Vault22/22seven-class intelligence, decentralized (design in [docs/ARCHITECTURE.
 
 - [ ] Local nudge engine: budget drift, category spikes, subscription & duplicate detection, fee creep, VAT deadlines *(partial: budget drift, duplicate charges, and subscription detection ship in the desktop app; the rest is unbuilt)*
 - [ ] Optional OS notifications (local only)
-- [ ] Benchmark packs: signed aggregate-statistics packs; local peer comparison ("you vs households like yours") *(partial: pack format + comparison math in `slipscan-packs`; no surface computes or shows it)*
-- [ ] Opt-in anonymous contribution: local differential privacy, coarse k-anonymous cohorts, anonymous transport, off by default
+- [ ] Benchmark packs: signed aggregate-statistics packs; local peer comparison ("you vs households like yours") *(partial: pack format, comparison math and the read path all ship — `ops::pack_benchmark`, `slipscan pack benchmark`, `POST /api/v1/pack_benchmark`. Missing: any published benchmark pack to compare against — publishing one needs contributors, which is the line below)*
+- [ ] Opt-in anonymous contribution: local differential privacy, coarse k-anonymous cohorts, anonymous transport, off by default *(not started: no differential-privacy code exists anywhere in the tree)*
 - [ ] **Parity matrices**: tracked feature-by-feature vs Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency) and Vault22/22seven (net worth, goals, nudges, peer comparison) — each gap becomes an issue
 
 ## Phase 4.7 — Global by default + OpenRate FX
@@ -73,11 +80,11 @@ Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Data location & backup".
 - [x] Safety rails: no nested targets, permission checks, existing-database detection (open-instead), read-only during move, cross-process move refusal
 - [x] In-app + docs backup guidance: sync the folder with your own cloud (iCloud/Dropbox/Syncthing/Nextcloud/NAS) — **users back up their own data**; note the keychain KEK never travels with the folder
 
-## Phase 4.8 — ShapePay: email-driven payment webhooks ([TODO-FOLD-SHAPEPAY.md](TODO-FOLD-SHAPEPAY.md))
+## Phase 4.8 — Payments: reference watches and signed webhooks
 
-Simple by design: connect your email, watch for reference codes, fire signed webhooks — a payment system on the transactions already in your inbox.
+Simple by design: watch reference codes, fire signed webhooks — a payment detector on the transactions already flowing into your books.
 
-- [x] Original ShapePay history folded into this repo
+- [x] The prior payments product's history folded into this repo
 - [x] Watch codes (reference + optional amount)
 - [x] Webhook endpoints: vault-held secrets, HMAC-signed payloads (timestamp + nonce), SQLite retry queue with backoff, audited deliveries
 - [x] Detection hook on inbound transactions (every source inherits: the hook runs inside `transaction_create`) *(partial upstream: parsing bank-alert emails into transactions is not wired yet — see [docs/EMAIL.md](docs/EMAIL.md); statement imports and manual entries trigger detection today)*

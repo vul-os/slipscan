@@ -11,6 +11,7 @@ import { mockApi } from "./mock";
 import { apiStatus } from "./status.svelte";
 import type {
   Account,
+  BenchmarkReport,
   Book,
   Budget,
   BudgetUpsert,
@@ -34,8 +35,12 @@ import type {
   MemberPatch,
   MemberSettleRow,
   NewMember,
+  InstalledPackInfo,
   NewPayEndpoint,
   NewPayWatch,
+  PackDocumentRequest,
+  PackInstallOutcome,
+  PackVerification,
   PayDelivery,
   PayEndpoint,
   PayEndpointWithSecret,
@@ -291,7 +296,7 @@ export const api = {
   }): Promise<FxConversion> =>
     call("fx_convert", { query: q }, () => mockApi.fx_convert(q)),
 
-  // -- ShapePay: watch reference codes on inbound transactions, fire signed
+  // -- Payments: watch reference codes on inbound transactions, fire signed
   // webhooks. Only payDeliverDue touches the network — on explicit user
   // action, and only to endpoints the user registered. --
 
@@ -354,6 +359,49 @@ export const api = {
    * the deliveries acted on, updated. */
   payDeliverDue: (): Promise<PayDelivery[]> =>
     call("pay_deliver_due", {}, mockApi.pay_deliver_due),
+
+  // -- classification packs: rules, never data. Every install goes through
+  // verify → TOFU trust → Installer, so a signer change is a refusal and
+  // versions only move forward. Nothing here touches the network: a pack is
+  // a file the user already holds. --
+
+  packList: (q: { book_id: string }): Promise<InstalledPackInfo[]> =>
+    call("pack_list", { query: q }, () => mockApi.pack_list(q)),
+
+  /** Preflight: verifies the signature and reports the signer's fingerprint
+   * and what installing would do. Writes nothing — call it before
+   * `packInstall` so the trust-on-first-use decision is an informed one. */
+  packVerify: (q: PackDocumentRequest): Promise<PackVerification> =>
+    call("pack_verify", { query: q }, () => mockApi.pack_verify(q)),
+
+  /** Verify and install (or upgrade). Passing the publisher's key *is* the
+   * trust decision; the pack id is pinned to it from then on. */
+  packInstall: (q: PackDocumentRequest): Promise<PackInstallOutcome> =>
+    call("pack_install", { query: q }, () => mockApi.pack_install(q)),
+
+  /** Removes the pack's rules and registration. Categories it created stay
+   * (local now) so history never breaks, and the signer pin is kept. */
+  packUninstall: (q: { book_id: string; pack_id: string }): Promise<boolean> =>
+    call("pack_uninstall", { query: q }, () => mockApi.pack_uninstall(q)),
+
+  /** Install the built-in seed packs into a book. **Opt-in, never automatic**
+   * — which taxonomy a book starts from is the user's decision, and putting a
+   * South African chart in front of someone in Portugal would be wrong.
+   * Idempotent: a seed already at the same version is skipped, and categories
+   * the user already has are adopted by (parent, name), never duplicated, so
+   * re-running clobbers nothing. Returns only the seeds it actually wrote. */
+  packInstallSeeds: (q: { book_id: string }): Promise<PackInstallOutcome[]> =>
+    call("pack_install_seeds", { query: q }, () => mockApi.pack_install_seeds(q)),
+
+  /** Compare this book's spend for one calendar month against every
+   * installed benchmark pack — the read side of peer comparison, computed
+   * here, transmitting nothing. `skipped` and `unmapped_keys` must be shown:
+   * a pack in another currency is *not compared* (no FX is applied) and a
+   * key nothing maps to is missing, and rendering either as a zero would be
+   * a lie. Contribution, and the differential privacy it needs, are not
+   * built (BENCHMARKS.md). */
+  packBenchmark: (q: { book_id: string; period: string }): Promise<BenchmarkReport[]> =>
+    call("pack_benchmark", { query: q }, () => mockApi.pack_benchmark(q)),
 
   settingsGet: (): Promise<Settings> =>
     call("settings_get", {}, mockApi.settings_get),

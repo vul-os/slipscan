@@ -123,6 +123,17 @@ pub struct StatementImportOutcome {
 /// (provider id or content hash already present) are counted, not errors —
 /// overlapping statement pulls are the normal case.
 ///
+/// **Categorisation.** A statement line has no merchant field — banks send a
+/// narrative and nothing else — so `merchant` stays `None` here and core
+/// derives the matching key from the description
+/// (`slipscan_core::util::merchant_key_from_description`, which declines on
+/// narratives that name no merchant). That is what puts imported lines
+/// through the same cascade as slips: this book's own corrections and learned
+/// mappings first, installed pack rules only for a merchant the book has no
+/// opinion about. Deriving it in core rather than here is deliberate — core
+/// takes the dedupe hash over the merchant the *source* reported, so the
+/// derived key cannot shift hashes that existing books already store.
+///
 /// Lines without a `provider_txn_id` are numbered per identical
 /// (date, amount, currency, description) tuple within the batch, so two
 /// genuine identical purchases in one statement both import while a
@@ -170,6 +181,9 @@ pub fn import_statement_lines(
             posted_date: line.posted_date,
             amount_minor: line.amount_minor,
             currency,
+            // No invented merchant: the bank did not report one. Core derives
+            // the categorisation key from the description instead (see this
+            // function's docs).
             merchant: None,
             description: Some(line.description),
             notes: None,
@@ -549,6 +563,71 @@ mod tests {
             second.content_duplicates, 1,
             "ambiguous cross-batch dedupe must be reported to the caller"
         );
+    }
+
+    /// The learning loop, end to end over the statement path: correcting one
+    /// imported line teaches the book, and the next statement carrying the
+    /// same narrative classifies itself. Before the key was derived from the
+    /// description this could never happen — imported lines had no merchant,
+    /// so they reached neither mappings nor pack rules.
+    #[test]
+    fn statement_import_learns_from_a_correction_and_self_classifies() {
+        use slipscan_core::domain::{CategoryKind, NewCategory};
+        let (svc, book_id, account_id) = svc_with_account();
+        let groceries = svc
+            .category_create(NewCategory {
+                book_id: book_id.clone(),
+                parent_id: None,
+                name: "Groceries".into(),
+                kind: CategoryKind::Expense,
+                icon: None,
+                color: None,
+            })
+            .unwrap();
+
+        let june = import_statement_lines(
+            &svc,
+            &book_id,
+            &account_id,
+            TransactionSource::Import,
+            vec![line("2026-06-02", "PNP FAMILY KENILWORTH", -45_900, None)],
+        )
+        .unwrap();
+        let first = &june.imported[0];
+        assert_eq!(
+            first.merchant, None,
+            "the bank reported no merchant and we invent none"
+        );
+        assert_eq!(
+            first.merchant_normalized.as_deref(),
+            Some("pnp family kenilworth")
+        );
+        assert!(first.category_id.is_none(), "nothing learned yet");
+        svc.transaction_categorize(&first.id, &groceries.id)
+            .unwrap();
+
+        // Next month's statement: same shop, different day and amount.
+        let july = import_statement_lines(
+            &svc,
+            &book_id,
+            &account_id,
+            TransactionSource::Import,
+            vec![
+                line("2026-07-04", "PNP FAMILY KENILWORTH", -51_200, None),
+                // A housekeeping line names no merchant: it derives no key,
+                // so it stays uncategorised rather than being guessed at.
+                line("2026-07-31", "MONTHLY ACCOUNT FEE", -11_500, None),
+            ],
+        )
+        .unwrap();
+        assert_eq!(july.imported.len(), 2);
+        assert_eq!(
+            july.imported[0].category_id.as_deref(),
+            Some(groceries.id.as_str()),
+            "the correction classifies the next statement automatically"
+        );
+        assert_eq!(july.imported[1].merchant_normalized, None);
+        assert_eq!(july.imported[1].category_id, None);
     }
 
     struct FixtureAdapter(Vec<StatementLine>);

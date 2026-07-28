@@ -48,6 +48,14 @@ default = []
 # changes NO behaviour of the rest of SlipScan — nothing else in the workspace
 # depends on this crate — it only makes `op_for_write`/`parse_row_value` and
 # friends available, and pulls in `dmtap-sync` (and transitively `dmtap-core`).
+#
+# The entire test suite is behind this feature too, so the ONLY invocation that
+# verifies anything here is:
+#   cargo test --manifest-path crates/slipscan-sync/Cargo.toml --features sync-dmtap
+# A bare `cargo test` on this crate used to compile an empty lib, run zero
+# tests and print `test result: ok`. It now fails on purpose, naming the seven
+# tests it did not run — see `feature_gate` in src/lib.rs. Skip loudly, never
+# silently: a false green here is indistinguishable from a verified one.
 sync-dmtap = ["dep:dmtap-sync"]
 
 [lints.rust]

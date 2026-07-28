@@ -24,7 +24,19 @@ Peer comparison uses **benchmark packs** — signed packs (same machinery as [cl
 "median monthly groceries spend, ZA, household of 2, income band C: R 4,850"
 ```
 
-The comparison math (percentile placement against a pack's aggregates) is implemented in the `slipscan-packs` crate, but **no app surface calls it yet** — there is currently no CLI command or screen that shows "you vs households like yours". When it lands, the model is: you download a public pack, and the comparison is computed locally. Downloading a public file reveals nothing about your finances — **reading is perfectly private**, full stop. If you never contribute, you still get the comparison feature, at zero privacy cost.
+Reading is **implemented and reachable**: install a benchmark pack like any other signed pack, then
+
+```
+slipscan pack benchmark --period 2026-06
+```
+
+or `POST /api/v1/pack_benchmark` with `{"book_id": …, "period": "2026-06"}`, or the desktop's `pack_benchmark` IPC command behind the Packs screen. The comparison math (percentile placement against a pack's aggregates) lives in the `slipscan-packs` crate; the op that feeds it your own numbers is `slipscan_server::ops::pack_benchmark`. Your side of the comparison is core's own spending report for the month, resolved onto the pack's taxonomy keys through the map installs already write — spend booked to a child category counts toward its parent's key, and a pack in a currency your book does not use is reported as *not compared* rather than as a fabricated zero. **No FX conversion is applied.** A pack statistic whose taxonomy key nothing you have installed maps to is listed as unmapped rather than dropped, so "why is groceries missing?" has an answer.
+
+The desktop surfaces the same operation on the **Packs** screen: pick a month, and every installed benchmark pack is compared against it. `skipped` and `unmapped_keys` are rendered as what they are — a pack in another currency reads *not compared*, and a key nothing maps to reads *unmatched* — because a benchmark silently shown as zero would be a lie.
+
+One honest limit remains on what exists today: a comparison needs a benchmark pack to exist, and SlipScan ships none, because publishing one requires contributors — and contribution is the part that is not built.
+
+You download a public pack, and the comparison is computed locally. Downloading a public file reveals nothing about your finances — **reading is perfectly private**, full stop. If you never contribute, you still get the comparison feature, at zero privacy cost.
 
 ## Contributing: opt-in, anonymous, lossy by design — **not implemented**
 

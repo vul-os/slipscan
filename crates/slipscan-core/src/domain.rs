@@ -733,7 +733,7 @@ pub struct TaxPeriodSummary {
 pub type Vat201Summary = TaxPeriodSummary;
 
 // ---------------------------------------------------------------------------
-// ShapePay — watch codes, webhook endpoints, matches, deliveries
+// Payments — watch codes, webhook endpoints, matches, deliveries
 // ---------------------------------------------------------------------------
 
 str_enum!(

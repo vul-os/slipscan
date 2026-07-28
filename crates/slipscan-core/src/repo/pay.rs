@@ -1,4 +1,4 @@
-//! ShapePay tables: watch codes, webhook endpoints, matches, delivery queue.
+//! Payments tables: watch codes, webhook endpoints, matches, delivery queue.
 //!
 //! Raw SQL only — validation, secret handling, matching, and dispatch live in
 //! the service layer / `crate::pay`.

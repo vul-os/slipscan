@@ -4,7 +4,7 @@ Your inbox is where receipts, statements, and bank alerts already arrive. SlipSc
 
 One `MailboxConnector` trait (in `crates/slipscan-ingest`), four providers.
 
-> **Status — read this first.** The connector code below (IMAP UID sync + IDLE, Gmail history deltas + Pub/Sub pull, Graph deltas + device-code auth, Proton via Bridge) is implemented and tested in `crates/slipscan-ingest`, but the only surface wired to it today is the CLI's **one-shot generic-IMAP poll**: `slipscan mail-sync` fetches unseen messages from a configured IMAP folder and imports attachments as documents, then exits. There is **no long-running push loop** on any surface yet (no IDLE holding, no Pub/Sub polling, no watch renewal), the desktop app's mailbox settings currently cover generic IMAP fields only (no Gmail/Outlook add flow), and `slipscan-server` does not run mailbox connectors at all. Sections describing those flows document the implemented library behaviour and the intended UX; the wiring is tracked in [ROADMAP.md](../ROADMAP.md).
+> **Status — read this first.** The connector code below (IMAP UID sync + IDLE, Gmail history deltas + Pub/Sub pull, Graph deltas + device-code auth, Proton via Bridge) is implemented and tested in `crates/slipscan-ingest`. The surface wired to it is the CLI's **one-shot poll**, now for all three connectors: `slipscan mail-sync --provider {imap,gmail,graph}` (default `imap`, so existing invocations are unchanged) fetches unseen messages from the configured mailbox, imports attachments and receipt-like bodies as documents, and exits; `slipscan mail-sync --provider {gmail,graph} --login` runs the OAuth grant — loopback + PKCE for Gmail, device code for Graph — and the tokens land in the credential vault. What is still **not** wired: there is no long-running push loop on any surface (`mail-sync` never calls `wait_for_new`, so no IDLE holding, no Pub/Sub pull, and no `users.watch` renewal), the desktop app's mailbox settings cover generic IMAP fields only (no Gmail/Outlook add flow), and `slipscan-server` does not run mailbox connectors at all. Sections describing those flows document the implemented library behaviour and the intended UX; the wiring is tracked in [ROADMAP.md](../ROADMAP.md).
 
 ## The connectivity matrix
 
@@ -48,17 +48,17 @@ sequenceDiagram
 
 ## Generic IMAP (any host)
 
-Works with any IMAP server: your own mail server, Fastmail, a [lilmail](https://github.com/vul-os)-managed mailbox, your ISP. This is the one provider with a working end-to-end path today — syncing runs via the CLI, though the one-time configuration step currently needs the server API (the CLI has no settings command yet):
+Works with any IMAP server: your own mail server, Fastmail, a [lilmail](https://github.com/vul-os)-managed mailbox, your ISP. The simplest path — no app registration, no OAuth — and the CLI's default provider. The one-time configuration step still needs the server API (the CLI has no settings command yet):
 
 1. Configure host, port (993/TLS), username, and folder: `slipscan mail-sync` reads the `mail.imap.config` setting, which today is written through the server API's `settings_set` (see [CONFIGURATION.md](CONFIGURATION.md#the-settings-model)).
 2. Use an **app password** if your provider supports them; it goes into the [credential vault](THREAT-MODEL.md) and is never displayed again.
-3. Run `slipscan mail-sync` (e.g. from cron/launchd) — each run fetches unseen messages and imports their attachments as documents.
+3. Run `slipscan mail-sync` (e.g. from cron/launchd) — each run fetches unseen messages and imports their attachments as documents. `--provider imap` is the default; passing it explicitly changes nothing.
 
 **Sync (library):** the connector keeps a per-folder UID cursor and fetches only messages above it. **Push (library, not yet wired):** the connector can hold an IDLE connection and re-issue it when the server drops it (~29 minutes on many servers) — but no shipped surface runs that loop yet; today sync happens only when you run `mail-sync`.
 
-## Gmail — connector implemented, no app surface yet
+## Gmail
 
-Gmail's IMAP works today (use the generic-IMAP path above with an app password). The dedicated Gmail connector below (API deltas, labels, Pub/Sub push) exists in `slipscan-ingest` but is **not yet reachable from the CLI or desktop app** — the setup steps are written for when that wiring lands. The trade-off is a one-time setup of **your own** Google Cloud project — SlipScan has no central OAuth client, so you bring yours.
+Gmail's IMAP also works (use the generic-IMAP path above with an app password). The dedicated Gmail connector below — API deltas, labels — is reachable from the CLI as `slipscan mail-sync --provider gmail`; the desktop app has no Gmail add flow yet, and the Pub/Sub push half is still library-only (see below). The trade-off is a one-time setup of **your own** Google Cloud project — SlipScan has no central OAuth client, so you bring yours.
 
 ### One-time Google Cloud setup
 
@@ -67,13 +67,15 @@ Gmail's IMAP works today (use the generic-IMAP path above with an app password).
 3. Create an **OAuth client id** of type **Desktop app**. Note the client id and secret.
 4. Add your own Google account as a test user on the OAuth consent screen. (Your client serves only you — no verification process needed.)
 
-### Connect (intended flow — no UI for this yet)
+### Connect (CLI; no desktop UI for this yet)
 
-1. Provide the client id + secret (secret → vault).
-2. SlipScan starts the **loopback OAuth flow**: your browser opens, you sign in to Google, and Google redirects to `http://127.0.0.1:<port>` where SlipScan is listening. The refresh token goes straight into the vault.
-3. Pick a label to watch (e.g. create a Gmail filter that labels receipts `slipscan`).
+1. Store the client secret in the vault: `slipscan vault set gmail.client_secret` (no-echo prompt; never argv, never displayed again).
+2. Write the mailbox config under the `mail.gmail.config` setting — like `mail.imap.config`, through the server API's `settings_set` for now. Fields: `client_id`, `client_secret_ref` (the vault entry name from step 1), `token_ref` (where the tokens will live), `label_id`, and the optional `pubsub_topic` / `pubsub_subscription`. No secret material ever goes in this JSON, only entry names.
+3. Run `slipscan mail-sync --provider gmail --login`. SlipScan prints the **loopback OAuth** URL, you open it and sign in to Google, and Google redirects to `http://127.0.0.1:<port>` where SlipScan is listening (PKCE, random state). The refresh token goes straight into the vault under `token_ref`; no token material is ever printed.
+4. Pick a label to watch (e.g. create a Gmail filter that labels receipts `slipscan`) and put its id in `label_id`.
+5. Sync with `slipscan mail-sync --provider gmail` (cron/launchd, same as IMAP).
 
-**Sync:** SlipScan stores a `historyId` cursor and calls `history.list` — each sync transfers only what changed since last time.
+**Sync:** SlipScan stores a `historyId` cursor and calls `history.list` — each sync transfers only what changed since last time. The very first run adopts the mailbox's current `historyId` as its baseline and imports nothing; mail from before the connection is a job for file import. Access tokens are refreshed automatically and the rotated set is written back to the vault.
 
 ### Push via Pub/Sub pull
 
@@ -81,11 +83,11 @@ Gmail's IMAP works today (use the generic-IMAP path above with an app password).
 2. Create a **pull subscription** on the topic.
 3. In SlipScan, set the topic name on the mailbox. SlipScan issues `users.watch` and then long-polls the pull subscription.
 
-New mail → Gmail publishes to your topic → an outbound pull sees it within seconds → `history.list` fetches the delta. The watch expires every 7 days and must be renewed. No public endpoint, no domain, no TLS certificate — the pull subscription is why. (The pull/watch/renewal code exists in the connector; nothing runs it continuously yet.)
+New mail → Gmail publishes to your topic → an outbound pull sees it within seconds → `history.list` fetches the delta. The watch expires every 7 days and must be renewed. No public endpoint, no domain, no TLS certificate — the pull subscription is why. (The pull/watch/renewal code exists in the connector and is exercised by its tests, but **no shipped surface runs it**: `mail-sync` is a one-shot poll and never calls `wait_for_new`, so configuring `pubsub_topic`/`pubsub_subscription` today only widens the OAuth scopes it asks for.)
 
-## Outlook / Microsoft 365 — connector implemented, no app surface yet
+## Outlook / Microsoft 365
 
-Uses Microsoft Graph with **your own app registration**. Like Gmail, the connector is implemented in `slipscan-ingest` but not yet reachable from the CLI or desktop app.
+Uses Microsoft Graph with **your own app registration**. Like Gmail, the connector is reachable from the CLI (`slipscan mail-sync --provider graph`) and has no desktop UI yet.
 
 ### One-time Entra setup
 
@@ -94,13 +96,14 @@ Uses Microsoft Graph with **your own app registration**. Like Gmail, the connect
 3. API permissions: delegated `Mail.Read` and `offline_access`.
 4. Note the **Application (client) ID** and tenant id.
 
-### Connect (intended flow — no UI for this yet)
+### Connect (CLI; no desktop UI for this yet)
 
-1. Provide the client id + tenant.
-2. SlipScan shows a **device code**: open https://microsoft.com/devicelogin on any browser, enter the code, sign in. No redirect URI, no local web server — device-code flow is built for apps like this.
-3. The refresh token lands in the vault. Pick a folder to watch.
+1. Write the mailbox config under the `mail.graph.config` setting (server API `settings_set`, as above). Fields: `client_id`, `tenant`, `folder` (a well-known name like `inbox`, or a folder id), and `token_ref`. A public client has no secret, so this JSON is the whole configuration.
+2. Run `slipscan mail-sync --provider graph --login`. SlipScan shows a **device code**: open https://microsoft.com/devicelogin on any browser, enter the code, sign in. No redirect URI, no local web server — device-code flow is built for apps like this.
+3. The refresh token lands in the vault under `token_ref`, and is never displayed.
+4. Sync with `slipscan mail-sync --provider graph`.
 
-**Sync:** Graph **delta queries** on the watched folder — SlipScan stores the `deltaLink` and each poll returns only changes. Polling every few minutes costs almost nothing.
+**Sync:** Graph **delta queries** on the watched folder — SlipScan stores the `deltaLink` and each poll returns only changes. Polling every few minutes costs almost nothing. An expired delta token (HTTP 410) triggers one full resync; document dedup absorbs the refetch.
 
 **Push:** Graph change notifications require a public HTTPS endpoint that Microsoft can call. SlipScan does not open one — delta polling is the answer. (`slipscan-server` does not currently expose a Graph change-notification receiver either; if one is ever added it will be documented in [SELFHOST.md](SELFHOST.md).)
 
@@ -118,10 +121,10 @@ The bridge behaves as a normal IMAP server (IDLE included, once a push loop ship
 
 Every mailbox has:
 
-- **Folder / label** — only this source is watched. Use provider-side rules (Gmail filters, Sieve, Outlook rules) to route receipts into it.
-- **Sender allowlist** — optional but recommended: only mail from listed senders/domains (`fnb.co.za`, `takealot.com`, …) is processed.
+- **Folder / label** — only this source is watched (`folder` for IMAP/Graph, `label_id` for Gmail). Use provider-side rules (Gmail filters, Sieve, Outlook rules) to route receipts into it.
+- **Sender allowlist** — optional but recommended: only mail from listed senders/domains (`fnb.co.za`, `takealot.com`, …) is processed. Implemented and tested in the library (`MailboxFilter`, addresses/domains/subdomains), but **no surface configures it yet**: `slipscan mail-sync` runs with an empty allowlist, which means allow-all, so today the folder/label is what narrows the stream.
 
-Filters run before any content is parsed. Mail that doesn't match is never fetched beyond headers, never stored, never sent to an extraction provider. Start with a dedicated label + allowlist; loosen later if you find you're missing receipts.
+The folder/label filter is provider-side: mail outside it is never fetched. The sender allowlist runs on the fetched message before anything is imported — non-matching mail is never stored and never sent to an extraction provider. Start with a dedicated label; add an allowlist once it is configurable, and loosen later if you find you're missing receipts.
 
 ## What gets ingested
 

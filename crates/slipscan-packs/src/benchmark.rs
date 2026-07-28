@@ -6,13 +6,22 @@
 //! contains no I/O and no network — pure arithmetic over parsed packs.
 //! Contribution (the write side) is a separate, opt-in pipeline and is
 //! deliberately **not** implemented here.
+//!
+//! Reached from `slipscan_server::ops::pack_benchmark`, and through it the
+//! HTTP `pack_benchmark` route and `slipscan pack benchmark`. That op is what
+//! turns a book's own spend into the `spend_minor` map [`compare`] takes; the
+//! taxonomy-key → local-category resolution lives there, not here, because it
+//! needs core's category tree.
 
 use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
 
 use crate::model::{BenchmarkSet, BenchmarkStat};
 
 /// Where your spend sits relative to the cohort quartiles.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum QuartilePosition {
     /// Below the 25th percentile.
     BelowP25,
@@ -24,7 +33,7 @@ pub enum QuartilePosition {
 
 /// One category compared against the cohort. Amounts are minor units in the
 /// benchmark set's currency.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Comparison {
     pub category_key: String,
     pub period: String,

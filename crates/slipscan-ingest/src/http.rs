@@ -118,9 +118,34 @@ impl HttpResponse {
         (200..300).contains(&self.status)
     }
 
+    /// Parse the body as JSON, failing **closed and loud** on an empty or
+    /// truncated one.
+    ///
+    /// A 2xx status proves only that the server *began* a successful
+    /// response. A server that writes its header before it finishes encoding
+    /// JSON publishes a short 200 on an encode/write failure, and because the
+    /// truncated body is still a complete, well-formed HTTP message no
+    /// transport-level check (content length, chunk terminator) can catch it
+    /// — this parse is the only place it can be caught. `serde_json` rejects
+    /// a body that ends mid-value and one with trailing content after the
+    /// value; the branches below exist so the failure names the hazard
+    /// instead of surfacing a bare "EOF while parsing".
     pub fn json(&self) -> IngestResult<serde_json::Value> {
-        serde_json::from_slice(&self.body)
-            .map_err(|e| IngestError::Parse(format!("invalid JSON response: {e}")))
+        if self.body.iter().all(u8::is_ascii_whitespace) {
+            return Err(IngestError::Parse(
+                "empty body where JSON was expected — a 2xx is not proof of a complete body".into(),
+            ));
+        }
+        serde_json::from_slice(&self.body).map_err(|e| {
+            if e.is_eof() {
+                IngestError::Parse(format!(
+                    "truncated JSON response: body ends mid-JSON ({e}) — a 2xx is not proof of a \
+                     complete body"
+                ))
+            } else {
+                IngestError::Parse(format!("invalid JSON response: {e}"))
+            }
+        })
     }
 }
 
@@ -319,6 +344,42 @@ mod tests {
         assert!(!dbg.contains("s3cr3t"), "{dbg}");
         assert!(!dbg.contains("token-material"), "{dbg}");
         assert!(dbg.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn truncated_and_empty_bodies_never_parse_as_json() {
+        // A 200 is not proof of a complete body: an engine that writes its
+        // header before encoding JSON emits a short 200 that looks perfectly
+        // healthy at the transport layer.
+        let full = br#"{"historyId":"12345","emailAddress":"a@b.test"}"#;
+        for cut in 0..full.len() {
+            let resp = HttpResponse {
+                status: 200,
+                body: full[..cut].to_vec(),
+            };
+            let err = resp
+                .json()
+                .expect_err("a truncated body must never parse as JSON");
+            assert!(
+                err.to_string().contains("not proof of a complete body"),
+                "cut {cut}: {err}"
+            );
+        }
+        // The whole body still parses.
+        let resp = HttpResponse {
+            status: 200,
+            body: full.to_vec(),
+        };
+        assert_eq!(resp.json().unwrap()["historyId"], "12345");
+    }
+
+    #[test]
+    fn trailing_content_after_the_json_is_rejected() {
+        let resp = HttpResponse {
+            status: 200,
+            body: br#"{"a":1}{"a":2}"#.to_vec(),
+        };
+        assert!(resp.json().is_err(), "the body must be exactly one value");
     }
 
     #[test]

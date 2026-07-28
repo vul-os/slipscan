@@ -1,6 +1,6 @@
 [package]
 name = "slipscan-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "slip/scan — self-hosted personal finance and accounting"
 edition = "2021"
 license = "MIT"
@@ -21,6 +21,12 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 slipscan-core = { path = "../../../crates/slipscan-core" }
+# The one pack install pipeline (verify -> TOFU trust -> Installer). The
+# desktop talks to it directly rather than through slipscan-server's ops
+# layer: it needs the richer Installer surface (uninstall, per-pack signer
+# and region) that ops does not expose, and pulling axum into the desktop
+# binary to reach a shared helper would be the worse trade.
+slipscan-packs = { path = "../../../crates/slipscan-packs" }
 # Production FX transport (reqwest over rustls) for explicit OpenRate fetches.
 slipscan-ingest = { path = "../../../crates/slipscan-ingest" }
 # The explicit FX fetch drives core's `?Send` future on a self-contained

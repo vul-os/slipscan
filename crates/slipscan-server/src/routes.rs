@@ -19,7 +19,8 @@ use slipscan_core::{datadir, fx, CoreError};
 use slipscan_core::secrets::VaultSecretMeta;
 
 use crate::ops::{
-    self, BalanceSheet, InstalledPackEntry, OpsError, PackInstallResult, ProfitAndLoss, TaxReport,
+    self, BalanceSheet, BenchmarkReport, InstalledPackEntry, OpsError, PackInstallResult,
+    ProfitAndLoss, TaxReport,
 };
 use crate::{ct_eq, hex_decode, token_hash, AppState, AUTH_TOKEN_SETTING};
 
@@ -118,7 +119,7 @@ impl From<CoreError> for ApiError {
             CoreError::FxTransport(_) | CoreError::FxParse(_) => {
                 (StatusCode::BAD_GATEWAY, "fx_upstream")
             }
-            // ShapePay: a webhook receiver being unreachable is an upstream
+            // Payments: a webhook receiver being unreachable is an upstream
             // problem, same posture as FX transport failures.
             CoreError::PayTransport(_) => (StatusCode::BAD_GATEWAY, "pay_upstream"),
             // Data folder: an occupied target is a conflict (the client may
@@ -337,6 +338,19 @@ struct PackInstallReq {
     signature_hex: String,
     /// Verifying key, hex (32 bytes).
     public_key_hex: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackIdReq {
+    book_id: String,
+    pack_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PackBenchmarkReq {
+    book_id: String,
+    /// Calendar month to compare, `YYYY-MM`.
+    period: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -897,7 +911,7 @@ async fn vault_revoke(
     Ok(Json(OK))
 }
 
-// -- ShapePay (Phase 4.8): watch codes, webhook endpoints, matches and the
+// -- Payments (Phase 4.8): watch codes, webhook endpoints, matches and the
 // delivery queue. Deliberately simple — watches are a flat list, `enabled`
 // the only state. Everything served here is configuration/metadata;
 // detection runs inside `transaction_create` (already routed above), and the
@@ -1007,6 +1021,47 @@ async fn pack_install(
         req.manifest.as_bytes(),
         &signature,
         &public_key,
+    )?))
+}
+
+/// Install the built-in seed packs into a book.
+///
+/// Deliberately an **explicit user action** and not something book creation
+/// does: which taxonomy a book should start from is the user's decision — a
+/// ZA chart auto-installed for someone in Portugal would be wrong. Idempotent
+/// and non-clobbering: a seed already installed at the same version is
+/// skipped, and categories the user already has are adopted by (parent, name)
+/// rather than duplicated.
+async fn pack_install_seeds(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<PackInstallResult>> {
+    Ok(Json(ops::pack_install_seeds(&*s.service()?, &req.book_id)?))
+}
+
+/// Remove an installed pack. Categories it created stay (history never
+/// breaks); so does the signer pin. `false` = that pack was not installed.
+async fn pack_uninstall(State(s): State<AppState>, Json(req): Json<PackIdReq>) -> ApiResult<bool> {
+    Ok(Json(ops::pack_uninstall(
+        &*s.service()?,
+        &req.book_id,
+        &req.pack_id,
+    )?))
+}
+
+/// Peer comparison for one month against the installed benchmark packs.
+///
+/// A read, and only a read: the comparison is computed here from the book's
+/// own spend and a public pack of cohort aggregates. Nothing is transmitted —
+/// benchmark *contribution* does not exist (docs/BENCHMARKS.md).
+async fn pack_benchmark(
+    State(s): State<AppState>,
+    Json(req): Json<PackBenchmarkReq>,
+) -> ApiResult<Vec<BenchmarkReport>> {
+    Ok(Json(ops::pack_benchmark(
+        &*s.service()?,
+        &req.book_id,
+        &req.period,
     )?))
 }
 
@@ -1151,6 +1206,9 @@ pub fn app(state: AppState) -> Router {
         .route("/pay_match_list", post(pay_match_list))
         .route("/pay_delivery_list", post(pay_delivery_list))
         .route("/pack_install", post(pack_install))
+        .route("/pack_install_seeds", post(pack_install_seeds))
+        .route("/pack_uninstall", post(pack_uninstall))
+        .route("/pack_benchmark", post(pack_benchmark))
         .route("/pack_list", post(pack_list))
         .route("/audit_list", post(audit_list))
         // Read-only data-folder status; the move op is local-only (see the
@@ -1272,6 +1330,117 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(missing["error"]["code"], "not_found");
+    }
+
+    /// The pack surface over HTTP. `pack_install_seeds`, `pack_uninstall` and
+    /// `pack_benchmark` all existed as ops (and, for uninstall, as a Tauri
+    /// command) with no route at all, so self-hosters could install a signed
+    /// pack and then had no way to seed, remove or compare.
+    #[tokio::test]
+    async fn pack_seed_list_benchmark_and_uninstall_round_trip_over_http() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Personal", "kind": "personal", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        // Seeding is an explicit action, and an idempotent one.
+        let (status, seeded) = call(
+            &app,
+            post_req(
+                "/api/v1/pack_install_seeds",
+                json!({ "book_id": book_id }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{seeded}");
+        assert_eq!(seeded.as_array().unwrap().len(), 3);
+        let (status, again) = call(
+            &app,
+            post_req(
+                "/api/v1/pack_install_seeds",
+                json!({ "book_id": book_id }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(again.as_array().unwrap().is_empty(), "already installed");
+
+        let (_, listed) = call(&app, post_req("/api/v1/pack_list", json!({}), None)).await;
+        assert_eq!(listed.as_array().unwrap().len(), 3);
+
+        // Benchmark packs are a different kind of pack; the seeds are
+        // taxonomies, so there is nothing to compare against — and the route
+        // says so with an empty list rather than inventing numbers.
+        let (status, reports) = call(
+            &app,
+            post_req(
+                "/api/v1/pack_benchmark",
+                json!({ "book_id": book_id, "period": "2026-07" }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{reports}");
+        assert!(reports.as_array().unwrap().is_empty());
+
+        let (status, bad) = call(
+            &app,
+            post_req(
+                "/api/v1/pack_benchmark",
+                json!({ "book_id": book_id, "period": "2026-13" }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(bad["error"]["code"], "validation");
+
+        let (status, removed) = call(
+            &app,
+            post_req(
+                "/api/v1/pack_uninstall",
+                json!({ "book_id": book_id, "pack_id": "za-personal" }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{removed}");
+        assert_eq!(removed, json!(true));
+        let (_, listed) = call(&app, post_req("/api/v1/pack_list", json!({}), None)).await;
+        assert_eq!(listed.as_array().unwrap().len(), 2);
+        // Categories the pack created survive it.
+        let (_, tree) = call(
+            &app,
+            post_req("/api/v1/category_tree", json!({ "book_id": book_id }), None),
+        )
+        .await;
+        assert!(tree
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["name"] == "Groceries"));
+
+        // Removing it twice is `false`, not an error.
+        let (status, removed) = call(
+            &app,
+            post_req(
+                "/api/v1/pack_uninstall",
+                json!({ "book_id": book_id, "pack_id": "za-personal" }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(removed, json!(false));
     }
 
     #[tokio::test]

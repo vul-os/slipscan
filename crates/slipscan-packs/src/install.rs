@@ -34,7 +34,7 @@ use slipscan_core::util::{new_id, normalize_merchant, now_iso};
 use crate::error::{PackError, PackResult};
 use crate::model::{BenchmarkSet, MatchKind, PackKind, PackPayload, Semver};
 use crate::trust;
-use crate::verify::{Provenance, VerifiedPack};
+use crate::verify::{key_fingerprint, Provenance, VerifiedPack};
 
 pub(crate) const INSTALL_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS pack_installs (
@@ -69,6 +69,12 @@ CREATE TABLE IF NOT EXISTS pack_rules (
 );
 CREATE INDEX IF NOT EXISTS idx_pack_rules_book ON pack_rules (book_id, rule_kind);
 ";
+
+/// Signer recorded for packs adopted from the pre-installer settings index
+/// ([`Installer::adopt_legacy`]). Not a key and never treated as one: it is
+/// unpinned, and it can never be trusted, because [`crate::TrustStore::trust`]
+/// only accepts 32-byte hex keys.
+pub const LEGACY_SIGNER: &str = "legacy-manifest";
 
 /// Metadata for one installed pack (never the signer's secret — there is
 /// none — and never user data).
@@ -118,6 +124,20 @@ impl<'c> Installer<'c> {
         conn.execute_batch(INSTALL_SCHEMA)?;
         migrate_region_column(conn)?;
         Ok(Self { conn })
+    }
+
+    /// Open the installer for reading only: nothing is created, nothing is
+    /// migrated, so it is safe on a connection the user has flagged
+    /// read-only. `None` means this database has never had a pack installed
+    /// — there is nothing to read, and a read path may not create it.
+    pub fn open_readonly(conn: &'c Connection) -> PackResult<Option<Self>> {
+        let tables: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'pack_installs'",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok((tables > 0).then_some(Self { conn }))
     }
 
     /// Install or upgrade a verified pack into `book_id`.
@@ -170,53 +190,19 @@ impl<'c> Installer<'c> {
         };
 
         let now = now_iso();
-        let (created, reused, key_to_id) = install_categories(&tx, book_id, payload, &now)?;
-        let rules = install_rules(&tx, book_id, payload, &key_to_id, &now)?;
-
-        tx.execute(
-            "INSERT INTO pack_installs
-                 (book_id, pack_id, name, version, kind, region, signer,
-                  payload_json, installed_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
-             ON CONFLICT (book_id, pack_id) DO UPDATE SET
-                 name = excluded.name,
-                 version = excluded.version,
-                 kind = excluded.kind,
-                 region = excluded.region,
-                 signer = excluded.signer,
-                 payload_json = excluded.payload_json,
-                 updated_at = excluded.updated_at",
-            params![
-                book_id,
-                payload.meta.id,
-                payload.meta.name,
-                offered.to_string(),
-                payload.kind().as_str(),
-                payload.meta.region,
-                pack.signer(),
-                pack.pack().payload_bytes(),
-                now,
-            ],
-        )?;
-
         let action = match &outcome {
             InstallOutcome::Installed => "pack_install",
             InstallOutcome::Upgraded { .. } => "pack_upgrade",
         };
-        audit_pack(
+        let counts = write_install(
             &tx,
             book_id,
-            &payload.meta.id,
+            payload,
+            pack.signer(),
+            pack.pack().payload_bytes(),
             action,
-            serde_json::json!({
-                "pack_id": payload.meta.id,
-                "version": offered.to_string(),
-                "kind": payload.kind().as_str(),
-                "signer_fingerprint": pack.fingerprint(),
-                "categories": payload.categories.len(),
-                "merchant_rules": payload.merchant_rules.len(),
-                "keyword_rules": payload.keyword_rules.len(),
-            }),
+            &now,
+            &now,
         )?;
         tx.commit()?;
 
@@ -225,10 +211,63 @@ impl<'c> Installer<'c> {
             pack: self
                 .get(book_id, &payload.meta.id)?
                 .expect("pack row just written"),
-            categories_created: created,
-            categories_reused: reused,
-            rules_installed: rules,
+            categories_created: counts.categories_created,
+            categories_reused: counts.categories_reused,
+            rules_installed: counts.rules_installed,
         })
+    }
+
+    /// Adopt a pack that a pre-installer SlipScan already installed into this
+    /// book — the migration path for the old `packs.installed` settings
+    /// index, and nothing else.
+    ///
+    /// That index stored the manifest and only the manifest: not the
+    /// signature, not the publisher's key. There is therefore nothing left to
+    /// re-verify and nothing honest to pin, and this path says so in its
+    /// shape — it takes an already-parsed payload rather than bytes, so no
+    /// publisher-supplied file can reach it; it records the signer as
+    /// [`LEGACY_SIGNER`] rather than inventing a key; and it pins nothing, so
+    /// a later properly signed install of the same pack id still gets to pin
+    /// its real signer and take the row over.
+    ///
+    /// Categories the old path created are adopted by (parent, name), never
+    /// duplicated. Returns `None` when the pack is already registered in the
+    /// tables, which makes the migration idempotent.
+    pub fn adopt_legacy(
+        &self,
+        book_id: &str,
+        payload: &PackPayload,
+        installed_at: &str,
+    ) -> PackResult<Option<InstallReport>> {
+        repo::book::get(self.conn, book_id)?
+            .ok_or_else(|| PackError::BookNotFound(book_id.to_string()))?;
+        if self.get(book_id, &payload.meta.id)?.is_some() {
+            return Ok(None);
+        }
+        let payload_bytes = serde_json::to_vec_pretty(payload)?;
+
+        let tx = self.conn.unchecked_transaction()?;
+        let counts = write_install(
+            &tx,
+            book_id,
+            payload,
+            LEGACY_SIGNER,
+            &payload_bytes,
+            "pack_adopt_legacy",
+            installed_at,
+            &now_iso(),
+        )?;
+        tx.commit()?;
+
+        Ok(Some(InstallReport {
+            outcome: InstallOutcome::Installed,
+            pack: self
+                .get(book_id, &payload.meta.id)?
+                .expect("pack row just written"),
+            categories_created: counts.categories_created,
+            categories_reused: counts.categories_reused,
+            rules_installed: counts.rules_installed,
+        }))
     }
 
     /// Remove an installed pack's rules and registration. Categories the pack
@@ -341,6 +380,85 @@ impl<'c> Installer<'c> {
         }
         Ok(out)
     }
+}
+
+/// What one write of an install touched.
+struct InstallCounts {
+    categories_created: usize,
+    categories_reused: usize,
+    rules_installed: usize,
+}
+
+/// The shared body of every path that writes a pack into a book: taxonomy,
+/// rules, the registration row, and the audit entry — all inside `tx`, so a
+/// half-installed pack is not a state that exists. Verification, trust,
+/// pinning and version rules are the caller's job and happen before this.
+#[allow(clippy::too_many_arguments)]
+fn write_install(
+    tx: &Connection,
+    book_id: &str,
+    payload: &PackPayload,
+    signer: &str,
+    payload_bytes: &[u8],
+    action: &str,
+    installed_at: &str,
+    now: &str,
+) -> PackResult<InstallCounts> {
+    // Store the parsed semver, so a version string is one canonical form in
+    // the table no matter how the file spelled it.
+    let version = payload.meta.semver()?.to_string();
+    let (categories_created, categories_reused, key_to_id) =
+        install_categories(tx, book_id, payload, now)?;
+    let rules_installed = install_rules(tx, book_id, payload, &key_to_id, now)?;
+
+    tx.execute(
+        "INSERT INTO pack_installs
+             (book_id, pack_id, name, version, kind, region, signer,
+              payload_json, installed_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT (book_id, pack_id) DO UPDATE SET
+             name = excluded.name,
+             version = excluded.version,
+             kind = excluded.kind,
+             region = excluded.region,
+             signer = excluded.signer,
+             payload_json = excluded.payload_json,
+             updated_at = excluded.updated_at",
+        params![
+            book_id,
+            payload.meta.id,
+            payload.meta.name,
+            version,
+            payload.kind().as_str(),
+            payload.meta.region,
+            signer,
+            payload_bytes,
+            installed_at,
+            now,
+        ],
+    )?;
+
+    audit_pack(
+        tx,
+        book_id,
+        &payload.meta.id,
+        action,
+        serde_json::json!({
+            "pack_id": payload.meta.id,
+            "version": version,
+            "kind": payload.kind().as_str(),
+            "signer_fingerprint": key_fingerprint(signer),
+            "categories": payload.categories.len(),
+            "merchant_rules": payload.merchant_rules.len(),
+            "keyword_rules": payload.keyword_rules.len(),
+        }),
+    )?;
+
+    Ok(InstallCounts {
+        categories_created,
+        categories_reused,
+        rules_installed,
+    })
 }
 
 fn map_installed(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstalledPack> {

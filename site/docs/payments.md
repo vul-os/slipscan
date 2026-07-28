@@ -1,8 +1,8 @@
-# Payments — ShapePay
+# Payments — reference watches and signed webhooks
 
-> **ShapePay is a payment detector on your own inbox.** Give a customer a reference code, connect your email, and when the EFT lands you get a signed webhook — fired from your machine, straight to your systems. A payment product built on the transactions already flowing through your own mailbox: as long as your box has network, it works. No central infrastructure, ever.
+> **A payment detector on your own books.** Give a customer a reference code, and when a matching inbound transaction is detected — from any ingestion source — you get a signed webhook, fired from your machine straight to your systems. Built on the transactions already flowing through your own mailbox and imports: as long as your box has network, it works. No central infrastructure, ever.
 
-You hand a customer a reference (`INV-7031`). They pay by EFT. The bank's statement or alert arrives in your mailbox, SlipScan ingests it, and the moment a matching inbound transaction is detected your endpoints receive an HMAC-signed `payment.matched` webhook. Inbox in, webhook out — that is the whole product.
+You hand a customer a reference (`INV-7031`). They pay by EFT. The bank's statement or alert arrives in your mailbox, SlipScan ingests it, and the moment a matching inbound transaction is detected your endpoints receive an HMAC-signed `payment.matched` webhook. Inbox in, webhook out — that is the whole feature.
 
 Deliberately simple, by design: watch codes are a **flat list** with an on/off switch. No expiry, no recurring/one-shot machinery, no tolerance windows — the only optional filter is one exact amount in one currency.
 
@@ -153,7 +153,7 @@ After **20 attempts** a delivery is abandoned as `failed` (`slipscan pay deliver
 ## Security model
 
 - **The signing secret is vault-held and shown once.** Generated locally (32 random bytes from the OS CSPRNG), stored only in the [write-only credential vault](THREAT-MODEL.md), displayed a single time at add/rotate. At delivery time the signature is computed *inside* the vault's use-closure — secret material never reaches the dispatcher, the queue, logs, or the audit trail.
-- **Secrets never transit HTTP.** Over the [server API](API.md#payments-shapepay), `pay_endpoint_add` and `pay_endpoint_rotate_secret` are refused — endpoints are added locally (CLI or desktop). Listings return metadata only.
+- **Secrets never transit HTTP.** Over the [server API](API.md#payments), `pay_endpoint_add` and `pay_endpoint_rotate_secret` are refused — endpoints are added locally (CLI or desktop). Listings return metadata only.
 - **Payloads carry no bank data.** No account numbers, no raw statement description — only your own reference, label, and the amount/currency/date. The receiver already knows what the reference means.
 - **No central infrastructure.** Your machine POSTs directly to endpoints you registered. No relay, no hosted queue, nothing to trust but your own box and your receiver.
 - **Nothing fires twice for the same bank line.** Content-hash dedupe rejects a re-imported duplicate transaction before the detection hook runs.
@@ -161,4 +161,4 @@ After **20 attempts** a delivery is abandoned as `failed` (`slipscan pay deliver
 
 ---
 
-**Next:** [API.md](API.md#payments-shapepay) — the `pay_*` operations on the server and desktop surfaces.
+**Next:** [API.md](API.md#payments) — the `pay_*` operations on the server and desktop surfaces.

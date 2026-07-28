@@ -37,6 +37,8 @@ const ROUTES = [
   "budgets",
   "ledger",
   "reconcile",
+  "household",
+  "packs",
   "payments",
   "reports",
   "settings",

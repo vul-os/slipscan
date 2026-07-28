@@ -11,6 +11,16 @@
 //! The `rate.rate` field is captured as a raw JSON token ([`RawValue`]) and
 //! parsed straight into [`Decimal`] — it never round-trips through `f64`, so
 //! a 28-digit rate survives verbatim.
+//!
+//! **A 200 is not proof of a complete body.** OpenRate writes its response
+//! header before it finishes encoding JSON (`_ = enc.Encode(v)` after the
+//! header is already on the wire), so an encode or write failure mid-body
+//! publishes a *successful* status with a short body and no transport-level
+//! error for the client to trip over. Every body this client accepts is
+//! therefore decoded through [`decode_body`], which rejects an empty or
+//! truncated body loudly, and every field the client depends on is required
+//! on the wire — a partial response can only ever surface as an error, never
+//! as a defaulted or zero rate reaching money math.
 
 use async_trait::async_trait;
 use rust_decimal::Decimal;
@@ -168,8 +178,17 @@ impl<'a> OpenRateClient<'a> {
             });
         }
         expect_success(&response)?;
-        let wire: ConvertWire = serde_json::from_slice(&response.body)
-            .map_err(|e| CoreError::FxParse(format!("convert response: {e}")))?;
+        let wire: ConvertWire = decode_body("convert response", &response.body)?;
+        // A rate is money math, so it is validated at *this* boundary rather
+        // than only where it is cached: zero would silently convert every
+        // amount to 0 and a negative one would poison every later
+        // conversion, so no caller of this client may ever receive one.
+        if wire.rate.rate <= Decimal::ZERO {
+            return Err(CoreError::FxParse(format!(
+                "OpenRate returned a non-positive rate {} for {from}/{to} — refusing it",
+                wire.rate.rate
+            )));
+        }
         // as_of must be a real RFC 3339 instant — staleness math depends on
         // it. A far-future date (hostile/misconfigured server) would make a
         // stale rate look perfectly fresh forever, so it is rejected here;
@@ -199,8 +218,7 @@ impl<'a> OpenRateClient<'a> {
         let url = format!("{}/api/v1/meta", self.base_url);
         let response = self.transport.get(&url).await?;
         expect_success(&response)?;
-        let wire: MetaWire = serde_json::from_slice(&response.body)
-            .map_err(|e| CoreError::FxParse(format!("meta response: {e}")))?;
+        let wire: MetaWire = decode_body("meta response", &response.body)?;
         Ok(wire
             .currencies
             .into_iter()
@@ -212,6 +230,11 @@ impl<'a> OpenRateClient<'a> {
     }
 
     /// `true` when `/healthz` answers 2xx.
+    ///
+    /// Status-only by design: liveness asks whether the instance answers at
+    /// all, and no value is read out of the body, so a truncated `/healthz`
+    /// body cannot mislead anything. Nothing here may grow a body-derived
+    /// return value without routing it through [`decode_body`].
     pub async fn healthz(&self) -> CoreResult<bool> {
         let url = format!("{}/healthz", self.base_url);
         let response = self.transport.get(&url).await?;
@@ -231,8 +254,47 @@ fn expect_success(response: &FxHttpResponse) -> CoreResult<()> {
     }
 }
 
+/// Decode a JSON body that arrived under a success status, failing **closed
+/// and loud** when it is empty or truncated.
+///
+/// A 2xx status proves only that the server *began* a successful response. An
+/// engine that writes its header before encoding JSON publishes a short 200
+/// on an encode/write failure, and — because the truncated body is a
+/// complete, well-formed HTTP message — no transport-level check (content
+/// length, chunk terminator, TLS close) can catch it. The only place it can
+/// be caught is here, so this is deliberately the single door every FX body
+/// goes through.
+///
+/// `serde_json` rejects a body that ends mid-value *and* a body with trailing
+/// content after the value, so a partial payload cannot deserialize; the
+/// checks below exist to say so in words a user can act on rather than
+/// surfacing a bare "EOF while parsing at line 1 column 0".
+fn decode_body<T: serde::de::DeserializeOwned>(what: &str, body: &[u8]) -> CoreResult<T> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Err(CoreError::FxParse(format!(
+            "{what}: OpenRate answered with a success status but an empty body — a 200 is not \
+             proof of a complete body; refusing to treat it as a result"
+        )));
+    }
+    serde_json::from_slice(body).map_err(|e| {
+        if e.is_eof() {
+            CoreError::FxParse(format!(
+                "{what}: body ends mid-JSON ({e}) — the response was truncated; a 200 is not \
+                 proof of a complete body, so this is not a successful poll"
+            ))
+        } else {
+            CoreError::FxParse(format!("{what}: {e}"))
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Wire shapes (openrate rateView). Unknown fields are ignored.
+//
+// Nothing load-bearing carries `#[serde(default)]`: a field that defaults is
+// a field a truncated body can silently supply. The two exceptions are
+// genuinely optional on the wire and default to *unknown*, never to a value
+// that could be mistaken for good data.
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -260,7 +322,9 @@ struct QualityWire {
 
 #[derive(Deserialize)]
 struct MetaWire {
-    #[serde(default)]
+    /// Required: a body without it is a malformed response, not an instance
+    /// that quotes nothing. Defaulting here would turn a truncated `/meta`
+    /// into a confident, silent "no currencies supported".
     currencies: Vec<CurrencyWire>,
 }
 
@@ -540,6 +604,212 @@ mod tests {
                 },
             ]
         );
+    }
+
+    // -----------------------------------------------------------------
+    // A 200 is not proof of a complete body.
+    //
+    // OpenRate writes its response header before it finishes encoding JSON,
+    // so a failure mid-encode publishes a *successful* status with a short
+    // body. The result is a complete, well-formed HTTP message, so no
+    // transport check can catch it — these tests pin that the client does.
+    // -----------------------------------------------------------------
+
+    /// Every prefix of a good convert body, cut at a byte boundary, must be
+    /// an error — never a quote. This is the truncation hazard in general
+    /// form rather than one hand-picked cut point.
+    #[tokio::test]
+    async fn every_truncation_of_a_200_convert_body_is_an_error_never_a_quote() {
+        let full = convert_body("USD", "ZAR", "18.074219053", "2026-07-17T16:00:00Z", "A");
+        for cut in 0..full.len() {
+            if !full.is_char_boundary(cut) {
+                continue;
+            }
+            let transport = MockFxTransport::new().route("/convert", 200, &full[..cut]);
+            let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+            let result = client.convert_one("USD", "ZAR").await;
+            let err = match result {
+                Err(e) => e,
+                Ok(quote) => panic!(
+                    "a body truncated at {cut}/{} bytes yielded a usable quote (rate {}) — a \
+                     partial 200 must never become a rate",
+                    full.len(),
+                    quote.rate
+                ),
+            };
+            assert!(matches!(err, CoreError::FxParse(_)), "cut {cut}: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_and_whitespace_200_bodies_are_loud_errors() {
+        for body in ["", "   ", "\n\t "] {
+            let transport = MockFxTransport::new().route("/convert", 200, body);
+            let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+            let err = client.convert_one("USD", "ZAR").await.unwrap_err();
+            assert!(matches!(err, CoreError::FxParse(_)), "{err}");
+            let rendered = err.to_string();
+            assert!(rendered.contains("empty body"), "{rendered}");
+            // Loud: the message must name the hazard, not just fail.
+            assert!(rendered.contains("200 is not proof"), "{rendered}");
+        }
+    }
+
+    #[tokio::test]
+    async fn truncated_body_error_names_the_hazard() {
+        // The one cut point a caller is most likely to hit: the encoder died
+        // right after emitting the rate token, so the JSON *looks* like it
+        // has everything the client needs and only the closing braces are
+        // missing.
+        let body = r#"{"rate":{"rate":18.074219053,"as_of":"2026-07-17T16:00:00Z","#;
+        let transport = MockFxTransport::new().route("/convert", 200, body);
+        let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+        let err = client.convert_one("USD", "ZAR").await.unwrap_err();
+        let rendered = err.to_string();
+        assert!(rendered.contains("truncated"), "{rendered}");
+        assert!(rendered.contains("200 is not proof"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn valid_json_missing_a_required_field_is_rejected() {
+        // Each of these is well-formed JSON under a 200 — only serde's
+        // required fields stand between them and money math.
+        let cases = [
+            // no rate at all
+            r#"{"rate":{"as_of":"2026-07-17T16:00:00Z","quality":{"grade":"A"}}}"#,
+            // no as_of: staleness would be unknowable
+            r#"{"rate":{"rate":"18.07","quality":{"grade":"A"}}}"#,
+            // no quality envelope
+            r#"{"rate":{"rate":"18.07","as_of":"2026-07-17T16:00:00Z"}}"#,
+            // quality present but no grade
+            r#"{"rate":{"rate":"18.07","as_of":"2026-07-17T16:00:00Z","quality":{}}}"#,
+            // the whole rate envelope missing
+            r#"{}"#,
+            // right shape, wrong type for the rate token
+            r#"{"rate":{"rate":null,"as_of":"2026-07-17T16:00:00Z","quality":{"grade":"A"}}}"#,
+        ];
+        for body in cases {
+            let transport = MockFxTransport::new().route("/convert", 200, body);
+            let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+            let err = match client.convert_one("USD", "ZAR").await {
+                Err(e) => e,
+                Ok(quote) => panic!("{body} yielded a quote (rate {})", quote.rate),
+            };
+            assert!(matches!(err, CoreError::FxParse(_)), "{body}: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn trailing_content_after_the_json_is_rejected() {
+        // A body that is a good response *plus* junk is as broken as one cut
+        // short; the whole body must be exactly one JSON value.
+        let full = convert_body("USD", "ZAR", "18.07", "2026-07-17T16:00:00Z", "A");
+        for suffix in ["{\"rate\":", "garbage", "{}"] {
+            let transport =
+                MockFxTransport::new().route("/convert", 200, &format!("{full}{suffix}"));
+            let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+            let err = client.convert_one("USD", "ZAR").await.unwrap_err();
+            assert!(matches!(err, CoreError::FxParse(_)), "{suffix}: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_client_itself_rejects_non_positive_rates() {
+        // The cache layer also checks this, but the guarantee belongs at the
+        // boundary: `OpenRateClient` is public, so a direct caller must not
+        // be able to receive a 0 rate that silently zeroes every amount, nor
+        // a negative one.
+        for bad in ["0", "0.0000", "-0", "-18.07", "0e0"] {
+            let body = convert_body("USD", "ZAR", bad, "2026-07-17T16:00:00Z", "A");
+            let transport = MockFxTransport::new().route("/convert", 200, &body);
+            let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+            let err = client.convert_one("USD", "ZAR").await.unwrap_err();
+            assert!(matches!(err, CoreError::FxParse(_)), "rate {bad}: {err}");
+            assert!(
+                err.to_string().contains("non-positive"),
+                "rate {bad}: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn meta_without_a_currencies_field_is_an_error_not_an_empty_list() {
+        // Regression: `currencies` used to default, so a 200 whose body was
+        // cut before the list (or that omitted it) read as "this instance
+        // supports no currencies at all" instead of "malformed response".
+        for body in [r#"{}"#, r#"{"other":1}"#] {
+            let transport = MockFxTransport::new().route("/api/v1/meta", 200, body);
+            let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+            let err = client.meta().await.unwrap_err();
+            assert!(matches!(err, CoreError::FxParse(_)), "{body}: {err}");
+        }
+        // An explicitly empty list still means what it says.
+        let transport = MockFxTransport::new().route("/api/v1/meta", 200, r#"{"currencies":[]}"#);
+        let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+        assert!(client.meta().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn meta_truncated_under_a_200_is_an_error() {
+        let full = r#"{"currencies": ["USD", {"code": "ZAR", "name": "South African Rand"}]}"#;
+        for cut in 0..full.len() {
+            let transport = MockFxTransport::new().route("/api/v1/meta", 200, &full[..cut]);
+            let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+            assert!(
+                client.meta().await.is_err(),
+                "meta body truncated at {cut} bytes must not parse"
+            );
+        }
+    }
+
+    /// The decimal-only guarantee, pinned end to end at the client boundary.
+    ///
+    /// `rate` is captured verbatim as a `serde_json` [`RawValue`] token and
+    /// parsed with `Decimal::from_str`, so the exact digits survive. Anything
+    /// that routes it through `f64` — `as_f64()`, `Decimal::from_f64*`, or a
+    /// float-typed serde field — fails here, because the nearest `f64` to
+    /// this token is a *different* number.
+    #[tokio::test]
+    async fn the_rate_token_never_round_trips_through_f64() {
+        // 28 significant digits: representable as a Decimal, not as an f64.
+        const TOKEN: &str = "1.000000000000000000000000005";
+        // Premise check — if this ever stops holding the test proves nothing.
+        let via_f64 = TOKEN.parse::<f64>().expect("parses as a float too");
+        assert_ne!(
+            via_f64.to_string(),
+            TOKEN,
+            "test premise: f64 must lose these digits"
+        );
+
+        for body in [
+            // as a bare JSON number token…
+            format!(
+                r#"{{"rate":{{"rate":{TOKEN},"as_of":"2026-07-17T16:00:00Z",
+                   "quality":{{"grade":"A"}}}}}}"#
+            ),
+            // …and as a JSON string token.
+            format!(
+                r#"{{"rate":{{"rate":"{TOKEN}","as_of":"2026-07-17T16:00:00Z",
+                   "quality":{{"grade":"A"}}}}}}"#
+            ),
+        ] {
+            let transport = MockFxTransport::new().route("/convert", 200, &body);
+            let client = OpenRateClient::new("https://fx.example.org", &transport).unwrap();
+            let quote = client.convert_one("USD", "ZAR").await.unwrap();
+            assert_eq!(quote.rate.to_string(), TOKEN, "digits must survive exactly");
+
+            // …and must leave the crate as a JSON *string*, not a float.
+            // (`rust_decimal`'s `serde-float` feature would flip this, and
+            // Cargo feature unification means any dependency could enable
+            // it for the whole workspace.)
+            let json = serde_json::to_value(&quote).unwrap();
+            assert!(
+                json["rate"].is_string(),
+                "rate must serialize as a string, got {}",
+                json["rate"]
+            );
+            assert_eq!(json["rate"], serde_json::json!(TOKEN));
+        }
     }
 
     #[tokio::test]

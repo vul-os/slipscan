@@ -1,8 +1,10 @@
 -- =============================================================================
--- Migration 0400: ShapePay — email-driven payment webhooks.
+-- Migration 0400: payments — reference watches and signed webhooks. The
+-- filename and migration id are historical (the feature once carried a
+-- product name); applied ids are never renamed.
 --
--- Deliberately SIMPLE (TODO-FOLD-SHAPEPAY.md): watch codes are a flat list —
--- no expiry, no recurrence, no lifecycle machinery. When an inbound (positive)
+-- Deliberately SIMPLE: watch codes are a flat list — no expiry, no
+-- recurrence, no lifecycle machinery. When an inbound (positive)
 -- transaction's text carries an enabled watch code as a whole token, a match
 -- row is written and one signed webhook delivery is queued per enabled
 -- endpoint.

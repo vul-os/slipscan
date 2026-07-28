@@ -16,16 +16,42 @@
     key: string;
   }
 
-  const nav: NavItem[] = [
-    { route: "dashboard", label: "Dashboard", icon: "dashboard", key: "D" },
-    { route: "transactions", label: "Transactions", icon: "transactions", key: "T" },
-    { route: "receipts", label: "Receipts", icon: "receipt", key: "R" },
-    { route: "budgets", label: "Budgets", icon: "budgets", key: "B" },
-    { route: "ledger", label: "Ledger", icon: "ledger", key: "L" },
-    { route: "reconcile", label: "Reconcile", icon: "reconcile", key: "C" },
-    { route: "payments", label: "Payments", icon: "zap", key: "Y" },
-    { route: "reports", label: "Reports", icon: "reports", key: "P" },
-    { route: "settings", label: "Settings", icon: "settings", key: "S" },
+  /**
+   * Eleven destinations is more than reads as one list, so the rail is
+   * grouped: what the money did, what the books say, and what the machine is
+   * set up with. The flattened order is exactly `ROUTES` — the group headings
+   * are decoration around the same sequence, never a re-ordering of it.
+   *
+   * Collapsed (below the `rail` breakpoint) the headings hide and the
+   * hairline between groups carries the grouping on its own.
+   */
+  const nav: Array<{ heading: string; items: NavItem[] }> = [
+    {
+      heading: "Money",
+      items: [
+        { route: "dashboard", label: "Dashboard", icon: "dashboard", key: "D" },
+        { route: "transactions", label: "Transactions", icon: "transactions", key: "T" },
+        { route: "receipts", label: "Receipts", icon: "receipt", key: "R" },
+        { route: "budgets", label: "Budgets", icon: "budgets", key: "B" },
+        { route: "household", label: "Household", icon: "wallet", key: "H" },
+      ],
+    },
+    {
+      heading: "Books",
+      items: [
+        { route: "ledger", label: "Ledger", icon: "ledger", key: "L" },
+        { route: "reconcile", label: "Reconcile", icon: "reconcile", key: "C" },
+        { route: "payments", label: "Payments", icon: "zap", key: "Y" },
+        { route: "reports", label: "Reports", icon: "reports", key: "P" },
+      ],
+    },
+    {
+      heading: "This machine",
+      items: [
+        { route: "packs", label: "Packs", icon: "package", key: "K" },
+        { route: "settings", label: "Settings", icon: "settings", key: "S" },
+      ],
+    },
   ];
 
   const themeModes: Array<{ mode: ThemeMode; icon: IconName; label: string }> = [
@@ -121,35 +147,46 @@
 
   <!-- nav -->
   <nav
-    class="flex-1 space-y-0.5 overflow-x-hidden overflow-y-auto px-2 rail:px-3"
+    class="flex-1 overflow-x-hidden overflow-y-auto px-2 rail:px-3"
     aria-label="Sections"
   >
-    {#each nav as item (item.route)}
-      {@const active = router.current === item.route}
-      <a
-        href="#/{item.route}"
-        title={item.label}
-        aria-current={active ? "page" : undefined}
-        class="group flex items-center justify-center gap-0 rounded-md px-0 py-[7px] text-[13px] font-medium transition-colors rail:justify-start rail:gap-2.5 rail:px-2.5
-          {active
-          ? 'bg-ink-900 text-ink-50 dark:bg-ink-100 dark:text-ink-900'
-          : 'text-t2 hover:bg-sunken hover:text-t1'}"
-      >
-        <Icon
-          name={item.icon}
-          size={16}
-          class={active ? "" : "text-t3 group-hover:text-t2"}
-        />
-        <span class="hidden min-w-0 flex-1 truncate rail:inline">{item.label}</span>
-        {#if active}
-          <span class="hidden size-1.5 rounded-full bg-accent rail:inline"></span>
-        {:else}
-          <span
-            class="kbd hidden opacity-0 transition-opacity group-hover:opacity-100 rail:inline-flex"
-            title="Press G then {item.key}">{item.key}</span
-          >
-        {/if}
-      </a>
+    {#each nav as group, gi (group.heading)}
+      <!-- Separator + heading: the heading is the accessible group name in
+           the expanded rail; collapsed, the hairline alone does the work. -->
+      <div class={gi === 0 ? "" : "mt-2 border-t border-line pt-2"}>
+        <p class="eyebrow mb-1 hidden px-2.5 rail:block">{group.heading}</p>
+        <div class="space-y-0.5" role="group" aria-label={group.heading}>
+          {#each group.items as item (item.route)}
+            {@const active = router.current === item.route}
+            <a
+              href="#/{item.route}"
+              title={item.label}
+              aria-current={active ? "page" : undefined}
+              class="group flex items-center justify-center gap-0 rounded-md px-0 py-[7px] text-[13px] font-medium transition-colors rail:justify-start rail:gap-2.5 rail:px-2.5
+                {active
+                ? 'bg-ink-900 text-ink-50 dark:bg-ink-100 dark:text-ink-900'
+                : 'text-t2 hover:bg-sunken hover:text-t1'}"
+            >
+              <Icon
+                name={item.icon}
+                size={16}
+                class={active ? "" : "text-t3 group-hover:text-t2"}
+              />
+              <span class="hidden min-w-0 flex-1 truncate rail:inline"
+                >{item.label}</span
+              >
+              {#if active}
+                <span class="hidden size-1.5 rounded-full bg-accent rail:inline"></span>
+              {:else}
+                <span
+                  class="kbd hidden opacity-0 transition-opacity group-hover:opacity-100 rail:inline-flex"
+                  title="Press G then {item.key}">{item.key}</span
+                >
+              {/if}
+            </a>
+          {/each}
+        </div>
+      </div>
     {/each}
   </nav>
 

@@ -54,7 +54,7 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
     <td valign="top">
       <ul>
         <li>Accounts across banks — bank, cash, card, asset, liability</li>
-        <li>Transaction categorisation with local corrections and merchant mappings — the learning loop never leaves your machine; community pack <em>rules</em> install today but are not yet consulted during categorisation (<a href="docs/PACKS.md">status</a>)</li>
+        <li>Transaction categorisation with local corrections and merchant mappings — the learning loop never leaves your machine; community pack <em>rules</em> are consulted only for merchants your book has no opinion about, so your corrections always win — exact rules apply on every surface, the rest inside a process that has installed a pack (<a href="docs/PACKS.md">status</a>)</li>
         <li>Per-category monthly budgets, spending breakdowns and income/expense reports (a rollover flag is stored per budget, but rollover is not yet applied to the numbers)</li>
         <li>Receipt/slip capture with LLM/OCR extraction (line items, discounts, VAT) — bring your own key or run a local model</li>
         <li>Household members &amp; per-person attribution — split spend across the people sharing a book, with per-member expense/contribution reports and a "who owes whom" settle-up view; members are local data, not logins</li>
@@ -75,9 +75,9 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
 
 **Infrastructure you can trust**
 
-- **Get paid by reference (ShapePay)** — watch an EFT reference code, and when the matching payment lands in your books (from any source) SlipScan fires an HMAC-signed webhook to endpoints you register. Signing secrets are vault-held and shown exactly once; payloads carry the reference and amount, never account numbers; deliveries retry until your box has network. Inbox in, webhook out, no central infrastructure ([guide](docs/PAYMENTS.md))
+- **Get paid by reference (Payments)** — watch an EFT reference code, and when the matching payment lands in your books (from any source) SlipScan fires an HMAC-signed webhook to endpoints you register. Signing secrets are vault-held and shown exactly once; payloads carry the reference and amount, never account numbers; deliveries retry until your box has network. Inbox in, webhook out, no central infrastructure ([guide](docs/PAYMENTS.md))
 - **Movable data folder, your own backup** — your books and documents live in one folder you can see, relocate from Settings or `slipscan data move` (verified copy + atomic switch), and back up by syncing it with your own cloud (iCloud / Dropbox / Syncthing / NAS). SlipScan ships no backup service, and the keychain key never travels with the folder ([data &amp; backup](docs/CONFIGURATION.md))
-- Ingestion from your own mailbox — always your accounts, [never our infrastructure](docs/EMAIL.md); generic IMAP polling works today, Gmail/Graph connectors and push are built but not yet wired to a surface
+- Ingestion from your own mailbox — always your accounts, [never our infrastructure](docs/EMAIL.md); generic IMAP, Gmail, and Microsoft Graph all sync one-shot from `slipscan mail-sync` today (`--login` runs the provider's own OAuth grant into the vault); the push loop (IMAP IDLE) is built but not yet wired to a surface
 - Open-source, local bank-scraper framework — adapters run in your session, first adapters in progress ([framework](docs/BANK-ADAPTERS.md))
 - Write-only credential vault rooted in the OS keychain — secrets can be set, rotated, revoked, and used, never viewed ([threat model](docs/THREAT-MODEL.md))
 - Opt-in multi-currency FX via [OpenRate](https://github.com/vul-os/openrate) — self-hosted, provenance-graded rates. Decimal-only rate math (floats never touch money), a local rate cache, and every conversion recording the exact rate, quality grade, and as-of age it used — surfaced on the CLI (`slipscan fx`), the HTTP server, and the desktop Settings screen; converted report views are still landing (Phase 4.7). No endpoint configured means zero FX network calls ([contract](docs/ARCHITECTURE.md#exchange-rates--openrate))
@@ -114,7 +114,7 @@ These are the **shipped desktop app**, running with demo data. The full annotate
     <td width="50%"><img src="assets/screens/budgets.png" alt="Budgets"><br><sub><em>Budgets — per-category monthly limits with burn bars, remaining amounts, and warn colours as they fill</em></sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="assets/screens/payments.png" alt="Payments"><br><sub><em>Payments (ShapePay) — watch codes, webhook endpoints with rotate-once secrets, and the signed-delivery queue with retry status</em></sub></td>
+    <td width="50%"><img src="assets/screens/payments.png" alt="Payments"><br><sub><em>Payments — reference watches, webhook endpoints with rotate-once secrets, and the signed-delivery queue with retry status</em></sub></td>
     <td width="50%"><img src="assets/screens/transactions.png" alt="Transactions"><br><sub><em>Transactions — inline categorisation and per-person attribution (member avatars) for households sharing a book</em></sub></td>
   </tr>
 </table>
@@ -214,7 +214,7 @@ Settings live in SQLite, secrets live in the OS keychain, and there is no requir
 | [CONFIGURATION.md](docs/CONFIGURATION.md) | Settings model, data locations, environment |
 | [API.md](docs/API.md) | One service surface, two transports — Tauri IPC and the `/api/v1` HTTP server |
 | [EMAIL.md](docs/EMAIL.md) | Email ingestion: IMAP IDLE, Gmail, Microsoft Graph, Proton Bridge — your accounts, no middleman |
-| [PAYMENTS.md](docs/PAYMENTS.md) | ShapePay: watch a payment reference, get a signed webhook when the EFT lands — setup, receiver verification, delivery and retry semantics |
+| [PAYMENTS.md](docs/PAYMENTS.md) | Payments — reference watches and signed webhooks: watch a payment reference, get a signed webhook when the EFT lands; setup, receiver verification, delivery and retry semantics |
 | [BANK-ADAPTERS.md](docs/BANK-ADAPTERS.md) | The local, open-source bank-scraper framework and how to write an adapter |
 | [PACKS.md](docs/PACKS.md) | Signed classification packs: format, signing, verification, distribution |
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | Nudges and anonymous peer benchmarks: local DP, cohorts, honest limits |

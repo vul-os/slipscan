@@ -19,8 +19,8 @@ use crate::secrets::SecretString;
 use crate::secrets::{KeyringSecretStore, SecretStore};
 use crate::slip::SlipPayload;
 use crate::util::{
-    days_between, merchant_similarity, new_id, normalize_currency_code, normalize_merchant,
-    now_iso, parse_date, transaction_dedupe_hash,
+    days_between, merchant_key_from_description, merchant_similarity, new_id,
+    normalize_currency_code, normalize_merchant, now_iso, parse_date, transaction_dedupe_hash,
 };
 use crate::vat::split_inclusive;
 
@@ -109,6 +109,66 @@ struct ReconCandidate {
     merchant_score: f64,
 }
 
+// ---------------------------------------------------------------------------
+// Merchant classification hook.
+//
+// Core holds no classification knowledge of its own: rules arrive in signed
+// packs, and slipscan-packs depends on core, never the other way round. This
+// is that dependency inversion — the one seam through which installed pack
+// rules reach categorisation.
+// ---------------------------------------------------------------------------
+
+/// One category suggestion for a merchant, from a classifier outside core.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CategorySuggestion {
+    pub category_id: String,
+    /// Rule confidence in `[0, 1]`, recorded on the mapping it produces.
+    pub confidence: f64,
+}
+
+/// A source of merchant→category suggestions, consulted by
+/// [`CoreService::transaction_create`] only when the book's own
+/// `merchant_mappings` have nothing to say about the merchant.
+///
+/// `slipscan_packs::engine::PackClassifier` implements this over the
+/// `pack_rules` tables installed packs write into the same database; a host
+/// binary registers it once with [`register_merchant_classifier`]. With
+/// nothing registered — the default — categorisation behaves exactly as it
+/// did before packs existed.
+///
+/// The implementation is handed core's *current* connection, inside the
+/// insert transaction, so it reads the same database at the same snapshot.
+/// It must only read: a categorisation path may run against a connection the
+/// user has flagged read-only.
+pub trait MerchantClassifier: Send + Sync {
+    /// Suggest a category for an already-normalized merchant string
+    /// (`util::normalize_merchant`), optionally with the transaction's
+    /// free-text description. `None` means "no opinion".
+    fn suggest(
+        &self,
+        conn: &Connection,
+        book_id: &str,
+        merchant_normalized: &str,
+        description: Option<&str>,
+    ) -> Option<CategorySuggestion>;
+}
+
+static MERCHANT_CLASSIFIER: std::sync::OnceLock<&'static dyn MerchantClassifier> =
+    std::sync::OnceLock::new();
+
+/// Register the process-wide merchant classifier. The first call wins and
+/// returns `true`; later calls are ignored and return `false`, so no library
+/// can quietly replace the host's choice. Safe to call from several entry
+/// points.
+pub fn register_merchant_classifier(classifier: &'static dyn MerchantClassifier) -> bool {
+    MERCHANT_CLASSIFIER.set(classifier).is_ok()
+}
+
+/// The registered classifier, if the host registered one.
+pub fn merchant_classifier() -> Option<&'static dyn MerchantClassifier> {
+    MERCHANT_CLASSIFIER.get().copied()
+}
+
 /// Facade over one SQLite database plus a secret store.
 pub struct CoreService {
     db: Db,
@@ -164,6 +224,21 @@ impl CoreService {
 
     fn conn(&self) -> &Connection {
         self.db.conn()
+    }
+
+    /// Run `f` against this service's SQLite connection.
+    ///
+    /// The escape hatch for sibling crates that own their own tables in the
+    /// same database file — today only slipscan-packs, whose `pack_*` tables
+    /// (installer, trust store, rule engine) must live beside the categories
+    /// they map onto. Core keeps the connection private otherwise; this is
+    /// the one, greppable way out, and the read-only flag still applies
+    /// because enforcement is SQLite's own `PRAGMA query_only`.
+    pub fn with_connection<T, E>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, E>,
+    ) -> Result<T, E> {
+        f(self.conn())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -378,6 +453,13 @@ impl CoreService {
 
     /// Create a transaction with dedupe by (account, provider_txn_id | hash).
     /// When no category is given, a stored merchant mapping is applied.
+    ///
+    /// The matching key is the source's merchant when it reports one, and
+    /// otherwise a conservatively derived key from the description
+    /// ([`merchant_key_from_description`]) — which is what lets bank and CSV
+    /// statement imports, whose lines only ever carry a description, reach
+    /// the same cascade. `merchant` itself is left exactly as the source gave
+    /// it (`None` for a statement line): we never invent a display name.
     pub fn transaction_create(&self, new: NewTransaction) -> CoreResult<Transaction> {
         let account = self.account_get(&new.account_id)?;
         if account.book_id != new.book_id {
@@ -405,7 +487,13 @@ impl CoreService {
             }
         }
 
-        let merchant_normalized = new
+        // The merchant the *source* reported, if any. This — not the derived
+        // key below — is what the dedupe hash is taken over, so hashes stay
+        // byte-identical to the ones already stored in existing books and an
+        // overlapping re-import still dedupes across this change. Nothing is
+        // lost by excluding the derived key: it is a pure function of the
+        // description, which the hash already covers.
+        let source_merchant_normalized = new
             .merchant
             .as_deref()
             .map(normalize_merchant)
@@ -416,10 +504,25 @@ impl CoreService {
             new.amount_minor,
             &currency,
             new.provider_txn_id.as_deref(),
-            merchant_normalized.as_deref(),
+            source_merchant_normalized.as_deref(),
             new.description.as_deref(),
             new.dedupe_occurrence,
         );
+
+        // Statement and CSV imports carry a description and no merchant —
+        // the bank never sends one. Without a key derived from that
+        // description they reach neither pack rules nor this book's own
+        // mappings and corrections, so a primary ingestion path would import
+        // permanently uncategorised. `merchant_key_from_description` declines
+        // whenever the narrative does not clearly name a merchant, leaving
+        // the row exactly as it is today; see its docs for the rule.
+        let merchant_normalized = match source_merchant_normalized {
+            Some(m) => Some(m),
+            None => new
+                .description
+                .as_deref()
+                .and_then(merchant_key_from_description),
+        };
 
         let tx = self.conn().unchecked_transaction()?;
         if let Some(pid) = new.provider_txn_id.as_deref() {
@@ -435,11 +538,20 @@ impl CoreService {
             return Err(CoreError::DuplicateTransaction { existing_id });
         }
 
+        // Categorisation cascade. A stored mapping always wins: it is either
+        // the user's own correction, something learned from one, an LLM
+        // verdict they accepted, or a pack's exact rule seeded at install —
+        // so pack rules are only ever consulted for a merchant this book has
+        // no opinion about yet. That ordering is the whole point of
+        // MappingSource: user judgement over community rules, silently.
         let mut category_id = new.category_id;
         if category_id.is_none() {
             if let Some(m) = merchant_normalized.as_deref() {
                 if let Some(mapping) = repo::category::get_mapping(&tx, &new.book_id, m)? {
                     category_id = Some(mapping.category_id);
+                } else if let Some(classifier) = merchant_classifier() {
+                    category_id =
+                        self.classify_by_packs(&tx, classifier, &new.book_id, m, &new.description)?;
                 }
             }
         }
@@ -484,7 +596,7 @@ impl CoreService {
             None,
             Some(serde_json::to_string(&txn)?),
         )?;
-        // ShapePay detection hook: every ingestion source (statement import,
+        // Payment detection hook: every ingestion source (statement import,
         // email, scraper, manual) flows through this path, so watch-code
         // detection inherits all of them. Runs inside the same SQLite
         // transaction — a failed insert enqueues nothing, and the dedupe
@@ -492,6 +604,47 @@ impl CoreService {
         self.detect_payment_matches(&tx, &txn)?;
         tx.commit()?;
         Ok(txn)
+    }
+
+    /// Ask the registered classifier (installed pack rules) about a merchant
+    /// the book has no mapping for, and remember its verdict as a `pack`
+    /// mapping.
+    ///
+    /// Remembering is what makes the answer durable: the same merchant then
+    /// classifies identically on surfaces that do not link slipscan-packs,
+    /// and uninstalling the pack deletes its `pack`-sourced mappings again.
+    /// A later correction overwrites the row with `MappingSource::User`, so
+    /// the precedence above is unaffected.
+    ///
+    /// A suggestion pointing at a category that no longer exists (or belongs
+    /// to another book) is dropped rather than written — a stale rule must
+    /// never fail an import.
+    fn classify_by_packs(
+        &self,
+        conn: &Connection,
+        classifier: &dyn MerchantClassifier,
+        book_id: &str,
+        merchant_normalized: &str,
+        description: &Option<String>,
+    ) -> CoreResult<Option<String>> {
+        let Some(hit) =
+            classifier.suggest(conn, book_id, merchant_normalized, description.as_deref())
+        else {
+            return Ok(None);
+        };
+        match repo::category::get(conn, &hit.category_id)? {
+            Some(category) if category.book_id == book_id => {}
+            _ => return Ok(None),
+        }
+        repo::category::upsert_mapping(
+            conn,
+            book_id,
+            merchant_normalized,
+            &hit.category_id,
+            MappingSource::Pack,
+            hit.confidence,
+        )?;
+        Ok(Some(hit.category_id))
     }
 
     pub fn transaction_get(&self, id: &str) -> CoreResult<Transaction> {
@@ -2869,10 +3022,10 @@ impl CoreService {
     }
 
     // -----------------------------------------------------------------------
-    // ShapePay — watch codes, webhook endpoints, delivery dispatch.
-    // Deliberately simple (TODO-FOLD-SHAPEPAY.md): watch codes are a flat
-    // list, detection lives in `transaction_create`, secrets live in the
-    // vault. Pure logic (matching, signing, backoff) is in `crate::pay`.
+    // Payments — watch codes, webhook endpoints, delivery dispatch.
+    // Deliberately simple: watch codes are a flat list, detection lives in
+    // `transaction_create`, secrets live in the vault. Pure logic (matching,
+    // signing, backoff) is in `crate::pay`.
     // -----------------------------------------------------------------------
 
     /// The credential vault over this service's database + keychain.
@@ -3143,7 +3296,7 @@ impl CoreService {
     /// enabled endpoint, and audits — metadata only, never the description.
     fn detect_payment_matches(&self, conn: &Connection, txn: &Transaction) -> CoreResult<()> {
         if txn.amount_minor <= 0 {
-            return Ok(()); // Outflows never match: ShapePay watches money IN.
+            return Ok(()); // Outflows never match: watches are money-IN only.
         }
         let watches = repo::pay::list_enabled_watches(conn, &txn.book_id)?;
         if watches.is_empty() {
@@ -3783,6 +3936,262 @@ mod tests {
         next.amount_minor = -777;
         let next = svc.transaction_create(next).unwrap();
         assert_eq!(next.category_id.as_deref(), Some(cat.id.as_str()));
+    }
+
+    /// Stand-in for slipscan-packs' classifier: it recognises exactly one
+    /// merchant, so registering it process-wide leaves every other test in
+    /// this binary behaving as if nothing were registered.
+    struct StubClassifier;
+
+    /// The merchant the stub has an opinion about, normalized.
+    const STUB_MERCHANT: &str = "stub pack merchant";
+
+    impl MerchantClassifier for StubClassifier {
+        fn suggest(
+            &self,
+            conn: &Connection,
+            book_id: &str,
+            merchant_normalized: &str,
+            _description: Option<&str>,
+        ) -> Option<CategorySuggestion> {
+            if merchant_normalized != STUB_MERCHANT {
+                return None;
+            }
+            // Whatever category the test named "Pack suggestion" in this book
+            // — the real classifier resolves ids the same way, out of its own
+            // tables in this same connection.
+            let id: String = conn
+                .query_row(
+                    "SELECT id FROM categories WHERE book_id = ?1 AND name = 'Pack suggestion'",
+                    [book_id],
+                    |row| row.get(0),
+                )
+                .ok()?;
+            Some(CategorySuggestion {
+                category_id: id,
+                confidence: 0.9,
+            })
+        }
+    }
+
+    #[test]
+    fn registered_classifier_categorizes_and_user_mappings_still_win() {
+        register_merchant_classifier(&StubClassifier);
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let suggested = make_category(&svc, &book, "Pack suggestion");
+        let mine = make_category(&svc, &book, "Mine");
+
+        let import = |merchant: &str, occurrence: u32| {
+            let mut new = make_txn(&svc, &book, &account);
+            new.merchant = Some(merchant.to_string());
+            new.dedupe_occurrence = occurrence;
+            svc.transaction_create(new).unwrap()
+        };
+
+        // No mapping for this merchant: the classifier is consulted, and its
+        // verdict is remembered as a `pack` mapping.
+        let txn = import("Stub Pack Merchant", 0);
+        assert_eq!(txn.category_id.as_deref(), Some(suggested.id.as_str()));
+        let mapping = repo::category::get_mapping(svc.conn(), &book.id, STUB_MERCHANT)
+            .unwrap()
+            .unwrap();
+        assert_eq!(mapping.category_id, suggested.id);
+        assert_eq!(mapping.source, MappingSource::Pack);
+
+        // A merchant it has no opinion about is left uncategorised.
+        assert!(import("Somewhere Else Entirely", 0).category_id.is_none());
+
+        // The user corrects it: their mapping outranks the classifier from
+        // then on, silently and permanently.
+        svc.transaction_categorize(&txn.id, &mine.id).unwrap();
+        let later = import("Stub Pack Merchant", 1);
+        assert_eq!(later.category_id.as_deref(), Some(mine.id.as_str()));
+        assert_eq!(
+            repo::category::get_mapping(svc.conn(), &book.id, STUB_MERCHANT)
+                .unwrap()
+                .unwrap()
+                .source,
+            MappingSource::User
+        );
+    }
+
+    /// A statement line as bank/CSV import builds it: a description, and no
+    /// merchant at all. Before the key was derived from the description this
+    /// path skipped categorisation entirely — no pack rules, and none of the
+    /// book's own mappings or corrections either.
+    fn statement_txn(book: &Book, account: &Account, narrative: &str) -> NewTransaction {
+        NewTransaction {
+            book_id: book.id.clone(),
+            account_id: account.id.clone(),
+            source: TransactionSource::Import,
+            provider_txn_id: None,
+            posted_date: "2026-07-01".into(),
+            amount_minor: -45_900,
+            currency: "ZAR".into(),
+            merchant: None,
+            description: Some(narrative.to_string()),
+            notes: None,
+            category_id: None,
+            document_id: None,
+            dedupe_occurrence: 0,
+        }
+    }
+
+    #[test]
+    fn statement_lines_categorize_from_their_description() {
+        register_merchant_classifier(&StubClassifier);
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let suggested = make_category(&svc, &book, "Pack suggestion");
+
+        // Description only, merchant None — the classifier is reached
+        // through the key derived from the narrative, and its verdict is
+        // remembered under that key like any other.
+        let txn = svc
+            .transaction_create(statement_txn(&book, &account, "STUB PACK MERCHANT"))
+            .unwrap();
+        assert_eq!(txn.merchant, None, "we never invent a display merchant");
+        assert_eq!(txn.merchant_normalized.as_deref(), Some(STUB_MERCHANT));
+        assert_eq!(txn.category_id.as_deref(), Some(suggested.id.as_str()));
+        assert_eq!(
+            repo::category::get_mapping(svc.conn(), &book.id, STUB_MERCHANT)
+                .unwrap()
+                .unwrap()
+                .source,
+            MappingSource::Pack
+        );
+    }
+
+    #[test]
+    fn statement_line_that_names_no_merchant_stays_untouched() {
+        register_merchant_classifier(&StubClassifier);
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        make_category(&svc, &book, "Pack suggestion");
+
+        // A bank housekeeping line names nobody. Declining is the point: a
+        // key here would be guessed, and the moment the user categorised the
+        // row it would write a durable mapping under that guess.
+        let txn = svc
+            .transaction_create(statement_txn(&book, &account, "MONTHLY ACCOUNT FEE"))
+            .unwrap();
+        assert_eq!(txn.merchant_normalized, None);
+        assert_eq!(txn.category_id, None);
+        // Categorising it by hand still works, and still writes no mapping.
+        let cat = make_category(&svc, &book, "Bank charges");
+        let updated = svc.transaction_categorize(&txn.id, &cat.id).unwrap();
+        assert_eq!(updated.category_id.as_deref(), Some(cat.id.as_str()));
+        assert!(repo::category::get_mapping(
+            svc.conn(),
+            &book.id,
+            &normalize_merchant("MONTHLY ACCOUNT FEE")
+        )
+        .unwrap()
+        .is_none());
+    }
+
+    #[test]
+    fn statement_import_preserves_mapping_source_precedence() {
+        register_merchant_classifier(&StubClassifier);
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let suggested = make_category(&svc, &book, "Pack suggestion");
+        let learned_cat = make_category(&svc, &book, "Learned");
+        let mine = make_category(&svc, &book, "Mine");
+
+        let import = |occurrence: u32| {
+            let mut new = statement_txn(&book, &account, "STUB PACK MERCHANT");
+            new.dedupe_occurrence = occurrence;
+            svc.transaction_create(new).unwrap()
+        };
+
+        // A learned (rule-sourced) mapping already outranks the pack.
+        repo::category::upsert_mapping(
+            svc.conn(),
+            &book.id,
+            STUB_MERCHANT,
+            &learned_cat.id,
+            MappingSource::Rule,
+            0.8,
+        )
+        .unwrap();
+        let learned = import(0);
+        assert_eq!(
+            learned.category_id.as_deref(),
+            Some(learned_cat.id.as_str())
+        );
+        assert_ne!(learned.category_id.as_deref(), Some(suggested.id.as_str()));
+
+        // The user's own correction outranks the learned rule, and keeps
+        // outranking it on every later import of the same narrative.
+        svc.transaction_categorize(&learned.id, &mine.id).unwrap();
+        let mapping = repo::category::get_mapping(svc.conn(), &book.id, STUB_MERCHANT)
+            .unwrap()
+            .unwrap();
+        assert_eq!(mapping.source, MappingSource::User);
+        assert_eq!(mapping.category_id, mine.id);
+        assert_eq!(import(1).category_id.as_deref(), Some(mine.id.as_str()));
+    }
+
+    #[test]
+    fn derived_merchant_key_never_moves_the_dedupe_hash() {
+        // Existing books hold statement rows whose hash was taken with no
+        // merchant at all. Deriving a key must not shift the hash, or the
+        // next overlapping statement pull re-imports every one of them as a
+        // new transaction.
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let narrative = "PNP FAMILY KENILWORTH";
+        let txn = svc
+            .transaction_create(statement_txn(&book, &account, narrative))
+            .unwrap();
+        assert_eq!(
+            txn.merchant_normalized.as_deref(),
+            Some("pnp family kenilworth")
+        );
+        assert_eq!(
+            txn.dedupe_hash,
+            transaction_dedupe_hash(
+                &account.id,
+                "2026-07-01",
+                -45_900,
+                "ZAR",
+                None,
+                None, // as every release before the derived key wrote it
+                Some(narrative),
+                0,
+            )
+        );
+        // And a re-import of that same line is still a duplicate.
+        let err = svc
+            .transaction_create(statement_txn(&book, &account, narrative))
+            .unwrap_err();
+        assert!(matches!(err, CoreError::DuplicateTransaction { .. }));
+    }
+
+    #[test]
+    fn classifier_suggestion_of_a_stale_category_is_dropped() {
+        register_merchant_classifier(&StubClassifier);
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        // No "Pack suggestion" category in this book at all: a rule pointing
+        // at a category that no longer exists must not fail the import.
+        let mut new = make_txn(&svc, &book, &account);
+        new.merchant = Some("Stub Pack Merchant".into());
+        let txn = svc.transaction_create(new).unwrap();
+        assert!(txn.category_id.is_none());
+        assert!(
+            repo::category::get_mapping(svc.conn(), &book.id, STUB_MERCHANT)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -6482,7 +6891,7 @@ mod tests {
     }
 
     // -- pay delivery resilience --------------------------------------------
-    // (The main ShapePay service tests live in `crate::pay::tests`; this one
+    // (The main payments service tests live in `crate::pay::tests`; this one
     // needs the private `vault()` handle to simulate a revoked secret.)
 
     #[tokio::test]

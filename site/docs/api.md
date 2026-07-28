@@ -2,11 +2,13 @@
 
 SlipScan has **one service surface, two transports**. Every operation is a function on the core service layer (`crates/slipscan-core`); the Tauri desktop app calls it over IPC and `slipscan-server` exposes the same operations over HTTP. Full same-name/same-payload parity is the contract in [ARCHITECTURE.md](ARCHITECTURE.md#ipc--api-surface) — **and it is not met yet**:
 
-- The **HTTP server is the canonical, near-complete surface** — the operation tables below describe it.
-- The **desktop IPC currently exposes a UI-shaped subset** (47 commands) with display-oriented DTOs. Missing from IPC today: `book_create`/`book_get`, all account CRUD, `transaction_create`/`transaction_get`, `category_create`, `budget_status`, the document status-machine ops (`document_transition`, `document_record_extraction`, `document_current_extraction`), `journal_get`, `coa_seed`, `report_profit_loss`, `report_balance_sheet`, `audit_list`, and `pack_install`/`pack_list`.
-- Three names currently diverge where both surfaces exist: desktop `report_vat_summary` vs server `report_tax` (the server keeps `report_vat` as a deprecated route alias), desktop `ledger_account_list` vs server `coa_list`, and desktop `category_list` vs server `category_tree`. `settings_get`/`settings_set` share names across both, but the payloads diverge: the desktop carries a whole-settings UI blob, the server generic key/value pairs. The desktop additionally has `journal_list`, `budget_list`, `report_income_expense`, `vault_set`/`vault_replace`, and `pay_deliver_due`, none of which are HTTP routes (vault writes are deliberately local-only — see below; the server flushes webhook deliveries with its own loop instead of a route — see [Payments](#payments-shapepay)).
+- The **HTTP server is the canonical, near-complete surface** — the operation tables below describe it. 75 routes under `/api/v1` (74 distinct handlers: `report_vat` is a deprecated alias of `report_tax`), plus the public `GET /health`.
+- The **desktop IPC exposes a UI-shaped subset** — **64 commands** with display-oriented DTOs (`health` in `src-tauri/src/lib.rs`, the other 63 in `src-tauri/src/commands.rs`). `apps/desktop/src/lib/api/client.ts` calls **all 64**: every registered command is reachable from a screen. (`pack_install_seeds` was registered-but-uncalled until the Packs screen surfaced it as an explicit action, and `pack_benchmark` had no IPC command at all until the same change added one.) **19 HTTP operations have no IPC command**: `book_create`/`book_get`, `account_create`/`account_get`/`account_update`/`account_delete` (`account_list` **is** wired — Dashboard, Transactions, Reports and Settings all call it), `transaction_create`/`transaction_get`, `category_create`, `member_get`, `budget_status`, the document status-machine ops (`document_transition`, `document_record_extraction`, `document_current_extraction`), `journal_get`, `coa_seed`, `report_profit_loss`, `report_balance_sheet`, and `audit_list`.
+- Three names currently diverge where both surfaces exist: desktop `report_vat_summary` vs server `report_tax` (the server keeps `report_vat` as a deprecated route alias), desktop `ledger_account_list` vs server `coa_list`, and desktop `category_list` vs server `category_tree`. `settings_get`/`settings_set` share names across both, but the payloads diverge: the desktop carries a whole-settings UI blob, the server generic key/value pairs. Discounting those three renames, **8 commands are desktop-only**: `journal_list`, `budget_list`, `report_income_expense`, `data_move`, `vault_set`/`vault_replace`, `pay_deliver_due`, and `pack_verify`. Each omission is deliberate, not a gap — vault writes and the data-folder move are local-only by design (see [Data folder](#data-folder) and [What is deliberately absent](#what-is-deliberately-absent)), the server flushes webhook deliveries with its own loop instead of a route (see [Payments](#payments)), and pack verification is a preflight the CLI does inline (`slipscan pack verify`). The rest are UI conveniences the server has no reason to grow.
 
-Closing this gap (one name, one payload, both transports) is tracked in [ROADMAP.md](../ROADMAP.md).
+The three sets are machine-readable in [`parity.json`](parity.json), derived from `crates/slipscan-server/src/routes.rs`, `apps/desktop/src-tauri/src/lib.rs`, and `apps/desktop/src/lib/api/client.ts`. Regenerate it in the same change as any route or command you add, so a CI check can diff the doc against the code.
+
+Closing the 19-operation gap (one name, one payload, both transports) is tracked in [ROADMAP.md](../ROADMAP.md).
 
 ## Transports
 
@@ -44,6 +46,16 @@ The surface, grouped by domain module. It mirrors the `pub fn`s on the core serv
 | `transaction_create` / `transaction_get` / `transaction_list` | Bank-level transactions; `source` = scraper \| email \| import \| manual |
 | `transaction_categorize` | Assign a category; records a local correction that feeds the learning loop ([PACKS.md](PACKS.md#corrections-stay-local)) |
 | `category_create` / `category_tree` | Hierarchical categories |
+
+### Household members & attribution
+
+Members are rows in the book, never logins — the model is in [ARCHITECTURE.md](ARCHITECTURE.md#household-members--per-person-attribution). Attribution is metadata on the transaction: it adds a member dimension to reporting and never alters debits or credits.
+
+| Operation | Purpose |
+|---|---|
+| `member_add` / `member_get` / `member_list` / `member_update` / `member_remove` | People in the household: label, display initial, cosmetic colour, and an optional default account they own (new transactions on it attribute to them unless overridden) |
+| `transaction_attribute` | Set — or clear, with a null member — who a transaction is attributed to; the member must belong to the transaction's book |
+| `transaction_splits_list` / `transaction_split_set` | Split one transaction across members as `(member_id, share_minor)` rows that must sum to the transaction's absolute amount; each member appears at most once, and an empty list clears the split |
 
 ### Budgets
 
@@ -83,6 +95,9 @@ The surface, grouped by domain module. It mirrors the `pub fn`s on the core serv
 | `report_spending` | Spending breakdowns by category/period |
 | `report_trial_balance` | Trial balance for business books |
 | `report_profit_loss` / `report_balance_sheet` / `report_tax` | Income statement, balance sheet, and the tax-period summary (base-currency) — labeled from the book's region profile ("VAT201" is the `za` profile's name for it). `report_vat` remains as a deprecated alias of `report_tax` |
+| `report_member_expense` / `report_member_contribution` | Per-member expense and contribution rollups over a period ([Household members](ARCHITECTURE.md#household-members--per-person-attribution)) |
+| `report_member_category` | Share-of-category per member. Server + desktop only — no CLI equivalent yet (`slipscan report` supports `tb`/`pl`/`bs`/`tax`/`members`/`settle-up`, not this one) |
+| `report_settle_up` | Net "who owes whom" position per member over a period; desktop and CLI (`slipscan report settle-up`) both call it |
 
 ### Settings, packs, audit
 
@@ -90,8 +105,20 @@ The surface, grouped by domain module. It mirrors the `pub fn`s on the core serv
 |---|---|
 | `settings_get` / `settings_set` | Key/value settings; secret-flagged values are **rejected over HTTP** — secret material is set locally (CLI / desktop) only ([CONFIGURATION.md](CONFIGURATION.md#the-settings-model)) |
 | `pack_install` / `pack_list` | Verify (ed25519) and install a classification pack ([PACKS.md](PACKS.md)) |
+| `pack_install_seeds` | Install the built-in seed packs into a book — an explicit action, never automatic, and idempotent (categories you already have are adopted by (parent, name), not duplicated). On the desktop it is a user action on the Packs screen, presented with the book's region profile in view |
+| `pack_uninstall` | Remove a pack's rules and its registration. Categories it created stay (history never breaks) and the signer pin stays; returns `false` if that pack was not installed |
+| `pack_benchmark` | Peer comparison for one month (`period`: `YYYY-MM`) against installed benchmark packs — computed locally from your own spend, transmits nothing ([BENCHMARKS.md](BENCHMARKS.md)). On all three surfaces (HTTP, `slipscan pack benchmark`, and the desktop Packs screen); the desktop DTO adds the pack's display name, and no surface converts currencies — a pack the book's currency does not match comes back `skipped`, and a taxonomy key nothing maps to comes back in `unmapped_keys` |
 | `audit_list` | Read the append-only audit log |
 | `vault_list` / `vault_revoke` | Vault **metadata** and revocation; `vault_set`/`vault_replace` are deliberately not HTTP routes |
+
+### Data folder
+
+Where the durable data lives, and the operation that relocates it ([ARCHITECTURE.md](ARCHITECTURE.md#data-location--backup--your-folder-your-cloud-your-responsibility)).
+
+| Operation | Purpose |
+|---|---|
+| `data_status` | Current data folder, pointer path, and sizes. The **one `GET`** in the API — `GET /api/v1/data_status`, everything else is `POST`. A server started with an explicit `--db` (no managed folder) answers `503` rather than inventing an answer about a folder it is not serving. The desktop DTO adds a cloud-sync hint for the Settings screen |
+| `data_move` | Move the data folder (copy → verify → switch pointer → delete old). **Desktop IPC and CLI (`slipscan data move`) only — no HTTP route.** The target is a path on the server's own filesystem, so a remote caller cannot meaningfully name one and a leaked bearer token could otherwise redirect and then delete the data; the process must also quiesce read-only mid-move, which an HTTP client cannot be trusted to coordinate; and the move deletes the old copy, which is an owner-present decision |
 
 ### Exchange rates (opt-in)
 
@@ -106,9 +133,9 @@ The opt-in OpenRate FX operations ([CONFIGURATION.md](CONFIGURATION.md#exchange-
 
 Rates are decimal strings end-to-end — never floats. The single FX setting (`fx.openrate_base_url`) can also be written through the generic `settings_set` route.
 
-### Payments (ShapePay)
+### Payments
 
-Watch reference codes on inbound transactions and fire signed webhooks to endpoints you registered — the full model, delivery semantics, and a receiver verification example are in [PAYMENTS.md](PAYMENTS.md). All `pay_*` operations exist under the same names on both transports, with the exceptions called out below:
+Reference watches and signed webhooks: watch reference codes on inbound transactions and fire signed webhooks to endpoints you registered — the full model, delivery semantics, and a receiver verification example are in [PAYMENTS.md](PAYMENTS.md). All `pay_*` operations exist under the same names on both transports, with the exceptions called out below:
 
 | Operation | Purpose |
 |---|---|
@@ -118,13 +145,14 @@ Watch reference codes on inbound transactions and fire signed webhooks to endpoi
 | `pay_match_list` / `pay_delivery_list` | Detected matches, and the SQLite delivery queue with state (`pending` / `delivered` / `failed`), attempts, `next_attempt_at`, and last status/error |
 | `pay_deliver_due` | POST every due pending delivery now — **desktop IPC only**. The server has no route for it: `slipscan serve` runs its own delivery loop (every 30 s, honoring each delivery's backoff), and `slipscan mail-sync` / `slipscan pay deliver` flush from the CLI |
 
-### Health (HTTP only)
+### Health
 
-`GET /health` → `{ "status": "ok", "version": "..." }`. The one non-`/api/v1` route; exists for probes and reverse-proxy checks.
+`GET /health` → `{ "status": "ok", "version": "..." }`. The one non-`/api/v1` route — unauthenticated, outside the bearer check — for probes and reverse-proxy checks. The desktop has the same-named `health` IPC command; it adds the `tauri` runtime version and backs the sidebar's live/mock status badge.
 
 ## What is deliberately absent
 
 - **No vault-read operation.** Vault writes (`vault_set` / `vault_replace`) exist over desktop IPC only; over HTTP only `vault_list` (metadata) and `vault_revoke` exist. Nothing returns secret material over IPC or HTTP, to anyone, ever. This is structural, not policy — see [THREAT-MODEL.md](THREAT-MODEL.md).
+- **No remote data-folder move.** `data_move` exists over desktop IPC and the CLI only; over HTTP the data folder is read-only status (`data_status`). The rationale is in [Data folder](#data-folder) above and in the `data_status` handler's doc comment.
 - **No cloud concepts.** No orgs, no billing, no auth-as-a-service. Those died with the legacy stack ([CHANGELOG.md](../CHANGELOG.md)).
 - **No push from the server.** Clients poll or subscribe locally; the server only answers.
 

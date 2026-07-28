@@ -1,4 +1,4 @@
-//! ShapePay — email-driven payment webhooks (TODO-FOLD-SHAPEPAY.md, Phase 4.8).
+//! Payments — reference watches and signed webhooks (Phase 4.8).
 //!
 //! Deliberately SIMPLE: watch reference codes on inbound transactions, fire
 //! signed webhooks when one is detected. Watch codes are a flat list — no

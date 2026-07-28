@@ -96,16 +96,65 @@
 //! here doesn't require touching `envoir` at all (see the root `Cargo.toml`
 //! and this crate's `Cargo.toml` for why `optional` alone isn't sufficient).
 //! Enable with `--features sync-dmtap` when building this crate on its own.
+//!
+//! The gate is written per item rather than as a crate-level
+//! `#![cfg(feature = "sync-dmtap")]`, and that is deliberate: a crate-level
+//! gate strips *every* item in this file when the feature is off, including a
+//! test, so a bare `cargo test` compiled an empty crate, ran zero tests and
+//! printed `test result: ok`. Seven real tests had silently not run. Per-item
+//! gating leaves room for the `feature_gate` guard below, which fails that bare
+//! run and says what was not checked. The library itself is still empty and
+//! dependency-free without the feature — the guard is `cfg(test)`-only and
+//! links nothing.
 
-#![cfg(feature = "sync-dmtap")]
+/// Fails a bare `cargo test` on this crate, on purpose.
+///
+/// The whole mapping and its suite are behind `sync-dmtap`, so without the
+/// feature there is nothing to test — and a test runner that reports success
+/// for having verified nothing is worse than one that reports failure. This
+/// module is the loud skip: it names the suite that did not run and the exact
+/// command that runs it.
+///
+/// CI passes the feature, so this never fires there; it fires for a developer
+/// who typed the short command and would otherwise have believed it.
+#[cfg(all(test, not(feature = "sync-dmtap")))]
+mod feature_gate {
+    /// Not a broken build — a refused false green. See the module docs.
+    #[test]
+    fn dmtap_mapping_suite_did_not_run() {
+        panic!(
+            "\n\
+             slipscan-sync was tested WITHOUT --features sync-dmtap, so nothing was verified.\n\
+             \n\
+             Not run (7 tests, all of src/lib.rs's suite):\n\
+             \x20 - editable_rows_are_lww_registers\n\
+             \x20 - ledger_rows_are_set_adds_keyed_by_table\n\
+             \x20 - deleting_a_ledger_row_is_refused\n\
+             \x20 - a_deleted_row_round_trips_and_can_be_revived\n\
+             \x20 - decimals_encode_exactly\n\
+             \x20 - canonical_json_rejects_non_objects\n\
+             \x20 - canonical_json_is_key_order_independent\n\
+             \n\
+             Run them with:\n\
+             \x20 cargo test --manifest-path crates/slipscan-sync/Cargo.toml --features sync-dmtap\n\
+             \n\
+             That invocation fetches the pinned `envoir` git dependency, which is why it is not\n\
+             the default and why this crate is excluded from the root workspace (a bare\n\
+             `git clone && cargo build` of SlipScan must never reach for envoir).\n"
+        );
+    }
+}
 
+#[cfg(feature = "sync-dmtap")]
 use dmtap_sync::{Hlc, SVal, SyncOp, OP_LWW_SET, OP_SET_ADD};
+#[cfg(feature = "sync-dmtap")]
 use rust_decimal::Decimal;
 
 /// The substrate op kinds this mapping emits.
 ///
 /// Read from `dmtap-sync` rather than hard-coded, because `SYNC.md`'s own
 /// adoption notes say never to hard-code the discriminators.
+#[cfg(feature = "sync-dmtap")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     /// §4.4 last-writer-wins register — an editable row.
@@ -114,6 +163,7 @@ pub enum Kind {
     SetAdd,
 }
 
+#[cfg(feature = "sync-dmtap")]
 impl Kind {
     /// The wire discriminator for this kind.
     pub fn code(self) -> u8 {
@@ -126,6 +176,7 @@ impl Kind {
 
 /// The single register per editable row. Named rather than empty so the address
 /// space stays open for a later per-column split (§4.1.1).
+#[cfg(feature = "sync-dmtap")]
 pub const LWW_FIELD: &str = "row";
 
 /// Tables whose rows are immutable ledger facts, merged by union.
@@ -133,14 +184,17 @@ pub const LWW_FIELD: &str = "row";
 /// Kept as data rather than as a predicate on the table name so that adding a
 /// table is a deliberate act with a matching mapping decision, not something a
 /// naming convention can do by accident.
+#[cfg(feature = "sync-dmtap")]
 pub const LEDGER_TABLES: &[&str] = &["journals", "journal_lines"];
 
 /// Whether `table` is an immutable ledger, and so maps to the OR-Set.
+#[cfg(feature = "sync-dmtap")]
 pub fn is_ledger(table: &str) -> bool {
     LEDGER_TABLES.contains(&table)
 }
 
 /// The primitive `table` maps to.
+#[cfg(feature = "sync-dmtap")]
 pub fn kind_for(table: &str) -> Kind {
     if is_ledger(table) {
         Kind::SetAdd
@@ -149,6 +203,7 @@ pub fn kind_for(table: &str) -> Kind {
     }
 }
 
+#[cfg(feature = "sync-dmtap")]
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum MapError {
     /// A ledger table has no concept of deletion; a correction is a reversal.
@@ -164,6 +219,7 @@ pub enum MapError {
 /// Text, not a float: §4.1 has no float, and SlipScan has no float in money
 /// either, so this loses nothing. `Decimal`'s `to_string` is exact and
 /// round-trips through `parse`.
+#[cfg(feature = "sync-dmtap")]
 pub fn decimal_value(d: Decimal) -> SVal {
     SVal::Text(d.to_string())
 }
@@ -177,6 +233,7 @@ pub fn decimal_value(d: Decimal) -> SVal {
 /// a `BTreeMap` under the `preserve_order`-off default, so serialisation is
 /// already key-sorted; this function exists to make that a stated guarantee
 /// rather than an inherited accident, and to reject non-objects.
+#[cfg(feature = "sync-dmtap")]
 pub fn canonical_json(row: &serde_json::Value) -> Result<String, MapError> {
     match row {
         serde_json::Value::Object(_) => Ok(row.to_string()),
@@ -187,6 +244,7 @@ pub fn canonical_json(row: &serde_json::Value) -> Result<String, MapError> {
 }
 
 /// The discriminated LWW payload: `"v"` live, `"x"` deleted (§4.1.1).
+#[cfg(feature = "sync-dmtap")]
 fn row_value(row: &serde_json::Value, deleted: bool) -> Result<SVal, MapError> {
     let tag = if deleted { "x" } else { "v" };
     Ok(SVal::Text(format!("{tag}{}", canonical_json(row)?)))
@@ -197,6 +255,7 @@ fn row_value(row: &serde_json::Value, deleted: bool) -> Result<SVal, MapError> {
 /// An editable row becomes an LWW register write; a ledger row becomes a
 /// set-add. Deleting a ledger row is refused rather than silently mapped, so a
 /// caller that tries gets an error instead of a converged hole in the books.
+#[cfg(feature = "sync-dmtap")]
 pub fn op_for_write(
     ns: &str,
     table: &str,
@@ -235,6 +294,7 @@ pub fn op_for_write(
 }
 
 /// Read a LWW register payload back into `(row, deleted)`.
+#[cfg(feature = "sync-dmtap")]
 pub fn parse_row_value(v: &SVal) -> Option<(serde_json::Value, bool)> {
     let SVal::Text(s) = v else { return None };
     let (tag, body) = s.split_at_checked(1)?;
@@ -246,7 +306,9 @@ pub fn parse_row_value(v: &SVal) -> Option<(serde_json::Value, bool)> {
     serde_json::from_str(body).ok().map(|row| (row, deleted))
 }
 
-#[cfg(test)]
+/// The real suite. Gated with the mapping it tests — the `feature_gate` module
+/// above is what stops its absence from reading as success.
+#[cfg(all(test, feature = "sync-dmtap"))]
 mod tests {
     use super::*;
 

@@ -191,6 +191,39 @@ impl Pack {
         &self.payload.meta.version
     }
 
+    /// Adopt payload bytes distributed in the **single-file form**: the
+    /// payload JSON plus a signature handed over separately (the `pack
+    /// install <payload.json> --signature --public-key` shape). The manifest
+    /// is derived from the payload and the bytes are kept verbatim, so what
+    /// gets installed — and what a later export writes back out — is exactly
+    /// the byte sequence that was signed.
+    ///
+    /// Signature-checking still happens through [`Pack::verify`]; this only
+    /// assembles the two-part form around bytes the caller already holds.
+    pub(crate) fn from_signed_payload(
+        payload_bytes: Vec<u8>,
+        payload: PackPayload,
+        signature: Option<ManifestSignature>,
+    ) -> Self {
+        let manifest = ManifestDoc {
+            pack: ManifestPack {
+                id: payload.meta.id.clone(),
+                name: payload.meta.name.clone(),
+                version: payload.meta.version.clone(),
+                region: payload.meta.region.clone(),
+                author: payload.meta.author.clone(),
+                payload: DEFAULT_PAYLOAD_FILE.to_string(),
+                payload_sha256: sha256_hex(&payload_bytes),
+            },
+            signature,
+        };
+        Self {
+            manifest,
+            payload,
+            payload_bytes,
+        }
+    }
+
     /// Build a pack from a payload (used by pack authors, the builtin packs,
     /// and tests). Serializes the payload to pretty JSON — those bytes become
     /// the signable artifact. Sign with [`crate::verify::sign_pack`].

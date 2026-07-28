@@ -101,7 +101,7 @@ impl AnthropicProvider {
 
 /// Pull the concatenated text blocks out of a Messages API response.
 fn response_text(body: &str) -> Result<String, ExtractError> {
-    let value: serde_json::Value = serde_json::from_str(body)?;
+    let value = super::decode_response_body("anthropic", body)?;
     let stop_reason = value["stop_reason"].as_str().unwrap_or_default();
     if stop_reason == "refusal" {
         return Err(ExtractError::Provider(
@@ -244,6 +244,39 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ExtractError::Auth(_)));
         assert!(!err.to_string().contains("sk-ant-canned"));
+    }
+
+    #[tokio::test]
+    async fn a_truncated_200_never_becomes_a_slip() {
+        // Whole-path version of the envelope hazard: the transport reports a
+        // clean 200, the body is short, and no extraction may come out of it.
+        let full = canned_message(SLIP_JSON, "end_turn");
+        for cut in [0, 1, 30, full.len() / 2, full.len() - 3, full.len() - 1] {
+            let mock = Arc::new(MockTransport::new());
+            mock.push_response(200, &full[..cut]);
+            let err = match provider(mock)
+                .extract(ExtractionRequest::new(MIME_JPEG, vec![1, 2, 3]))
+                .await
+            {
+                Err(e) => e,
+                Ok(slip) => panic!(
+                    "a body truncated at {cut} bytes produced a slip (total {})",
+                    slip.totals.total_minor
+                ),
+            };
+            assert!(
+                matches!(err, ExtractError::InvalidResponse(_)),
+                "cut {cut}: {err}"
+            );
+            assert!(!err.is_retryable(), "cut {cut}: {err}");
+        }
+        // Sanity: the untruncated body still extracts.
+        let mock = Arc::new(MockTransport::new());
+        mock.push_response(200, full);
+        assert!(provider(mock)
+            .extract(ExtractionRequest::new(MIME_JPEG, vec![1, 2, 3]))
+            .await
+            .is_ok());
     }
 
     #[tokio::test]

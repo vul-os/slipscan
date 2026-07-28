@@ -3,15 +3,21 @@
  * Routes are flat ids; the hash is `#/<id>`. Works in Tauri and plain browser.
  */
 
+/**
+ * Every screen, in sidebar order — the nav renders this order, so the two
+ * cannot drift apart.
+ */
 export const ROUTES = [
   "dashboard",
   "transactions",
   "receipts",
   "budgets",
+  "household",
   "ledger",
   "reconcile",
   "payments",
   "reports",
+  "packs",
   "settings",
 ] as const;
 

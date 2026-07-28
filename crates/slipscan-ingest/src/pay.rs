@@ -1,4 +1,4 @@
-//! Production transport for slipscan-core's ShapePay webhook dispatcher.
+//! Production transport for slipscan-core's payment webhook dispatcher.
 //!
 //! Core defines the [`WebhookTransport`] trait so it stays strictly
 //! network-free; this crate already carries `reqwest`, so the real
