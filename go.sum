@@ -14,6 +14,8 @@ github.com/tetratelabs/wazero v1.12.0 h1:DuWcpNu/FzgEXgGBDp8J1Spc+CWOvvtvVyjKlaZ
 github.com/tetratelabs/wazero v1.12.0/go.mod h1:LvKtzl2RqO4gyF27BiXU+nKAjcV8f38U+kP/q2vgxh0=
 github.com/vul-os/kotva/bindings/go v0.2.0 h1:2FCLPMUtoURouIxPL1Ka4HrSEoIUN6k3Gyb9d5UF4TI=
 github.com/vul-os/kotva/bindings/go v0.2.0/go.mod h1:vDg6WQ9Hvv0Q/Jpd9uynqWnBa7g5CvWK3B8DHFPPPHA=
+github.com/vul-os/kotva/bindings/go v0.2.1 h1:gJ5xPlqH67Ne3aYk0J13750HrwLgH0eZ1iWsju0Wc0A=
+github.com/vul-os/kotva/bindings/go v0.2.1/go.mod h1:vDg6WQ9Hvv0Q/Jpd9uynqWnBa7g5CvWK3B8DHFPPPHA=
 golang.org/x/mod v0.16.0 h1:QX4fJ0Rr5cPQCF7O9lh9Se4pmwfwskqZfq5moyldzic=
 golang.org/x/mod v0.16.0/go.mod h1:hTbmBsO62+eylJbnUtE2MGJUyE7QWk4xUqPFrRgJ+7c=
 golang.org/x/sys v0.6.0/go.mod h1:oPkhp1MJrh7nUepCBck5+mAzfO9JrbApNNgaTdGDITg=

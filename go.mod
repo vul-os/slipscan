@@ -13,7 +13,7 @@ go 1.25.0
 // `//go:build dmtap`. See CHANGELOG.md for the migration, and
 // backend/internal/substrate/engine_pin_test.go for what keeps it this way.
 require (
-	github.com/vul-os/kotva/bindings/go v0.2.0
+	github.com/vul-os/kotva/bindings/go v0.2.1
 	modernc.org/sqlite v1.34.5
 )
 

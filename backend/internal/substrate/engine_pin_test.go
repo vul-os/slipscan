@@ -33,7 +33,7 @@ import (
 // line is in a file a reviewer is looking at.
 const (
 	engineModule  = "github.com/vul-os/kotva/bindings/go"
-	engineVersion = "v0.2.0"
+	engineVersion = "v0.2.1"
 )
 
 // vendoredDir is the tree this module replaced. Named so the assertion below
