@@ -91,6 +91,29 @@
   .toggle button{background:none; border:0; padding:6px 10px; cursor:pointer; color:var(--ink-3); font-size:12px; display:flex; align-items:center;}
   .toggle button[aria-pressed="true"]{background:var(--accent); color:var(--accent-ink);}
 
+  /* The bar was one un-collapsing flex row: five links, a three-way theme
+     toggle and a button, 705px of content in a 390px viewport — the whole page
+     scrolled sideways on a phone. Nothing here is lost, only relocated: the
+     section links are same-page anchors you reach by scrolling, and Docs,
+     GitHub and Vulos are all in the footer. */
+  @media(max-width:860px){
+    .bar nav a.sect{display:none;}
+    .bar-inner{gap:12px;}
+  }
+  /* Below ~400px the wordmark is the last thing that has to give: the mark
+     still identifies the product, and every nav destination is in the footer. */
+  @media(max-width:400px){
+    .brand .wm{display:none;}
+  }
+  @media(max-width:560px){
+    .bar nav a.suite{display:none;}
+    .bar-inner{padding:0 16px; gap:8px;}
+    .bar nav{gap:4px;}
+    .bar nav a{padding:8px 9px;}
+    .toggle button{padding:6px 8px;}
+    .bar nav .btn{padding:9px 13px;}
+  }
+
   /* hero */
   .hero{position:relative; padding:88px 0 56px; background:var(--glow);}
   .eyebrow{display:inline-flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--accent); background:var(--accent-tint); border:1px solid var(--line); padding:6px 12px; border-radius:999px; margin-bottom:22px;}
@@ -112,6 +135,12 @@
   .section-head p{color:var(--ink-2); font-size:17px; margin-top:14px;}
 
   .grid{display:grid; gap:20px; grid-template-columns:repeat(auto-fit,minmax(260px,1fr));}
+  /* A grid item defaults to min-width:auto, so it refuses to shrink below its
+     content. That made the code blocks inside these cells 508px wide in a
+     342px track — their own overflow-x:auto never engaged, and the whole page
+     scrolled sideways instead. min-width:0 lets the track win, so the pre
+     scrolls within its card the way it was always meant to. */
+  .grid > *{min-width:0;}
   .card{background:var(--surface); border:1px solid var(--line); border-radius:var(--r-lg); padding:26px; box-shadow:var(--sh-1); transition:.18s var(--ease);}
   .card:hover{box-shadow:var(--sh-2); transform:translateY(-2px);}
   .card .ico{width:40px; height:40px; border-radius:10px; display:grid; place-items:center; background:var(--accent-tint); color:var(--accent); margin-bottom:16px;}
@@ -157,13 +186,13 @@
 
 <header class="bar">
   <div class="bar-inner">
-    <a class="brand" href="./index.html"><img src="./flowstock.svg" alt="" /> FlowStock</a>
+    <a class="brand" href="./index.html"><img src="./flowstock.svg" alt="" /> <span class="wm">FlowStock</span></a>
     <nav>
-      <a href="#features">Features</a>
-      <a href="#sync">Sync</a>
-      <a href="#install">Install</a>
+      <a class="sect" href="#features">Features</a>
+      <a class="sect" href="#sync">Sync</a>
+      <a class="sect" href="#install">Install</a>
       <a href="./docs.html">Docs</a>
-      <a href="https://vulos.org/products" title="Back to the Vulos suite" aria-label="Back to Vulos">Vulos</a>
+      <a class="suite" href="https://vulos.org/products" title="Back to the Vulos suite" aria-label="Back to Vulos">Vulos</a>
       <div class="toggle" role="group" aria-label="Theme">
         <button data-theme-val="light" title="Light">☀</button>
         <button data-theme-val="dark" title="Dark">☾</button>
