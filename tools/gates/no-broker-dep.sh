@@ -78,10 +78,28 @@ SEAM_FLAG=${SEAM_FLAG:-}
 # and a human must.
 DOC_PATHS=${DOC_PATHS:-'docs/ site/ README.md CHANGELOG.md LICENSE.md'}
 
+# Split so this script's own source does not contain the literal marker it searches for —
+# otherwise the gate would exempt itself by accident rather than by the explicit rule above.
+_ALLOW_SUFFIX=':allow-file'
+
 # Build directories and vendored trees are excluded from the TEXT scan only. They are not
 # excluded from C-DEP, which reads the resolved graph and is where a vendored broker would
 # show up anyway.
-PRUNE='./.git ./target ./node_modules ./vendor ./dist ./build ./.venv ./__pycache__'
+# Matched by NAME, at any depth — not by top-level path. A `-path ./node_modules` test only
+# ever matches a prune dir sitting in the root, which is not where they mostly live: gitstate
+# has web/node_modules, apps/desktop/src-tauri/target and crates/gitstate-sync/target, and a
+# path-matched prune walked all three. That cost 28,731 scanned files and ~16 minutes for one
+# invocation, and it was a correctness bug before it was a performance one — a vendored package
+# or a build fingerprint containing the broker's name would have produced a spurious FAIL
+# against a product that does not depend on it.
+PRUNE_NAMES='.git target node_modules vendor dist build .venv __pycache__'
+
+# Emits the `find` prune expression, name-matched so it applies at ANY depth.
+prune_expr() {
+	_e=''
+	for _n in $PRUNE_NAMES; do _e="$_e -name $_n -prune -o"; done
+	printf '%s' "$_e"
+}
 
 say() { printf '%s\n' "$*"; }
 fail() { printf 'VIOLATION  %s\n' "$*"; violations=$((violations + 1)); }
@@ -104,6 +122,25 @@ is_exempt() {
 	for _pre in $SEAM_PATHS $DOC_PATHS; do
 		case $_p in "${_pre%/}"/* | "$_pre") return 0 ;; esac
 	done
+	# A file may name the broker in order to ASSERT ITS ABSENCE. gitstate's CI carries a step
+	# called "Assert no Ephor dependency anywhere" whose grep pattern necessarily spells the
+	# broker's name — and this gate flagged it, which is the gate failing a repo for enforcing
+	# the very rule the gate exists to enforce. The available workarounds were both bad:
+	# exempting all of .github/ would blind the gate to a workflow that genuinely deploys a
+	# broker, and deleting the assertion would remove a real check to satisfy a false one.
+	#
+	# So a file may opt out explicitly, and the cost of doing so is that it must say why in the
+	# same breath. Every exemption is PRINTED with its reason on every run (see scan_file), so
+	# the escape hatch cannot be used quietly — an unexplained one is visible in the output and
+	# in review. Grep-hostile spelling of the marker keeps this very comment from matching it.
+	if grep -Iq -e "no-broker-dep""$_ALLOW_SUFFIX" "$1" 2>/dev/null; then
+		_reason=$(grep -Ihm1 -e "no-broker-dep""$_ALLOW_SUFFIX" "$1" 2>/dev/null |
+			sed "s/.*no-broker-dep$_ALLOW_SUFFIX[: ]*//" | cut -c1-100)
+		[ -n "$_reason" ] || _reason='(NO REASON GIVEN — this exemption is not accountable)'
+		printf '  EXEMPT-FILE  %s — %s\n' "$_p" "$_reason"
+		_file_exemptions=$((_file_exemptions + 1))
+		return 0
+	fi
 	return 1
 }
 
@@ -111,7 +148,61 @@ is_exempt() {
 # Each ecosystem answers ONE question: "with default features/tags, what does the build
 # actually pull in?" The command must be the toolchain's own resolver — a manifest grep
 # cannot see a transitive dependency, which is precisely how a broker arrives.
+#
+# C-DEP runs once PER MANIFEST, not once per repo. The earlier if/elif chain checked whichever
+# ecosystem happened to own the root manifest and silently ignored every other one — and said
+# nothing, so the output read as a clean pass. pango is the case that exposed it: package.json
+# at the root, go.mod in backend/, and the entire Go closure — the actual product — was never
+# read. A gate that quietly declines to look is worse than one that fails, because the operator
+# has no way to tell the difference.
 check_dep_closure() {
+	_root=$(pwd)
+	# shellcheck disable=SC2086 # word splitting of the prune list is intended
+	_manifests=$(find . $(prune_expr) -type f \
+		\( -name Cargo.toml -o -name go.mod -o -name package.json \
+		-o -name pyproject.toml -o -name requirements.txt \) -print 2>/dev/null |
+		sed 's|/[^/]*$||' | sort -u)
+
+	if [ -z "$_manifests" ]; then
+		cannot "C-DEP  no recognised manifest (Cargo.toml / go.mod / package.json / pyproject.toml) anywhere under $_root — add this ecosystem's mechanics per substrate/SOVEREIGNTY.md §5.2 instead of skipping"
+		return 0
+	fi
+
+	# A Cargo workspace member resolves through its workspace root, so checking it separately
+	# re-reads the same graph. Skip members; the root already covers them.
+	_rust_ws=no
+	if [ -f Cargo.toml ] && grep -q '^\[workspace\]' Cargo.toml 2>/dev/null; then _rust_ws=yes; fi
+
+	_oldifs=$IFS
+	IFS='
+'
+	for _d in $_manifests; do
+		IFS=$_oldifs
+		if [ "$_rust_ws" = yes ] && [ "$_d" != "." ] && [ -f "$_d/Cargo.toml" ] &&
+			! grep -q '^\[workspace\]' "$_d/Cargo.toml" 2>/dev/null; then
+			IFS='
+'
+			continue
+		fi
+		# NOT a subshell: the violation counter must survive back into run_gate.
+		cd "$_d" || {
+			cannot "C-DEP  cannot enter $_d — its dependency closure was NOT read"
+			IFS='
+'
+			continue
+		}
+		check_dep_closure_one "$_d"
+		cd "$_root" || die "lost the repo root while walking manifests"
+		IFS='
+'
+	done
+	IFS=$_oldifs
+}
+
+# Reads ONE manifest directory's default-feature closure. Runs in a subshell, so it reports
+# through the shared counters by printing — see run_gate, which re-counts from output.
+check_dep_closure_one() {
+	_where=$1
 	ecosystem=none
 	closure=''
 
@@ -178,15 +269,13 @@ check_dep_closure() {
 		# The subshell above cannot increment the parent's counter; record the fact here.
 		violations=$((violations + 1))
 	fi
-	say "  C-DEP    $ecosystem: examined $n entries of the default-feature dependency closure"
+	say "  C-DEP    $ecosystem ($_where): examined $n entries of the default-feature dependency closure"
 }
 
 # ── C-START: the broker may not be named outside a declared seam ───────────────────────
 check_startup_text() {
-	find_expr=''
-	for p in $PRUNE; do find_expr="$find_expr -path $p -prune -o"; done
 	# shellcheck disable=SC2086 # word splitting of the prune list is intended
-	files=$(find . $find_expr -type f -print 2>/dev/null)
+	files=$(find . $(prune_expr) -type f -print 2>/dev/null)
 	if [ -z "$files" ]; then
 		cannot "C-START  scanned NOTHING — the file walk found no files under $(pwd)"
 		return 0
@@ -273,6 +362,7 @@ run_gate() {
 	cd "$root" 2>/dev/null || die "cannot enter '$root'"
 	violations=0
 	unverifiable=0
+	_file_exemptions=0
 	say "R-SOV-1 gate (no-broker-dep) — $(pwd)"
 	say "  broker pattern: $BROKER_RE"
 	# All three always run: a check that cannot run must not suppress a check that found
@@ -463,6 +553,61 @@ selftest() {
 			SEAM_PATHS="reach go.mod" SEAM_FLAG="broker"
 	else
 		unexercised="$unexercised go(no-go-toolchain)"
+	fi
+
+	# ---- Structural controls: three defects found by running this gate across the suite ----
+	# Each of these shipped as a clean-looking pass while the gate was wrong. They are controls
+	# now so they cannot come back silently.
+	if command -v go >/dev/null 2>&1; then
+		ran=$((ran + 1))
+
+		# DEFECT 1 — nested prune. A prune list matched by top-level PATH walks every nested
+		# node_modules/ and target/, so a vendored file naming the broker fails a product that
+		# does not depend on it. The planted file is deep enough that only a name-match prunes it.
+		mkdir -p "$tmp/prune_nested/web/node_modules/pkg" "$tmp/prune_nested/crates/x/target/debug"
+		printf 'module example.test/prune_nested\n\ngo 1.21\n' >"$tmp/prune_nested/go.mod"
+		printf 'package main\n\nfunc main() {}\n' >"$tmp/prune_nested/main.go"
+		printf 'const url = "https://ephor.example";\n' \
+			>"$tmp/prune_nested/web/node_modules/pkg/index.js"
+		printf 'ephor build fingerprint\n' >"$tmp/prune_nested/crates/x/target/debug/build.log"
+		expect prune_nested 0 "nested node_modules/ and target/ are pruned at any depth, not just the root" \
+			'BROKER_RE=ephor|vulos-relayd'
+
+		# DEFECT 2 — monorepo blind spot. package.json at the root, go.mod in backend/. The
+		# if/elif chain read the npm closure and never looked at Go, reporting a clean pass over
+		# an unexamined product. The planted broker import is reachable ONLY through the Go side.
+		mkdir -p "$tmp/multi_mod/backend"
+		printf '{"name":"multi","version":"0.0.0","private":true}\n' >"$tmp/multi_mod/package.json"
+		cat >"$tmp/multi_mod/backend/go.mod" <<-'EOF'
+			module example.test/multi/backend
+
+			go 1.21
+
+			require example.test/ephorclient v0.0.0
+
+			replace example.test/ephorclient => ../../ephorclient
+		EOF
+		printf 'package main\n\nimport "example.test/ephorclient"\n\nfunc main() { println(ephorclient.Dial()) }\n' \
+			>"$tmp/multi_mod/backend/main.go"
+		expect multi_mod 1 "a second manifest below the root is CHECKED, not silently skipped" \
+			'BROKER_RE=ephor|vulos-relayd'
+
+		# DEFECT 3 — the gate flagged a CI step whose purpose was asserting the broker's absence.
+		# The marker exempts that file and prints the stated reason; without it this same tree
+		# fails, which is what makes the control meaningful rather than decorative.
+		mkdir -p "$tmp/assert_absence/.github/workflows"
+		printf 'module example.test/assert_absence\n\ngo 1.21\n' >"$tmp/assert_absence/go.mod"
+		printf 'package main\n\nfunc main() {}\n' >"$tmp/assert_absence/main.go"
+		printf 'name: ci\njobs:\n  x:\n    steps:\n      - run: grep -rE "ephor" . && exit 1\n' \
+			>"$tmp/assert_absence/.github/workflows/ci.yml"
+		expect assert_absence 1 "an unmarked file naming the broker still FAILS (the marker is doing the work)" \
+			'BROKER_RE=ephor|vulos-relayd'
+		printf '# no-broker-dep%s asserts this broker is absent; the grep must spell its name\n' \
+			"$_ALLOW_SUFFIX" >>"$tmp/assert_absence/.github/workflows/ci.yml"
+		expect assert_absence 0 "a file may name the broker to assert its ABSENCE, with a printed reason" \
+			'BROKER_RE=ephor|vulos-relayd'
+	else
+		unexercised="$unexercised structural(no-go-toolchain)"
 	fi
 
 	say ""
