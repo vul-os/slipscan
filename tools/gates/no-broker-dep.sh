@@ -70,7 +70,13 @@ set -u
 BROKER_RE=${BROKER_RE:-'ephor|vulos-relayd'}
 SEAM_PATHS=${SEAM_PATHS:-}
 SEAM_FLAG=${SEAM_FLAG:-}
-DOC_PATHS=${DOC_PATHS:-'docs/ README.md CHANGELOG.md LICENSE.md'}
+# `site/` is in the default set because every product in this suite mirrors `docs/` into
+# `site/docs/` for its published mini-site. Omitting it made the gate flag a heading like
+# "## Exposing via your own Ephor (optional)" — prose describing the PERMITTED optional path —
+# as an R-SOV-1 violation. A doc that marks the broker optional is the contract being followed,
+# not broken; what R-SOV-1a forbids is prominence in getting-started, which a grep cannot judge
+# and a human must.
+DOC_PATHS=${DOC_PATHS:-'docs/ site/ README.md CHANGELOG.md LICENSE.md'}
 
 # Build directories and vendored trees are excluded from the TEXT scan only. They are not
 # excluded from C-DEP, which reads the resolved graph and is where a vendored broker would
@@ -91,6 +97,10 @@ die() { printf 'CANNOT CHECK  %s\n' "$*" >&2; exit 2; }
 # path. Prefix match on the repo-relative path, so "src/reach/ephor/" covers the directory.
 is_exempt() {
 	_p=${1#./}
+	# This gate quotes the broker in its own explanatory comments, so it matches itself once
+	# copied into a product. A gate that fails every adopter on its own documentation is worse
+	# than no gate: the first fix anyone reaches for is deleting the gate.
+	case $1 in */no-broker-dep.sh | no-broker-dep.sh) return 0 ;; esac
 	for _pre in $SEAM_PATHS $DOC_PATHS; do
 		case $_p in "${_pre%/}"/* | "$_pre") return 0 ;; esac
 	done
