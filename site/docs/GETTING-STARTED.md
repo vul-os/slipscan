@@ -17,13 +17,18 @@ against it before running the binary — `install.sh` in this repo does exactly
 that and refuses to install on a mismatch, a missing sums file, or a machine
 with no SHA-256 tool to check with.
 
-**With Docker:**
+**With Docker** — build the image yourself; there is no published one to pull
+(the release workflow builds archives, not images):
 
 ```bash
-docker run -p 8787:8787 -v flowstock-data:/data \
-  -e FLOWSTOCK_HOST=0.0.0.0 -e FLOWSTOCK_DATA_DIR=/data \
-  ghcr.io/vul-os/flowstock:latest
+docker build -t flowstock:local .
+docker run -p 127.0.0.1:8787:8787 -v flowstock-data:/data flowstock:local
 ```
+
+The image builds `-tags dmtap`, so it merges with the shared engine and will not
+sync with a branch running a release archive — see
+[CLOUD-NODE.md](CLOUD-NODE.md#1-what-you-must-decide-first-which-build) before
+mixing the two.
 
 **From source** (needs Go 1.25+ and Node 18+):
 
@@ -85,14 +90,26 @@ offline keeps trading normally and converges the next time it can reach any
 peer (changes relay transitively through shared peers). One reachable peer per
 pair is enough — a sync round pushes **and** pulls.
 
-To sync across the internet without opening ports, expose a branch through a
-[Ephor](https://github.com/vul-os/ephor) tunnel and use the
-`https://…` relay URL as the peer address.
+Steps 1–3 are the whole of it: you type the other branch's address, and there is
+no directory, no default endpoint and no third party involved. `0.0.0.0` above
+assumes a LAN or a VPN you run yourself — sync is plain HTTP and the signatures
+authenticate the peers without encrypting the payload.
+
+To reach branches across the internet, run one node on your own cloud instance
+and have the others dial it. That is a different threat model — TLS, firewall,
+which build, backups — and it has its own page:
+[CLOUD-NODE.md](CLOUD-NODE.md). Do not simply point `0.0.0.0` at a public IP.
 
 See [SYNC.md](SYNC.md) for topologies, transport security and merge semantics.
 
 ## Where is my data?
 
 A single SQLite database (WAL mode) at `~/.flowstock/flowstock.db`
-(override with `FLOWSTOCK_DATA_DIR`). Back it up like any file — copy all
-`flowstock.db*` files together, or use `.backup` from the sqlite3 CLI.
+(override with `FLOWSTOCK_DATA_DIR`). It holds your business data **and** this
+node's identity keypair, its workspace id and its peers' enrolled keys — so a
+backup that keeps it is a backup that restores the same node, with no re-pairing.
+
+Back it up like any file — copy all `flowstock.db*` files together (WAL mode means
+`flowstock.db` alone can be missing the newest writes), or use `.backup` from the
+sqlite3 CLI. [CLOUD-NODE.md §7](CLOUD-NODE.md#7-durability-and-backup) has the
+stop/copy/start procedure and the restore.

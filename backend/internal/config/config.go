@@ -52,6 +52,17 @@ type Config struct {
 	// concurrent writes. Every node in a workspace must agree; sync.SyncPeer
 	// refuses a round across a mismatch rather than let that diverge silently.
 	SubstrateSync *bool `json:"substrate_sync,omitempty"`
+	// SubstrateAcceptUnsignedOps, when true, lets a substrate node merge a
+	// remote op that carries no signed envelope. Default false = fail closed:
+	// with the substrate as merge authority every replicated change is verified
+	// on its own signature rather than trusted for having arrived over an
+	// authenticated connection (substrate/SOVEREIGNTY.md R-SOV-3.2).
+	//
+	// The only reason to turn it on is a fleet mid-migration off the built-in
+	// engine, whose peers still hold pre-switch ops with no envelope. It is a
+	// temporary state, not a deployment mode, and it MUST NOT be on for a node
+	// bound to a public address.
+	SubstrateAcceptUnsignedOps bool `json:"substrate_accept_unsigned_ops,omitempty"`
 }
 
 const configName = "flowstock.config.json"
@@ -96,6 +107,9 @@ func Load() *Config {
 	case "0", "false":
 		off := false
 		cfg.SubstrateSync = &off
+	}
+	if v := os.Getenv("FLOWSTOCK_SUBSTRATE_ACCEPT_UNSIGNED_OPS"); v == "1" || v == "true" {
+		cfg.SubstrateAcceptUnsignedOps = true
 	}
 
 	// Defaults.

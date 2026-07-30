@@ -91,8 +91,21 @@ func main() {
 		}
 		defer substrateEngine.Close(context.Background())
 		st.SetMerger(substrateEngine)
+		// Fail closed on a remote op with no envelope unless an operator has
+		// explicitly opted out for a migration. Announced either way, because
+		// "every replicated change is verified on its own signature" is the
+		// property that makes an internet-exposed node defensible, and an
+		// operator must be able to read off the log which posture this node is in.
+		st.SetAcceptUnsignedRemoteOps(cfg.SubstrateAcceptUnsignedOps)
 		log.Printf("substrate sync engine active (compiled in %s) — merges follow SYNC.md, not the built-in CRDT",
 			time.Since(started).Round(time.Millisecond))
+		if cfg.SubstrateAcceptUnsignedOps {
+			log.Printf("WARNING: substrate_accept_unsigned_ops is ON — remote ops with no signed " +
+				"envelope will be merged by the built-in algebra. Migration only; never for a node " +
+				"bound to a public address.")
+		} else {
+			log.Printf("every remote op must carry its own signed envelope (fail closed)")
+		}
 	}
 
 	syncEngine := syncpkg.New(st, func() string { return st.GetSetting("sync_secret") })

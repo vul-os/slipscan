@@ -247,7 +247,7 @@
     <div class="sync">
       <ol class="steps">
         <li><span class="n">1</span><div><h4>Every branch is its own node</h4><p>Run FlowStock on a laptop, a shop PC, a server, a NAS or a Raspberry Pi. Each keeps a full local database.</p></div></li>
-        <li><span class="n">2</span><div><h4>Pair once, then sign every request</h4><p>Point one branch at another over the LAN, a VPN, or a Ephor tunnel. A shared secret bootstraps the pairing; after that the two branches authenticate each other by Ed25519 key. A new device adopts the existing workspace and pulls its history.</p></div></li>
+        <li><span class="n">2</span><div><h4>Pair once, then sign every request</h4><p>Point one branch at another over the LAN, a VPN, or a node you run on your own cloud instance. You type the address &mdash; there is no directory and no default endpoint. A shared secret bootstraps the pairing; after that the two branches authenticate each other by Ed25519 key. A new device adopts the existing workspace and pulls its history.</p></div></li>
         <li><span class="n">3</span><div><h4>Keep trading, online or not</h4><p>An offline branch never stops working. When it can reach a peer again, changes replay both ways — and merge without conflict.</p></div></li>
         <li><span class="n">4</span><div><h4>Everyone converges</h4><p>Catalog edits resolve last-writer-wins; stock movements merge by union. Any topology works: a pair, a hub, or a full mesh.</p></div></li>
       </ol>

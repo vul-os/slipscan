@@ -20,7 +20,7 @@ iframe.
 │   └─ SQLite (WAL)  ~/.flowstock/flowstock.db                                         │
 │                                                                                     │
 └───────────────▲───────────────────────────────────────────────────▲────────────────┘
-                │  HTTP /api/sync/* (LAN · VPN · Ephor tunnel)  │
+                │  HTTP /api/sync/* (LAN · VPN · your own cloud node)  │
                 ▼                                                     ▼
           other branch                                          other branch
 ```
@@ -109,8 +109,11 @@ a minute for every enabled peer. Any topology works — full mesh, hub-and-spoke
 through head office, or chains — because ops carry their origin node and relay
 transitively.
 
-Op batches are **signed** with the sender's Ed25519 key and verified on receipt
-(tamper-evidence), and the **transport itself** is mutually key-authenticated:
+Op batches are **signed** with the sender's Ed25519 key — in both directions,
+mandatory — and verified against the key that sender authenticated with, which is
+tamper-evidence for the hop and not an author signature (per-op author signatures
+are a `-tags dmtap` property; see [SYNC.md](SYNC.md#per-node-identity)). The
+**transport itself** is mutually key-authenticated:
 every request is signed over a canonical envelope (method, path, body hash,
 timestamp, nonce), verified against the peer's enrolled key with ±5-min
 freshness and replay protection. See [SYNC.md](SYNC.md) for the full identity,

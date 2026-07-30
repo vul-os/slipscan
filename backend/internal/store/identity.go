@@ -4,10 +4,20 @@ package store
 // keeps it in settings. The public key is exchanged and recorded on pairing
 // (peers.pubkey), and op batches + snapshots are signed with the private key.
 //
-// This is groundwork: it makes replicated data attributable and tamper-evident.
-// The sync transport still authenticates with the shared Bearer secret exactly
-// as before — upgrading transport auth to these keys (mutual key auth instead
-// of a shared secret) is a documented next step, not forced here.
+// One key, three jobs:
+//   - it signs every op batch a node sends, in both directions, so a relayed
+//     batch is tamper-evident and attributable to the node that sent it;
+//   - it signs every sync REQUEST, which is how the transport's mutual key
+//     authentication works (sync/transport_auth.go);
+//   - on a `-tags dmtap` build it is also the substrate author key, so each op
+//     carries its own COSE_Sign1 envelope (substrate/substrate.go).
+//
+// This comment used to end "the sync transport still authenticates with the
+// shared Bearer secret exactly as before — upgrading transport auth to these
+// keys is a documented next step, not forced here". That step was taken: the
+// transport is mutual key auth and the secret only bootstraps pairing. A stale
+// comment that understates what the code does is as misleading as one that
+// overstates it, just in the direction nobody audits.
 
 import (
 	"crypto"

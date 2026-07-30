@@ -40,11 +40,15 @@ mismatch, a missing sums file, or a machine with no SHA-256 tool to check with.
 ## Part of VulOS
 
 FlowStock is part of **[VulOS](https://vulos.org)** — the open, self-hostable
-web OS and app suite. VulOS software is free and open source; the only paid
-services are **Ephor** (reachability) and **backup storage**. FlowStock
-runs standalone, and is also hosted as an app inside the Vulos OS shell. It
-pairs naturally with a Ephor tunnel when branches need to sync across the
-internet without opening ports. Nothing about sync depends on it.
+web OS and app suite. VulOS software is free and open source. FlowStock runs
+standalone, and is also hosted as an app inside the Vulos OS shell.
+
+**Nothing about FlowStock depends on a VulOS service.** It syncs over a LAN, a
+VPN you run yourself, a node on your own cloud instance
+([CLOUD-NODE.md](CLOUD-NODE.md)), or a shared folder — none of which involves a
+third party. The one gap those leave is reaching a branch that can open no port
+at all, which is what a reachability broker would be for; the suite's own broker
+(Ephor) is **not ready as of 2026-07-30** and FlowStock does not integrate it.
 
 ## Next steps
 

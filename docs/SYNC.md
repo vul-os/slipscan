@@ -116,23 +116,36 @@ a fresh key, rotate the secret alongside removal to revoke completely.
 
 ### Network
 
-- To be reachable by other branches, run with `host: 0.0.0.0`. Peers connect to
-  `http://<host>:<port>` — the app's own address (sync shares the app port;
-  there is no separate sync port).
+- To be reachable by other branches, run with `host: 0.0.0.0` (or the one
+  interface address you mean). Peers connect to `http://<host>:<port>` — the
+  app's own address (sync shares the app port; there is no separate sync port).
 - Sync traffic is business data. The signatures authenticate peers but do **not**
-  encrypt the payload, so still run it on a **trusted network**: a LAN, a
-  VPN/overlay (Tailscale, WireGuard, Netbird), or an HTTPS tunnel such as a
-  [Ephor](https://github.com/vul-os/ephor) exposing the port as
-  `https://…`. Peer URLs may be `http://` or `https://`.
+  encrypt the payload, so on its own run it on a **trusted network**: a LAN or a
+  VPN/overlay (Tailscale, WireGuard, Netbird). Peer URLs may be `http://` or
+  `https://`.
+- **A node on a public address is not on a trusted network.** FlowStock does not
+  terminate TLS, so that case needs a terminating reverse proxy in front of it
+  and the `-tags dmtap` build behind it. That is a different threat model with its
+  own page: [CLOUD-NODE.md](CLOUD-NODE.md).
 - The shared secret is compared in constant time; failed auth returns 401.
 
 ### Independence first
 
 FlowStock never _needs_ the internet or any Vulos service to sync. A LAN, a
-VPN/overlay you run yourself, or the folder transport below are all first-class.
-An **Ephor** tunnel is only ever an _optional convenience_ for reaching a
-branch across the internet without opening a port — nothing about sync depends
-on it.
+VPN/overlay you run yourself, a node you stand up on your own cloud instance
+([CLOUD-NODE.md](CLOUD-NODE.md)), or the folder transport below are all
+first-class, and none of them involves a third party.
+
+Reaching a branch that is behind NAT and **cannot** open a port is the one case
+none of those solve; a reachability broker would. The suite's own broker,
+[Ephor](https://github.com/vul-os/ephor), is **not ready as of 2026-07-30**, and
+FlowStock does not integrate it — nothing in the build, the configuration or the
+startup path references it, which the R-SOV-1 gate (`make sovereignty-gate`)
+enforces on every push. Were that to change it would arrive as one _optional_
+provider behind a build tag, off by default, and losing it would cost reach and
+nothing else. Today the honest statement of the gap is: **a branch that can open
+no port, and cannot reach any branch that can, is unreachable** — use the folder
+transport below.
 
 ## Folder sync (files as transport)
 
@@ -202,10 +215,21 @@ the lines already written, so folder late-joiners still replay in full.)
 Each node generates an **Ed25519 keypair** on first run. That one identity does
 double duty:
 
-- it signs the **op batches** a node pushes and the **snapshots** it writes, so
-  replicated data is attributable and **tamper-evident**; and
+- it signs every **op batch** a node sends — pushes _and_ pull responses — and
+  the **snapshots** it writes; and
 - it signs every **sync request** (see _Transport & security_ above), which is
   how the mutual key authentication works.
+
+The batch signature is **required in both directions** and verified against the
+key the sender authenticated with, so a caller cannot present one key at the
+transport and sign the payload with another. Read it for exactly what it is: it
+proves **these bytes reached you as the sending node sent them**. It is not an
+author signature, so under the built-in engine a relayed op is attributable to
+the peer that relayed it and not to whoever wrote it — a fully enrolled peer
+could author history in another branch's name and nothing in the batch would
+contradict it. Per-**op** author signatures, verified on their own, are a
+property of the `-tags dmtap` build below, which is why
+[CLOUD-NODE.md](CLOUD-NODE.md) requires that build for an internet-exposed node.
 
 Public keys are exchanged in the sync handshake and recorded against each peer
 (`peers.pubkey`, keyed to the remote `node_id`) on pairing — the same recorded
@@ -219,10 +243,18 @@ implementation of those rules that several products share, and FlowStock can use
 it instead of its own.
 
 **It is an optional build, not the default one.** The engine is compiled in only
-with `-tags dmtap`; the binary a release ships carries the built-in CRDT and
-nothing else. Everything below describes the `-tags dmtap` build. The
+with `-tags dmtap`; the binary a **release archive** ships carries the built-in
+CRDT and nothing else. Everything below describes the `-tags dmtap` build. The
 built-in CRDT is not a legacy path being tolerated — it is what almost every
 install runs, and it is fully tested either way.
+
+**Two exceptions where the substrate build is not optional.** The container image
+(`Dockerfile`) builds `-tags dmtap`, because it is the cloud-node artifact; and a
+node on a public address must run that build, because only it gives every op its
+own author signature ([CLOUD-NODE.md](CLOUD-NODE.md) §1 has the comparison
+table). A LAN or VPN install is free to stay on the built-in engine — but a
+workspace must pick one, so mixing the container with release-archive branches
+does not work.
 
 Because the two engines break ties differently, a node **advertises which engine
 it merges by** in the sync handshake, and refuses a round with a peer that
@@ -234,6 +266,21 @@ still the mutual-Ed25519 HTTP pull and the folder-sync path, and the per-node
 key is still the per-node key — it simply becomes the signing key for each op as
 well, so every replicated change is individually signed and verified rather than
 trusted because it arrived over an authenticated connection.
+
+That last clause is the load-bearing one, so here is what it means operationally.
+On this build an op with **no** envelope is **refused**, not merged: it could only
+be trusted for the connection it arrived over. So is a validly signed op that
+claims to come from a node other than the one whose key signed it — only FlowStock
+knows which key a node enrolled at pairing, so only FlowStock can catch that. Both
+refusals abort the whole batch and surface as the peer's round failing, and both
+are counted in `GET /api/substrate` (`legacy_ops`, `refused`) so a mixed fleet
+shows up as a stream of refusals rather than as silence. The controls are in
+`backend/internal/substrate/op_authenticity_test.go`.
+
+A fleet mid-migration off the built-in engine legitimately holds pre-switch ops
+with no envelope; `substrate_accept_unsigned_ops` lets those through while the
+rollout finishes. It is off by default, the startup log says which posture is
+active, and it must not be on for a node bound to a public address.
 
 What the mapping says, in FlowStock's terms:
 

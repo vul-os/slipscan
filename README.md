@@ -183,7 +183,7 @@ flowchart LR
         UB[Browser UI] --> CB[Go binary]
         CB --> DB[(SQLite + oplog)]
     end
-    CA <-- "HTTP /api/sync (mutual Ed25519 key auth)<br>LAN · VPN · Ephor" --> CB
+    CA <-- "HTTP /api/sync (mutual Ed25519 key auth)<br>LAN · VPN · your own cloud node" --> CB
 ```
 
 Every mutation is journalled to an oplog with a hybrid-logical-clock timestamp
@@ -217,15 +217,17 @@ Vulos OS embedding). Business, branches and sync are configured in-app. See
 
 ## Documentation
 
-| Doc                                                | Contents                                                         |
-| -------------------------------------------------- | ---------------------------------------------------------------- |
-| [docs/OVERVIEW.md](docs/OVERVIEW.md)               | what FlowStock is, in one page — also the docs site landing page |
-| [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) | install, first run, connecting branches, backups                 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)       | Go binary, data model, oplog & clocks, sync protocol             |
-| [docs/SYNC.md](docs/SYNC.md)                       | topologies, security, merge semantics, conflict examples         |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md)     | every setting + environment variables                            |
-| [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md)         | regenerating the README screenshots                              |
-| [docs/TESTING.md](docs/TESTING.md)                 | Go and browser test suites, running and debugging them           |
+| Doc                                                | Contents                                                                             |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| [docs/OVERVIEW.md](docs/OVERVIEW.md)               | what FlowStock is, in one page — also the docs site landing page                     |
+| [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) | install, first run, connecting branches, backups                                     |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)       | Go binary, data model, oplog & clocks, sync protocol                                 |
+| [docs/SYNC.md](docs/SYNC.md)                       | topologies, security, merge semantics, conflict examples                             |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md)     | every setting + environment variables                                                |
+| [docs/CLOUD-NODE.md](docs/CLOUD-NODE.md)           | a branch node on a VPS: which build, TLS, firewall, backup, upgrade                  |
+| [docs/SOVEREIGNTY.md](docs/SOVEREIGNTY.md)         | how FlowStock meets the substrate's five adoption properties — and where it does not |
+| [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md)         | regenerating the README screenshots                                                  |
+| [docs/TESTING.md](docs/TESTING.md)                 | Go and browser test suites, running and debugging them                               |
 
 ## Development
 

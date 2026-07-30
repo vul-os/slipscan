@@ -20,6 +20,18 @@ func authed(t *testing.T, to *node, from *store.Store, method, path string, body
 	return req(t, method, to.server.URL+path, body, h)
 }
 
+// signedBatch marshals an ops batch the way postOps does — signed with the
+// sending node's key, which handleOps now REQUIRES. A test fixture that skips
+// the signature is testing the refusal, not the case it meant to test.
+func signedBatch(from *store.Store, ops []store.Op) []byte {
+	raw, _ := json.Marshal(ops)
+	buf, _ := json.Marshal(opsMsg{
+		NodeID: from.NodeID(), Ops: ops,
+		PubKey: from.PublicKeyHex(), Sig: from.Sign(raw),
+	})
+	return buf
+}
+
 // pair returns a server node and a second node already enrolled on it.
 func pair(t *testing.T) (*node, *node) {
 	t.Helper()
@@ -394,7 +406,7 @@ func TestOpsFromAForeignWorkspaceAreNotApplied(t *testing.T) {
 	foreign.RowID = "theirs"
 	foreign.Payload = []byte(`{"name":"Theirs"}`)
 
-	buf, _ := json.Marshal(opsMsg{NodeID: b.st.NodeID(), Ops: []store.Op{foreign}})
+	buf := signedBatch(b.st, []store.Op{foreign})
 	code, body := authed(t, a, b.st, "POST", "/api/sync/ops", buf)
 	if code != 200 {
 		t.Fatalf("the request itself is well formed and authenticated: got %d: %s", code, body)
@@ -415,7 +427,7 @@ func TestOpsFromAForeignWorkspaceAreNotApplied(t *testing.T) {
 
 	// The same op with our own workspace id IS applied, proving the rejection was
 	// the org check and not something incidental.
-	buf, _ = json.Marshal(opsMsg{NodeID: b.st.NodeID(), Ops: mine})
+	buf = signedBatch(b.st, mine)
 	if code, body = authed(t, a, b.st, "POST", "/api/sync/ops", buf); code != 200 {
 		t.Fatalf("our own ops should be accepted, got %d: %s", code, body)
 	}
@@ -433,7 +445,7 @@ func TestOpsForUnknownTablesAreSkipped(t *testing.T) {
 	ops, _ := b.st.OpsAfter(map[string]string{}, Batch)
 	ops[0].Tbl = "tables_from_the_future"
 
-	buf, _ := json.Marshal(opsMsg{NodeID: b.st.NodeID(), Ops: ops})
+	buf := signedBatch(b.st, ops)
 	code, body := authed(t, a, b.st, "POST", "/api/sync/ops", buf)
 	if code != 200 {
 		t.Fatalf("an unknown table should be skipped, not fault the node: got %d: %s", code, body)

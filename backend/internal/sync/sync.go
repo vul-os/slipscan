@@ -92,12 +92,46 @@ func New(s *store.Store, secretFn func() string) *Engine {
 type opsMsg struct {
 	NodeID string     `json:"node_id"`
 	Ops    []store.Op `json:"ops"`
-	// PubKey + Sig sign the batch (Ed25519 over the marshaled ops). The request
-	// envelope signature (transport_auth.go) already binds the whole body to the
-	// caller's key; this batch signature is kept as defence-in-depth so a relayed
-	// batch stays attributable and tamper-evident on its own.
-	PubKey string `json:"pubkey,omitempty"`
-	Sig    string `json:"sig,omitempty"`
+	// PubKey + Sig sign the batch (Ed25519 over the marshaled ops) with the key
+	// of the node that SENT it. They are mandatory in both directions and
+	// verified in both directions — this used to be "verified only if present",
+	// which meant a caller could skip op-level verification entirely by omitting
+	// two fields, and handlePull never sent them at all, so the pull direction
+	// had no op-level tamper evidence whatsoever.
+	//
+	// Read this for what it is and no more: it attests the SENDER relayed these
+	// bytes unaltered. It is not an author signature, so it does not make a
+	// relayed op attributable to whoever wrote it — under the built-in engine
+	// nothing does, which is why an internet-exposed node must run the substrate
+	// build, where every op carries its own COSE_Sign1 envelope
+	// (substrate/SOVEREIGNTY.md R-SOV-3.2, docs/SYNC.md).
+	PubKey string `json:"pubkey"`
+	Sig    string `json:"sig"`
+}
+
+// signBatch fills in PubKey/Sig over the marshaled ops. Both ends marshal the
+// same way, so the signed preimage is the same bytes on the wire.
+func (e *Engine) signBatch(msg *opsMsg) {
+	body, _ := json.Marshal(msg.Ops)
+	msg.PubKey = e.Store.PublicKeyHex()
+	msg.Sig = e.Store.Sign(body)
+}
+
+// verifyBatch checks a batch signature, and (when expectKey is non-empty) that
+// it was made by the key the sender is already known by. It returns a
+// client-facing reason on failure.
+func verifyBatch(msg opsMsg, expectKey string) (bool, string) {
+	if msg.PubKey == "" || msg.Sig == "" {
+		return false, "op batch is unsigned: pubkey and sig are required"
+	}
+	body, _ := json.Marshal(msg.Ops)
+	if !store.VerifySig(msg.PubKey, body, msg.Sig) {
+		return false, "op batch signature invalid"
+	}
+	if expectKey != "" && msg.PubKey != expectKey {
+		return false, "op batch is signed by a key other than the sender's enrolled key"
+	}
+	return true, ""
 }
 
 type pullReq struct {
@@ -140,14 +174,22 @@ func (e *Engine) handleOps(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	// If the batch carries its own signature, it must verify against its public
-	// key — tamper-evidence independent of the transport envelope.
-	if msg.Sig != "" || msg.PubKey != "" {
-		body, _ := json.Marshal(msg.Ops)
-		if !store.VerifySig(msg.PubKey, body, msg.Sig) {
-			http.Error(w, "op batch signature invalid", http.StatusBadRequest)
-			return
-		}
+	// The batch must be signed, and by the key the transport already
+	// authenticated the caller with. guard verified the envelope signature over
+	// this exact body for the node in hdrNode, so binding to that node's enrolled
+	// key here means a caller cannot present one key at the transport and sign
+	// the payload with another.
+	//
+	// A caller on the bootstrap path has no enrolled key yet, and expectKey is
+	// then empty: the batch signature is still mandatory, it is just not yet
+	// bound to a pinned identity. That is the TOFU window and nothing more.
+	expectKey := ""
+	if node := r.Header.Get(hdrNode); node != "" {
+		expectKey = e.Store.PubkeyForNode(node)
+	}
+	if ok, reason := verifyBatch(msg, expectKey); !ok {
+		http.Error(w, reason, http.StatusBadRequest)
+		return
 	}
 	applied, err := e.Store.ApplyOps(msg.Ops)
 	if err != nil {
@@ -168,7 +210,12 @@ func (e *Engine) handlePull(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, opsMsg{NodeID: e.NodeID, Ops: ops})
+	// Signed, like the push direction. A pull response used to travel with no
+	// batch signature at all, so the puller had nothing but the TLS-less HTTP
+	// connection vouching for what it applied.
+	msg := opsMsg{NodeID: e.NodeID, Ops: ops}
+	e.signBatch(&msg)
+	writeJSON(w, msg)
 }
 
 // Result reports the outcome of syncing one peer.
@@ -270,7 +317,7 @@ func (e *Engine) SyncPeer(ctx context.Context, peerID, baseURL string) Result {
 			res.Error = err.Error()
 			return res
 		}
-		ops, err := e.pull(ctx, base, auth, myVec)
+		ops, err := e.pull(ctx, base, auth, peerPub, myVec)
 		if err != nil {
 			res.Error = err.Error()
 			return res
@@ -326,13 +373,9 @@ func (e *Engine) fetchVector(ctx context.Context, base, auth string) (peerInfo, 
 }
 
 func (e *Engine) postOps(ctx context.Context, base, auth string, ops []store.Op) error {
-	body, _ := json.Marshal(ops)
-	buf, _ := json.Marshal(opsMsg{
-		NodeID: e.NodeID,
-		Ops:    ops,
-		PubKey: e.Store.PublicKeyHex(),
-		Sig:    e.Store.Sign(body),
-	})
+	msg := opsMsg{NodeID: e.NodeID, Ops: ops}
+	e.signBatch(&msg)
+	buf, _ := json.Marshal(msg)
 	req, _ := http.NewRequestWithContext(ctx, "POST", base+"/api/sync/ops", bytes.NewReader(buf))
 	req.Header.Set("Authorization", auth)
 	req.Header.Set("Content-Type", "application/json")
@@ -348,7 +391,11 @@ func (e *Engine) postOps(ctx context.Context, base, auth string, ops []store.Op)
 	return nil
 }
 
-func (e *Engine) pull(ctx context.Context, base, auth string, vec map[string]string) ([]store.Op, error) {
+// pull fetches the ops this node lacks. peerKey is the public key the peer
+// presented in the handshake: the batch it answers with must be signed by that
+// same key, so a response cannot be swapped in by whatever sits between the two
+// nodes on an unencrypted hop.
+func (e *Engine) pull(ctx context.Context, base, auth, peerKey string, vec map[string]string) ([]store.Op, error) {
 	buf, _ := json.Marshal(pullReq{Vector: vec})
 	req, _ := http.NewRequestWithContext(ctx, "POST", base+"/api/sync/pull", bytes.NewReader(buf))
 	req.Header.Set("Authorization", auth)
@@ -365,6 +412,9 @@ func (e *Engine) pull(ctx context.Context, base, auth string, vec map[string]str
 	var msg opsMsg
 	if err := json.NewDecoder(resp.Body).Decode(&msg); err != nil {
 		return nil, err
+	}
+	if ok, reason := verifyBatch(msg, peerKey); !ok {
+		return nil, fmt.Errorf("pull: %s", reason)
 	}
 	return msg.Ops, nil
 }

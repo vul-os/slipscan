@@ -257,11 +257,21 @@ func TestLegacyPeerWithoutEngineFieldIsBuiltin(t *testing.T) {
 	ctx := context.Background()
 	local := newNode(t, "L", "shared-secret")
 
-	// Stand in for an older build: a vector response with no merge_engine.
+	// Stand in for an older build: a vector response with no merge_engine. It
+	// still signs its op batches — that is not the property under test here, and
+	// an unsigned batch is refused outright (see TestPullResponseMustBeSigned).
+	old := newNode(t, "Old", "shared-secret")
 	legacy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/pull") {
+			msg := opsMsg{NodeID: "legacy-node"}
+			old.eng.signBatch(&msg)
+			writeJSON(w, msg)
+			return
+		}
 		writeJSON(w, map[string]any{
 			"node_id": "legacy-node",
 			"org_id":  local.st.OrgID(),
+			"pubkey":  old.st.PublicKeyHex(),
 			"vector":  map[string]string{},
 		})
 	}))

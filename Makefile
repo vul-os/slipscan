@@ -3,7 +3,7 @@ VERSION := $(shell cat VERSION 2>/dev/null || echo dev)
 # Every target here is phony — none of them names a file it produces. `test-e2e`
 # was missing from this list, so a directory or file called `test-e2e` appearing
 # in the tree would have made `make test` quietly do nothing.
-.PHONY: dev dev-app build build-frontend test test-go test-e2e test-race lint docs-check docs-sync screenshots run release-guards
+.PHONY: dev dev-app build build-frontend test test-go test-e2e test-race lint docs-check docs-sync screenshots run release-guards sovereignty-gate
 
 # UI-only dev (browser + demo data)
 dev:
@@ -21,7 +21,15 @@ build-frontend:
 	npm run build
 
 # Tests
-test: test-go release-guards test-e2e
+test: test-go sovereignty-gate release-guards test-e2e
+
+# R-SOV-1: no reachability broker in the default build or startup path
+# (kotva substrate/SOVEREIGNTY.md §3.1). The gate is LIFTED verbatim from the
+# substrate into tools/gates/; scripts/sovereignty-gate.sh holds FlowStock's
+# configuration and also runs the gate's self-control, because a copied gate that
+# has gone inert reports a pass nobody earned.
+sovereignty-gate:
+	sh scripts/sovereignty-gate.sh
 
 test-go:
 	go test ./backend/...

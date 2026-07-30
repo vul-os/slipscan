@@ -79,6 +79,47 @@ jobs:
       - name: Published docs match the repo docs
         run: npm run docs:check
 
+      # R-SOV-1 (kotva substrate/SOVEREIGNTY.md §3.1): the DEFAULT build and
+      # startup path must carry no hard dependency on a reachability broker.
+      # The gate is lifted verbatim from the substrate into tools/gates/, and the
+      # step runs its self-control in the same breath — a copied gate that has
+      # gone inert reports a pass nobody earned. Exit 2 ("could not check") fails
+      # this step exactly like exit 1; there is no skip path.
+      - name: R-SOV-1 gate — no reachability broker in the default path
+        run: make sovereignty-gate
+
+      # The lifted copy must stay byte-identical to the substrate's LIVE one.
+      # Unlike the frozen vectors, which are pinned to the engine's tag, a gate is
+      # not versioned content — a stale copy is the whole failure mode
+      # (substrate/SOVEREIGNTY.md §5.3: "a copied script drifts"), so this tracks
+      # kotva's default branch and goes red when the substrate improves the gate.
+      # The fix is always to re-copy, never to edit the copy: FlowStock's
+      # configuration lives in scripts/sovereignty-gate.sh.
+      #
+      # It fails closed on a missing file rather than skipping. If it is red
+      # because the substrate has not published the gate yet, that is a real
+      # cross-repo state and a red tick is the honest report of it.
+      - name: Check out the substrate's live gate
+        uses: actions/checkout@v4
+        with:
+          repository: vul-os/kotva
+          path: .upstream-kotva-main
+
+      - name: The lifted gate matches the substrate's
+        run: |
+          set -euo pipefail
+          mine=tools/gates/no-broker-dep.sh
+          theirs=.upstream-kotva-main/tools/gates/no-broker-dep.sh
+          if [ ! -f "$theirs" ]; then
+            echo "::error::$theirs is missing — the substrate does not publish the gate at that path, so this check verified NOTHING. Fix the path or the cross-repo expectation; do not delete the check."
+            exit 1
+          fi
+          if ! diff -u "$theirs" "$mine"; then
+            echo "::error::$mine has drifted from the substrate's copy — re-copy it rather than editing it (FlowStock's configuration belongs in scripts/sovereignty-gate.sh)"
+            exit 1
+          fi
+          echo "$mine is byte-identical to the substrate's copy"
+
       - name: Go tests
         run: npm run test:go
 

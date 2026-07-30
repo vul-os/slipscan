@@ -76,6 +76,22 @@ type Store struct {
 	// merger, when set, is the substrate engine that decides conflicts. nil
 	// (the default) keeps the hand-rolled LWW/union path below.
 	merger Merger
+	// acceptUnsignedRemoteOps relaxes ApplyOps's fail-closed rule that, with a
+	// merger installed, every remote op must carry its own signed envelope.
+	// False (the default) is the R-SOV-3.2 posture: an op is authentic because
+	// it is signed, never because of the connection it arrived on. It exists
+	// only for a fleet mid-migration off the built-in engine, whose peers still
+	// hold pre-switch ops with no envelope.
+	acceptUnsignedRemoteOps bool
+}
+
+// SetAcceptUnsignedRemoteOps opts a node out of the fail-closed rule that a
+// remote op must carry its own envelope when a Merger is installed. Call it
+// before serving traffic; see the field comment for why the default is off.
+func (s *Store) SetAcceptUnsignedRemoteOps(v bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.acceptUnsignedRemoteOps = v
 }
 
 // SetMerger installs an external merge authority. Passing nil restores the
@@ -464,10 +480,24 @@ func (s *Store) ApplyOps(ops []Op) (int, error) {
 				continue
 			}
 			if op.Cose == "" {
-				// A peer that has not enabled the substrate engine. Merged by
-				// the built-in algebra and counted, because a fleet running two
-				// algebras at once is a condition an operator must be able to
-				// see.
+				// An op with no envelope cannot be verified on its own — the only
+				// thing vouching for it is the connection it arrived over, which is
+				// exactly what substrate/SOVEREIGNTY.md R-SOV-3.2 forbids relying
+				// on. On a node whose merge authority is the substrate it is also a
+				// second algebra's op, so accepting it diverges the merge as well.
+				// Both reasons say refuse, and refusing aborts the batch rather
+				// than dropping one row, because a partially-applied push is a
+				// silent hole.
+				if !s.acceptUnsignedRemoteOps {
+					s.merger.NoteLegacy() // still counted: an operator must see it happening
+					return 0, fmt.Errorf("substrate: op %s (%s/%s) carries no signed envelope; "+
+						"refusing to merge a change that cannot be verified on its own "+
+						"(set substrate_accept_unsigned_ops only while migrating a fleet off the built-in engine)",
+						op.HLC, op.Tbl, op.RowID)
+				}
+				// Migration escape hatch, off by default: merged by the built-in
+				// algebra and counted, because a fleet running two algebras at once
+				// is a condition an operator must be able to see.
 				s.merger.NoteLegacy()
 				continue
 			}

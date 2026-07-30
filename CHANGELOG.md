@@ -7,7 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **An enrolled sync peer could push ops attributed to any node it liked.**
+  `handleOps` verified the op-batch signature only `if msg.Sig != "" ||
+msg.PubKey != ""`, so omitting two JSON fields skipped op-level verification
+  altogether: an authenticated peer could POST a batch of ops carrying another
+  node's `node_id` and they were applied and written. And `handlePull` returned
+  no batch signature at all, so the pull direction had **no** op-level tamper
+  evidence — on the plain-HTTP hop the docs describe, whatever sat in the middle
+  could rewrite everything a node pulled. The batch signature is now
+  **mandatory in both directions** and bound to the key the sender authenticated
+  with, so a caller cannot present one key at the transport and sign the payload
+  with another. Six negative controls with an asserted count:
+  `backend/internal/sync/op_authenticity_test.go`.
+- **A substrate node merged remote ops that carried no signed envelope.** With
+  the shared engine installed as merge authority, an op with `cose == ""` was
+  counted as "legacy" and then merged by the built-in algebra — accepted on the
+  strength of the connection it arrived over, which is precisely what per-op
+  authenticity is supposed to remove (kotva `substrate/SOVEREIGNTY.md`
+  R-SOV-3.2). It is now **refused**, and still counted so a mixed fleet is
+  visible. `substrate_accept_unsigned_ops` (default `false`, announced in the
+  startup log) is the migration hatch for a fleet still rolling off the built-in
+  engine; it must not be on for a node bound to a public address. Five per-op
+  controls with an asserted count:
+  `backend/internal/substrate/op_authenticity_test.go`.
+
+### Added
+
+- **`docs/CLOUD-NODE.md`** — running a branch node on a cloud instance, which is
+  a different threat model from the LAN/VPN topologies the other pages assume.
+  Which build (and why the substrate one is not optional there), bind address,
+  the reverse proxy that terminates TLS declared as the trust boundary it is,
+  firewall, the container and systemd artifacts, backup/restore, upgrade, and a
+  closing section on what the setup still does not protect against.
+- **`docs/SOVEREIGNTY.md`** — FlowStock's answer to the substrate's five
+  adoption properties and thirteen-row checklist, with a runnable command behind
+  each row and **not-met** recorded where it is not met: per-op authenticity and
+  the shared merge engine hold on the `-tags dmtap` build and not in the release
+  archives, and mutual auth is not channel-bound because FlowStock terminates no
+  TLS.
+- **The R-SOV-1 gate, lifted verbatim** into `tools/gates/no-broker-dep.sh` with
+  FlowStock's configuration in `scripts/sovereignty-gate.sh` (`make
+sovereignty-gate`). It runs the gate and the gate's own self-control in one
+  step, because a copied gate that has gone inert reports a pass nobody earned,
+  and CI additionally diffs the copy against the substrate's live one so a silent
+  fork fails the build. FlowStock references no reachability broker at all — no
+  seam is declared, which is the strictest posture the gate has. Proven against
+  this tree, not just the gate's fixtures: a planted default broker endpoint in
+  `backend/internal/config/config.go` makes it exit 1.
+- **A tested backup and restore.**
+  `store.TestBackupAndRestorePreservesIdentityAndEnrolments` takes the backup
+  `docs/CLOUD-NODE.md` describes, destroys the data directory, restores it, and
+  asserts the node returns with the same node id, key, workspace, peer
+  enrolments, history and a clock that did not regress — so "restore does not
+  force re-pairing" is a check rather than a claim.
+
 ### Changed
+
+- **The container image now builds `-tags dmtap`.** It is the cloud-node
+  artifact, and only that build signs every op individually. `--build-arg
+BUILD_TAGS=embed_frontend` restores the release-archive build for a LAN
+  deployment. The consequence is stated in the Dockerfile and in
+  `docs/CLOUD-NODE.md`: the merge engine is a workspace-wide choice, so the
+  container refuses to sync with a branch running a release archive.
+- **Corrected two documentation claims that were wrong, not merely vague.**
+  `docs/GETTING-STARTED.md` told operators to `docker run
+ghcr.io/vul-os/flowstock:latest`; no such image exists, and the release
+  workflow explicitly does not build or push one. And `docs/CONFIGURATION.md`
+  said ops "are **signed** with the node's Ed25519 key and verified on receipt
+  (tamper-evident)" without distinguishing a per-hop batch signature from a
+  per-op author signature — the built-in engine has only the former, and a reader
+  plans a threat model around the difference.
+- **Ephor is named only as a dated, optional, not-integrated convenience.** It
+  was in the getting-started path ("expose a branch through an Ephor tunnel"),
+  which reads as a supported step. It is **not ready as of 2026-07-30**;
+  `docs/SYNC.md`, `docs/OVERVIEW.md` and `docs/CLOUD-NODE.md` now say so with the
+  date attached, name the gap it would close (a branch that can open no port),
+  and point at the folder transport that covers that gap today. No code, build or
+  configuration references it, which the gate enforces.
+- **`store/identity.go`'s package comment stopped understating the code.** It
+  still said the transport "authenticates with the shared Bearer secret exactly
+  as before" and called mutual key auth "a documented next step" — a claim stale
+  in the too-pessimistic direction, which nobody audits.
 
 - **The DMTAP sync engine is now a fetched, pinned module instead of a vendored
   copy.** `third_party/dmtapsync/` (~2,070 LOC plus a 427 KB `.wasm`) is gone;

@@ -342,10 +342,17 @@ func TestMintedEnvelopeRoundTripsThroughTheOplog(t *testing.T) {
 	}
 }
 
-// TestLegacyPeerIsCountedNotSilentlyMerged: an op from a peer that has not
-// enabled the substrate carries no envelope. It still merges (by the built-in
-// algebra) but is counted, so an operator can see a fleet running two algebras.
-func TestLegacyPeerIsCountedNotSilentlyMerged(t *testing.T) {
+// TestLegacyPeerIsRefusedAndCounted: an op from a peer that has not enabled the
+// substrate carries no envelope, so it cannot be verified on its own — the only
+// thing vouching for it is the connection it arrived over.
+//
+// This test used to assert the opposite: that such an op "still merges (by the
+// built-in algebra) but is counted". Counting it was right; merging it was the
+// R-SOV-3.2 hole (kotva substrate/SOVEREIGNTY.md §3.3.2) — an authenticated peer
+// could push a row attributed to any node id at all and a substrate node would
+// write it. It is now refused, and still counted, so an operator sees a mixed
+// fleet as a stream of refusals rather than as silence.
+func TestLegacyPeerIsRefusedAndCounted(t *testing.T) {
 	a, b := newNode(t, "a"), newNode(t, "b")
 	pair(t, a, b)
 
@@ -353,14 +360,14 @@ func TestLegacyPeerIsCountedNotSilentlyMerged(t *testing.T) {
 	ops, _ := a.st.OwnOpsAfter("")
 	ops[0].Cose = "" // as if a were running with the flag off
 
-	if _, err := b.st.ApplyOps(ops); err != nil {
-		t.Fatalf("a legacy op must still merge: %v", err)
+	if _, err := b.st.ApplyOps(ops); err == nil {
+		t.Fatal("an op with no envelope must be refused, not merged on the strength of the transport")
 	}
 	if got := b.eng.Stats().LegacyOps; got != 1 {
-		t.Fatalf("legacy_ops = %d, want 1", got)
+		t.Fatalf("legacy_ops = %d, want 1 — a refusal an operator cannot see is a silent one", got)
 	}
-	if rows, _ := b.st.ListRows("products", false); len(rows) != 1 {
-		t.Fatalf("legacy op did not merge: %v", rows)
+	if rows, _ := b.st.ListRows("products", false); len(rows) != 0 {
+		t.Fatalf("a refused op still landed: %v", rows)
 	}
 }
 
