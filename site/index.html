@@ -156,7 +156,7 @@ p{margin:0}
 .kbtn svg{width:14px;height:14px;flex:none}
 kbd{
   display:inline-block;padding:1px 5px;border:1px solid var(--line-2);border-radius:5px;
-  background:var(--panel);font-size:11px;color:var(--t2);line-height:1.5;
+  background:var(--panel);font-size:12px;color:var(--t2);line-height:1.5;
 }
 .iconbtn{
   display:grid;place-items:center;width:32px;height:32px;border-radius:9px;
@@ -228,7 +228,7 @@ kbd{
 .pane{padding:clamp(44px,6vw,76px) 0;border-bottom:1px solid var(--line);scroll-margin-top:72px}
 .pane:last-of-type{border-bottom:0}
 .eyebrow{
-  display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:11.5px;
+  display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;
   letter-spacing:.08em;text-transform:uppercase;color:var(--t3);margin-bottom:14px;
 }
 .eyebrow::before{content:"";width:18px;height:1px;background:var(--accent)}
@@ -246,7 +246,7 @@ kbd{
 .pill{
   display:inline-flex;align-items:center;gap:9px;padding:5px 12px;border-radius:999px;
   border:1px solid var(--accent-edge);background:var(--accent-wash);
-  font-family:var(--mono);font-size:11.5px;letter-spacing:.04em;color:var(--accent-text);
+  font-family:var(--mono);font-size:12px;letter-spacing:.04em;color:var(--accent-text);
 }
 .pill i{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
 h1{font-size:clamp(38px,6.4vw,68px);letter-spacing:-.04em;line-height:1.02;margin:20px 0 0;font-weight:700}
@@ -272,8 +272,8 @@ h1 .slash{color:var(--accent-text)}
 }
 .dots{display:flex;gap:6px}
 .dots i{width:9px;height:9px;border-radius:50%;background:var(--line-2)}
-.window-bar .label{font-family:var(--mono);font-size:11.5px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.window-bar .right{margin-left:auto;display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:11px;color:var(--t3)}
+.window-bar .label{font-family:var(--mono);font-size:12px;color:var(--t3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.window-bar .right{margin-left:auto;display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12px;color:var(--t3)}
 /* The chrome caption has nowhere to go at phone widths and is decoration. This
    has to sit AFTER the rule above: same specificity, so source order decides. */
 @media(max-width:560px){.window-bar .right{display:none}}
@@ -299,7 +299,7 @@ h1 .slash{color:var(--accent-text)}
 .nudge-card .h{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:650;color:var(--warn)}
 .nudge-card .h svg{width:14px;height:14px}
 .nudge-card p{margin-top:6px;font-size:13px;color:var(--t2)}
-.nudge-card .f{margin-top:9px;font-family:var(--mono);font-size:10.5px;color:var(--t3);letter-spacing:.03em}
+.nudge-card .f{margin-top:9px;font-family:var(--mono);font-size:12px;color:var(--t3);letter-spacing:.03em}
 @media(max-width:720px){.nudge-card{display:none}}
 
 .shotnote{margin-top:34px;font-size:12.5px;color:var(--t3)}
@@ -345,7 +345,7 @@ h1 .slash{color:var(--accent-text)}
 .grid .card{display:flex;flex-direction:column}
 .card .meta{
   margin-top:auto;padding-top:11px;border-top:1px solid var(--line);
-  font-family:var(--mono);font-size:11px;color:var(--t3);letter-spacing:.02em;line-height:1.55;
+  font-family:var(--mono);font-size:12px;color:var(--t3);letter-spacing:.02em;line-height:1.55;
 }
 
 /* ── why it's different: four promises, each with its reason ───────────── */
@@ -362,13 +362,13 @@ h1 .slash{color:var(--accent-text)}
 .promise p{font-size:14.5px;color:var(--t2)}
 .promise .because{
   margin-top:auto;padding-top:11px;border-top:1px solid var(--line);
-  font-family:var(--mono);font-size:11px;color:var(--t3);letter-spacing:.02em;line-height:1.55;
+  font-family:var(--mono);font-size:12px;color:var(--t3);letter-spacing:.02em;line-height:1.55;
 }
 
 /* honesty chips — built means in the tree, wired in, and under test */
 .chip{
   display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;
-  font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.05em;
+  font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.05em;
   text-transform:uppercase;white-space:nowrap;border:1px solid;
 }
 .chip::before{content:"";width:5px;height:5px;border-radius:50%;background:currentColor}
@@ -388,7 +388,7 @@ h1 .slash{color:var(--accent-text)}
 }
 .egress .eh{
   display:flex;align-items:center;gap:10px;padding:13px 18px;border-bottom:1px solid var(--line);
-  background:var(--sunken);font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;
+  background:var(--sunken);font-family:var(--mono);font-size:12px;letter-spacing:.06em;
   text-transform:uppercase;color:var(--t3);
 }
 .egress .eh svg{width:15px;height:15px;color:var(--accent-text)}
@@ -405,7 +405,7 @@ h1 .slash{color:var(--accent-text)}
 .caps{margin-top:28px;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--panel);box-shadow:var(--shadow-raised)}
 .caps .ch{
   padding:11px 18px;background:var(--sunken);border-bottom:1px solid var(--line);border-top:1px solid var(--line);
-  font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--t3);
+  font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--t3);
 }
 .caps .ch:first-child{border-top:0}
 .caps .row{display:flex;gap:16px;align-items:baseline;padding:15px 18px;border-bottom:1px solid var(--line)}
@@ -429,8 +429,8 @@ h1 .slash{color:var(--accent-text)}
 .galtabs button[aria-selected=true]{background:var(--accent);border-color:var(--accent);color:var(--accent-fg);font-weight:650}
 .galstage{margin-top:6px}
 .galbar{display:flex;align-items:center;gap:12px;padding:0 13px;height:40px;border-bottom:1px solid var(--line);background:var(--sunken)}
-.galbar .path{font-family:var(--mono);font-size:11.5px;color:var(--t3);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.galbar .count{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:11.5px;color:var(--t2)}
+.galbar .path{font-family:var(--mono);font-size:12px;color:var(--t3);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.galbar .count{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px;color:var(--t2)}
 .galnav{display:flex;gap:4px}
 .galnav button{
   display:grid;place-items:center;width:26px;height:26px;border-radius:7px;border:1px solid var(--line);
@@ -443,7 +443,7 @@ h1 .slash{color:var(--accent-text)}
   border-left:2px solid var(--accent);padding-left:14px;min-height:64px;
 }
 .galcap b{color:var(--t1)}
-.galcap .k{margin-left:auto;flex:none;font-family:var(--mono);font-size:11px;color:var(--t3);white-space:nowrap}
+.galcap .k{margin-left:auto;flex:none;font-family:var(--mono);font-size:12px;color:var(--t3);white-space:nowrap}
 @media(max-width:680px){.galcap .k{display:none}}
 .lightnote{
   display:none;margin-top:12px;padding:10px 13px;border:1px solid var(--line);border-radius:var(--radius-sm);
@@ -463,7 +463,7 @@ h1 .slash{color:var(--accent-text)}
 .not p{font-size:13.5px;color:var(--t2)}
 .not .today{border-left:1px solid var(--line);padding-left:16px}
 @media(max-width:760px){.not .today{border-left:0;border-top:1px solid var(--line);padding-left:0;padding-top:10px}}
-.not .today .h{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-text);margin-bottom:5px}
+.not .today .h{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent-text);margin-bottom:5px}
 .not .today p{color:var(--t2);font-size:13.5px}
 
 /* ── install ───────────────────────────────────────────────────────────── */
@@ -479,7 +479,7 @@ h1 .slash{color:var(--accent-text)}
 .copybtn{
   display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;margin-left:auto;
   border:1px solid var(--line);border-radius:7px;background:var(--panel);
-  font-family:var(--mono);font-size:10.5px;color:var(--t3);
+  font-family:var(--mono);font-size:12px;color:var(--t3);
   transition:border-color var(--quick) var(--ease),color var(--quick) var(--ease);
 }
 .copybtn:hover{border-color:var(--accent-edge);color:var(--t1)}
@@ -494,7 +494,7 @@ h1 .slash{color:var(--accent-text)}
 .plat:hover{border-color:var(--accent-edge);transform:translateY(-1px)}
 .plat svg.os{width:19px;height:19px;flex:none;margin-top:2px;color:var(--t2);stroke-width:1.7}
 .plat b{display:block;font-size:14.5px;display:flex;align-items:center;gap:8px}
-.plat b .f{font-family:var(--mono);font-size:11px;color:var(--t3);font-weight:400}
+.plat b .f{font-family:var(--mono);font-size:12px;color:var(--t3);font-weight:400}
 .plat span{display:block;font-size:13px;color:var(--t2);margin-top:3px}
 .plat .arr{margin-left:auto;color:var(--t3);flex:none;align-self:center}
 .plat .arr svg{width:15px;height:15px}
@@ -523,14 +523,14 @@ h1 .slash{color:var(--accent-text)}
 @media(max-width:860px){.foot-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:520px){.foot-grid{grid-template-columns:1fr}}
 .foot-grid .blurb{color:var(--t2);font-size:13.5px;margin-top:12px;max-width:42ch}
-.foot-grid h4{font-size:11.5px;text-transform:uppercase;letter-spacing:.1em;color:var(--t3);margin-bottom:12px;font-weight:600}
+.foot-grid h4{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--t3);margin-bottom:12px;font-weight:600}
 .foot-grid ul{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .foot-grid a{color:var(--t2);font-size:13.5px;transition:color var(--quick) var(--ease)}
 .foot-grid a:hover{color:var(--t1)}
 .foot-bar{
   max-width:var(--max);margin:0 auto;padding:14px clamp(16px,3vw,40px) 30px;
   display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;border-top:1px solid var(--line);
-  font-family:var(--mono);font-size:11.5px;color:var(--t3);
+  font-family:var(--mono);font-size:12px;color:var(--t3);
 }
 .foot-bar .v{display:inline-flex;align-items:center;gap:8px;color:var(--t2)}
 .foot-bar .v img{width:17px;height:17px;border-radius:5px}
@@ -555,12 +555,12 @@ h1 .slash{color:var(--accent-text)}
   color:var(--t2);font-size:14px;text-align:left;
 }
 .pal .row svg{width:15px;height:15px;flex:none;stroke-width:1.8}
-.pal .row .k{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--t3);flex:none}
+.pal .row .k{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--t3);flex:none}
 .pal .row[aria-selected=true]{background:var(--accent-wash);color:var(--t1)}
 .pal .row[aria-selected=true] svg{color:var(--accent-text)}
 .pal .empty{padding:30px 16px;text-align:center;color:var(--t3);font-size:13.5px}
 .pal .empty .big{display:block;font-size:14.5px;color:var(--t2);margin-bottom:5px;font-weight:600}
-.pal .pfoot{display:flex;gap:16px;padding:9px 15px;border-top:1px solid var(--line);background:var(--sunken);font-size:11px;color:var(--t3)}
+.pal .pfoot{display:flex;gap:16px;padding:9px 15px;border-top:1px solid var(--line);background:var(--sunken);font-size:12px;color:var(--t3)}
 .pal .pfoot span{display:inline-flex;align-items:center;gap:5px}
 
 /* ── motion opt-out: one block, everything obeys it ────────────────────── */
