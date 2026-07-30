@@ -53,7 +53,16 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0600_devices",
         include_str!("migrations/0600_devices.sql"),
     ),
+    (700, "0700_oplog", include_str!("migrations/0700_oplog.sql")),
 ];
+
+/// The embedded migration set, for tests that need to stop part-way through
+/// it — replaying an upgrade from an older schema, which is the only way to
+/// check that a migration does the right thing to data that already exists.
+#[cfg(test)]
+pub(crate) fn migrations_for_test() -> &'static [(i64, &'static str, &'static str)] {
+    MIGRATIONS
+}
 
 /// A configured, migrated SQLite database handle.
 #[derive(Debug)]
@@ -149,13 +158,13 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 100, 101, 200, 201, 300, 301, 400, 500, 600]
+            vec![1, 100, 101, 200, 201, 300, 301, 400, 500, 600, 700]
         );
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 100, 101, 200, 201, 300, 301, 400, 500, 600]
+            vec![1, 100, 101, 200, 201, 300, 301, 400, 500, 600, 700]
         );
     }
 

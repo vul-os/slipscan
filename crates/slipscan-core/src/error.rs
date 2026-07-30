@@ -99,6 +99,22 @@ pub enum CoreError {
     #[error("pairing refused: {0}")]
     DevicePairing(String),
 
+    // -- The signed operation log (docs/NODES.md) -------------------------
+    #[error(
+        "this device's sync clock is {ahead_ms}ms ahead of its wall clock, past the \
+         {bound_ms}ms bound. Every operation signed from here would carry a timestamp \
+         no peer will accept, and the timestamp is inside the signature — so nothing \
+         was sealed. Correct this machine's clock; the pending writes are safe in the \
+         outbox and seal once it is sound"
+    )]
+    SyncClockDrift { ahead_ms: u64, bound_ms: u64 },
+
+    #[error("operation {op_id} does not verify: {reason}")]
+    SyncOpUnverified { op_id: String, reason: String },
+
+    #[error("sync mapping error: {0}")]
+    SyncMapping(String),
+
     #[error(
         "exchange rates are not configured: set the OpenRate base URL first \
          (fx_configure) — SlipScan makes no FX network calls until you do"

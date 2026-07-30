@@ -209,6 +209,15 @@ impl CoreService {
         Ok(())
     }
 
+    /// The underlying connection, for tests that need to look at what a
+    /// service call did to the database rather than at what it returned —
+    /// notably `crate::sync::tests`, which checks that ordinary service writes
+    /// reach the operation log.
+    #[cfg(test)]
+    pub(crate) fn conn_for_test(&self) -> &Connection {
+        self.db.conn()
+    }
+
     /// Whether the service is currently flagged read-only (moving data).
     pub fn is_read_only(&self) -> bool {
         self.read_only.get()

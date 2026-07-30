@@ -23,6 +23,9 @@ pub mod repo;
 pub mod secrets;
 pub mod service;
 mod slip;
+/// The signed operation log — the **record** half of device sync. Nothing
+/// here opens a socket; there is no transport yet (docs/NODES.md).
+pub mod sync;
 pub mod util;
 pub mod vat;
 

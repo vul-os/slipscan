@@ -1,9 +1,10 @@
 -- =============================================================================
 -- Migration 0600: device identity & accountless pairing (docs/NODES.md).
 --
--- Phase 1 of the node model. This migration stores IDENTITY ONLY. There is
--- no oplog, no transport, and nothing here causes anything to sync between
--- devices — see docs/NODES.md "Nothing syncs yet".
+-- Phase 1 of the node model. This migration stores IDENTITY ONLY, and nothing
+-- here causes anything to sync between devices. The signed operation log
+-- arrived later, in migration 0700, and consumes the key this one mints; there
+-- is still no transport — see docs/NODES.md "What is still missing".
 --
 -- There are NO ACCOUNTS. A device's ed25519 public key IS its id; there is
 -- no email, no login, no username, and no directory that maps a name to a

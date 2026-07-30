@@ -25,6 +25,12 @@ keyring = { workspace = true }
 # words do. Not invented here — same facility Kotva identities use.
 kotva-core = { workspace = true }
 rusqlite = { workspace = true }
+# The oplog signs every op as a COSE_Sign1 and orders it with an HLC. Both are
+# the shared engine's, reached through the mapping crate rather than
+# re-derived: `slipscan-sync` decides which primitive a table maps to, and
+# `dmtap-sync` (kotva-sync) is the algebra itself.
+slipscan-sync = { workspace = true }
+dmtap-sync = { package = "kotva-sync", version = "0.1.0" }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
 # raw_value: the FX client captures OpenRate's decimal `rate` token verbatim

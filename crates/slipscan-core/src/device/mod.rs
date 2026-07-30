@@ -2,10 +2,12 @@
 //! device id**, plus the peer pins that pairing produces.
 //!
 //! **Nothing here syncs anything.** This is phase 1 of the node model
-//! (docs/NODES.md): identity and pairing only. There is no oplog, no
-//! transport, no coordinator, no directory, and no default endpoint. Two
-//! paired devices know each other's keys and can prove possession of them —
-//! and that is the entire extent of it.
+//! (docs/NODES.md): identity and pairing only. Phase 2, the signed operation
+//! log, lives in [`crate::sync`] and consumes the key this module mints; it
+//! records changes and sends them nowhere. There is still no transport, no
+//! coordinator, no directory, and no default endpoint. Two paired devices know
+//! each other's keys and can prove possession of them — and that is the entire
+//! extent of it.
 //!
 //! ## No accounts, ever
 //!
@@ -515,6 +517,44 @@ impl<'a> Devices<'a> {
             paired_at: now,
             revoked_at: None,
             last_seen_at: None,
+        })
+    }
+
+    /// Run `consume` with this device's key in the substrate's own
+    /// [`IdentityKey`](kotva_core::identity::IdentityKey) form.
+    ///
+    /// The oplog signs each operation as an RFC 9052 `COSE_Sign1`, and the
+    /// engine's signer takes an `IdentityKey`. That costs nothing to provide:
+    /// an `IdentityKey` *is* an ed25519 keypair reconstructed from a 32-byte
+    /// seed, which is exactly what the vault holds, so the device id a peer
+    /// pinned at pairing and the `kid` inside every signed op are the same 32
+    /// bytes. There is no second key, no derivation, and no way for the two to
+    /// disagree.
+    ///
+    /// One unwrap per caller, not one per signature: the vault stamps an audit
+    /// entry on every use, so signing a hundred ops through a hundred
+    /// `use_with` calls would write a hundred rows about it. The material
+    /// still lives only for the closure — `SigningKey` zeroizes on drop.
+    ///
+    /// Refuses, exactly as [`Devices::sign`] does, when the vault's key is not
+    /// the pinned public key: signing under a key this device cannot prove it
+    /// holds would attribute ops to an identity it does not own.
+    pub(crate) fn with_identity_key<T>(
+        &self,
+        consume: impl FnOnce(&kotva_core::identity::IdentityKey) -> CoreResult<T>,
+    ) -> CoreResult<T> {
+        let identity = self.require_identity()?;
+        self.vault().use_with(IDENTITY_SECRET_REF, |secret| {
+            let seed = keys::decode_hex(secret.expose_secret())
+                .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+                .ok_or_else(|| CoreError::DeviceKeyUnusable {
+                    subject: "this device's stored private key".into(),
+                })?;
+            let key = kotva_core::identity::IdentityKey::from_seed(&seed);
+            if keys::encode_hex(&key.public()) != identity.public_key {
+                return Err(CoreError::DeviceKeyMismatch);
+            }
+            consume(&key)
         })
     }
 
