@@ -15,6 +15,8 @@ One `MailboxConnector` trait (in `crates/slipscan-ingest`), four providers.
 | Outlook / Microsoft 365 | Graph delta queries (BYO app registration, device-code flow) | Graph change notifications — self-host server mode only; otherwise delta polling |
 | Proton Mail | IMAP via local **Proton Bridge** | IMAP IDLE against the bridge |
 
+**Read the Push column as "the connector can do this", not "SlipScan does this".** No shipped surface runs a push loop: every provider's sync is one poll per `slipscan mail-sync`, and the IDLE / Pub/Sub machinery below is implemented in the library with no caller. Graph push is additionally unsupported by design outside self-host mode.
+
 Mail carries two different things, and they take two different paths:
 
 - a **document** — a PDF/image attachment, or an HTML body that reads like a receipt — goes into the extraction pipeline;

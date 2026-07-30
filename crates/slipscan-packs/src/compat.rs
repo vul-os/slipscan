@@ -8,8 +8,14 @@
 //! same verify → trust → install path as every other pack.
 //!
 //! New code writes [`PackPayload`]; this module is the on-ramp for old files
-//! (and for `slipscan pack verify`, which still reports on a manifest without
-//! installing it).
+//! and the renderer for the one place that still speaks the flat shape (the
+//! installed-packs index, [`PackManifest::from_payload`]).
+//!
+//! It is **not** a surface. [`verify_pack`] reads this one shape and nothing
+//! else, so a "verify" command built on it rejects every current-format pack
+//! its own installer would accept — which is what `slipscan pack verify` did
+//! until [`crate::transport::plan_document`] replaced it. Anything a user
+//! points at a pack file goes through `plan_document`.
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
@@ -201,6 +207,12 @@ fn parents_first(categories: Vec<PackCategory>) -> PackResult<Vec<PackCategory>>
 /// Verify a detached ed25519 signature over the raw manifest bytes, then
 /// parse the manifest. Returns the manifest only when the signature is valid
 /// for `public_key_bytes` (32 bytes) and `signature_bytes` (64 bytes).
+///
+/// **Legacy shape only, and deliberately so.** A current-format document has
+/// no top-level `id`, so this fails it with `missing field 'id'` even though
+/// the signature was fine and the installer would take it. Do not build a
+/// user-facing check on this — [`crate::transport::plan_document`] is the
+/// check, and it accepts exactly what the installer accepts.
 pub fn verify_pack(
     manifest_bytes: &[u8],
     signature_bytes: &[u8],

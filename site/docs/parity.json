@@ -4,7 +4,14 @@
     "change as any route or IPC command you add.",
     "http.routes  <- crates/slipscan-server/src/routes.rs, the `app()` router",
     "ipc.commands <- apps/desktop/src-tauri/src/lib.rs, generate_handler![]",
-    "client.calls <- apps/desktop/src/lib/api/client.ts, every call(\"name\")"
+    "client.calls <- apps/desktop/src/lib/api/client.ts, every call(\"name\")",
+    "",
+    "A route existing does not mean the operation is served: device_init,",
+    "device_rotate, device_reset, device_forget and the three device_pair_*",
+    "routes are registered so they can REFUSE and name the local command",
+    "instead (they create or destroy key material, or need a human in front",
+    "of the device). They are counted here as routes because the router has",
+    "them; the working implementation of each is the IPC command."
   ],
   "http": {
     "prefix": "/api/v1",
@@ -113,7 +120,7 @@
     }
   },
   "ipc": {
-    "count": 70,
+    "count": 84,
     "commands": [
       "account_list",
       "book_create",
@@ -123,6 +130,20 @@
       "category_list",
       "data_move",
       "data_status",
+      "device_forget",
+      "device_get",
+      "device_init",
+      "device_invite_cancel",
+      "device_invite_list",
+      "device_list",
+      "device_pair_accept",
+      "device_pair_confirm",
+      "device_pair_invite",
+      "device_reset",
+      "device_revoke",
+      "device_rotate",
+      "device_rotations",
+      "device_status",
       "document_get",
       "document_import",
       "document_list",
@@ -188,7 +209,7 @@
     ]
   },
   "client": {
-    "count": 70,
+    "count": 84,
     "calls": [
       "account_list",
       "book_create",
@@ -198,6 +219,20 @@
       "category_list",
       "data_move",
       "data_status",
+      "device_forget",
+      "device_get",
+      "device_init",
+      "device_invite_cancel",
+      "device_invite_list",
+      "device_list",
+      "device_pair_accept",
+      "device_pair_confirm",
+      "device_pair_invite",
+      "device_reset",
+      "device_revoke",
+      "device_rotate",
+      "device_rotations",
+      "device_status",
       "document_get",
       "document_import",
       "document_list",
@@ -268,7 +303,7 @@
     "category_list": "category_tree"
   },
   "missing_from_ipc": {
-    "count": 32,
+    "count": 19,
     "operations": [
       "account_create",
       "account_delete",
@@ -279,19 +314,6 @@
       "budget_status",
       "category_create",
       "coa_seed",
-      "device_forget",
-      "device_get",
-      "device_init",
-      "device_invite_list",
-      "device_list",
-      "device_pair_accept",
-      "device_pair_confirm",
-      "device_pair_invite",
-      "device_reset",
-      "device_revoke",
-      "device_rotate",
-      "device_rotations",
-      "device_status",
       "document_current_extraction",
       "document_record_extraction",
       "document_transition",
@@ -305,10 +327,11 @@
     ]
   },
   "desktop_only": {
-    "count": 8,
+    "count": 9,
     "commands": [
       "budget_list",
       "data_move",
+      "device_invite_cancel",
       "journal_list",
       "pack_verify",
       "pay_deliver_due",

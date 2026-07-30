@@ -91,7 +91,9 @@ Receipts and bank alerts mostly arrive by email. Connect your own mailbox and Sl
 
 The simplest path is **generic IMAP polling via the CLI**: configure host/port/username/folder, put the app password in the [credential vault](THREAT-MODEL.md) (write-only, never displayed again), and run `slipscan mail-sync` — attachments in unseen mail become documents. Any IMAP host works, including a [lilmail](https://github.com/vul-os)-managed mailbox or a local Proton Bridge.
 
-The dedicated **Gmail** (history deltas) and **Outlook/Microsoft 365** (Graph deltas) connectors run from the same command: `slipscan mail-sync --provider gmail|graph`, after a one-time `--login` that completes the OAuth grant against **your own** app registration (browser loopback for Gmail, device code for Graph) and puts the tokens in the vault. `--provider imap` remains the default, so existing invocations are unchanged. What is still missing: no push loop runs anywhere (each `mail-sync` is one poll, so Gmail's Pub/Sub pull and `users.watch` renewal stay library-only), and the desktop app's mailbox settings are IMAP-only — see the status note in [EMAIL.md](EMAIL.md) for exactly where each provider stands.
+The dedicated **Gmail** (history deltas) and **Outlook/Microsoft 365** (Graph deltas) connectors run from the same command: `slipscan mail-sync --provider gmail|graph`, after a one-time `--login` that completes the OAuth grant against **your own** app registration (browser loopback for Gmail, device code for Graph) and puts the tokens in the vault. `--provider imap` remains the default, so existing invocations are unchanged. What is still missing: no push loop runs anywhere (each `mail-sync` is one poll, so IMAP IDLE, Gmail's Pub/Sub pull and `users.watch` renewal stay library-only), and the desktop app's mailbox settings are IMAP-only — see the status note in [EMAIL.md](EMAIL.md) for exactly where each provider stands.
+
+**Bank alerts can become transactions**, not just documents — add `--alerts --account <acct>` to any of the above. This needs one thing first: a signed `mailrules` pack that knows your bank's alert format, because **SlipScan deliberately ships no bank patterns of its own** (formats are per-bank and per-country, so they are data, not code). Without a pack installed, `--alerts` tells you so and does nothing. With one, a matched alert is parsed into a statement line and imported through the exact path `--preset` uses above, so dedupe, your categorisation corrections, and the [Payments](PAYMENTS.md) hook all apply — and a rule that matches but cannot read a field cleanly declines with a reason instead of guessing. CLI-only, one target account per run: [EMAIL.md](EMAIL.md#bank-alert-emails--transactions).
 
 ## 5. Set an LLM provider
 
@@ -110,8 +112,10 @@ Configuration is headless today, and honestly clunky: the CLI has no settings co
 ## Where to go from here
 
 - Automate bank pulls — [BANK-ADAPTERS.md](BANK-ADAPTERS.md)
-- Install a regional classification pack — [PACKS.md](PACKS.md)
+- Install a regional classification pack, or a `mailrules` pack for your bank's alerts — [PACKS.md](PACKS.md)
 - Run headless on your NAS — [SELFHOST.md](SELFHOST.md)
+- Give this device an identity and pair another one — [NODES.md](NODES.md) (identity and pairing only; nothing syncs yet)
+- See how much of Xero and Vault22 actually exists — [PARITY.md](../PARITY.md)
 - Understand what protects your credentials — [THREAT-MODEL.md](THREAT-MODEL.md)
 
 **Next:** [CONFIGURATION.md](CONFIGURATION.md) — settings model, data locations, and provider configs.

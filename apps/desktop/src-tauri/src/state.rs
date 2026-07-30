@@ -1,9 +1,14 @@
 //! Shared Tauri state: one [`CoreService`] over the SQLite database in the
 //! movable data folder (resolved through core's shared
 //! [`slipscan_core::datadir::DataDirResolver`] — the same pointer the CLI and
-//! server follow), plus a second connection reserved for the credential vault
-//! (core keeps the vault tables private to `secrets::Vault`, which borrows a
-//! raw connection).
+//! server follow), plus two further connections to the same file for the
+//! subsystems core keeps private to their own borrowing types: the credential
+//! vault (`secrets::Vault`) and device identity ([`DeviceHandle`], which owns
+//! a connection and a keychain).
+//!
+//! All three are closed and reopened around a data-folder move — core's move
+//! takes SQLite's exclusive lock and refuses while *any* connection is open,
+//! including this process's own.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -14,6 +19,7 @@ use slipscan_core::domain::{AuditEntry, Book, CategoryKind, NewCategory};
 use slipscan_core::secrets::{KeyringSecretStore, MemorySecretStore};
 use slipscan_core::util::{new_id, now_iso};
 use slipscan_core::{repo, CoreResult, CoreService, Db};
+use slipscan_server::devices::DeviceHandle;
 
 /// Starter category taxonomy for a fresh book: (name, kind, icon).
 /// Packs can extend this later; these make categorise/budgets usable on day 1.
@@ -34,6 +40,14 @@ pub struct AppState {
     service: Mutex<CoreService>,
     /// Second connection to the same file, used only by vault commands.
     vault_db: Mutex<Db>,
+    /// Device identity and pairing, over a third connection to the same file.
+    ///
+    /// This is `slipscan-server`'s handle, not a local re-implementation, and
+    /// deliberately: it is where the served/local-only split for device
+    /// operations is written down, and the CLI drives the same type. A second
+    /// wrapper here would be a second opinion about which operations may
+    /// leave the machine.
+    devices: Mutex<DeviceHandle>,
     /// OS keychain handle for the vault's key-encryption key.
     pub keychain: KeyringSecretStore,
     /// Shared resolver for the movable data folder — pointer file in the
@@ -64,10 +78,12 @@ impl AppState {
 
         let service = CoreService::open(&db_path).map_err(err)?;
         let vault_db = open_vault_db(&db_path)?;
+        let devices = open_devices(&db_path)?;
 
         Ok(Self {
             service: Mutex::new(service),
             vault_db: Mutex::new(vault_db),
+            devices: Mutex::new(devices),
             keychain: KeyringSecretStore::default(),
             resolver,
             data_dir: Mutex::new(data_dir),
@@ -84,6 +100,12 @@ impl AppState {
         self.vault_db
             .lock()
             .map_err(|_| "vault state poisoned".to_string())
+    }
+
+    pub fn devices(&self) -> Result<MutexGuard<'_, DeviceHandle>, String> {
+        self.devices
+            .lock()
+            .map_err(|_| "device identity state poisoned".to_string())
     }
 
     /// The currently active data folder.
@@ -113,6 +135,7 @@ impl AppState {
     pub fn move_data_dir(&self, target: &Path, use_existing: bool) -> Result<PathBuf, String> {
         let mut service = self.service()?;
         let mut vault_db = self.vault_db()?;
+        let mut devices = self.devices()?;
         let mut data_dir = self
             .data_dir
             .lock()
@@ -122,9 +145,10 @@ impl AppState {
             adopt_existing(&self.resolver, &data_dir, target)
         } else {
             match closed_placeholders() {
-                Ok((service_placeholder, vault_placeholder)) => {
+                Ok((service_placeholder, vault_placeholder, devices_placeholder)) => {
                     *service = service_placeholder;
                     *vault_db = vault_placeholder;
+                    *devices = devices_placeholder;
                     // Single spinner-friendly await on the frontend: no
                     // progress events — the promise resolving is the
                     // completion signal.
@@ -143,9 +167,10 @@ impl AppState {
         // that way — nothing is written into a folder the user just pointed
         // at, and the empty state is recoverable from the UI.
         match (moved, reopen(&self.resolver)) {
-            (moved, Ok((new_service, new_vault_db, new_dir))) => {
+            (moved, Ok((new_service, new_vault_db, new_devices, new_dir))) => {
                 *service = new_service;
                 *vault_db = new_vault_db;
+                *devices = new_devices;
                 *data_dir = new_dir.clone();
                 moved.map(|()| new_dir)
             }
@@ -166,23 +191,27 @@ impl AppState {
 /// connections must be closed (not merely `query_only`) for the duration.
 /// Every state lock is held throughout, so no IPC command can ever observe
 /// the stand-ins.
-fn closed_placeholders() -> CoreResult<(CoreService, Db)> {
+fn closed_placeholders() -> CoreResult<(CoreService, Db, DeviceHandle)> {
     Ok((
         CoreService::new(Db::open_in_memory()?, Box::new(MemorySecretStore::new())),
         Db::open_in_memory()?,
+        // In-memory, and with a *memory* keychain: the stand-in must not be
+        // able to touch the real OS keychain even if something reached it.
+        DeviceHandle::new(Db::open_in_memory()?, Box::new(MemorySecretStore::new())),
     ))
 }
 
-/// Open service + vault connections on whichever folder the shared pointer
-/// currently names. An adopted folder keeps exactly the books it already
-/// holds — including none.
-fn reopen(resolver: &DataDirResolver) -> Result<(CoreService, Db, PathBuf), String> {
+/// Open service + vault + device connections on whichever folder the shared
+/// pointer currently names. An adopted folder keeps exactly the books — and
+/// exactly the device identity — it already holds, including none.
+fn reopen(resolver: &DataDirResolver) -> Result<(CoreService, Db, DeviceHandle, PathBuf), String> {
     let dir = resolver.resolve().map_err(err)?;
     let db = datadir::db_path(&dir);
     let service = CoreService::open(&db)
         .map_err(|e| format!("opening the database at {} failed: {e}", dir.display()))?;
     let vault_db = open_vault_db(&db)?;
-    Ok((service, vault_db, dir))
+    let devices = open_devices(&db)?;
+    Ok((service, vault_db, devices, dir))
 }
 
 /// "Open instead": switch the pointer to a folder that already contains a
@@ -257,6 +286,18 @@ fn open_vault_db(db_path: &Path) -> Result<Db, String> {
     let vault_db = Db::open(db_path).map_err(err)?;
     let _ = vault_db.conn().busy_timeout(Duration::from_secs(5));
     Ok(vault_db)
+}
+
+/// Device-identity connection: same file, same patience as the vault's, and
+/// the real OS keychain — the device's private key lives in the vault, so
+/// there is no device identity without it.
+fn open_devices(db_path: &Path) -> Result<DeviceHandle, String> {
+    let db = Db::open(db_path).map_err(err)?;
+    let _ = db.conn().busy_timeout(Duration::from_secs(5));
+    Ok(DeviceHandle::new(
+        db,
+        Box::new(KeyringSecretStore::default()),
+    ))
 }
 
 /// Fill a just-created book with the two things that make it usable on day

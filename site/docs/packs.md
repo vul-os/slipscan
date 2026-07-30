@@ -62,17 +62,32 @@ Trust is per-publisher and there is no central authority deciding who may publis
 
 **A fetched pack is stricter.** Passing `--public-key` on the command line is a decision you made about a key you were holding; a pack that arrives over a transport was hand-carried by nobody. So on the fetch path an unknown signer is **refused** until you pass the exact fingerprint you were shown (`--accept-signer`, or the tick on the desktop's Sources panel) — see ["Getting a pack"](#getting-a-pack). The pin is unaffected either way: a changed publisher key is refused on every path, with no override anywhere.
 
-The fingerprint is put in front of you where the decision is made: the desktop's verify step shows it, and says whether that key is already trusted, before the install button does anything; every installed pack lists its signer fingerprint afterwards. What no surface exposes is the store itself — there is no screen or command that lists trusted signers or revokes one, though `slipscan_packs::TrustStore` implements both.
+The fingerprint is put in front of you where the decision is made: the desktop's verify step and `slipscan pack verify` both show it, and say whether that key is already trusted, before anything commits; every installed pack lists its signer fingerprint afterwards. What no surface exposes is the store itself — there is no screen or command that lists trusted signers or revokes one, though `slipscan_packs::TrustStore` implements both.
 
 ## Installing a pack
 
-- CLI: `slipscan pack install <pack.json> --signature <hex|@file> --public-key <hex|@file>` — verification failure rejects the pack before anything is applied. `slipscan pack verify` checks a pack without installing; `slipscan pack list` shows what's installed.
+- CLI: `slipscan pack install <pack.json> --signature <hex|@file> --public-key <hex|@file>` — verification failure rejects the pack before anything is applied. `slipscan pack verify` takes the same three arguments and reports without installing (see below); `slipscan pack list` shows what's installed.
 - Server: the `pack_install` operation ([API.md](API.md)) with the same three inputs.
 - Desktop: a top-level **Packs** screen (it moved out of Settings). Pick the pack file, paste or pick its signature and public key, and it verifies first: you see the signer's fingerprint, whether that key is already trusted, and what the install would do (new install, or an upgrade from which version), and only then commit. The same screen upgrades and uninstalls.
 - Installation is per-book, and **versions only move forward**: re-installing the version you already have is refused (`already installed`) and downgrades are rejected. Installing a *higher* version upgrades in place — categories keep their ids, your renames survive, and rules are replaced wholesale.
 - Your data is untouched either way, and rules are never applied retroactively: a pack classifies what you import from then on, not what is already in the book.
 
+### Checking a pack before you install it
+
+`slipscan pack verify <pack.json> --signature … --public-key …` is the local-file twin of `pack fetch`: it installs nothing, trusts nothing and writes nothing, and it exists so the out-of-band fingerprint check happens *before* the key is passed to `install` — because passing the key is the trust decision. It reports the signer's fingerprint in the grouped `ab12-cd34-ef56-7890` form you can read down a phone line, whether that key is already trusted here, whether the pack id is already pinned (and to whom), the id/version/kind/region the pack actually claims, and what installing it into this book would do: a new install, an upgrade from a named version, or a refusal in the installer's own words (a changed publisher key, the version already installed, a downgrade). A "would refuse" is a report, not a failure — the command still exits 0; only a bad signature exits non-zero. `--json` prints the same fields under the same names as `pack fetch --json` and the desktop's verify screen.
+
+Two things follow from what it is for, and both are deliberate:
+
+- **It accepts exactly the documents `install` accepts — no more, no less.** Both start at `slipscan_packs::verify_detached` (via `transport::plan_document`), so the current payload format and the legacy flat manifest are equally readable to both, and a pack can never be called invalid here and then install successfully. It used to parse the file itself in the legacy shape only, so a current-format pack failed with `missing field 'id'` and a legacy pack was described under the id from the file rather than the normalised id it installs as — a verify that cannot read the artifact you are about to trust is worse than not having one.
+- **It resolves a book**, exactly as `install` and `pack fetch` do (`--book <id-or-name>`, or the only book you have). "What would installing do" has no answer without one, and refusing to guess beats reporting a plan for a book you did not mean.
+
+Nothing here can weaken the pin: a pack id stays bound to the key that first signed it, `verify` only reads that binding, and a key change is reported as the refusal it is — never as something a flag could accept.
+
+The one case where the report and the attempt can still disagree is a database that has not yet migrated its pre-installer `packs.installed` blob; it is described under ["Upgrading from a pre-installer database"](#installing-a-pack) above, along with the one-command way out.
+
 **Upgrading from a pre-installer database.** Packs installed by the old path lived in one `packs.installed` settings blob and were never consulted by anything. They are adopted into the pack tables the first time you install or list packs: the categories that install created are matched by name and parent (never duplicated), and its rules become live rules. Nothing is fabricated on the way in — that blob stored no signature and no public key, so the adopted row records no signer and pins nothing, which leaves a properly signed release of the same pack free to take it over later. The settings key itself is kept verbatim, and an entry that cannot be adopted is still listed, so an install that happened never disappears from the record.
+
+One consequence, stated rather than hidden: adoption is a **write**, so only the install and list paths can perform it, and a preflight is a read. On a database whose blob has not been adopted yet, `pack verify` (and `pack fetch`, and the desktop's verify step) reads pack tables the blob has not been folded into, and can therefore report *"would install"* for a pack whose install then refuses it as `already installed` — the one case where the preflight and the attempt still disagree. It is a single-shot, pre-migration-only window: run `slipscan pack list` once and the two agree from then on. The fix belongs in the layer that owns the migration, not in the preflight — a read has to stay a read.
 
 ## Getting a pack
 
@@ -132,7 +147,7 @@ Nothing about your book is ever sent to a source. Fetching is a GET; there is no
 3. **The signer.** Trust-on-first-use — where "first use" means *you saw the fingerprint and said yes*, not "it showed up". A pack that arrives over a transport was not hand-carried with its key the way `pack install <file> --public-key <hex>` is, so an unknown signer is refused until you pass the very fingerprint you are being asked about. **Naming a source is not consent to everything that source will ever serve.**
 4. **Versions**, forward only, exactly as for a local file.
 
-A read (`pack fetch`) runs gates 1 and 2–4 as a *preflight* and writes nothing at all, so the fingerprint is in front of you before any decision is possible.
+A read (`pack fetch`) runs gates 1 and 2–4 as a *preflight* and writes nothing at all, so the fingerprint is in front of you before any decision is possible. `pack verify` is the same preflight over a file you are holding rather than bytes off a source — one function (`transport::plan`), so no surface can promise something the attempt then refuses.
 
 ### On all three surfaces
 

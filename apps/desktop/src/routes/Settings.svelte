@@ -21,6 +21,7 @@
   import Data from "./settings/Data.svelte";
   import Connections from "./settings/Connections.svelte";
   import Vault from "./settings/Vault.svelte";
+  import Devices from "./settings/Devices.svelte";
 
   let s = $state<Settings | null>(null);
   /** Every book in the database; `book` is the one the screens work with. */
@@ -31,7 +32,7 @@
   let loadError = $state<string | null>(null);
   let saveError = $state<string | null>(null);
 
-  type Tab = "general" | "data" | "connections" | "vault";
+  type Tab = "general" | "data" | "connections" | "vault" | "devices";
   let tab = $state<Tab>("general");
 
   const tabs: Array<{ id: Tab; label: string }> = [
@@ -39,6 +40,10 @@
     { id: "data", label: "Data & backup" },
     { id: "connections", label: "Connections" },
     { id: "vault", label: "Credential vault" },
+    // Devices sits beside the vault because that is literally where its key
+    // lives: this device's private key is a write-only vault entry. It is not
+    // a sync screen — nothing syncs — which the tab itself says up front.
+    { id: "devices", label: "Devices" },
   ];
 
   /** True while the data-folder move is running (bound out of the Data tab).
@@ -147,6 +152,8 @@
     <Data bind:moving={dataMoving} onmoved={load} />
   {:else if tab === "connections"}
     <Connections bind:settings={s} {book} />
+  {:else if tab === "devices"}
+    <Devices />
   {:else}
     <Vault />
   {/if}

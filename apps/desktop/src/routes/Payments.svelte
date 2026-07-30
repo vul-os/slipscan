@@ -6,11 +6,17 @@
    * overstate:
    *
    * * **Where detection fires.** The hook lives inside `transaction_create`,
-   *   so every source inherits it — but the only sources that exist today are
-   *   statement imports and manual entries. Parsing bank-alert emails into
-   *   transactions is NOT wired (ROADMAP.md, docs/EMAIL.md): alert mail is
-   *   captured as a document, never turned into a transaction, so it cannot
-   *   trigger a watch. No copy here may imply otherwise.
+   *   so every source inherits it. The set of sources is now three: statement
+   *   imports, manual entries, and bank-alert emails — the last of those
+   *   changed this release. `slipscan mail-sync --alerts --account …` parses
+   *   alert mail into statement lines and feeds them through the *same*
+   *   import path a CSV takes, so those transactions do reach the detection
+   *   hook and can fire a watch. The caveat that keeps it honest is a
+   *   different one: **no bank patterns ship**, so nothing is parsed until the
+   *   user installs a `mailrules` pack for their bank (Settings ›
+   *   Connections). This screen used to say email parsing was not
+   *   implemented, which is now the wrong claim in the too-pessimistic
+   *   direction.
    * * **What a signing secret is.** It is generated locally, held write-only
    *   in the credential vault, and displayed exactly once — at creation or at
    *   rotation, in a modal that has to be acknowledged. There is no path that
@@ -482,18 +488,21 @@
       </p>
       <!-- The detection hook lives inside transaction_create, so it does
            apply to every source. Saying "any source" and stopping there would
-           still mislead, because the set of sources that reach it today is
-           two. State the set. -->
+           still mislead, because the set of sources that reach it is a
+           specific three. State the set — and state the condition on the
+           newest one, which is a missing pack, not missing code. -->
       <p
         class="mb-3 flex items-start gap-1.5 rounded-lg border border-line bg-sunken/50 px-3 py-2 text-[11.5px] leading-relaxed text-t2"
       >
         <Icon name="alert-circle" size={13} class="mt-0.5 shrink-0 text-t3" />
         <span>
           Detection runs on every transaction as it is created, which today
-          means <span class="font-medium">statement imports and entries you
-          make yourself</span>. Reading a payment out of a bank-alert email is
-          not implemented — alert mail is only ever captured as a document, so
-          it cannot trigger a watch.
+          means <span class="font-medium">statement imports, entries you make
+          yourself, and bank-alert emails</span>. Alert mail goes through the
+          same import path a statement does, so a parsed alert can fire a watch
+          — but only once you have installed a
+          <span class="font-mono">mailrules</span> pack for your bank, because
+          no bank patterns ship. Settings › Connections says where that stands.
         </span>
       </p>
 

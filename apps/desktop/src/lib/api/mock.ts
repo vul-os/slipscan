@@ -14,6 +14,10 @@ import type {
   Category,
   DataMoveRequest,
   DataStatus,
+  DeviceIdentity,
+  DevicePeer,
+  DeviceRotateResult,
+  DeviceRotation,
   Document,
   DocumentImportRequest,
   DocumentReviewRequest,
@@ -43,6 +47,10 @@ import type {
   PackSourceInfo,
   PackSourceKind,
   PackVerification,
+  PairingAcceptance,
+  PairingInvite,
+  PairingInviteMeta,
+  PairRedeemRequest,
   PayDelivery,
   PayEndpoint,
   PayEndpointWithSecret,
@@ -880,6 +888,260 @@ function mockFingerprint(name: string, secret: string): string {
     h = Math.imul(h ^ c.codePointAt(0)!, 0x01000193) >>> 0;
   }
   return h.toString(16).padStart(8, "0");
+}
+
+// ---------------------------------------------------------------------------
+// device identity and pairing.
+//
+// **No signature is generated or verified here, and nothing syncs** — the
+// second half of that sentence is true of the real thing too (docs/NODES.md:
+// identity and pairing only, no oplog, no transport). What the mock models
+// faithfully is the state machine the screen has to render and every refusal
+// it has to be able to show:
+//
+// * pairing with yourself is refused, which is why the browser harness cannot
+//   run the ceremony end to end on its own (see `mockForeignInvite`);
+// * a claim token is single-use and burnt on redemption, so a replayed
+//   acceptance is refused;
+// * an expired invite is refused;
+// * the key-name comparison is MANDATORY: a redeem with neither a typed
+//   key-name nor an explicit human confirmation is refused outright rather
+//   than quietly downgraded, exactly as the Tauri command does;
+// * a mistyped key-name and the wrong device are different answers;
+// * a revoked peer is a tombstone that refuses re-pairing until it is
+//   deliberately forgotten.
+// ---------------------------------------------------------------------------
+
+/** Deterministic 64-char lowercase hex, standing in for a public key. */
+function mockPublicKey(seed: string): string {
+  let h = 0x2545f491;
+  let out = "";
+  for (let i = 0; i < 8; i++) {
+    for (const c of seed + ":" + i) {
+      h = Math.imul(h ^ c.codePointAt(0)!, 0x01000193) >>> 0;
+    }
+    out += h.toString(16).padStart(8, "0");
+  }
+  return out.slice(0, 64);
+}
+
+/** Word list for the mock's key-names. The real ones come from kotva-core:
+ * eight data words carrying 80 bits of a BLAKE3 digest plus a checksum word.
+ * These are the right *shape* — nine short words joined by `-` — and nothing
+ * more; the mock cannot and must not claim to check a checksum. */
+const MOCK_KEYNAME_WORDS = [
+  "amber", "anchor", "basalt", "brisk", "cedar", "cinder", "dune", "ember",
+  "flint", "grove", "harbor", "indigo", "jasper", "kelp", "lumen", "marble",
+  "nimbus", "onyx", "pewter", "quartz", "rowan", "slate", "tundra", "umber",
+  "vellum", "willow", "xenon", "yarrow", "zephyr", "orchid", "pebble", "reef",
+];
+
+/** Nine words, derived from the key. Same input, same name — the only
+ * property the UI depends on. */
+function mockKeyname(publicKey: string): string {
+  const words: string[] = [];
+  for (let i = 0; i < 9; i++) {
+    const chunk = parseInt(publicKey.slice(i * 4, i * 4 + 4) || "0", 16);
+    words.push(MOCK_KEYNAME_WORDS[chunk % MOCK_KEYNAME_WORDS.length]!);
+  }
+  return words.join("-");
+}
+
+/** Normalize a typed key-name the way core does: lowercase, trimmed, and
+ * tolerant of spaces where a user typed words instead of hyphens. */
+function normalizeKeyname(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .split(/[\s-]+/)
+    .filter(Boolean)
+    .join("-");
+}
+
+/** Does this look like a key-name at all? The real gate is the checksum word;
+ * the mock can only check the shape, and says so rather than pretending. */
+function looksLikeKeyname(name: string): boolean {
+  return name.split("-").length === 9;
+}
+
+interface MockBlobPayload {
+  typ: "slipscan.pair.invite" | "slipscan.pair.accept";
+  device_id: string;
+  label: string;
+  claim: string;
+  expires_at?: string;
+  for_device_id?: string;
+}
+
+const MOCK_BLOB_PREFIX = "ss-pair1.";
+
+const encodeMockBlob = (payload: MockBlobPayload): string =>
+  MOCK_BLOB_PREFIX + btoa(JSON.stringify(payload));
+
+function decodeMockBlob(blob: string): MockBlobPayload {
+  const trimmed = blob.trim();
+  if (!trimmed.startsWith(MOCK_BLOB_PREFIX))
+    throw new Error("not a SlipScan pairing blob");
+  try {
+    return JSON.parse(atob(trimmed.slice(MOCK_BLOB_PREFIX.length)));
+  } catch {
+    throw new Error("this pairing blob is not readable — copy it again in full");
+  }
+}
+
+const THIS_DEVICE_KEY = mockPublicKey("this-laptop");
+const PAIRED_DEVICE_KEY = mockPublicKey("home-server");
+const REVOKED_DEVICE_KEY = mockPublicKey("old-phone");
+
+let deviceIdentity: DeviceIdentity | null = {
+  public_key: THIS_DEVICE_KEY,
+  keyname: mockKeyname(THIS_DEVICE_KEY),
+  label: "Alex's laptop",
+  created_at: "2026-06-02T08:14:00Z",
+  rotated_at: null,
+};
+
+const devicePeers: DevicePeer[] = [
+  {
+    public_key: PAIRED_DEVICE_KEY,
+    keyname: mockKeyname(PAIRED_DEVICE_KEY),
+    label: "home server",
+    paired_at: "2026-06-02T08:31:00Z",
+    revoked_at: null,
+    // Always null: nothing connects to anything.
+    last_seen_at: null,
+  },
+  {
+    public_key: REVOKED_DEVICE_KEY,
+    keyname: mockKeyname(REVOKED_DEVICE_KEY),
+    label: "old phone",
+    paired_at: "2026-06-02T08:44:00Z",
+    revoked_at: "2026-07-04T19:02:00Z",
+    last_seen_at: null,
+  },
+];
+
+let deviceInvites: PairingInviteMeta[] = [];
+let deviceRotations: DeviceRotation[] = [];
+/** claim token -> the invite it belongs to. The real store keeps only a
+ * SHA-256 of the token, so a copy of the database can redeem nothing; the mock
+ * keeps it in the clear, and this comment is why that is acceptable here. */
+const mockClaims = new Map<string, string>();
+
+const mockClaimToken = (): string => mockPublicKey("claim-" + ++seq);
+
+function requireDeviceIdentity(): DeviceIdentity {
+  if (!deviceIdentity)
+    throw new Error(
+      "this device has no identity yet — create one before pairing",
+    );
+  return deviceIdentity;
+}
+
+/**
+ * The key-name comparison, resolved the way the Tauri command resolves it —
+ * **fail closed**.
+ *
+ * A request carrying neither a typed key-name nor an explicit human
+ * confirmation is refused. It is not treated as "someone confirmed it": the
+ * blobs are self-signed, so a substituted invite verifies perfectly, and this
+ * comparison is the only thing that authenticates a pairing. Modelling the
+ * refusal is what lets the screen be tested for asking.
+ */
+function mockKeynameCheck(query: PairRedeemRequest, actual: string): void {
+  const typed = query.expect_keyname?.trim();
+  if (typed) {
+    const expected = normalizeKeyname(typed);
+    if (!looksLikeKeyname(expected))
+      throw new Error(
+        `"${expected}" is not a key-name (nine words) — check what you typed`,
+      );
+    if (expected !== actual)
+      throw new Error(
+        `key-name mismatch: you expected ${expected}, this blob carries ` +
+          `${actual} — refusing rather than pairing the wrong device`,
+      );
+    return;
+  }
+  if (query.confirmed_by_human) return;
+  throw new Error(
+    "pairing needs the key-name check: pass the key-name shown on the other " +
+      "device (expect_keyname), or confirm that this screen displayed it and " +
+      "the person agreed it matched (confirmed_by_human)",
+  );
+}
+
+/**
+ * An invite as though **another** device had minted it.
+ *
+ * The browser harness is one device, and pairing with yourself is refused (by
+ * core, and by this mock) — so without this the accept side of the ceremony is
+ * unreachable outside Tauri. Exported for the test suites; it is not a real
+ * signed blob, because nothing here signs anything.
+ */
+export function mockForeignInvite(
+  label = "a device",
+  ttlSeconds = 600,
+): { blob: string; keyname: string } {
+  const key = mockPublicKey("foreign-" + ++seq);
+  return {
+    blob: encodeMockBlob({
+      typ: "slipscan.pair.invite",
+      device_id: key,
+      label,
+      claim: mockClaimToken(),
+      expires_at: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
+    }),
+    keyname: mockKeyname(key),
+  };
+}
+
+/**
+ * The acceptance the other device would carry back, given an invite this one
+ * minted. A human walking a blob across the room, simulated — same reason as
+ * `mockForeignInvite`.
+ */
+export function mockForeignAcceptance(inviteBlob: string): {
+  blob: string;
+  keyname: string;
+} {
+  const invite = decodeMockBlob(inviteBlob);
+  const key = mockPublicKey("accepter-" + ++seq);
+  return {
+    blob: encodeMockBlob({
+      typ: "slipscan.pair.accept",
+      device_id: key,
+      label: "the other device",
+      claim: invite.claim,
+      for_device_id: invite.device_id,
+    }),
+    keyname: mockKeyname(key),
+  };
+}
+
+/** Pin a peer, trust-on-first-use: an unknown key is pinned, a known one may
+ * refresh its cosmetic label, and a **revoked** one is refused. */
+function mockPinPeer(publicKey: string, label: string): DevicePeer {
+  const existing = devicePeers.find((p) => p.public_key === publicKey);
+  if (existing) {
+    if (existing.revoked_at)
+      throw new Error(
+        `${existing.keyname} was revoked on this device — forget it first if ` +
+          "you really mean to pair it again",
+      );
+    existing.label = label;
+    return existing;
+  }
+  const peer: DevicePeer = {
+    public_key: publicKey,
+    keyname: mockKeyname(publicKey),
+    label,
+    paired_at: new Date().toISOString(),
+    revoked_at: null,
+    last_seen_at: null,
+  };
+  devicePeers.push(peer);
+  return peer;
 }
 
 // ---------------------------------------------------------------------------
@@ -2792,6 +3054,218 @@ export const mockApi = {
     if (i === -1) throw new Error(`no credential named "${q.name}"`);
     vaultEntries.splice(i, 1);
     return null;
+  },
+
+  // -- device identity and pairing. Nothing syncs; see the section comment
+  // above for what the state machine does and does not model. --
+
+  device_status: async (): Promise<DeviceIdentity | null> =>
+    deviceIdentity ? clone(deviceIdentity) : null,
+
+  device_list: async (): Promise<DevicePeer[]> => clone(devicePeers),
+
+  device_get: async (q: { device_id: string }): Promise<DevicePeer> => {
+    const peer = devicePeers.find(
+      (p) => p.public_key === q.device_id.trim().toLowerCase(),
+    );
+    if (!peer) throw new Error(`no paired device ${q.device_id}`);
+    return clone(peer);
+  },
+
+  device_invite_list: async (): Promise<PairingInviteMeta[]> =>
+    clone(deviceInvites),
+
+  device_rotations: async (): Promise<DeviceRotation[]> =>
+    clone(deviceRotations),
+
+  device_init: async (q: { label?: string }): Promise<DeviceIdentity> => {
+    if (deviceIdentity)
+      throw new Error(
+        `this device already has an identity (${deviceIdentity.keyname}) — ` +
+          "rotate it, or reset it first",
+      );
+    const key = mockPublicKey("init-" + ++seq);
+    deviceIdentity = {
+      public_key: key,
+      keyname: mockKeyname(key),
+      label: q.label?.trim() || "this device",
+      created_at: new Date().toISOString(),
+      rotated_at: null,
+    };
+    return clone(deviceIdentity);
+  },
+
+  device_rotate: async (): Promise<DeviceRotateResult> => {
+    const current = requireDeviceIdentity();
+    const key = mockPublicKey("rotate-" + ++seq);
+    const now = new Date().toISOString();
+    const rotation: DeviceRotation = {
+      old_public_key: current.public_key,
+      new_public_key: key,
+      // Not a signature. The real one is made by the OUTGOING key and is what
+      // makes a rotation provable rather than asserted; this harness has no
+      // ed25519 and must not imply it does.
+      signature: mockPublicKey("sig-" + seq) + mockPublicKey("sig2-" + seq),
+      rotated_at: now,
+    };
+    deviceRotations.push(rotation);
+    deviceIdentity = {
+      public_key: key,
+      keyname: mockKeyname(key),
+      label: current.label,
+      created_at: current.created_at,
+      rotated_at: now,
+    };
+    return clone({ identity: deviceIdentity, rotation });
+  },
+
+  device_reset: async (q: { confirm: boolean }): Promise<null> => {
+    if (!q.confirm)
+      throw new Error(
+        "resetting destroys this device's private key and cannot be undone — " +
+          "pass confirm to proceed",
+      );
+    deviceIdentity = null;
+    // Peer pins survive: they are this device's opinions about *other*
+    // devices, and changing our own key does not invalidate them.
+    deviceInvites = [];
+    deviceRotations = [];
+    mockClaims.clear();
+    return null;
+  },
+
+  device_revoke: async (q: { device_id: string }): Promise<DevicePeer> => {
+    const peer = devicePeers.find((p) => p.public_key === q.device_id);
+    if (!peer) throw new Error(`no paired device ${q.device_id}`);
+    peer.revoked_at ??= new Date().toISOString();
+    return clone(peer);
+  },
+
+  device_forget: async (q: { device_id: string }): Promise<boolean> => {
+    const i = devicePeers.findIndex((p) => p.public_key === q.device_id);
+    if (i === -1) return false;
+    devicePeers.splice(i, 1);
+    return true;
+  },
+
+  device_pair_invite: async (q: {
+    label?: string;
+    ttl_seconds?: number;
+  }): Promise<PairingInvite> => {
+    const identity = requireDeviceIdentity();
+    const ttl = q.ttl_seconds ?? 600;
+    if (ttl < 1 || ttl > 86_400)
+      throw new Error("invite lifetime must be between 1 and 86400 seconds");
+    const claim = mockClaimToken();
+    const inviteId = id("dv01");
+    const now = new Date();
+    const expires_at = new Date(now.getTime() + ttl * 1000).toISOString();
+    deviceInvites = [
+      {
+        id: inviteId,
+        label: q.label?.trim() || "a device",
+        created_at: now.toISOString(),
+        expires_at,
+        redeemed_at: null,
+        redeemed_by: null,
+      },
+      ...deviceInvites,
+    ];
+    mockClaims.set(claim, inviteId);
+    return {
+      id: inviteId,
+      blob: encodeMockBlob({
+        typ: "slipscan.pair.invite",
+        device_id: identity.public_key,
+        label: identity.label,
+        claim,
+        expires_at,
+      }),
+      keyname: identity.keyname,
+      expires_at,
+    };
+  },
+
+  device_invite_cancel: async (q: { id: string }): Promise<boolean> => {
+    const invite = deviceInvites.find(
+      (i) => i.id === q.id && i.redeemed_at === null,
+    );
+    if (!invite) return false;
+    deviceInvites = deviceInvites.filter((i) => i.id !== q.id);
+    for (const [claim, owner] of [...mockClaims]) {
+      if (owner === q.id) mockClaims.delete(claim);
+    }
+    return true;
+  },
+
+  device_pair_accept: async (
+    q: PairRedeemRequest,
+  ): Promise<PairingAcceptance> => {
+    const identity = requireDeviceIdentity();
+    const payload = decodeMockBlob(q.blob);
+    if (payload.typ !== "slipscan.pair.invite")
+      throw new Error("that is not a pairing invite");
+    if (payload.device_id === identity.public_key)
+      throw new Error(
+        "this invite came from this device — pair two different devices",
+      );
+    if (payload.expires_at && payload.expires_at < new Date().toISOString())
+      throw new Error(
+        `this invite expired at ${payload.expires_at} — ask for a fresh one`,
+      );
+    // The key-name is always recomputed from the key, never read out of the
+    // blob: an attacker controls every field in there.
+    mockKeynameCheck(q, mockKeyname(payload.device_id));
+
+    const peer = mockPinPeer(payload.device_id, payload.label);
+    return clone({
+      peer,
+      blob: encodeMockBlob({
+        typ: "slipscan.pair.accept",
+        device_id: identity.public_key,
+        label: identity.label,
+        claim: payload.claim,
+        for_device_id: payload.device_id,
+      }),
+    });
+  },
+
+  device_pair_confirm: async (q: PairRedeemRequest): Promise<DevicePeer> => {
+    const identity = requireDeviceIdentity();
+    const payload = decodeMockBlob(q.blob);
+    if (payload.typ !== "slipscan.pair.accept")
+      throw new Error("that is not a pairing acceptance");
+    if (payload.device_id === identity.public_key)
+      throw new Error(
+        "this acceptance came from this device — pair two different devices",
+      );
+    if (payload.for_device_id !== identity.public_key)
+      throw new Error("this acceptance is addressed to a different device");
+    mockKeynameCheck(q, mockKeyname(payload.device_id));
+
+    const inviteId = mockClaims.get(payload.claim);
+    const invite = deviceInvites.find((i) => i.id === inviteId);
+    if (!invite)
+      throw new Error(
+        "this acceptance answers no invite from this device — it may have " +
+          "been withdrawn, or minted somewhere else",
+      );
+    if (invite.redeemed_at)
+      throw new Error(
+        "this invite was already redeemed — invites are single-use; mint a fresh one",
+      );
+    if (invite.expires_at < new Date().toISOString())
+      throw new Error(
+        `this invite expired at ${invite.expires_at} — mint a fresh one`,
+      );
+
+    const peer = mockPinPeer(payload.device_id, payload.label);
+    // Burn the token, exactly as the real confirm does in the same
+    // transaction as the pin.
+    invite.redeemed_at = new Date().toISOString();
+    invite.redeemed_by = peer.public_key;
+    mockClaims.delete(payload.claim);
+    return clone(peer);
   },
 };
 

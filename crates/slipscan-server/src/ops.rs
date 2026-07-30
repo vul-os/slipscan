@@ -14,7 +14,7 @@ use slipscan_packs::transport::{
 };
 use slipscan_packs::{
     benchmark, builtin, engine, verify_detached, BenchmarkCohort, Comparison, InstallReport,
-    Installer, PackError, PackManifest, TrustStatus, TrustStore,
+    Installer, PackError, PackManifest,
 };
 
 /// Settings key of the **pre-installer** index of installed packs: one JSON
@@ -99,28 +99,27 @@ pub fn pack_install(
     // from here on core consults the rules being written (engine docs).
     engine::register_classifier();
 
-    let label = verified
-        .payload()
-        .meta
-        .author
-        .as_deref()
-        .map(str::trim)
-        .filter(|author| !author.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("publisher {}", verified.fingerprint()));
-
     service.with_connection(|conn| {
         let installer = Installer::open(conn)?;
         // Migrate first: a pack the old path installed must become an upgrade
         // of the same row, not a second copy of the same taxonomy.
         adopt_legacy_index(service, &installer)?;
 
-        let trust = TrustStore::open(conn)?;
-        if let TrustStatus::Unknown { .. } = trust.status(verified.signer())? {
-            trust.trust(verified.signer(), &label)?;
-        }
-
-        let report = installer.install(book_id, &verified)?;
+        // Trust MUST NOT be recorded before the pin is checked. The hand-rolled
+        // trust-then-install ordering this replaced left a rejected signer in the
+        // trust store on its way out of a refused install: the pin protected the
+        // pack id, but that key was now trusted for every OTHER pack id, so a
+        // later install under a different id proceeded with no prompt at all.
+        // `install_verified` gates in the right order (signature, pin, signer,
+        // versions). For the local path, "the caller passed this key" IS the
+        // trust-on-first-use answer, hence Accept of that exact fingerprint.
+        let fingerprint = verified.fingerprint();
+        let report = transport::install_verified(
+            conn,
+            book_id,
+            &verified,
+            SignerDecision::Accept(&fingerprint),
+        )?;
         Ok(install_result(book_id, &report))
     })
 }
@@ -979,6 +978,7 @@ mod tests {
     };
     use slipscan_core::secrets::MemorySecretStore;
     use slipscan_core::Db;
+    use slipscan_packs::trust::TrustStore;
     use slipscan_packs::{MatchType, PackCategory, PackRule};
 
     fn svc() -> CoreService {
@@ -1342,7 +1342,7 @@ mod tests {
         // Passing the key was the trust decision; it is recorded, so the pack
         // id is now bound to it.
         let signers = service
-            .with_connection(|conn| TrustStore::open(conn)?.list())
+            .with_connection(|conn| -> Result<_, PackError> { TrustStore::open(conn)?.list() })
             .unwrap();
         assert_eq!(signers.len(), 1);
         assert_eq!(signers[0].public_key, hex_key(3));
@@ -1355,6 +1355,22 @@ mod tests {
             pack_install(&service, &book_id, &newer, &other_sig, &other_key),
             Err(OpsError::Pack(PackError::SignerChanged { .. }))
         ));
+
+        // ...and the refused key must NOT have been trusted on its way out.
+        // This assertion is the whole point: the pin always protected THIS pack
+        // id, but the hand-rolled trust-then-install ordering recorded the
+        // rejected signer anyway, leaving it trusted for every OTHER pack id —
+        // so a later install under a different id proceeded with no prompt. A
+        // failed install must never be a route to acquiring trust.
+        let after = service
+            .with_connection(|conn| -> Result<_, PackError> { TrustStore::open(conn)?.list() })
+            .unwrap();
+        assert_eq!(
+            after.len(),
+            1,
+            "a refused signer change left the rejected key in the trust store: {after:?}"
+        );
+        assert_eq!(after[0].public_key, hex_key(3), "the pinned signer changed");
     }
 
     fn hex_key(seed: u8) -> String {

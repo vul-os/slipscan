@@ -32,7 +32,7 @@
   <tr>
     <td align="center" width="33%"><strong>You are the server</strong><br><sub>No SaaS backend, no aggregator in the middle. Everything runs on your machine or a box you control.</sub></td>
     <td align="center" width="33%"><strong>Write-only secrets</strong><br><sub>Bank &amp; mailbox credentials live in your OS keychain. Set, rotate, revoke, use — never view.</sub></td>
-    <td align="center" width="33%"><strong>Share smarts, not data</strong><br><sub>Community knowledge travels as signed classification packs — with noise-protected benchmark statistics designed on the same principle (<a href="docs/BENCHMARKS.md">not yet built</a>). Never your transactions.</sub></td>
+    <td align="center" width="33%"><strong>Share smarts, not data</strong><br><sub>Community knowledge travels as signed packs — over a folder, a USB stick, a git remote or HTTPS, with no registry in the middle. Benchmark statistics are designed on the same principle; reading one is local, and <a href="docs/BENCHMARKS.md">contributing is not built</a>. Never your transactions.</sub></td>
   </tr>
 </table>
 
@@ -61,7 +61,7 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
         <li>Per-category monthly budgets, spending breakdowns and income/expense reports (a rollover flag is stored per budget, but rollover is not yet applied to the numbers)</li>
         <li>Receipt/slip capture with LLM/OCR extraction (line items, discounts, VAT) — bring your own key or run a local model</li>
         <li>Household members &amp; per-person attribution — split spend across the people sharing a book, with per-member expense/contribution reports and a "who owes whom" settle-up view; members are local data, not logins</li>
-        <li>Local nudge engine and anonymous peer benchmarks — designed, in progress (<a href="docs/BENCHMARKS.md">how it stays private</a>)</li>
+        <li>Local nudge engine — budget drift, duplicate charges and recurring-subscription detection are computed on your own data and surface on the Dashboard; the category-spike, fee-creep and tax-deadline tiers are not built. Peer benchmarks compare you against a signed pack <em>locally</em> (nothing is transmitted), but no benchmark pack is published yet, and contributing to one is <a href="docs/BENCHMARKS.md">designed and unbuilt</a></li>
       </ul>
     </td>
     <td valign="top">
@@ -82,9 +82,10 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
 - **Movable data folder, your own backup** — your books and documents live in one folder you can see, relocate from Settings or `slipscan data move` (verified copy + atomic switch), and back up by syncing it with your own cloud (iCloud / Dropbox / Syncthing / NAS). SlipScan ships no backup service, and the keychain key never travels with the folder ([data &amp; backup](docs/CONFIGURATION.md))
 - Ingestion from your own mailbox — always your accounts, [never our infrastructure](docs/EMAIL.md); generic IMAP, Gmail, and Microsoft Graph all sync one-shot from `slipscan mail-sync` today (`--login` runs the provider's own OAuth grant into the vault); the push loop (IMAP IDLE) is built but not yet wired to a surface, and Graph push is unsupported by design outside self-host mode
 - **Bank alert emails become transactions** — "your card was used for R 184.50 at…" is parsed into a statement line and imported through the same path a CSV statement uses, so dedupe, your own categorisation corrections, and the Payments detection hook all apply. The formats are **data, not code**: they ship as signed `mailrules` [packs](docs/PACKS.md#mailrules-packs), so the community maintains each bank's rules without a bank-specific line in the product — SlipScan ships none of its own. Deliberately conservative: a rule that matches but cannot read a field cleanly declines and reports why, because a wrongly-parsed transaction is worse than an unparsed one. CLI today (`slipscan mail-sync --alerts --account <account>`); no desktop UI yet ([guide](docs/EMAIL.md#bank-alert-emails--transactions))
-- Open-source, local bank-scraper framework — adapters run in your session, first adapters in progress ([framework](docs/BANK-ADAPTERS.md))
+- **Packs travel over anything, because the signature is what you trust** — a pack is the same signed bytes whether it came off a USB stick, a folder your household already syncs, a git remote, or an HTTPS URL, and all four end at the same ed25519 check. There is no registry and no default source: the source list starts empty, so a fresh install makes **zero** pack network calls until you name a source yourself, and a publisher's fingerprint is shown for you to compare before their first pack is accepted ([format, signing and distribution](docs/PACKS.md))
+- Open-source, local bank-scraper framework — the trait, the statement pipeline and the region CSV preset catalog ship, and downloaded statements import with `slipscan import --preset`. **No adapter talks to a bank yet**: the only non-test implementation reads files, so no credential has ever been handed to one ([framework](docs/BANK-ADAPTERS.md))
 - Write-only credential vault rooted in the OS keychain — secrets can be set, rotated, revoked, and used, never viewed ([threat model](docs/THREAT-MODEL.md))
-- Opt-in multi-currency FX via [OpenRate](https://github.com/vul-os/openrate) — self-hosted, provenance-graded rates. Decimal-only rate math (floats never touch money), a local rate cache, and every conversion recording the exact rate, quality grade, and as-of age it used — surfaced on the CLI (`slipscan fx`), the HTTP server, and the desktop Settings screen; converted report views are still landing (Phase 4.7). No endpoint configured means zero FX network calls ([contract](docs/ARCHITECTURE.md#exchange-rates--openrate))
+- Opt-in multi-currency FX via [OpenRate](https://github.com/vul-os/openrate) — self-hosted, provenance-graded rates. Decimal-only rate math (floats never touch money), a local rate cache, and every conversion recording the exact rate, quality grade, and as-of age it used — surfaced on the CLI (`slipscan fx`), the HTTP server, and the desktop Settings screen. **No report converts anything yet** — reports return one row per currency, and the Reports screen tells you outright that nothing there is converted (Phase 4.7). No endpoint configured means zero FX network calls ([contract](docs/ARCHITECTURE.md#exchange-rates--openrate))
 - Headless self-host server mode for an always-on box ([guide](docs/SELFHOST.md))
 - **Device sync will use one shared, specified merge engine** — not a private
   CRDT invented here. `slipscan-sync` expresses SlipScan's replicated state in
@@ -93,12 +94,22 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
   concurrent edits converge the way double-entry requires and a journal is never
   clobbered. Money crosses the wire as an exact decimal — the algebra forbids
   floats, and so does SlipScan. As a native Rust product it takes the shared
-  engine as a plain crate dependency. **Status: the mapping and its tests exist;
-  the oplog, device identity and transport do not yet, so nothing syncs between
-  devices today** ([roadmap](ROADMAP.md))
+  engine as a plain crate dependency. **Status: the merge mapping and per-device
+  identity both exist; the oplog and the transport do not, so nothing syncs
+  between devices today** ([roadmap](ROADMAP.md))
+- **Devices know each other without accounts** — a device's identity is an
+  ed25519 keypair it generates itself, and the public half *is* the id: no
+  email, no password, no username, no login, no server that decides who you
+  are. Pairing pins each peer's key at the one moment you redeem an invite,
+  compares fingerprints as nine readable words rather than hex, and treats a
+  changed key as a refusal instead of a silent re-pin. Pairing is a
+  `slipscan device` job today — there is no Devices screen. Over your own HTTP
+  server only the public half is served (identity, peers, revoking a lost
+  device); key material and claim tokens deliberately are not
+  ([nodes](docs/NODES.md))
 
 > [!NOTE]
-> **Status: 0.2.0, under active development.** The Rust core, CLI, extraction, ingestion, packs, and server crates are implemented; bank adapters, nudges/benchmarks, and device sync are tracked phase-by-phase in [ROADMAP.md](ROADMAP.md).
+> **Status: 0.2.0, under active development.** The Rust core, CLI, extraction, ingestion, packs, and server crates are implemented. Landed since 0.2.0 and not yet released: bank-alert emails → transactions, pack distribution over file/folder/git/HTTPS, per-device identity and pairing, and the measured [PARITY.md](PARITY.md) matrices. Still open — live bank adapters, the remaining nudge tiers, benchmark contribution, and device sync itself — tracked phase-by-phase in [ROADMAP.md](ROADMAP.md), and the honest per-item notes there are the ones to read.
 
 ## Screenshots
 
@@ -155,7 +166,9 @@ cd apps/desktop && npm install && npm run tauri dev
 # Core library + CLI (headless)
 cargo build --workspace
 cargo run -p slipscan-cli -- init --name "Personal" --kind personal
-cargo run -p slipscan-cli -- --help    # import, extract, mail-sync, recon, report, pack, vault, serve, list
+cargo run -p slipscan-cli -- --help    # import, watch, extract, mail-sync, recon, report, fx, tax,
+                                       # account, member, attribute, split, pack, pay, vault, device,
+                                       # data, serve, list
 ```
 
 `slipscan serve` binds `127.0.0.1` unless you explicitly pass `--lan` — see [docs/SELFHOST.md](docs/SELFHOST.md).
@@ -172,7 +185,7 @@ flowchart LR
         subgraph sources["sources"]
             bank["Bank scrapers<br/>(open-source, your session)"]
             mail["Email inbound<br/>(your IMAP / Gmail / Graph / Proton)<br/>receipts &amp; bank alerts"]
-            files["Slips &amp; files<br/>(import today; drag-drop &amp; watch planned)"]
+            files["Slips &amp; files<br/>(file picker + a watched drop folder;<br/>drag-drop not built)"]
         end
         core["Rust core<br/>(slipscan-core services:<br/>categorise, budget, ledger, recon)"]
         db[("SQLite<br/>your books, one file")]
@@ -187,7 +200,7 @@ flowchart LR
     openrate -.->|"rates + provenance,<br/>cached locally"| core
 ```
 
-Between machines there is no hub — every node is a self-hosted peer. The only things that ever cross the network are **signed packs** (taxonomies, classification rules, and bank-alert mail rules — verified with ed25519 on install) and, for users who opt in, **differentially-private aggregates** — category-level statistics noised on-device before they leave it. Aggregators are community-run and untrusted by design; transactions, merchants, and credentials never appear on any edge:
+Between machines there is no hub — every node is a self-hosted peer. The only thing that crosses the network today is a **signed pack** (taxonomies, classification rules, bank-alert mail rules, benchmark statistics — ed25519-verified on install), carried by whichever transport you chose: a folder, a stick, a git remote, an HTTPS URL. The dashed edges are the **designed and unbuilt** half — **differentially-private aggregates**, category-level statistics noised on-device before they leave it, with community-run aggregators untrusted by design. No contribution code, noise generation or anonymous transport exists in the tree, so no aggregate has ever left a machine. Transactions, merchants, and credentials never appear on any edge:
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-monospace, SFMono-Regular, Menlo, monospace','primaryColor':'transparent','primaryBorderColor':'#14b8a6','primaryTextColor':'#8f969e','lineColor':'#8a8f98','nodeBorder':'#5f8f8a','edgeLabelBackground':'transparent','clusterBorder':'#3f8f86','clusterBkg':'transparent'}}}%%
@@ -197,7 +210,7 @@ flowchart TB
     c["Chris's node"]
     m["Pack maintainer<br/>(any node, signs releases)"]
     agg["Community aggregator<br/>(anyone can run one — untrusted)"]
-    a <-->|"signed packs<br/>(git / p2p)"| b
+    a <-->|"signed packs<br/>(folder / git / https)"| b
     b <-->|"signed packs"| c
     a <-->|"signed packs"| c
     m -->|"signed classification &amp;<br/>benchmark packs"| a
@@ -207,7 +220,7 @@ flowchart TB
     agg -->|"aggregate statistics"| m
 ```
 
-Reading benchmark packs is perfectly private — comparison happens locally. Contributing is off by default, anonymous, and lossy by design: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+Reading benchmark packs is perfectly private — comparison happens locally, and that half is built. Contributing will be off by default, anonymous, and lossy by design; it is **not implemented**, and [docs/BENCHMARKS.md](docs/BENCHMARKS.md) writes the bar down so it cannot quietly slip.
 
 ## Configuration
 
@@ -225,6 +238,7 @@ Settings live in SQLite, secrets live in the OS keychain, and there is no requir
 | [PAYMENTS.md](docs/PAYMENTS.md) | Payments — reference watches and signed webhooks: watch a payment reference, get a signed webhook when the EFT lands; setup, receiver verification, delivery and retry semantics |
 | [BANK-ADAPTERS.md](docs/BANK-ADAPTERS.md) | The local, open-source bank-scraper framework and how to write an adapter |
 | [PACKS.md](docs/PACKS.md) | Signed packs — classification, benchmark, and bank-alert `mailrules` kinds: format, signing, verification, distribution |
+| [NODES.md](docs/NODES.md) | Device identity and pairing with no accounts: ed25519 device ids, word fingerprints, key pinning — and exactly what does not sync yet |
 | [BENCHMARKS.md](docs/BENCHMARKS.md) | Nudges and anonymous peer benchmarks: local DP, cohorts, honest limits |
 | [SELFHOST.md](docs/SELFHOST.md) | Running the core headless on a NAS / home server |
 | [THREAT-MODEL.md](docs/THREAT-MODEL.md) | What protects your credentials, what an attacker gets, residual risks |

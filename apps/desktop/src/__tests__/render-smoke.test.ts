@@ -437,6 +437,61 @@ describe("packs · peer comparison", () => {
   }, 30_000);
 });
 
+/**
+ * Devices: identity and pairing, which shipped reachable only from the CLI and
+ * the HTTP surface.
+ *
+ * The load-bearing assertion is not that the screen renders — it is that the
+ * screen says **nothing syncs**. Identity and pairing are real and a "paired"
+ * row with a green dot is exactly what a person reads as "my data is on both
+ * machines", so the disclaimer is the feature here, and dropping it is a
+ * one-line edit no type-check would notice.
+ */
+describe("settings · devices", () => {
+  it("renders this device's identity and key-name, and says nothing syncs", async () => {
+    const { target, dispose } = render(Settings as Component);
+    try {
+      await settle(target);
+      button(target, "Devices").click();
+      await settle(target);
+      const rendered = text(target);
+
+      // The disclaimer, in as many words.
+      expect(rendered).toContain("Nothing syncs between devices yet");
+      expect(rendered).toContain("no replication log, no transport");
+
+      // This device: label, the nine-word key-name, and the hex id.
+      expect(rendered).toContain("Alex's laptop");
+      expect(rendered).toContain("This device's key-name");
+      const identity = await mockApi.device_status();
+      expect(identity).not.toBeNull();
+      expect(rendered).toContain(identity!.keyname);
+      expect(rendered).toContain(identity!.public_key);
+
+      // The key-name's job is stated where it is shown; a fingerprint nobody
+      // compares protects nobody.
+      expect(rendered).toContain("is the authentication");
+
+      // No accounts, said plainly — this is the thing people assume exists.
+      expect(rendered).toContain("no email, no password, no username, no login");
+
+      // Peers, tombstone included. `last_seen_at` is always null because
+      // nothing connects, so the screen has to disclaim it rather than render
+      // an absence that reads as "offline".
+      expect(rendered).toContain("home server");
+      expect(rendered).toContain("old phone");
+      expect(rendered).toContain("revoked");
+      expect(rendered).toContain("never when a device was last seen");
+      expect(rendered).not.toMatch(/\bonline\b|\boffline\b/i);
+
+      expect(fatal, `runtime errors on the devices tab: ${fatal.join(" | ")}`)
+        .toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+});
+
 describe("app shell", () => {
   it("mounts the sidebar and swaps screens when a nav link is clicked", async () => {
     const { target, dispose } = render(App as Component);

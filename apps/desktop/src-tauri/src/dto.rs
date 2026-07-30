@@ -880,6 +880,145 @@ pub struct VaultRevokeRequest {
     pub name: String,
 }
 
+// ---------------------------------------------------------------------------
+// device identity and pairing.
+//
+// The read shapes — `DeviceIdentity`, `DevicePeer`, `DeviceRotation`,
+// `PairingInviteMeta` — cross IPC as **core's own types**, unwrapped. They are
+// public information (public keys, key-names, cosmetic labels, timestamps),
+// they are already `Serialize`, and a hand-copied DTO beside them would be one
+// more thing that can silently disagree with the wire names the HTTP routes
+// serve.
+//
+// The two shapes below exist because they carry a **pairing blob**, and a blob
+// is a credential until it is redeemed or expires: it contains the single-use
+// claim token. Core's `PairingInvite` and `PairingAcceptance` derive `Debug`,
+// which prints it. These do not — the whole reason they are not passed through.
+// ---------------------------------------------------------------------------
+
+/// A minted invite. `blob` is the text the user carries to the other device
+/// **and a credential while it lives** — show it, let it be copied, then drop
+/// it from state. Never log it and never put it in an error message.
+#[derive(Clone, Serialize)]
+pub struct PairingInviteDto {
+    pub id: String,
+    pub blob: String,
+    /// This device's key-name — what the other person must see match.
+    pub keyname: String,
+    pub expires_at: String,
+}
+
+impl std::fmt::Debug for PairingInviteDto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairingInviteDto")
+            .field("id", &self.id)
+            .field("blob", &"<redacted>")
+            .field("keyname", &self.keyname)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+/// The result of accepting an invite: the inviter is pinned, and `blob` goes
+/// back so the inviter can pin us. Same credential discipline as above — it
+/// echoes the claim token.
+#[derive(Clone, Serialize)]
+pub struct PairingAcceptanceDto {
+    pub peer: slipscan_core::device::DevicePeer,
+    pub blob: String,
+}
+
+impl std::fmt::Debug for PairingAcceptanceDto {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PairingAcceptanceDto")
+            .field("peer", &self.peer)
+            .field("blob", &"<redacted>")
+            .finish()
+    }
+}
+
+/// This device's key after a rotation, plus the rotation that proves it
+/// replaced the previous one.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceRotateDto {
+    pub identity: slipscan_core::device::DeviceIdentity,
+    pub rotation: slipscan_core::device::DeviceRotation,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceInitRequest {
+    /// Cosmetic name for this device. Not an identity — two devices may share
+    /// one and nothing anywhere cares.
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// A device id: the lowercase hex ed25519 public key. There is no other kind
+/// of device identifier — no account, no email, no username.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceIdRequest {
+    pub device_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceInviteRequest {
+    /// Cosmetic label for the device you expect to pair with.
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub ttl_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceInviteIdRequest {
+    pub id: String,
+}
+
+/// Destroying this device's private key is not undoable, so the intent is
+/// carried explicitly — the same `--yes` the CLI's `device reset` requires.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceResetRequest {
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+/// Redeeming a pairing blob: the blob, plus **how the human check was
+/// discharged**.
+///
+/// The two fields are the two arms of
+/// [`slipscan_core::device::pairing::KeynameCheck`] and nothing else. There is
+/// deliberately no third state: unlike the CLI, which offers `--unverified`
+/// for scripted use, this boundary has no way to skip the comparison at all.
+/// A caller that supplies neither field is refused (see
+/// `commands::keyname_check`) rather than silently downgraded, because the
+/// comparison *is* the authentication — everything else in the ceremony is a
+/// signature under a key the attacker would have substituted wholesale.
+#[derive(Clone, Deserialize)]
+pub struct DevicePairRedeemRequest {
+    /// The `ss-pair1.…` blob. A credential: not logged, not echoed into an
+    /// error message.
+    pub blob: String,
+    /// The key-name the user read off the *other device's screen* and typed
+    /// here. Compared against the key inside the blob; a mismatch refuses.
+    #[serde(default)]
+    pub expect_keyname: Option<String>,
+    /// Set only when this UI genuinely displayed the key-name and the user
+    /// affirmed it. A rubber stamp here is the one way to turn a human
+    /// verification step into decoration.
+    #[serde(default)]
+    pub confirmed_by_human: bool,
+}
+
+impl std::fmt::Debug for DevicePairRedeemRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DevicePairRedeemRequest")
+            .field("blob", &"<redacted>")
+            .field("expect_keyname", &self.expect_keyname)
+            .field("confirmed_by_human", &self.confirmed_by_human)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -935,6 +1074,46 @@ mod tests {
             set.into_patch().default_account_id,
             Some(Some("acc-1".to_string()))
         );
+    }
+
+    /// A pairing blob carries a single-use claim token, which makes it a
+    /// credential until it is redeemed. Core's own `PairingInvite` prints it
+    /// in `Debug`; these wrappers exist so nothing on this side can, and the
+    /// test is here because re-deriving `Debug` is a one-word edit.
+    #[test]
+    fn pairing_blobs_are_redacted_in_debug() {
+        const BLOB: &str = "ss-pair1.THIS-IS-A-CLAIM-TOKEN";
+
+        let invite = PairingInviteDto {
+            id: "inv-1".to_string(),
+            blob: BLOB.to_string(),
+            keyname: "amber-brisk-cedar-dune-ember-flint-grove-harbor-ink".to_string(),
+            expires_at: "2026-07-20T09:10:00Z".to_string(),
+        };
+        assert!(!format!("{invite:?}").contains("CLAIM-TOKEN"));
+        // …and it is still on the wire, because carrying it is the point.
+        assert!(serde_json::to_string(&invite).unwrap().contains(BLOB));
+
+        let acceptance = PairingAcceptanceDto {
+            peer: slipscan_core::device::DevicePeer {
+                public_key: "ab".repeat(32),
+                keyname: "amber-brisk-cedar-dune-ember-flint-grove-harbor-ink".to_string(),
+                label: "laptop".to_string(),
+                paired_at: "2026-07-20T09:00:00Z".to_string(),
+                revoked_at: None,
+                last_seen_at: None,
+            },
+            blob: BLOB.to_string(),
+        };
+        assert!(!format!("{acceptance:?}").contains("CLAIM-TOKEN"));
+
+        let redeem: DevicePairRedeemRequest =
+            serde_json::from_str(&format!(r#"{{"blob":"{BLOB}"}}"#)).unwrap();
+        assert!(!format!("{redeem:?}").contains("CLAIM-TOKEN"));
+        // Neither key-name field was supplied, so the request is *not* a
+        // pairing that can proceed; commands::keyname_check refuses it.
+        assert!(redeem.expect_keyname.is_none());
+        assert!(!redeem.confirmed_by_human);
     }
 
     #[test]

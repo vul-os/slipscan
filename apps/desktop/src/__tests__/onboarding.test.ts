@@ -449,10 +449,20 @@ describe("first-run dialog", () => {
       firstRun.open = true;
       firstRun.step = "mailbox";
       await tick();
-      // The e-mail parsing that is not built. This caveat is still true and
-      // must stay: `book_create` being wired says nothing about IMAP.
-      expect(flat(document.querySelector('[role="dialog"]'))).toMatch(
-        /not (built|implemented)/i,
+      // The mailbox step still collects nothing, and still has to say why —
+      // but the reason changed, so the assertion did too. "Parsing bank alert
+      // e-mails is not implemented" is now false (mail-sync --alerts does it),
+      // and a stale pessimistic caveat sends people looking for a feature they
+      // have. What remains true is that these fields feed nothing (mail-sync
+      // reads its own settings key) and that no bank patterns ship.
+      const shown = flat(document.querySelector('[role="dialog"]'));
+      expect(shown).toMatch(/nothing here is wired up yet/i);
+      expect(shown).toMatch(/reads its own settings key/i);
+      expect(shown).toMatch(/no bank patterns ship/i);
+      expect(shown).toMatch(/mailrules/);
+      // The old claim must not come back.
+      expect(shown).not.toMatch(
+        /parsing bank alert e-mails into transactions is not implemented/i,
       );
       expect(fatal).toEqual([]);
     } finally {

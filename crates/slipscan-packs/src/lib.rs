@@ -70,15 +70,21 @@ pub use model::{
 };
 pub use transport::{
     discover, fetch, install_bundle, install_verified, open as open_source, plan, plan_bundle,
-    publish, BlobStore, CatalogEntry, FetchedBundle, HttpBlob, PackHttp, PackPlan, PackSource,
-    PackSourceRow, PlannedAction, PublishReport, SignerDecision, SourceKind, SourceStore,
-    TransportContext,
+    plan_document, publish, BlobStore, CatalogEntry, FetchedBundle, HttpBlob, PackHttp, PackPlan,
+    PackSource, PackSourceRow, PlannedAction, PublishReport, SignerDecision, SourceKind,
+    SourceStore, TransportContext,
 };
 pub use trust::{TrustStatus, TrustStore, TrustedSigner};
 pub use verify::{key_fingerprint, sign_pack, verify_detached, Provenance, VerifiedPack};
 
 // The legacy flat-manifest file format. Users have these files on disk, so
-// they stay readable forever — but they now install through the one installer
-// (`verify_detached` converts them). `verify_pack` remains the check-only
-// entry point behind `slipscan pack verify`.
+// they stay readable forever — but they are not a second pipeline: they
+// install through the one installer (`verify_detached` converts them), and
+// they preflight through the one preflight (`plan_document`).
+//
+// `verify_pack` is a reader for that one shape, kept for the callers that
+// genuinely want the flat manifest back (the installed-packs index reports it)
+// — **not** a verify surface. Wiring a user-facing "verify" to it is exactly
+// how `slipscan pack verify` came to reject packs `slipscan pack install`
+// accepts; use `plan_document` for that.
 pub use compat::{verify_pack, MatchType, PackManifest, PackRule};

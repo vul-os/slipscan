@@ -8,12 +8,12 @@ Deliberately simple, by design: watch codes are a **flat list** with an on/off s
 
 ## How a payment becomes a webhook
 
-1. **Email in.** `slipscan mail-sync` fetches unseen mail from your own mailbox and imports attachments as documents ([EMAIL.md](EMAIL.md)) — bank statements and payment alerts arrive here.
-2. **Transaction created.** The detection hook lives inside core's `transaction_create`, so **every ingestion source inherits it**: statement-preset imports (`slipscan import statement.csv --preset … --account …`), manual entries, server/desktop creates, and any future connector.
+1. **Email in.** `slipscan mail-sync` fetches unseen mail from your own mailbox ([EMAIL.md](EMAIL.md)) — bank statements and payment alerts arrive here. Attachments become documents; with `--alerts --account <acct>` and a `mailrules` pack installed, a bank alert becomes a transaction directly.
+2. **Transaction created.** The detection hook lives inside core's `transaction_create`, so **every ingestion source inherits it**: statement-preset imports (`slipscan import statement.csv --preset … --account …`), bank-alert emails, manual entries, server/desktop creates, and any future connector.
 3. **Match.** Enabled watch codes are checked against the transaction's description and merchant text — case-insensitive, **whole-token** (`INV1` never fires on `INV11`), inbound money only, with the optional exact amount+currency filter applied. A match is recorded and audited (metadata only).
 4. **Webhook out.** One delivery per enabled endpoint is queued in SQLite and POSTed with HMAC-SHA256 signature headers. Failures retry with backoff until your box and the receiver can talk (or the schedule is exhausted).
 
-> **Honest status:** parsing bank-alert *emails* directly into transactions is not wired yet ([EMAIL.md](EMAIL.md) tracks it) — today email-ingested statements land as documents, and the reliable trigger is a statement import that carries the reference (or any other `transaction_create`). Every `mail-sync` run already flushes the webhook queue, so once alert parsing lands, email in → webhook out is one command.
+> **Honest status:** email in → webhook out really is one command now. `slipscan mail-sync --alerts --account <acct>` parses bank-alert emails into transactions ([EMAIL.md](EMAIL.md#bank-alert-emails--transactions)) and the same run flushes the webhook queue, so a "payment received, reference INV-2026-114" alert fires your endpoints without a second invocation. Two limits worth knowing: alert parsing needs a signed `mailrules` pack for your bank installed first — SlipScan ships none — and it is CLI-only, with no desktop screen. The desktop Payments panel still carries a note saying alert parsing is not implemented; that copy predates the feature.
 
 ## Setup walkthrough
 

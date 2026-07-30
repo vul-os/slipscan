@@ -6,7 +6,9 @@
 //!
 //! * [`plan`] — what installing this verified pack *would* do, including
 //!   refusing, computed from the installer's own rules and worded in the
-//!   installer's own errors. Writes nothing.
+//!   installer's own errors. Writes nothing. [`plan_bundle`] and
+//!   [`plan_document`] are its two front doors: bytes off a transport, and
+//!   bytes the user is holding.
 //! * [`install_bundle`] — do it. Same gates, same order, then
 //!   [`Installer::install`].
 //!
@@ -36,7 +38,7 @@ use rusqlite::Connection;
 use crate::error::{PackError, PackResult};
 use crate::install::{InstallReport, Installer};
 use crate::trust::{self, TrustStatus, TrustStore};
-use crate::verify::{key_fingerprint, VerifiedPack};
+use crate::verify::{key_fingerprint, verify_detached, VerifiedPack};
 
 use super::FetchedBundle;
 
@@ -209,6 +211,30 @@ pub fn plan_bundle(
 ) -> PackResult<PackPlan> {
     let verified = bundle.verify()?;
     plan(conn, book_id, &verified, Some(bundle.origin()))
+}
+
+/// Preflight bytes the user is holding — a pack document plus its detached
+/// signature and the publisher's key, the three inputs `slipscan pack install`
+/// and the desktop's install screen take. Installs nothing.
+///
+/// The local-file twin of [`plan_bundle`], and the reason a "verify" surface
+/// and an "install" surface cannot disagree about *what a pack is*: both start
+/// at [`verify_detached`], so the set of documents one accepts is by
+/// construction the set the other accepts — current [`PackPayload`] JSON and
+/// the legacy flat manifest alike. A surface that parsed the document itself
+/// instead would be a second opinion, and a second opinion is how you get
+/// told a pack is invalid and then install it successfully.
+///
+/// [`PackPayload`]: crate::model::PackPayload
+pub fn plan_document(
+    conn: &Connection,
+    book_id: &str,
+    document: &[u8],
+    signature: &[u8],
+    public_key: &[u8],
+) -> PackResult<PackPlan> {
+    let verified = verify_detached(document, signature, public_key)?;
+    plan(conn, book_id, &verified, None)
 }
 
 /// Verify a fetched bundle and install it, applying every gate in order.
@@ -622,6 +648,174 @@ mod tests {
         assert_eq!(
             Installer::open(conn).unwrap().list(&book_id).unwrap()[0].pack_id,
             "za-cohort"
+        );
+    }
+
+    /// The regression this exists for. For a long time the "verify" surface
+    /// parsed the pack file *itself*, in the legacy flat shape only, while the
+    /// install surface accepted both shapes through [`verify_detached`]. A user
+    /// could be told a current-format pack was invalid (`missing field 'id'`)
+    /// and then install the very same file successfully — and for a surface
+    /// whose whole job is to show you a signer's fingerprint *before* you
+    /// trust it, a verify that cannot read the artifact you are about to
+    /// install is worse than no verify at all.
+    ///
+    /// So: drive the **same bytes** through the preflight and through the
+    /// install, for every document shape there is plus a tampered one, and
+    /// assert the two agree — on acceptance, on what the pack *is*, and on the
+    /// refusal. [`plan_document`] and [`install_verified`] both start at
+    /// `verify_detached`, which is what makes that agreement structural rather
+    /// than a coincidence two code paths have to keep re-earning.
+    #[test]
+    fn the_preflight_and_the_install_accept_exactly_the_same_documents() {
+        // Legacy flat manifest: an unconstrained id, and a child category
+        // declared before its parent — both legal in that format, so both
+        // must stay installable, and the preflight must report the id the
+        // installer will actually use rather than echoing the file.
+        let legacy = serde_json::to_vec_pretty(&serde_json::json!({
+            "id": "ZA Parity Pack!",
+            "name": "Parity legacy",
+            "version": "1.0.0",
+            "author": "parity tests",
+            "categories": [
+                { "key": "food.dairy", "name": "Dairy", "parent_key": "food",
+                  "kind": "expense" },
+                { "key": "food", "name": "Food", "kind": "expense" }
+            ],
+            "rules": [
+                { "match_type": "merchant_contains", "pattern": "pick n pay",
+                  "category_key": "food", "confidence": 0.95 }
+            ],
+        }))
+        .unwrap();
+        // Current payload: no top-level `id` at all, which is exactly what the
+        // legacy-only reader choked on.
+        let current = serde_json::to_vec_pretty(&serde_json::json!({
+            "meta": {
+                "id": "za-parity-current", "name": "Parity current",
+                "version": "1.0.0", "region": "ZA", "author": "parity tests"
+            },
+            "categories": [{ "key": "food", "name": "Food", "kind": "expense" }],
+            "merchant_rules": [{
+                "match": "contains", "pattern": "checkers",
+                "category_key": "food", "confidence": 0.9
+            }],
+        }))
+        .unwrap();
+
+        // A publisher each, so "this signer is new here" is a live assertion
+        // for both documents rather than only the first one through.
+        let legacy_key = SigningKey::from_bytes(&[13u8; 32]);
+        let current_key = SigningKey::from_bytes(&[17u8; 32]);
+        let sign = |key: &SigningKey, doc: &[u8]| key.sign(doc).to_bytes().to_vec();
+        let current_sig = sign(&current_key, &current);
+        let current_public = current_key.verifying_key().as_bytes().to_vec();
+
+        let (db, book_id) = book("parity");
+        let conn = db.conn();
+
+        for (label, doc, sig, public, expect_id) in [
+            (
+                "legacy flat manifest",
+                legacy.as_slice(),
+                sign(&legacy_key, &legacy),
+                legacy_key.verifying_key().as_bytes().to_vec(),
+                "za-parity-pack-",
+            ),
+            (
+                "current payload",
+                current.as_slice(),
+                current_sig.clone(),
+                current_public.clone(),
+                "za-parity-current",
+            ),
+        ] {
+            // Surface 1 — verify. Reports, writes nothing.
+            let preview = plan_document(conn, &book_id, doc, &sig, &public)
+                .unwrap_or_else(|e| panic!("{label} must verify, not {e}"));
+            assert_eq!(preview.pack_id, expect_id, "{label}");
+            assert_eq!(preview.version, "1.0.0", "{label}");
+            assert_eq!(preview.kind, "taxonomy", "{label}");
+            assert_eq!(preview.action, PlannedAction::Install, "{label}");
+            assert_eq!(preview.refusal, None, "{label}");
+            assert!(preview.needs_signer_acceptance(), "{label}");
+            assert!(preview.pinned_fingerprint.is_none(), "{label}");
+
+            // Surface 2 — install. Takes the same bytes, and takes exactly the
+            // fingerprint verify just showed: a "yes" always means yes to the
+            // thing that was shown.
+            let verified = verify_detached(doc, &sig, &public)
+                .unwrap_or_else(|e| panic!("{label} must verify for install, not {e}"));
+            assert_eq!(
+                verified.fingerprint(),
+                preview.signer_fingerprint,
+                "{label}"
+            );
+            let report = install_verified(
+                conn,
+                &book_id,
+                &verified,
+                SignerDecision::Accept(&preview.signer_fingerprint),
+            )
+            .unwrap_or_else(|e| panic!("{label} must install, not {e}"));
+
+            // They agree on what the pack is — id included, which the
+            // legacy-only reader got wrong: it echoed the file's raw `id`
+            // while the installer normalised it, so verify described a pack
+            // that was never going to appear under that name.
+            assert_eq!(report.pack.pack_id, preview.pack_id, "{label}");
+            assert_eq!(report.pack.version, preview.version, "{label}");
+            assert_eq!(report.pack.kind.as_str(), preview.kind, "{label}");
+            assert_eq!(report.pack.signer, verified.signer(), "{label}");
+
+            // And they agree on the refusal, immediately afterwards.
+            let after = plan_document(conn, &book_id, doc, &sig, &public).unwrap();
+            assert_eq!(after.action, PlannedAction::Refuse, "{label}");
+            assert!(
+                after
+                    .refusal
+                    .as_deref()
+                    .is_some_and(|why| why.contains("already installed")),
+                "{label}: {:?}",
+                after.refusal
+            );
+            assert_eq!(
+                after.pinned_fingerprint.as_deref(),
+                Some(preview.signer_fingerprint.as_str()),
+                "{label}"
+            );
+            assert!(
+                matches!(
+                    install_verified(conn, &book_id, &verified, SignerDecision::RequireKnown),
+                    Err(PackError::AlreadyInstalled { .. })
+                ),
+                "{label}"
+            );
+        }
+
+        // Tampered: the current payload with one byte flipped, still carrying
+        // the signature that was genuine before the edit. Both surfaces refuse
+        // it, with the same error, because both ask the same function — and
+        // nothing new reaches the book.
+        let mut tampered = current.clone();
+        let idx = tampered.len() - 4;
+        tampered[idx] ^= 0x01;
+        assert!(matches!(
+            plan_document(conn, &book_id, &tampered, &current_sig, &current_public),
+            Err(PackError::VerificationFailed)
+        ));
+        assert!(matches!(
+            verify_detached(&tampered, &current_sig, &current_public),
+            Err(PackError::VerificationFailed)
+        ));
+        let installed = Installer::open(conn).unwrap().list(&book_id).unwrap();
+        assert_eq!(
+            installed
+                .iter()
+                .map(|p| p.pack_id.as_str())
+                .collect::<Vec<_>>(),
+            ["za-parity-current", "za-parity-pack-"],
+            "exactly the two documents that verified, and nothing else"
         );
     }
 }

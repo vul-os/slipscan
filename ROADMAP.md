@@ -17,21 +17,21 @@ The foundation everything else plugs into.
 - [x] Cargo workspace: `slipscan-core` (domain + storage), `slipscan-cli`
 - [x] Local SQLite storage (accounts, transactions, documents, categories, budgets, ledger, audit)
 - [x] Port the extraction data model (slip-v2 schema: line items, categories, discounts, VAT)
-- [ ] Import/export: CSV, OFX, and migration from the legacy Cloudflare stack *(partial: files import as documents; CSV statement parsing with SA-bank presets exists in `slipscan-ingest` but is not wired to a surface; no OFX parser; trial-balance CSV export and desktop report exports exist)*
+- [ ] Import/export: CSV, OFX, and migration from the legacy Cloudflare stack *(partial: statement CSV import is wired — `slipscan import <file> --preset <id> --account <acct>` parses rows into transactions through the region-grouped preset catalog (`--list-presets`), and `slipscan watch <dir>` imports a drop folder as documents. Both are CLI-only: the desktop stores a file without parsing it. No OFX parser exists — `.ofx` is only a recognised extension. Trial-balance CSV export and desktop report exports exist)*
 - [x] Pluggable LLM/OCR extraction: bring-your-own key or local model — never a SlipScan-hosted endpoint *(driven from the CLI)*
 
 ## Phase 2 — Tauri desktop app
 
 - [x] Tauri shell wrapping the Rust core (no separate backend process)
 - [x] Dashboard, transactions, receipts, budgets, ledger, reconcile, reports, settings screens on real core data
-- [ ] Slip/receipt capture: drag-drop, file watch, camera (mobile later) *(partial: file-picker import works; drag-drop and file watch not wired)*
+- [ ] Slip/receipt capture: drag-drop, file watch, camera (mobile later) *(partial: the desktop file picker works, and file watch ships — on the CLI: `slipscan watch <dir>` imports what is already in a drop folder and keeps importing as files land, `--once` for cron/launchd. Not built: drag-drop anywhere, a watch-folder setting in the desktop app, camera capture)*
 - [x] Fully offline operation
 
 ## Phase 3 — Ingestion: your bank, your inbox
 
-- [ ] **Bank scraper framework**: one open-source adapter per bank type, sandboxed, credentials stored in the OS keychain, sessions run locally *(partial: `BankAdapter` trait + statement pipeline + SA CSV presets implemented as a library; no surface wiring, no live adapter)*
+- [ ] **Bank scraper framework**: one open-source adapter per bank type, sandboxed, credentials stored in the OS keychain, sessions run locally *(partial: `BankAdapter` trait + statement pipeline + region CSV presets ship, and the statement path is wired on the CLI — `slipscan import --preset`. The only non-test `BankAdapter` implementation reads files: nothing talks to a bank, nothing runs on a schedule, no credential ever reaches an adapter, and the desktop cannot run a preset import)*
 - [ ] First adapters (South African banks first — FNB, Capitec, Standard Bank, Nedbank, Absa)
-- [ ] **Email inbound**: connect your own mailbox over IMAP; parse receipts, statements, and bank alert emails locally *(partial: one-shot generic-IMAP, Gmail, and Graph syncs all run from `slipscan mail-sync`, with `--login` for the OAuth providers' grants; no push loop; bank-alert parsing not implemented)*
+- [ ] **Email inbound**: connect your own mailbox over IMAP; parse receipts, statements, and bank alert emails locally *(partial: one-shot generic-IMAP, Gmail, and Graph syncs all run from `slipscan mail-sync`, with `--login` for the OAuth providers' grants. **Bank-alert parsing ships**: `slipscan mail-sync --alerts --account <acct>` turns a matched alert into a statement line and imports it through the same function CSV uses, so dedupe, the categorisation cascade and the Payments hook all apply — see Phase 4.95 below and [docs/EMAIL.md](docs/EMAIL.md#bank-alert-emails--transactions). Still missing: no push loop runs on any surface (IMAP IDLE is implemented in the connector and nothing calls it), the sender allowlist has no config key, alerts are CLI-only with one target account per run, and no self-hosted SMTP mode)*
 - [ ] Optional self-hosted SMTP receiving mode (you run the mail endpoint, not us)
 - [x] Dedupe + reconciliation between imported, emailed, and captured sources *(occurrence-indexed dedupe + scored recon in core)*
 
@@ -39,17 +39,33 @@ The foundation everything else plugs into.
 
 Share the smarts, not the data.
 
-- [ ] **Classification packs**: category taxonomies, merchant→category mappings, and classification rules as signed, versioned packs *(partial: format, ed25519 sign/verify, install, seed, uninstall and list all ship on CLI + HTTP + desktop IPC, and every binary registers the pack classifier at startup, so `contains`/`regex`/`keyword` rules apply on every surface. Missing: a `pack sign` helper and mapping export)*
-- [ ] Distribution with no central registry: git remotes and/or p2p, verified by signature
+- [ ] **Classification packs**: category taxonomies, merchant→category mappings, and classification rules as signed, versioned packs *(partial: three pack kinds ship — `taxonomy`, `benchmark`, and `mailrules` for [bank-alert formats](docs/EMAIL.md#formats-are-packs-not-code). Install, seed, uninstall and list are on CLI + HTTP + desktop IPC; ed25519 verification is on CLI + desktop IPC (there is no `/pack_verify` route — installing over HTTP verifies, inspecting-without-installing does not); every binary registers the pack classifier at startup, so `contains`/`regex`/`keyword` rules apply on every surface. Missing: a `pack sign` helper — signing is a library function, and both `pack publish` and `pack install` take a signature you produced elsewhere — and export of your own merchant mappings as a pack)*
+- [x] Distribution with no central registry: four transports in `slipscan-packs/src/transport/` — `file:`, `folder:` (a synced folder, a NAS mount, a USB stick), `git:` (any remote git accepts, `#ref` pinning) and `https://` — every one of them ending at the same `verify_detached` check, so no channel grants any authority and an `index.json` is a hint rather than a fact. There is no built-in source and no default endpoint: the source list starts empty, so a fresh install makes zero pack network calls until you name a source yourself. Source management, fetch and install ship on all three surfaces (`pack source add|remove|list`, `pack fetch`, `pack pull` on the CLI; `pack_source_*` over HTTP and desktop IPC, with the desktop Packs screen showing a publisher's fingerprint before you accept it); `publish` into a folder source is CLI + HTTP. *(p2p is not implemented — `BlobStore` is the one seam it would land on.)*
 - [ ] Opt-in, privacy-preserving contribution flow (rules only — never transactions)
-- [ ] Device-to-device sync (your own devices, end-to-end encrypted)
+- [ ] Device-to-device sync (your own devices, end-to-end encrypted) — **nothing syncs between devices today.** Two of the four pieces below exist and neither of them moves a byte between machines; the parent stays open until the other two do.
   - [x] Merge algebra: `slipscan-sync` maps SlipScan's replicated state onto the
         shared DMTAP Sync engine (`substrate/SYNC.md` ③) rather than a private
         CRDT — editable rows as §4.4 LWW registers, the posted ledger as a §4.3
         add-only set. Same compiled core Diwan and FlowStock use; as a native
         Rust product SlipScan takes it as a plain crate dependency.
+  - [x] Per-device identity and pairing (phase 1 of the node model — spec:
+        [docs/NODES.md](docs/NODES.md)). An ed25519 keypair per device whose
+        **public half is the device id**, private half held in the existing
+        vault; migration `0600_devices`; peer keys pinned trust-on-first-use,
+        where a key change is a refusal and never a silent re-pin, and a
+        revoked peer is a tombstone that cannot let itself back in; 9-word
+        key-names so two people can compare a fingerprint out loud.
+        `crates/slipscan-core/src/device/`. The whole ceremony runs on
+        `slipscan device`; over HTTP only the public half is served — identity,
+        peers, invite *metadata*, and revocation — while anything that creates
+        key material or carries a claim token is local-only and answers 403
+        with the command to run instead ([docs/NODES.md](docs/NODES.md#what-crosses-http-and-what-stays-local)).
+        There is no Devices *screen* in the desktop app, so pairing is a CLI
+        job today. There are no accounts anywhere in this — no email,
+        password, username or login.
   - [ ] Oplog: record each repo write as a signed op (nothing mints ops yet)
-  - [ ] Per-device identity from the existing vault, and a transport
+  - [ ] Transport: nothing carries an op from one paired device to another —
+        no endpoint, no discovery, no coordinator, no default anything
 
 ## Phase 4.5 — Insights, nudges & anonymous benchmarks
 
@@ -87,7 +103,7 @@ Simple by design: watch reference codes, fire signed webhooks — a payment dete
 - [x] The prior payments product's history folded into this repo
 - [x] Watch codes (reference + optional amount)
 - [x] Webhook endpoints: vault-held secrets, HMAC-signed payloads (timestamp + nonce), SQLite retry queue with backoff, audited deliveries
-- [x] Detection hook on inbound transactions (every source inherits: the hook runs inside `transaction_create`) *(partial upstream: parsing bank-alert emails into transactions is not wired yet — see [docs/EMAIL.md](docs/EMAIL.md); statement imports and manual entries trigger detection today)*
+- [x] Detection hook on inbound transactions (every source inherits: the hook runs inside `transaction_create`) *(and bank-alert emails now reach it: `slipscan mail-sync --alerts` books a matched alert through `transaction_create`, and the same command flushes the delivery queue, so **email in → webhook out is one invocation** — see [docs/EMAIL.md](docs/EMAIL.md#bank-alert-emails--transactions). Statement imports and manual entries trigger detection as they always did)*
 - [x] `slipscan pay` CLI, server routes, desktop Payments panel — guide with receiver verification example: [docs/PAYMENTS.md](docs/PAYMENTS.md)
 
 ## Phase 4.9 — Household members & per-person attribution
@@ -105,10 +121,10 @@ Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Household members & per-
 
 No fabricated credential scrapers. Real, testable, ToS-respecting integrations plus a contributor SDK.
 
-- [ ] Bank-alert email parser: rules-driven extraction of transaction-notification emails into statement lines (patterns supplied per-bank by the user/community, not hardcoded)
+- [x] Bank-alert email parser: rules-driven extraction of transaction-notification emails into statement lines (patterns supplied per-bank by the user/community, not hardcoded) *(engine in `crates/slipscan-ingest/src/email/alerts.rs`; formats are a pack kind — `mailrules`, in `crates/slipscan-packs/src/mailrules.rs` — so they inherit ed25519 signing, TOFU signer pinning and per-book install. Not one bank, country, currency or date order appears in the code, and **SlipScan ships no patterns at all**: until you install a pack, `--alerts` has nothing to match and says exactly that. A rule that matches and then cannot read a field cleanly declines with a reason rather than guessing, because a wrongly-parsed transaction also teaches the categoriser to keep being wrong. Missing: CLI-only, one target account per run (the account hint is used to reject a mismatch, not yet to route), and no desktop screen — see [docs/EMAIL.md](docs/EMAIL.md#what-is-still-missing))*
 - [ ] API adapters where banks publish real APIs (e.g. Investec Programmable Banking — OAuth + REST) as the reference `BankAdapter` implementation
 - [ ] Adapter SDK: documented trait, mock-transport test harness, fixtures format, `BANK-ADAPTERS.md` walkthrough so people build/maintain their own bank's adapter
-- [ ] File/statement import remains the universal fallback *(done: CSV presets)*
+- [x] File/statement import remains the universal fallback *(region-grouped CSV presets, wired on `slipscan import --preset`; the fully custom column mapping exists in the library and has no CLI flags yet)*
 
 ## Phase 5 — Feature-parity push (Vault22/22seven + Xero) & self-host
 

@@ -79,7 +79,7 @@ Until your bank has a live adapter, downloaded statement CSVs are the way in —
 2. **The `generic` family** — common single-format layouts (date/description/signed-amount and date/description/debit/credit) in the widespread conventions: ISO and DMY dates, US MM/DD/YYYY, EU dotted dates with decimal comma and `;` delimiters.
 3. **Custom mapping** — a declarative spec (`CustomMappingSpec`: column indices, date format, decimal style, delimiter, debit/credit or signed amounts) that handles any other bank, in any country, on day one. Amount parsing is float-free and knows both `1,234.56` and `1.234,56`.
 
-The statement→transactions wiring into CLI/desktop is still in progress — see [GETTING-STARTED.md](GETTING-STARTED.md#2-import-a-bank-statement-csv) for what works today.
+The statement→transactions path is wired on the CLI: `slipscan import statement.csv --preset za-fnb --account Cheque` parses the rows into transactions (dedup by provider id / content hash) and stores the file as a bank-statement document; `slipscan import --list-presets` prints the catalog grouped by region. **The desktop cannot run a preset import** — `document_import` stores the file and parses nothing — and the custom column mapping has no CLI flags yet. Walkthrough: [GETTING-STARTED.md](GETTING-STARTED.md#2-import-a-bank-statement-csv).
 
 ## Adapter roadmap
 
@@ -93,7 +93,7 @@ Live scraper adapters are tracked in [ROADMAP.md](../ROADMAP.md) Phase 3. South 
 | Nedbank | `za-nedbank` | CSV statement column preset ships today |
 | Absa | `za-absa` | CSV statement column preset ships today |
 
-Bank-alert email parsing is planned but not implemented ([EMAIL.md](EMAIL.md#what-gets-ingested)). Everything reconciles into the same accounts when the adapter lands.
+Bank-alert email parsing **is implemented**, and it is the shortest path to something adapter-like for a bank that publishes no API: a signed `mailrules` pack teaches SlipScan your bank's alert format, and `slipscan mail-sync --alerts --account <acct>` books matched alerts as transactions through this same statement path ([EMAIL.md](EMAIL.md#bank-alert-emails--transactions)). SlipScan ships no bank patterns of its own, so a pack for your bank is a genuinely useful contribution that needs no scraper. Everything reconciles into the same accounts when a live adapter eventually lands.
 
 Contributions for any bank, any country, are welcome — this is the single highest-leverage way to contribute to SlipScan; the trait, the vault handoff, and the review bar are identical whether the bank is in Johannesburg, London, or Tokyo. See [CONTRIBUTING.md](../CONTRIBUTING.md).
 

@@ -868,6 +868,126 @@ export interface VaultReplaceRequest {
 }
 
 // ---------------------------------------------------------------------------
+// device identity and pairing (docs/NODES.md).
+//
+// **NOTHING SYNCS.** This is phase 1 of the node model: identity and pairing
+// only. There is no oplog, no transport, no coordinator, no directory and no
+// default endpoint. Two paired devices know each other's keys and can prove
+// possession of them — and that is the entire extent of it. Every screen built
+// on these types has to say so; a "paired" badge that implies data is moving
+// would be the single most misleading thing this app could show.
+//
+// There are also no accounts: no email, no password, no username, no login.
+// A device generates its own keypair and the public key IS the id.
+//
+// Field names are the wire names — these mirror core's `device::DeviceIdentity`,
+// `DevicePeer`, `DeviceRotation` and `pairing::PairingInviteMeta`, which cross
+// IPC unwrapped.
+// ---------------------------------------------------------------------------
+
+/** This device's own identity. Public information only — the private half
+ * lives in the write-only vault and never crosses IPC. */
+export interface DeviceIdentity {
+  /** The device id: lowercase hex ed25519 public key (64 chars). */
+  public_key: string;
+  /** Human-comparable rendering of `public_key`: nine checksummed words.
+   * This is what a person reads off the other device's screen — and comparing
+   * it is the entire authentication step of pairing. */
+  keyname: string;
+  /** Cosmetic. Not an identity and not resolvable: two devices may share a
+   * label and nothing anywhere cares. */
+  label: string;
+  created_at: string;
+  rotated_at: string | null;
+}
+
+/** A peer device this one has pinned. */
+export interface DevicePeer {
+  /** The peer's device id. Pinned at pairing and never updated — the key IS
+   * the id, so there is no id under which a key could be swapped. */
+  public_key: string;
+  keyname: string;
+  label: string;
+  paired_at: string;
+  /** Tombstone. Non-null means revoked, and the row is kept precisely so that
+   * key cannot quietly re-pair: only a deliberate local forget clears it. */
+  revoked_at: string | null;
+  /** **Always null today** — nothing connects to anything. Do not render this
+   * as "offline"; there is nothing to be online. */
+  last_seen_at: string | null;
+}
+
+/** One rotation of this device's own key, provable against the key it
+ * replaced. Nothing transmits these. */
+export interface DeviceRotation {
+  old_public_key: string;
+  new_public_key: string;
+  /** Detached ed25519 signature by `old_public_key`. */
+  signature: string;
+  rotated_at: string;
+}
+
+/** This device's key after a rotation, plus the proof it replaced the last. */
+export interface DeviceRotateResult {
+  identity: DeviceIdentity;
+  rotation: DeviceRotation;
+}
+
+/** Outstanding-invite metadata. **Never carries a claim token** — the clear
+ * token exists only inside the blob the user already holds. */
+export interface PairingInviteMeta {
+  id: string;
+  label: string;
+  created_at: string;
+  expires_at: string;
+  redeemed_at: string | null;
+  /** Device id that redeemed this invite, once one has. */
+  redeemed_by: string | null;
+}
+
+/** An invite this device minted, ready to carry to another device by hand. */
+export interface PairingInvite {
+  id: string;
+  /**
+   * The text to move out of band — QR, paste, a file on a stick. SlipScan
+   * opens no socket to do this.
+   *
+   * **A CREDENTIAL until it is redeemed or expires**: it contains the invite's
+   * single-use claim token. Never log it, never put it in an error message,
+   * and drop it from component state as soon as it has been copied.
+   */
+  blob: string;
+  /** This device's key-name — what the *other* person must see match. */
+  keyname: string;
+  expires_at: string;
+}
+
+/** The result of accepting an invite: the inviter is now pinned, and `blob`
+ * goes back so the inviter can pin us. Same credential discipline as
+ * `PairingInvite.blob` — it echoes the claim token. */
+export interface PairingAcceptance {
+  peer: DevicePeer;
+  blob: string;
+}
+
+/**
+ * Redeeming a pairing blob. Exactly one of the two checks must be supplied,
+ * and the backend refuses the request outright if neither is — there is no
+ * "skip the comparison" state on this surface at all.
+ */
+export interface PairRedeemRequest {
+  blob: string;
+  /** The key-name the user read off the other device and typed. Compared
+   * against the key inside the blob; a mismatch refuses, and a name that
+   * fails its own checksum reports itself as mistyped instead. */
+  expect_keyname?: string;
+  /** Pass true ONLY when the screen genuinely displayed the key-name and the
+   * person affirmed it matched. Passing it otherwise turns a human
+   * verification step into a rubber stamp. */
+  confirmed_by_human?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Payments — watch reference codes on inbound transactions, fire signed
 // webhooks. Deliberately simple: watch codes are a flat list (`enabled` is
 // the only state, an optional exact amount the only filter), endpoint signing

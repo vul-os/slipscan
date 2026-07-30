@@ -516,11 +516,21 @@ enum PackAction {
         #[arg(long)]
         public_key: String,
     },
-    /// Verify a pack's signature without installing it.
+    /// Check a pack without installing it: the signature, the signer's
+    /// fingerprint, and what installing it here would actually do.
+    ///
+    /// Takes the same three inputs as `pack install` and accepts exactly the
+    /// documents `pack install` accepts — both the current payload format and
+    /// the legacy flat manifest — so a pack can never be called invalid here
+    /// and then install successfully. Installs nothing and trusts nothing;
+    /// this is where you read a publisher's fingerprint before deciding.
     Verify {
+        /// Path to the pack document (the exact signed bytes).
         manifest: PathBuf,
+        /// Detached ed25519 signature: hex, or @file (hex or raw 64 bytes).
         #[arg(long)]
         signature: String,
+        /// Publisher verifying key: hex, or @file (hex or raw 32 bytes).
         #[arg(long)]
         public_key: String,
     },
@@ -951,6 +961,19 @@ fn keyname_check(expect: &Option<String>, unverified: bool) -> KeynameCheck<'_> 
         None if unverified => KeynameCheck::ConfirmedByHuman,
         None => KeynameCheck::Expect(""),
     }
+}
+
+/// `pack verify --json`: the shared preflight plus the one field that is not
+/// part of it. Flattened, so the pack's fields are named exactly as
+/// `pack fetch --json` and the desktop's verify screen name them — a preflight
+/// that reads differently per surface is how the surfaces drift apart.
+#[derive(serde::Serialize)]
+struct PackVerifyOutput {
+    /// Always `true`: a signature that did not check out exits non-zero with
+    /// the failure instead of reporting itself as a result.
+    valid: bool,
+    #[serde(flatten)]
+    plan: ops::PackOfferPlan,
 }
 
 fn emit<T: serde::Serialize>(
@@ -2267,29 +2290,143 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     signature,
                     public_key,
                 } => {
+                    // Verify answers "what would `install` do here", so it
+                    // takes the same three inputs, resolves a book the same
+                    // way, and — this being the whole point — decides what a
+                    // pack *is* with the same code: `plan_document` starts at
+                    // the `verify_detached` the installer starts at, so the
+                    // set of documents this accepts is by construction the set
+                    // `pack install` accepts. It used to parse the file itself
+                    // (`verify_pack`, legacy shape only) and so rejected
+                    // current-format packs it would then install happily.
+                    let book = resolve_book(&svc, cli.book.as_deref())?;
                     let bytes = std::fs::read(manifest)
                         .with_context(|| format!("reading {}", manifest.display()))?;
                     let sig = read_bytes_arg(signature, 64, "signature")?;
                     let key = read_bytes_arg(public_key, 32, "public key")?;
-                    let verified = slipscan_packs::verify_pack(&bytes, &sig, &key)
+                    let plan = svc
+                        .with_connection(|conn| {
+                            slipscan_packs::plan_document(conn, &book.id, &bytes, &sig, &key)
+                        })
                         .context("pack verification failed")?;
-                    let out = serde_json::json!({
-                        "valid": true,
-                        "id": verified.id,
-                        "name": verified.name,
-                        "version": verified.version,
-                        "author": verified.author,
-                        "categories": verified.categories.len(),
-                        "rules": verified.rules.len(),
-                    });
+                    // Reported in the shape `pack fetch` and the desktop's
+                    // verify screen already use, so one pack reads the same
+                    // whichever surface you ask.
+                    let out = PackVerifyOutput {
+                        valid: true,
+                        plan: plan.into(),
+                    };
                     emit(cli.json, &out, || {
+                        let plan = &out.plan;
+                        fn plural(count: u32, one: &str, many: &str) -> String {
+                            format!("{count} {}", if count == 1 { one } else { many })
+                        }
                         println!(
-                            "OK: {} {} ({} categories, {} rules) — signature valid",
-                            verified.name,
-                            verified.version,
-                            verified.categories.len(),
-                            verified.rules.len()
+                            "Signature valid over the exact {} bytes of {}.",
+                            bytes.len(),
+                            manifest.display()
                         );
+                        println!(
+                            "  pack       {} {} ({}, {})",
+                            plan.pack_id,
+                            plan.version,
+                            plan.kind,
+                            plan.region.as_deref().unwrap_or("global"),
+                        );
+                        println!(
+                            "  name       {}{}",
+                            plan.name,
+                            plan.author
+                                .as_deref()
+                                .map(|a| format!(" — by {a}"))
+                                .unwrap_or_default(),
+                        );
+                        println!(
+                            "  contents   {}, {}, {}",
+                            plural(plan.categories, "category", "categories"),
+                            plural(plan.merchant_rules, "merchant rule", "merchant rules"),
+                            plural(plan.keyword_rules, "keyword rule", "keyword rules"),
+                        );
+                        // The fingerprint, and whether it means anything here
+                        // yet. These are the lines the command exists for.
+                        let conflicting_pin = plan
+                            .pinned_fingerprint
+                            .as_deref()
+                            .filter(|pinned| *pinned != plan.signer_fingerprint);
+                        if let Some(pinned) = conflicting_pin {
+                            // The pack id belongs to another key. No amount of
+                            // out-of-band checking of *this* fingerprint helps,
+                            // so do not invite the user to do any: say whose
+                            // pack id it is, and stop.
+                            println!(
+                                "  signer     {} — NOT the key this pack id belongs to",
+                                plan.signer_fingerprint
+                            );
+                            println!(
+                                "  pack id    {} is pinned to {pinned}. A publisher key change is \
+                                 a refusal,",
+                                plan.pack_id
+                            );
+                            println!(
+                                "             never a silent re-pin, and no flag on any surface \
+                                 overrides it."
+                            );
+                        } else {
+                            match plan.trusted_as.as_deref() {
+                                Some(label) => println!(
+                                    "  signer     {} — trusted here as {label:?}",
+                                    plan.signer_fingerprint
+                                ),
+                                None => {
+                                    println!(
+                                        "  signer     {} — NEW SIGNER, no key like this is \
+                                         trusted on this machine",
+                                        plan.signer_fingerprint
+                                    );
+                                    println!(
+                                        "             Compare it against the publisher's own \
+                                         channel first: passing"
+                                    );
+                                    println!(
+                                        "             --public-key to `pack install` IS the trust \
+                                         decision. (A pack"
+                                    );
+                                    println!(
+                                        "             pulled from a source is stricter — it \
+                                         refuses until you pass"
+                                    );
+                                    println!(
+                                        "             --accept-signer {}.)",
+                                        plan.signer_fingerprint
+                                    );
+                                }
+                            }
+                            if plan.pinned_fingerprint.is_some() {
+                                println!("  pack id    pinned to this signer already");
+                            } else {
+                                println!(
+                                    "  pack id    not pinned yet — installing binds {} to this \
+                                     key; a later",
+                                    plan.pack_id
+                                );
+                                println!(
+                                    "             version signed by any other key is refused, \
+                                     with no override."
+                                );
+                            }
+                        }
+                        match plan.refusal.as_deref() {
+                            Some(why) => println!("  install    WOULD REFUSE: {why}"),
+                            None => println!(
+                                "  install    would {} into {}{}",
+                                plan.action,
+                                book.name,
+                                plan.installed_version
+                                    .as_deref()
+                                    .map(|v| format!(" (over {v})"))
+                                    .unwrap_or_else(|| " (nothing installed there yet)".into()),
+                            ),
+                        }
                     })
                 }
                 PackAction::Seed => {
@@ -4604,6 +4741,242 @@ mod tests {
         run_pack(&["source", "list"]).unwrap();
     }
 
+    /// The two CLI surfaces used to disagree about *what a pack is*:
+    /// `pack install` accepted both the current payload format and the legacy
+    /// flat manifest (`verify_detached`), while `pack verify` parsed the file
+    /// itself in the legacy shape only (`verify_pack`) and failed a
+    /// current-format pack with `missing field 'id'`. So a user could be told
+    /// a pack was invalid and then install it successfully — and be shown a
+    /// signer's fingerprint for a pack id (`"ZA Legacy Pack!"`) that the
+    /// installer was never going to use (`za-legacy-pack-`). For the one
+    /// surface whose job is "inspect the fingerprint before you trust it",
+    /// that is worse than not having it.
+    ///
+    /// This drives the same three files through both surfaces and asserts they
+    /// agree. It fails on the old code at the *first* `verify` of the current
+    /// payload.
+    ///
+    /// The install leg goes through the library calls `ops::pack_install`
+    /// makes rather than `run(["pack", "install", …])` for the reason spelled
+    /// out on `startup_hook_applies_contains_rules_without_installing_a_pack`
+    /// below: the install *op* registers a process-wide classifier `OnceLock`,
+    /// and that test asserts it is the first in this binary to register.
+    /// `Installer::install` itself registers nothing.
+    #[test]
+    fn pack_verify_and_pack_install_agree_on_every_pack_file_shape() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("parity.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let run_pack = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json", "pack"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+
+        // Legacy flat manifest: an id the payload charset does not allow, and a
+        // child category before its parent. Both were legal in that format, so
+        // files like this stay installable — and `verify` has to describe what
+        // installing them would actually produce.
+        let legacy = serde_json::to_vec_pretty(&serde_json::json!({
+            "id": "ZA Legacy Pack!",
+            "name": "Legacy groceries",
+            "version": "1.0.0",
+            "author": "cli parity tests",
+            "categories": [
+                { "key": "food.dairy", "name": "Dairy", "parent_key": "food",
+                  "kind": "expense" },
+                { "key": "food", "name": "Food", "kind": "expense" }
+            ],
+            "rules": [
+                { "match_type": "merchant_contains", "pattern": "pick n pay",
+                  "category_key": "food", "confidence": 0.95 }
+            ],
+        }))
+        .unwrap();
+        // Current payload: no top-level `id` at all — the exact shape the
+        // legacy-only reader rejected.
+        let current = serde_json::to_vec_pretty(&serde_json::json!({
+            "meta": {
+                "id": "za-cli-current", "name": "Current groceries",
+                "version": "1.0.0", "region": "ZA", "author": "cli parity tests"
+            },
+            "categories": [{ "key": "food", "name": "Food", "kind": "expense" }],
+            "merchant_rules": [{
+                "match": "contains", "pattern": "checkers",
+                "category_key": "food", "confidence": 0.9
+            }],
+        }))
+        .unwrap();
+        // Tampered: one byte of the current payload flipped, still carrying the
+        // signature that was genuine before the edit.
+        let mut tampered = current.clone();
+        let idx = tampered.len() - 4;
+        tampered[idx] ^= 0x01;
+
+        let hex = |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("{b:02x}")).collect() };
+        // A publisher each, so "this signer is new here" is live for both.
+        let legacy_key = SigningKey::from_bytes(&[23u8; 32]);
+        let current_key = SigningKey::from_bytes(&[29u8; 32]);
+
+        let write = |name: &str, doc: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, doc).unwrap();
+            path.to_str().unwrap().to_string()
+        };
+        let legacy_path = write("legacy.json", &legacy);
+        let current_path = write("current.json", &current);
+        let tampered_path = write("tampered.json", &tampered);
+        let legacy_sig = hex(&legacy_key.sign(&legacy).to_bytes());
+        let current_sig = hex(&current_key.sign(&current).to_bytes());
+        let legacy_pub = hex(legacy_key.verifying_key().as_bytes());
+        let current_pub = hex(current_key.verifying_key().as_bytes());
+
+        // Verify reports what installing would do *here*, so — like `pack
+        // install` and like `pack fetch` — it needs a book to report against,
+        // and says so rather than guessing.
+        let err = run_pack(&[
+            "verify",
+            &legacy_path,
+            "--signature",
+            &legacy_sig,
+            "--public-key",
+            &legacy_pub,
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("no books yet"), "{err}");
+
+        run(
+            Cli::try_parse_from(["slipscan", "--db", &db_arg, "init", "--name", "Personal"])
+                .unwrap(),
+        )
+        .unwrap();
+
+        // Surface 1: both shapes verify, the tampered file does not.
+        for (label, path, sig, public) in [
+            ("legacy", &legacy_path, &legacy_sig, &legacy_pub),
+            ("current", &current_path, &current_sig, &current_pub),
+        ] {
+            run_pack(&["verify", path, "--signature", sig, "--public-key", public])
+                .unwrap_or_else(|e| panic!("`pack verify` must accept the {label} shape: {e}"));
+        }
+        let err = run_pack(&[
+            "verify",
+            &tampered_path,
+            "--signature",
+            &current_sig,
+            "--public-key",
+            &current_pub,
+        ])
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("verification failed"), "{err}");
+
+        // Surface 2: the same three files through the install path, with the
+        // same verdicts — and the pack id verify reported is the id that lands.
+        let svc = CoreService::open(&db).unwrap();
+        let book = svc.book_list().unwrap().remove(0);
+        for (label, doc, sig, public, expect_id) in [
+            (
+                "legacy",
+                &legacy,
+                &legacy_sig,
+                &legacy_pub,
+                "za-legacy-pack-",
+            ),
+            (
+                "current",
+                &current,
+                &current_sig,
+                &current_pub,
+                "za-cli-current",
+            ),
+        ] {
+            let sig_bytes = read_bytes_arg(sig, 64, "signature").unwrap();
+            let key_bytes = read_bytes_arg(public, 32, "public key").unwrap();
+            let preview = svc
+                .with_connection(|conn| {
+                    slipscan_packs::plan_document(conn, &book.id, doc, &sig_bytes, &key_bytes)
+                })
+                .unwrap();
+            assert_eq!(preview.pack_id, expect_id, "{label}");
+            assert_eq!(
+                preview.action,
+                slipscan_packs::PlannedAction::Install,
+                "{label}"
+            );
+
+            let verified = slipscan_packs::verify_detached(doc, &sig_bytes, &key_bytes)
+                .unwrap_or_else(|e| {
+                    panic!("`pack install` must accept the {label} shape too: {e}")
+                });
+            let installed = svc
+                .with_connection(|conn| -> anyhow::Result<slipscan_packs::InstalledPack> {
+                    slipscan_packs::TrustStore::open(conn)?
+                        .trust(verified.signer(), "cli parity tests")?;
+                    Ok(slipscan_packs::Installer::open(conn)?
+                        .install(&book.id, &verified)?
+                        .pack)
+                })
+                .unwrap();
+            assert_eq!(installed.pack_id, preview.pack_id, "{label}");
+            assert_eq!(installed.version, preview.version, "{label}");
+            assert_eq!(
+                slipscan_packs::key_fingerprint(&installed.signer),
+                preview.signer_fingerprint,
+                "{label}: verify showed the fingerprint the install recorded"
+            );
+        }
+        let tampered_sig = read_bytes_arg(&current_sig, 64, "signature").unwrap();
+        let tampered_key = read_bytes_arg(&current_pub, 32, "public key").unwrap();
+        assert!(
+            slipscan_packs::verify_detached(&tampered, &tampered_sig, &tampered_key).is_err(),
+            "the install path refuses the tampered file that verify refused"
+        );
+
+        // Both surfaces now agree it is installed, and refuse it again.
+        for (label, doc, sig, public) in [
+            ("legacy", &legacy, &legacy_sig, &legacy_pub),
+            ("current", &current, &current_sig, &current_pub),
+        ] {
+            let sig_bytes = read_bytes_arg(sig, 64, "signature").unwrap();
+            let key_bytes = read_bytes_arg(public, 32, "public key").unwrap();
+            let after = svc
+                .with_connection(|conn| {
+                    slipscan_packs::plan_document(conn, &book.id, doc, &sig_bytes, &key_bytes)
+                })
+                .unwrap();
+            assert_eq!(
+                after.action,
+                slipscan_packs::PlannedAction::Refuse,
+                "{label}"
+            );
+            assert!(
+                after
+                    .refusal
+                    .as_deref()
+                    .is_some_and(|why| why.contains("already installed")),
+                "{label}: {:?}",
+                after.refusal
+            );
+        }
+        drop(svc);
+
+        // And `pack verify` still exits 0 on an installed pack: "this would be
+        // refused" is a report, not a verification failure.
+        run_pack(&[
+            "verify",
+            &current_path,
+            "--signature",
+            &current_sig,
+            "--public-key",
+            &current_pub,
+        ])
+        .unwrap();
+    }
+
     /// The gap this guards: `register_classifier`'s contract is "call it once
     /// at startup, in every binary that imports transactions", and for a long
     /// time the only caller was the *install* path. A CLI run that did not
@@ -4621,8 +4994,12 @@ mod tests {
     /// `ops::pack_install_seeds`, `ops::pack_source_install`, or `run()` with
     /// a `pack install` / `pack seed` / `pack pull` command — any of those
     /// would register it as a side effect and this test would fail on its
-    /// `assert!(register_pack_classifier())`. (`pack source` and `pack fetch`
-    /// are safe: reading a source installs nothing and registers nothing.)
+    /// `assert!(register_pack_classifier())`. (`pack source`, `pack fetch` and
+    /// `pack verify` are safe: reading a source or preflighting a file installs
+    /// nothing and registers nothing. So is `Installer::install` called
+    /// directly — the registration lives in the *op*, not the installer, which
+    /// is why `pack_verify_and_pack_install_agree_on_every_pack_file_shape`
+    /// drives its install leg through the library.)
     #[test]
     fn startup_hook_applies_contains_rules_without_installing_a_pack() {
         use slipscan_core::domain::{AccountKind, NewAccount, NewTransaction};

@@ -14,9 +14,11 @@
    * profile prescribes — rather than a preference nothing reads.
    *
    * What it is still careful not to lie about, because the honest caveat is
-   * the product: bank-alert-email parsing is not built. The mailbox step
-   * says so and sends the user to where the IMAP details live, rather than
-   * collecting details that nothing reads.
+   * the product: the mailbox step collects nothing. Two separate reasons, and
+   * the step names both — the desktop's mailbox fields are stored in its own
+   * settings blob while `slipscan mail-sync` reads `mail.imap.config`, and
+   * bank-alert parsing (which *is* implemented now, unlike when this step was
+   * written) needs a `mailrules` pack that SlipScan does not ship.
    *
    * Region and currency come from `region_list` — regions are data, never
    * code, so there is no hardcoded jurisdiction anywhere in this file.
@@ -531,10 +533,14 @@
       >
         <Icon name="alert-circle" size={14} class="mt-px shrink-0" />
         <span>
-          <strong class="font-semibold">Not built yet:</strong> parsing bank
-          alert e-mails into transactions is not implemented. Configuring a
-          mailbox stores the connection details and nothing reads them yet, so
-          there is nothing to gain from setting it up in this flow.
+          <strong class="font-semibold">Nothing here is wired up yet:</strong>
+          the mailbox fields in Settings are the desktop's own record, and
+          <span class="font-mono">slipscan mail-sync</span> reads its own
+          settings key rather than them. Turning bank-alert e-mails into
+          transactions <em>is</em> implemented now, but no bank patterns ship —
+          it does nothing until you install a
+          <span class="font-mono">mailrules</span> pack for your bank. Either
+          way there is nothing to gain from setting a mailbox up in this flow.
         </span>
       </p>
       <button

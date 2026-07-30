@@ -16,6 +16,8 @@ use base64::Engine as _;
 use sha2::{Digest, Sha256};
 use tauri::State;
 
+use slipscan_core::device::pairing::{KeynameCheck, PairingInviteMeta, DEFAULT_INVITE_TTL_SECONDS};
+use slipscan_core::device::{DeviceIdentity, DevicePeer, DeviceRotation};
 use slipscan_core::domain::{
     self as core, CategoryNode, DocumentKind, DocumentSource, JournalSourceType, NewDocument,
     NewJournal, NewJournalLine, TransactionFilter,
@@ -1374,14 +1376,31 @@ fn decode_key_material(raw: &str, expect: usize, what: &str) -> Result<Vec<u8>, 
     Ok(bytes)
 }
 
+/// The three byte strings a signed pack arrives as: the document, its detached
+/// signature, and the publisher's public key.
+struct PackBytes {
+    document: Vec<u8>,
+    signature: Vec<u8>,
+    public_key: Vec<u8>,
+}
+
+/// Decode the three inputs. Transport-level only: no signature is checked
+/// here, and nothing is parsed.
+fn decode_pack_document(query: &PackDocumentRequest) -> Result<PackBytes, String> {
+    Ok(PackBytes {
+        document: base64::engine::general_purpose::STANDARD
+            .decode(query.document_base64.trim())
+            .map_err(|e| format!("invalid base64 pack document: {e}"))?,
+        signature: decode_key_material(&query.signature, 64, "signature")?,
+        public_key: decode_key_material(&query.public_key, 32, "public key")?,
+    })
+}
+
 /// Verify the three inputs and hand back the pack the installer would take.
 fn verify_request(query: &PackDocumentRequest) -> Result<slipscan_packs::VerifiedPack, String> {
-    let document = base64::engine::general_purpose::STANDARD
-        .decode(query.document_base64.trim())
-        .map_err(|e| format!("invalid base64 pack document: {e}"))?;
-    let signature = decode_key_material(&query.signature, 64, "signature")?;
-    let public_key = decode_key_material(&query.public_key, 32, "public key")?;
-    slipscan_packs::verify_detached(&document, &signature, &public_key).map_err(err)
+    let bytes = decode_pack_document(query)?;
+    slipscan_packs::verify_detached(&bytes.document, &bytes.signature, &bytes.public_key)
+        .map_err(err)
 }
 
 /// The label a first-use trust decision is recorded under. Comes from
@@ -1439,22 +1458,34 @@ pub async fn pack_list(
 /// trust-on-first-use mean anything, and report what installing would do.
 ///
 /// The refusals — a changed publisher key, the version already installed, a
-/// downgrade — come from `slipscan_packs::transport::plan`, the single
-/// preflight the CLI, the HTTP routes and this screen all share, so the
-/// preview can never promise something the attempt then refuses. A key change
-/// is a refusal, not a silent success: the pack id is pinned to the key that
-/// first signed it, and no other key can take the id over.
+/// downgrade — come from `slipscan_packs::plan_document`, the single preflight
+/// for bytes the user is holding: the CLI's `pack verify` and this screen call
+/// the very same function, and it starts at the same `verify_detached` the
+/// installer does. That is what makes "verify then install" honest rather than
+/// a coincidence — the set of documents this accepts *is* the set
+/// `pack_install` accepts, current payloads and legacy flat manifests alike.
+/// (A verify that parsed the file itself was how `slipscan pack verify` came to
+/// reject packs its own installer took.)
+///
+/// A key change is a refusal, not a silent success: the pack id is pinned to
+/// the key that first signed it, and no other key can take the id over.
 #[tauri::command]
 pub async fn pack_verify(
     state: State<'_, AppState>,
     query: PackDocumentRequest,
 ) -> Result<PackVerificationDto, String> {
-    let verified = verify_request(&query)?;
+    let bytes = decode_pack_document(&query)?;
     let service = state.service()?;
     book_by_id(&service, &query.book_id)?;
     service.with_connection(|conn| {
-        let plan =
-            slipscan_packs::transport::plan(conn, &query.book_id, &verified, None).map_err(err)?;
+        let plan = slipscan_packs::plan_document(
+            conn,
+            &query.book_id,
+            &bytes.document,
+            &bytes.signature,
+            &bytes.public_key,
+        )
+        .map_err(err)?;
         Ok(PackVerificationDto::from(plan))
     })
 }
@@ -1509,12 +1540,17 @@ pub async fn pack_install(
     engine::register_classifier();
 
     service.with_connection(|conn| {
-        let installer = Installer::open(conn).map_err(err)?;
-        let trust = TrustStore::open(conn).map_err(err)?;
-        if let TrustStatus::Unknown { .. } = trust.status(verified.signer()).map_err(err)? {
-            trust.trust(verified.signer(), &label).map_err(err)?;
-        }
-        let report = installer.install(&query.book_id, &verified).map_err(err)?;
+        // Same ordering defect as slipscan-server::ops::pack_install had: recording
+        // trust before the pin check left a rejected signer trusted for every other
+        // pack id after a refused install. install_verified gates in the right order.
+        let fingerprint = verified.fingerprint();
+        let report = slipscan_packs::transport::install_verified(
+            conn,
+            &query.book_id,
+            &verified,
+            slipscan_packs::transport::SignerDecision::Accept(&fingerprint),
+        )
+        .map_err(err)?;
         let (outcome, upgraded_from) = match report.outcome {
             InstallOutcome::Installed => ("installed", None),
             InstallOutcome::Upgraded { from } => ("upgraded", Some(from)),
@@ -2328,6 +2364,496 @@ pub async fn vault_revoke(
         store_labels(&service, &labels)?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// device identity and pairing — **identity only; nothing syncs yet**
+// (docs/NODES.md). There is no oplog, no transport, no coordinator and no
+// endpoint. Pairing two devices establishes that this key and that key belong
+// together, and then does nothing else.
+//
+// Every command below goes through `slipscan_server::devices::DeviceHandle`,
+// the same handle the CLI drives, so the desktop cannot form its own opinion
+// about which operations may leave the machine. That handle's split is:
+//
+// * **served over HTTP** — reading this device's identity, listing peers,
+//   invite metadata and the rotation chain, and revoking or forgetting a peer.
+// * **local-only, never routed** — `init`, `rotate`, `reset` (they create or
+//   destroy the private key) and the whole pairing ceremony (invites carry a
+//   single-use claim token, and the key-name comparison needs a human in front
+//   of the device).
+//
+// Tauri IPC is a local channel, so this file legitimately implements *both*
+// halves — the same treatment `vault_set` / `vault_replace` get, which have no
+// route either. What it must not do is loosen the ceremony, hence
+// `keyname_check` below.
+// ---------------------------------------------------------------------------
+
+/// Resolve how the out-of-band key-name comparison was discharged, or
+/// **refuse**.
+///
+/// The comparison is the entire authentication step of pairing: the blobs are
+/// self-signed, so a signature proves possession of the key *inside* the blob
+/// and nothing about who sent it. An attacker who substitutes the whole blob
+/// produces one that verifies perfectly.
+///
+/// So this fails closed, loudly, with text the caller can act on. It does not
+/// fall back to [`KeynameCheck::ConfirmedByHuman`] when nothing was supplied:
+/// that variant means "a human was shown the key-name and said yes", and a
+/// default is precisely a screen that never asked. There is no `--unverified`
+/// equivalent here at all — the CLI has one for scripting; a GUI where the
+/// human is already present has no use for it.
+fn keyname_check(query: &DevicePairRedeemRequest) -> Result<KeynameCheck<'_>, String> {
+    match query.expect_keyname.as_deref().map(str::trim) {
+        // Strongest: the user typed what they read off the other screen, and
+        // core compares it (checksum first, so a typo says "you typed it
+        // wrong" rather than "wrong device").
+        Some(typed) if !typed.is_empty() => Ok(KeynameCheck::Expect(typed)),
+        _ if query.confirmed_by_human => Ok(KeynameCheck::ConfirmedByHuman),
+        _ => Err(
+            "pairing needs the key-name check: either pass the key-name shown on the \
+                  other device (expect_keyname), or confirm that this screen displayed it \
+                  and the person agreed it matched (confirmed_by_human). Comparing the \
+                  key-name is what authenticates a pairing — without it a substituted \
+                  invite verifies perfectly."
+                .to_string(),
+        ),
+    }
+}
+
+// -- served-equivalent reads: public information only ------------------------
+
+/// This device's own identity — public key, key-name, label. `null` when this
+/// device has none yet, which is the state a fresh install is in.
+#[tauri::command]
+pub async fn device_status(state: State<'_, AppState>) -> Result<Option<DeviceIdentity>, String> {
+    state.devices()?.identity().map_err(err)
+}
+
+/// Pinned peers, revoked tombstones included — a revocation is a tombstone
+/// precisely so the key cannot quietly re-pair, so hiding them would hide the
+/// reason a re-pair is being refused.
+#[tauri::command]
+pub async fn device_list(state: State<'_, AppState>) -> Result<Vec<DevicePeer>, String> {
+    state.devices()?.peer_list().map_err(err)
+}
+
+/// One pinned peer by device id — the lookup for a key-name a user is reading
+/// off the other device.
+#[tauri::command]
+pub async fn device_get(
+    state: State<'_, AppState>,
+    query: DeviceIdRequest,
+) -> Result<DevicePeer, String> {
+    state
+        .devices()?
+        .peer_get(&query.device_id)
+        .map_err(err)?
+        .ok_or_else(|| format!("no paired device {}", query.device_id))
+}
+
+/// Invites this device has minted. **Never carries a claim token** — the clear
+/// token exists only in the blob the user already holds.
+#[tauri::command]
+pub async fn device_invite_list(
+    state: State<'_, AppState>,
+) -> Result<Vec<PairingInviteMeta>, String> {
+    state.devices()?.invite_list().map_err(err)
+}
+
+/// The rotation chain of this device's own key: public keys and signatures.
+#[tauri::command]
+pub async fn device_rotations(state: State<'_, AppState>) -> Result<Vec<DeviceRotation>, String> {
+    state.devices()?.rotations().map_err(err)
+}
+
+/// Revoke a peer. The pin becomes a tombstone, so that key cannot silently
+/// pair again; `device_forget` is the deliberate way back.
+#[tauri::command]
+pub async fn device_revoke(
+    state: State<'_, AppState>,
+    query: DeviceIdRequest,
+) -> Result<DevicePeer, String> {
+    state.devices()?.peer_revoke(&query.device_id).map_err(err)
+}
+
+// -- local-only: key material, and the human-in-the-loop ceremony ------------
+
+/// Generate this device's keypair. The private half goes straight into the
+/// write-only vault; the public half *is* the device id.
+///
+/// **Local-only by construction** — the HTTP route of this name refuses and
+/// says so. Refused if an identity already exists: replacing the local trust
+/// root is `device_rotate` (signed by the outgoing key) or `device_reset` (a
+/// deliberate local wipe), never a second init.
+#[tauri::command]
+pub async fn device_init(
+    state: State<'_, AppState>,
+    query: DeviceInitRequest,
+) -> Result<DeviceIdentity, String> {
+    let label = query.label.as_deref().map(str::trim).unwrap_or("");
+    let label = if label.is_empty() {
+        "this device"
+    } else {
+        label
+    };
+    state.devices()?.initialize(label).map_err(err)
+}
+
+/// Rotate this device's key, signed by the key it replaces. The device id
+/// changes, so peers' pins of *this* device go stale and nothing re-pairs them
+/// automatically — there is no transport to do it over.
+#[tauri::command]
+pub async fn device_rotate(state: State<'_, AppState>) -> Result<DeviceRotateDto, String> {
+    let (identity, rotation) = state.devices()?.rotate().map_err(err)?;
+    Ok(DeviceRotateDto { identity, rotation })
+}
+
+/// Destroy this device's private key and identity row — the deliberate local
+/// reset. Peer pins are kept (they are this device's opinions about *other*
+/// devices); `device_forget` clears those one at a time.
+///
+/// `confirm` must be true, mirroring the CLI's required `--yes`: the key
+/// cannot be recovered from a backup of the data folder, because the key that
+/// decrypts the vault never leaves this machine's keychain.
+#[tauri::command]
+pub async fn device_reset(
+    state: State<'_, AppState>,
+    query: DeviceResetRequest,
+) -> Result<(), String> {
+    if !query.confirm {
+        return Err(
+            "resetting destroys this device's private key and cannot be undone — \
+                    pass confirm to proceed"
+                .to_string(),
+        );
+    }
+    state.devices()?.reset().map_err(err)
+}
+
+/// Drop a peer's pin entirely, tombstone included: the deliberate local reset
+/// that lets a revoked key pair again. Returns whether a pin went away.
+#[tauri::command]
+pub async fn device_forget(
+    state: State<'_, AppState>,
+    query: DeviceIdRequest,
+) -> Result<bool, String> {
+    state.devices()?.peer_forget(&query.device_id).map_err(err)
+}
+
+/// Mint a single-use pairing invite (ceremony step 1).
+///
+/// The returned `blob` **contains a claim token** and is a credential until it
+/// is redeemed or expires. Move it out of band — QR, paste, a file on a stick;
+/// SlipScan opens no socket to do this and there is no coordinator to route it
+/// through.
+#[tauri::command]
+pub async fn device_pair_invite(
+    state: State<'_, AppState>,
+    query: DeviceInviteRequest,
+) -> Result<PairingInviteDto, String> {
+    let label = query.label.as_deref().map(str::trim).unwrap_or("");
+    let label = if label.is_empty() { "a device" } else { label };
+    let ttl = query.ttl_seconds.unwrap_or(DEFAULT_INVITE_TTL_SECONDS);
+    let invite = state.devices()?.invite_create(label, ttl).map_err(err)?;
+    Ok(PairingInviteDto {
+        id: invite.id,
+        blob: invite.blob,
+        keyname: invite.keyname,
+        expires_at: invite.expires_at,
+    })
+}
+
+/// Withdraw an unredeemed invite. Returns whether one went away.
+///
+/// Desktop-only (the CLI's `device cancel-invite`; no HTTP route, because the
+/// whole invite lifecycle is local). It earns its place on this surface: an
+/// invite blob is a live credential, and "I pasted that into the wrong window"
+/// needs an answer other than waiting out the TTL.
+#[tauri::command]
+pub async fn device_invite_cancel(
+    state: State<'_, AppState>,
+    query: DeviceInviteIdRequest,
+) -> Result<bool, String> {
+    state.devices()?.invite_cancel(&query.id).map_err(err)
+}
+
+/// Redeem an invite (ceremony step 2): check it, **pin the inviter**, and
+/// return the acceptance blob to carry back.
+///
+/// One of exactly two moments a peer key is ever accepted. The key-name check
+/// is mandatory here — see [`keyname_check`].
+#[tauri::command]
+pub async fn device_pair_accept(
+    state: State<'_, AppState>,
+    query: DevicePairRedeemRequest,
+) -> Result<PairingAcceptanceDto, String> {
+    let check = keyname_check(&query)?;
+    let acceptance = state
+        .devices()?
+        .pair_accept(&query.blob, check)
+        .map_err(err)?;
+    Ok(PairingAcceptanceDto {
+        peer: acceptance.peer,
+        blob: acceptance.blob,
+    })
+}
+
+/// Redeem the acceptance blob (ceremony step 4): **burn the single-use claim
+/// token** and pin the accepter. The other of the two moments a peer key is
+/// accepted; replaying the same blob is refused.
+#[tauri::command]
+pub async fn device_pair_confirm(
+    state: State<'_, AppState>,
+    query: DevicePairRedeemRequest,
+) -> Result<DevicePeer, String> {
+    let check = keyname_check(&query)?;
+    state
+        .devices()?
+        .pair_confirm(&query.blob, check)
+        .map_err(err)
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+    use slipscan_core::secrets::MemorySecretStore;
+    use slipscan_core::Db;
+    use slipscan_server::devices::DeviceHandle;
+
+    /// A device, exactly as the desktop holds one: `slipscan-server`'s handle
+    /// over a database plus a keychain. In-memory here; the real one is the
+    /// data folder's database and the OS keychain.
+    fn device(label: &str) -> DeviceHandle {
+        let handle = DeviceHandle::new(
+            Db::open_in_memory().expect("db"),
+            Box::new(MemorySecretStore::default()),
+        );
+        handle.initialize(label).expect("initialize");
+        handle
+    }
+
+    fn redeem(blob: &str, expect_keyname: Option<&str>) -> DevicePairRedeemRequest {
+        DevicePairRedeemRequest {
+            blob: blob.to_string(),
+            expect_keyname: expect_keyname.map(str::to_string),
+            confirmed_by_human: false,
+        }
+    }
+
+    /// **The guard.** A redeem request that discharges the key-name check
+    /// neither way is refused outright — not silently treated as "a human
+    /// confirmed it".
+    ///
+    /// This is the difference between a verification step and a rubber stamp.
+    /// The blobs are self-signed, so a substituted invite verifies perfectly;
+    /// comparing the key-name against the other device's screen is the only
+    /// thing that authenticates the pairing. A default of `ConfirmedByHuman`
+    /// would mean a screen that forgot to ask still reported that someone had
+    /// agreed.
+    #[test]
+    fn a_redeem_with_no_keyname_check_is_refused_not_downgraded() {
+        let query = redeem("ss-pair1.whatever", None);
+        let refusal = keyname_check(&query).expect_err("must refuse");
+        // Actionable: it names both ways out.
+        assert!(refusal.contains("expect_keyname"), "{refusal}");
+        assert!(refusal.contains("confirmed_by_human"), "{refusal}");
+
+        // Whitespace is not a key-name either.
+        assert!(keyname_check(&redeem("blob", Some("   "))).is_err());
+
+        // And the refusal must not echo the blob, which is a credential.
+        assert!(!refusal.contains("ss-pair1"), "{refusal}");
+    }
+
+    #[test]
+    fn a_typed_keyname_is_compared_and_an_affirmative_is_accepted() {
+        assert!(matches!(
+            keyname_check(&redeem("blob", Some("amber-brisk-cedar"))),
+            Ok(KeynameCheck::Expect("amber-brisk-cedar"))
+        ));
+        assert!(matches!(
+            keyname_check(&DevicePairRedeemRequest {
+                blob: "blob".to_string(),
+                expect_keyname: None,
+                confirmed_by_human: true,
+            }),
+            Ok(KeynameCheck::ConfirmedByHuman)
+        ));
+    }
+
+    /// The whole ceremony as the desktop drives it: two devices, blobs carried
+    /// by hand, the key-name typed at both ends. Both sides end up pinned.
+    ///
+    /// Driven through `keyname_check` + `DeviceHandle` — the exact pair of
+    /// things the commands call — rather than through core's `Devices`, so the
+    /// desktop's own plumbing is what is under test.
+    #[test]
+    fn the_pairing_ceremony_pins_both_devices_when_the_keynames_match() {
+        let laptop = device("laptop");
+        let phone = device("phone");
+        let laptop_keyname = laptop.identity().unwrap().unwrap().keyname;
+        let phone_keyname = phone.identity().unwrap().unwrap().keyname;
+
+        // 1: the laptop mints an invite; 2: the phone redeems it, typing the
+        // key-name it read off the laptop's screen.
+        let invite = laptop.invite_create("phone", 600).unwrap();
+        let accept_req = redeem(&invite.blob, Some(&laptop_keyname));
+        let acceptance = phone
+            .pair_accept(&invite.blob, keyname_check(&accept_req).unwrap())
+            .unwrap();
+        assert_eq!(acceptance.peer.keyname, laptop_keyname);
+
+        // 4: the laptop redeems the acceptance, typing the phone's key-name.
+        let confirm_req = redeem(&acceptance.blob, Some(&phone_keyname));
+        let peer = laptop
+            .pair_confirm(&acceptance.blob, keyname_check(&confirm_req).unwrap())
+            .unwrap();
+        assert_eq!(peer.keyname, phone_keyname);
+        assert!(!peer.is_revoked());
+
+        // Both hold exactly one pin, of the other.
+        assert_eq!(laptop.peer_list().unwrap().len(), 1);
+        assert_eq!(phone.peer_list().unwrap().len(), 1);
+
+        // The invite is burnt: single-use, so the same acceptance cannot be
+        // redeemed twice.
+        assert!(laptop.invite_list().unwrap()[0].is_redeemed());
+        assert!(laptop
+            .pair_confirm(&acceptance.blob, keyname_check(&confirm_req).unwrap())
+            .is_err());
+    }
+
+    /// A wrong key-name refuses, and refusing pins nothing. This is the case
+    /// the human check exists for — a blob substituted in flight.
+    #[test]
+    fn a_mismatched_keyname_refuses_and_pins_nothing() {
+        let laptop = device("laptop");
+        let phone = device("phone");
+        // A third device's key-name: well-formed (so it passes the checksum
+        // gate) but not the inviter's.
+        let intruder = device("intruder").identity().unwrap().unwrap().keyname;
+
+        let invite = laptop.invite_create("phone", 600).unwrap();
+        let req = redeem(&invite.blob, Some(&intruder));
+        let err = phone
+            .pair_accept(&invite.blob, keyname_check(&req).unwrap())
+            .expect_err("a mismatched key-name must refuse");
+        assert!(
+            format!("{err}").contains("key-name"),
+            "the refusal must name the comparison that failed: {err}"
+        );
+        assert!(phone.peer_list().unwrap().is_empty(), "nothing was pinned");
+
+        // A mistyped name is a *different* answer from the wrong device, and
+        // core distinguishes them — the desktop must not flatten them.
+        let typo = redeem(&invite.blob, Some("not-a-key-name"));
+        let err = phone
+            .pair_accept(&invite.blob, keyname_check(&typo).unwrap())
+            .expect_err("a mistyped key-name must refuse");
+        assert!(
+            format!("{err}").contains("mistyped") || format!("{err}").contains("typed"),
+            "{err}"
+        );
+    }
+
+    /// Rotation and reset are the two local-only key operations. Rotation is
+    /// signed by the outgoing key and verifies; reset destroys the identity
+    /// but keeps this device's opinions about other devices.
+    #[test]
+    fn rotate_is_provable_and_reset_keeps_peer_pins() {
+        let laptop = device("laptop");
+        let phone = device("phone");
+        let invite = laptop.invite_create("phone", 600).unwrap();
+        let laptop_keyname = laptop.identity().unwrap().unwrap().keyname;
+        let acceptance = phone
+            .pair_accept(
+                &invite.blob,
+                keyname_check(&redeem(&invite.blob, Some(&laptop_keyname))).unwrap(),
+            )
+            .unwrap();
+        let phone_keyname = phone.identity().unwrap().unwrap().keyname;
+        laptop
+            .pair_confirm(
+                &acceptance.blob,
+                keyname_check(&redeem(&acceptance.blob, Some(&phone_keyname))).unwrap(),
+            )
+            .unwrap();
+
+        let before = laptop.identity().unwrap().unwrap();
+        let (after, rotation) = laptop.rotate().unwrap();
+        assert_ne!(after.public_key, before.public_key, "a new device id");
+        assert!(rotation.verify(), "the rotation must prove itself");
+        assert_eq!(laptop.rotations().unwrap().len(), 1);
+
+        laptop.reset().unwrap();
+        assert!(laptop.identity().unwrap().is_none());
+        assert_eq!(
+            laptop.peer_list().unwrap().len(),
+            1,
+            "our pins of other devices survive changing our own key"
+        );
+        assert!(
+            laptop.invite_list().unwrap().is_empty(),
+            "a reset clears this device's invites"
+        );
+    }
+
+    /// A revoked peer is a tombstone, and only a deliberate forget clears it.
+    /// Both commands exist on this surface for that reason.
+    #[test]
+    fn revoke_tombstones_and_forget_is_the_only_way_back() {
+        let laptop = device("laptop");
+        let phone = device("phone");
+        let invite = laptop.invite_create("phone", 600).unwrap();
+        let laptop_keyname = laptop.identity().unwrap().unwrap().keyname;
+        let acceptance = phone
+            .pair_accept(
+                &invite.blob,
+                keyname_check(&redeem(&invite.blob, Some(&laptop_keyname))).unwrap(),
+            )
+            .unwrap();
+
+        let peer_id = acceptance.peer.public_key.clone();
+        assert!(phone.peer_revoke(&peer_id).unwrap().is_revoked());
+        assert_eq!(
+            phone.peer_list().unwrap().len(),
+            1,
+            "revocation is a tombstone, not a delete"
+        );
+        assert!(phone.peer_forget(&peer_id).unwrap());
+        assert!(phone.peer_list().unwrap().is_empty());
+        assert!(!phone.peer_forget(&peer_id).unwrap());
+    }
+
+    /// An invite can be withdrawn while it is unredeemed — the answer to
+    /// "that blob went to the wrong window", since the blob is a live
+    /// credential until it expires.
+    #[test]
+    fn an_unredeemed_invite_can_be_withdrawn() {
+        let laptop = device("laptop");
+        let invite = laptop.invite_create("phone", 600).unwrap();
+        assert_eq!(laptop.invite_list().unwrap().len(), 1);
+        assert!(laptop.invite_cancel(&invite.id).unwrap());
+        assert!(laptop.invite_list().unwrap().is_empty());
+        assert!(!laptop.invite_cancel(&invite.id).unwrap());
+    }
+
+    /// Invite metadata is what the screen lists, and it must never carry the
+    /// claim token — the clear token exists only inside the blob the user
+    /// already holds.
+    #[test]
+    fn invite_metadata_never_carries_the_claim_token() {
+        let laptop = device("laptop");
+        let invite = laptop.invite_create("phone", 600).unwrap();
+        let listed = serde_json::to_string(&laptop.invite_list().unwrap()).unwrap();
+        assert!(!listed.contains(&invite.blob));
+        // The blob's payload is base64url of JSON containing the token; assert
+        // on a long slice of it rather than the whole string.
+        let body = invite.blob.trim_start_matches("ss-pair1.");
+        assert!(body.len() > 40);
+        assert!(!listed.contains(&body[..40]));
+    }
 }
 
 #[cfg(test)]

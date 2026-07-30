@@ -17,10 +17,18 @@
  *   closed off deliberately, and any of them could be reopened by a one-line
  *   change to a shared component.
  *
- * The honesty caveats are pinned here for the same reason. "Bank-alert email
- * parsing is not wired" and "retrying stops at the cap" are load-bearing
- * claims about what the product does; upgrading either one is a two-word edit
- * that no type-check or build would notice.
+ * The honesty caveats are pinned here for the same reason. "No bank patterns
+ * ship", "nothing syncs between devices" and "retrying stops at the cap" are
+ * load-bearing claims about what the product does; editing one is two words
+ * that no type-check or build would notice. Pinning cuts both ways — the
+ * bank-alert assertion in this file had to be *inverted* when `mail-sync
+ * --alerts` shipped, because a caveat left stale in the pessimistic direction
+ * hides a feature the user has.
+ *
+ * Devices adds a third kind of guard: the pairing screen's key-name field is
+ * the entire authentication step of the ceremony, so a test asserts a pairing
+ * cannot be completed without it and that the screen never claims a human
+ * confirmed a comparison it did not ask for.
  *
  * Time is frozen inside the mock's July 2026 window, matching render-smoke.
  *
@@ -36,6 +44,11 @@ import Packs from "../routes/Packs.svelte";
 import Payments from "../routes/Payments.svelte";
 import Settings from "../routes/Settings.svelte";
 import Vault from "../routes/settings/Vault.svelte";
+import {
+  mockApi,
+  mockForeignAcceptance,
+  mockForeignInvite,
+} from "../lib/api/mock";
 
 const FROZEN_NOW = new Date("2026-07-20T09:00:00Z");
 
@@ -142,22 +155,42 @@ function press(el: Element, key: string): void {
 // ---------------------------------------------------------------------------
 
 describe("payments · what it claims about itself", () => {
-  it("does not present bank-alert email as a source of detections", async () => {
+  /**
+   * This assertion changed direction, which is the interesting part.
+   *
+   * It used to pin "reading a payment out of a bank-alert email is not
+   * implemented". That became false: `slipscan mail-sync --alerts --account …`
+   * parses alert mail into statement lines and pushes them through
+   * `import_statement_lines` → `transaction_create`, which is where payment
+   * detection lives — so a parsed alert genuinely can fire a watch. Leaving
+   * the old wording would have been a stale claim in the *pessimistic*
+   * direction, which is a defect too: it sends a user looking for a feature
+   * they already have.
+   *
+   * The honest caveat moved rather than disappearing, so this now pins the new
+   * one: no bank patterns ship, and nothing is parsed without a `mailrules`
+   * pack.
+   */
+  it("names the three sources of detections, and what gates the newest one", async () => {
     const { target, dispose } = render(Payments as Component);
     try {
       await settle(target);
       const rendered = text(target);
 
-      // The caveat, in as many words. Detection fires inside
-      // transaction_create, and the sources that reach it today are two.
-      expect(rendered).toContain("statement imports and entries you make");
+      // The set, stated. "Any source" alone would still mislead.
       expect(rendered).toContain(
-        "Reading a payment out of a bank-alert email is not implemented",
+        "statement imports, entries you make yourself, and bank-alert emails",
       );
+      // The condition on the newest one is a missing pack, not missing code.
+      expect(rendered).toContain("no bank patterns ship");
+      expect(rendered).toMatch(/mailrules/);
 
-      // And the claim that was there before must not come back. Pointing at
-      // a settings tab as the way to make email trigger a watch describes a
-      // pipeline that does not exist.
+      // The old, now-false claim must not come back.
+      expect(rendered).not.toMatch(/bank-alert email is not implemented/i);
+      expect(rendered).not.toMatch(/only ever captured as a document/i);
+
+      // Nor may the overstatement that predated *that*: pointing at a settings
+      // tab as the thing that makes email trigger a watch skips the pack.
       expect(rendered).not.toContain("email-ingested");
       expect(rendered).not.toMatch(/bank alerts first/i);
       expect(fatal, fatal.join(" | ")).toEqual([]);
@@ -501,4 +534,400 @@ describe("settings · connections shows only egress that can exist", () => {
       dispose();
     }
   }, 20_000);
+});
+
+// ---------------------------------------------------------------------------
+// Connections — bank-alert emails: an engine that ships, and formats that
+// do not
+// ---------------------------------------------------------------------------
+
+describe("settings · bank-alert emails are honest about the missing half", () => {
+  it("states that no bank patterns ship and points at the pack that fixes it", async () => {
+    const { target, dispose } = render(Settings as Component);
+    try {
+      await settle(target);
+      button(target, "Connections").click();
+      await settle(target);
+      const rendered = text(target);
+
+      // The whole content of this panel. `mail-sync --alerts` works; the
+      // formats are packs, and SlipScan ships none — so announcing "bank
+      // alerts supported" without this sentence would be the overstatement.
+      expect(rendered).toContain("Bank-alert emails");
+      expect(rendered).toContain("No bank patterns ship with SlipScan");
+      expect(rendered).toContain("this does nothing at all");
+      expect(rendered).toContain("No mailrules pack for your bank");
+
+      // The exact command, with an account in it — the CLI requires one
+      // because alerts have to be booked somewhere and guessing the card is
+      // the one thing this pipeline refuses to do.
+      expect(rendered).toContain("slipscan mail-sync --alerts --account");
+
+      // Multi-account routing exists in the library and nothing calls it.
+      // Implying otherwise would invent a feature.
+      expect(rendered).toContain("One account per run");
+      expect(rendered).toContain("not wired to anything");
+
+      // And the mailbox fields above are not the sync's config, which is the
+      // claim the old wording made.
+      expect(rendered).toContain("mail.imap.config");
+      expect(rendered).toContain("nothing consumes it yet");
+      expect(fatal, fatal.join(" | ")).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 20_000);
+
+  it("lists installed mailrules packs instead of the empty state", async () => {
+    // The other branch. The mock book has no mailrules pack — which is the
+    // true state of every install — so the populated path is only reachable
+    // by standing one in.
+    const withPack = vi.spyOn(mockApi, "pack_list").mockResolvedValue([
+      {
+        pack_id: "meridian-alerts",
+        book_id: "b1",
+        name: "Meridian Bank card alerts",
+        version: "1.2.0",
+        kind: "mailrules",
+        region: null,
+        signer_fingerprint: "9a1c-4d02-77bf-e310",
+        signer_label: "A Community Publisher",
+        installed_at: "2026-07-10T09:00:00Z",
+        updated_at: "2026-07-10T09:00:00Z",
+      },
+    ]);
+    try {
+      const { target, dispose } = render(Settings as Component);
+      try {
+        await settle(target);
+        button(target, "Connections").click();
+        await settle(target);
+        const rendered = text(target);
+
+        expect(rendered).toContain("1 mailrules pack");
+        expect(rendered).toContain("Meridian Bank card alerts");
+        // The signer is shown: which key vouched for a rule that will create
+        // transactions is not a detail.
+        expect(rendered).toContain("9a1c-4d02-77bf-e310");
+        expect(rendered).not.toContain("No mailrules pack for your bank");
+
+        // The caveat that survives having a pack: the desktop still does not
+        // poll, so the command is still the surface.
+        expect(rendered).toContain("slipscan mail-sync --alerts --account");
+        expect(fatal, fatal.join(" | ")).toEqual([]);
+      } finally {
+        dispose();
+      }
+    } finally {
+      withPack.mockRestore();
+    }
+  }, 20_000);
+});
+
+// ---------------------------------------------------------------------------
+// Devices — the pairing ceremony, and the three destructive actions
+//
+// Everything in this block guards a property that fails silently. A key-name
+// field that stops being required still renders; a confirm prompt that comes
+// unwired still shows a button that works; a blob left in component state
+// still looks fine on screen.
+// ---------------------------------------------------------------------------
+
+/** Open Settings on the Devices tab. */
+async function devicesTab(): Promise<{
+  target: HTMLElement;
+  dispose: () => void;
+}> {
+  const handle = render(Settings as Component);
+  await settle(handle.target);
+  button(handle.target, "Devices").click();
+  await settle(handle.target);
+  return handle;
+}
+
+const field = (target: HTMLElement, label: string): HTMLInputElement =>
+  [...target.querySelectorAll("input")].find((i) =>
+    (i.getAttribute("aria-label") ??
+      i.closest("label")?.textContent ??
+      "").includes(label),
+  )!;
+
+const area = (target: HTMLElement, label: string): HTMLTextAreaElement =>
+  [...target.querySelectorAll("textarea")].find((t) =>
+    (t.getAttribute("aria-label") ?? "").includes(label),
+  )!;
+
+function fill(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
+  el.value = value;
+  el.dispatchEvent(new Event("input", { bubbles: true }));
+  flushSync();
+}
+
+describe("settings · devices — the key-name comparison is not optional", () => {
+  /**
+   * **The one that matters.** The pairing blobs are self-signed: a signature
+   * proves possession of the key *inside* the blob and nothing about who sent
+   * it, so an attacker who substitutes the whole blob produces one that
+   * verifies perfectly. A person comparing nine words against the other
+   * device's screen is the entire authentication step.
+   *
+   * So the screen must not let a pairing through without it, and it must not
+   * offer a tick box beside a key-name it printed itself — that is a rubber
+   * stamp, and `confirmed_by_human` exists for callers that genuinely asked a
+   * human, not as a shortcut past asking.
+   */
+  it("will not pair without a typed key-name, and never claims a human confirmed one", async () => {
+    const spy = vi.spyOn(mockApi, "device_pair_accept");
+    const { target, dispose } = await devicesTab();
+    try {
+      const incoming = mockForeignInvite("phone");
+
+      // A blob alone does not enable the action: the comparison is required.
+      fill(area(target, "Pairing invite from the other device"), incoming.blob);
+      await settle(target);
+      const pair = buttons(target, "Compare and pair").at(-1)!;
+      expect(
+        pair.disabled,
+        "a pairing with no key-name typed must not be actionable",
+      ).toBe(true);
+
+      // Typing the *wrong* key-name is refused, and nothing is pinned.
+      const before = (await mockApi.device_list()).length;
+      const wrong = mockForeignInvite("someone else");
+      fill(field(target, "key-name shown on that device"), wrong.keyname);
+      await settle(target);
+      buttons(target, "Compare and pair").at(-1)!.click();
+      await settle(target);
+      expect(text(target)).toContain("key-name mismatch");
+      expect(await mockApi.device_list()).toHaveLength(before);
+
+      // The right key-name pairs, and the screen sent the typed name rather
+      // than asserting a human had confirmed something.
+      fill(field(target, "key-name shown on that device"), incoming.keyname);
+      await settle(target);
+      buttons(target, "Compare and pair").at(-1)!.click();
+      await settle(target);
+
+      expect(spy).toHaveBeenCalled();
+      for (const [arg] of spy.mock.calls) {
+        expect(arg.expect_keyname, "the typed key-name must be sent").toBeTruthy();
+        expect(
+          arg.confirmed_by_human,
+          "this screen must never rubber-stamp the comparison",
+        ).toBeFalsy();
+      }
+      expect(await mockApi.device_list()).toHaveLength(before + 1);
+      expect(fatal, fatal.join(" | ")).toEqual([]);
+    } finally {
+      spy.mockRestore();
+      dispose();
+    }
+  }, 30_000);
+
+  /**
+   * An invite blob carries a single-use claim token, so it is a credential
+   * until it is redeemed or expires. It is shown (carrying it is the point)
+   * and it is dropped the moment the step is over — and it never appears in an
+   * error message, where it would outlive the flow in a log or a screenshot.
+   */
+  it("treats a pairing blob as a credential and drops it when the step ends", async () => {
+    const { target, dispose } = await devicesTab();
+    try {
+      button(target, "Create invite").click();
+      await settle(target);
+
+      const blob = area(
+        target,
+        "Pairing invite to carry to the other device",
+      ).value;
+      expect(blob.startsWith("ss-pair1.")).toBe(true);
+      // Said out loud where the blob is shown.
+      expect(text(target)).toContain("Treat this like a password until it is used");
+      expect(text(target)).toContain("single-use claim token");
+
+      // Complete the pairing the way a person would: the other device answers,
+      // and its key-name is typed here.
+      const answer = mockForeignAcceptance(blob);
+      fill(area(target, "Acceptance blob from the other device"), answer.blob);
+      fill(field(target, "key-name shown on that device"), answer.keyname);
+      await settle(target);
+      // Two panels carry this action — invite-side (first) and accept-side.
+      // This is the invite side, step 2 of the ceremony.
+      buttons(target, "Compare and pair").at(0)!.click();
+      await settle(target);
+
+      const after = text(target);
+      expect(after).toContain("Paired with");
+      // Pairing succeeded and immediately says what it did not do.
+      expect(after).toContain("there is no sync to start");
+      // The blob is gone from the screen the moment it is spent.
+      expect(after).not.toContain(blob);
+
+      // Replaying the same answer is refused: the claim token was burnt.
+      button(target, "Create invite").click();
+      await settle(target);
+      fill(area(target, "Acceptance blob from the other device"), answer.blob);
+      fill(field(target, "key-name shown on that device"), answer.keyname);
+      await settle(target);
+      // Two panels carry this action — invite-side (first) and accept-side.
+      // This is the invite side, step 2 of the ceremony.
+      buttons(target, "Compare and pair").at(0)!.click();
+      await settle(target);
+      expect(text(target)).toMatch(/already redeemed|answers no invite/);
+      expect(fatal, fatal.join(" | ")).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+});
+
+describe("settings · devices — an open invite outlives the blob on screen", () => {
+  /**
+   * The regression this exists for. Step 2 of the ceremony ("paste the answer
+   * that came back") was nested inside the panel that displays the freshly
+   * minted blob, so it was reachable only in the same session that minted the
+   * invite. The other device is a walk down the hall away: hiding the blob — or
+   * closing the app — left a live invite in the database with no way in the UI
+   * to finish redeeming it.
+   *
+   * The blob must still go away when hidden (it is a credential), and the form
+   * must still be there.
+   */
+  it("keeps the redeem form after the credential is dropped from the screen", async () => {
+    const { target, dispose } = await devicesTab();
+    try {
+      button(target, "Create invite").click();
+      await settle(target);
+      const blob = area(
+        target,
+        "Pairing invite to carry to the other device",
+      ).value;
+      const answer = mockForeignAcceptance(blob);
+
+      button(target, "Hide").click();
+      await settle(target);
+
+      // The credential is off the screen…
+      expect(text(target)).not.toContain(blob);
+      // …the invite is still open, and it is still redeemable.
+      expect(text(target)).toContain("Step 2 · paste the answer that came back");
+      const pinned = (await mockApi.device_list()).length;
+
+      fill(area(target, "Acceptance blob from the other device"), answer.blob);
+      fill(field(target, "key-name shown on that device"), answer.keyname);
+      await settle(target);
+      buttons(target, "Compare and pair").at(0)!.click();
+      await settle(target);
+
+      expect(text(target)).toContain("Paired with");
+      expect(await mockApi.device_list()).toHaveLength(pinned + 1);
+      expect(fatal, fatal.join(" | ")).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+});
+
+describe("settings · devices — destroying something asks first", () => {
+  it("revoking asks, and cancelling revokes nothing", async () => {
+    const { target, dispose } = await devicesTab();
+    try {
+      const revoke = buttons(target, "Revoke").at(0)!;
+      revoke.click();
+      flushSync();
+
+      const prompt = dialog(document.body);
+      expect(prompt, "revoking a device did not ask first").not.toBeNull();
+      // The tombstone is explained, because "revoke" reads as "delete".
+      expect(text(prompt!)).toContain("tombstone");
+      expect(text(prompt!)).toContain("cannot quietly pair again");
+
+      const active = (await mockApi.device_list()).filter(
+        (p) => p.revoked_at === null,
+      ).length;
+      button(prompt!, "Cancel").click();
+      await settle(target);
+      expect(
+        (await mockApi.device_list()).filter((p) => p.revoked_at === null),
+      ).toHaveLength(active);
+      expect(fatal, fatal.join(" | ")).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+
+  it("forgetting a revoked device is type-to-confirm, since it lets that key back in", async () => {
+    const { target, dispose } = await devicesTab();
+    try {
+      // Relative to whatever the earlier suites in this file left pinned — the
+      // mock dataset is module state.
+      const pinned = (await mockApi.device_list()).length;
+      button(target, "Forget").click();
+      flushSync();
+      const prompt = dialog(document.body)!;
+      expect(text(prompt)).toContain("may pair with you again from scratch");
+
+      // Held until the phrase matches: forgetting is the only way back from a
+      // revocation, so it is not a stray-Enter away.
+      const confirm = button(prompt, "Forget device");
+      expect(confirm.disabled).toBe(true);
+      const typed = prompt.querySelector("input")!;
+      fill(typed, "old phone");
+      expect(button(prompt, "Forget device").disabled).toBe(false);
+
+      button(prompt, "Cancel").click();
+      await settle(target);
+      expect(await mockApi.device_list()).toHaveLength(pinned);
+      expect(fatal, fatal.join(" | ")).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+
+  it("resetting the identity is type-to-confirm and says recovery is impossible", async () => {
+    const { target, dispose } = await devicesTab();
+    try {
+      button(target, "Reset identity").click();
+      flushSync();
+      const prompt = dialog(document.body)!;
+      const said = text(prompt);
+
+      // The cost, stated: the key is gone and no backup holds it, because the
+      // key that decrypts the vault never leaves this machine's keychain.
+      expect(said).toContain("cannot be recovered from a backup");
+      expect(said).toContain("never leaves this machine's keychain");
+      // And the consolation that is actually true: peer pins survive.
+      expect(said).toContain("pins of those devices are kept");
+
+      expect(button(prompt, "Destroy this identity").disabled).toBe(true);
+      button(prompt, "Cancel").click();
+      await settle(target);
+      expect(await mockApi.device_status()).not.toBeNull();
+      expect(fatal, fatal.join(" | ")).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+
+  it("rotating warns that peers will not recognise the new id", async () => {
+    const { target, dispose } = await devicesTab();
+    try {
+      const before = await mockApi.device_status();
+      button(target, "Rotate key").click();
+      flushSync();
+      const prompt = dialog(document.body)!;
+      expect(text(prompt)).toContain("will not recognise the new one");
+      // Nothing is notified, because there is nothing to notify over.
+      expect(text(prompt)).toContain("no transport to notify over");
+
+      button(prompt, "Cancel").click();
+      await settle(target);
+      expect((await mockApi.device_status())!.public_key).toBe(
+        before!.public_key,
+      );
+      expect(fatal, fatal.join(" | ")).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
 });

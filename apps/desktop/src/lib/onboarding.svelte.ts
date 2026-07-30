@@ -26,9 +26,11 @@
  *
  * WHAT IT DOES *NOT* DO, and says so on screen (contract: honest caveats are
  * a feature, never quietly upgraded):
- *   - It does not enable bank-alert-email parsing. That is not built. The
- *     mailbox step records nothing and only points at where the IMAP details
- *     live.
+ *   - It does not set up a mailbox. The mailbox step records nothing, and says
+ *     why: the desktop's mailbox fields live in its own settings blob while
+ *     `slipscan mail-sync` reads `mail.imap.config`, and bank-alert parsing —
+ *     which is implemented now, engine and all — still needs a `mailrules`
+ *     pack, of which SlipScan ships none.
  *
  * The region and currency are also recorded locally, so Settings can open on
  * the profile the user chose without re-reading it off the book.

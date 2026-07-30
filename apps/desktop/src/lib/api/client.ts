@@ -19,6 +19,10 @@ import type {
   Category,
   DataMoveRequest,
   DataStatus,
+  DeviceIdentity,
+  DevicePeer,
+  DeviceRotateResult,
+  DeviceRotation,
   Document,
   DocumentImportRequest,
   FxConversion,
@@ -44,6 +48,10 @@ import type {
   PackOffer,
   PackSourceInfo,
   PackVerification,
+  PairingAcceptance,
+  PairingInvite,
+  PairingInviteMeta,
+  PairRedeemRequest,
   PayDelivery,
   PayEndpoint,
   PayEndpointWithSecret,
@@ -477,6 +485,94 @@ export const api = {
 
   vaultRevoke: (q: { name: string }): Promise<null> =>
     call("vault_revoke", { query: q }, () => mockApi.vault_revoke(q)),
+
+  // -- device identity and pairing (docs/NODES.md).
+  //
+  // **NOTHING SYNCS YET.** Identity and pairing are real; there is no oplog
+  // and no transport. Pairing two devices proves who they are and then does
+  // nothing else, and every screen here must say so.
+  //
+  // The ceremony (invite/accept/confirm) plus init, rotate, reset and forget
+  // are **local-only and exist only as IPC** — the HTTP routes of those names
+  // refuse and say why: they create or destroy the private key, or they carry
+  // a single-use claim token and need a human in front of the screen. Same
+  // treatment vaultSet/vaultReplace already get. --
+
+  /** This device's identity, or `null` if it has none yet. */
+  deviceStatus: (): Promise<DeviceIdentity | null> =>
+    call("device_status", {}, mockApi.device_status),
+
+  /** Pinned peers, revoked tombstones included — hiding a tombstone would
+   * hide the reason a re-pair is being refused. */
+  deviceList: (): Promise<DevicePeer[]> =>
+    call("device_list", {}, mockApi.device_list),
+
+  deviceGet: (q: { device_id: string }): Promise<DevicePeer> =>
+    call("device_get", { query: q }, () => mockApi.device_get(q)),
+
+  /** Invites this device minted. Never carries a claim token. */
+  deviceInviteList: (): Promise<PairingInviteMeta[]> =>
+    call("device_invite_list", {}, mockApi.device_invite_list),
+
+  deviceRotations: (): Promise<DeviceRotation[]> =>
+    call("device_rotations", {}, mockApi.device_rotations),
+
+  /** Revoke a peer: the pin becomes a tombstone so that key cannot silently
+   * pair again. `deviceForget` is the deliberate way back. */
+  deviceRevoke: (q: { device_id: string }): Promise<DevicePeer> =>
+    call("device_revoke", { query: q }, () => mockApi.device_revoke(q)),
+
+  /** Generate this device's keypair — the private half goes straight into the
+   * write-only vault, the public half becomes the device id. Refused if an
+   * identity already exists. */
+  deviceInit: (q: { label?: string }): Promise<DeviceIdentity> =>
+    call("device_init", { query: q }, () => mockApi.device_init(q)),
+
+  /** Rotate this device's key, signed by the key it replaces. The device id
+   * changes, so peers' pins of this device go stale — and nothing re-pairs
+   * them, because there is no transport to do it over. */
+  deviceRotate: (): Promise<DeviceRotateResult> =>
+    call("device_rotate", {}, mockApi.device_rotate),
+
+  /** Destroy this device's private key and identity. Peer pins are kept.
+   * `confirm` is required — it cannot be undone and the key cannot be
+   * recovered from a backup of the data folder. */
+  deviceReset: (q: { confirm: boolean }): Promise<null> =>
+    call("device_reset", { query: q }, () => mockApi.device_reset(q)),
+
+  /** Drop a peer's pin entirely, tombstone included — the deliberate local
+   * reset that lets a revoked key pair again. */
+  deviceForget: (q: { device_id: string }): Promise<boolean> =>
+    call("device_forget", { query: q }, () => mockApi.device_forget(q)),
+
+  /** Mint a single-use pairing invite. The returned `blob` **is a credential**
+   * until redeemed or expired: show it, let it be copied, then drop it. */
+  devicePairInvite: (q: {
+    label?: string;
+    ttl_seconds?: number;
+  }): Promise<PairingInvite> =>
+    call("device_pair_invite", { query: q }, () => mockApi.device_pair_invite(q)),
+
+  /** Withdraw an unredeemed invite — the answer to "that blob went to the
+   * wrong window". */
+  deviceInviteCancel: (q: { id: string }): Promise<boolean> =>
+    call("device_invite_cancel", { query: q }, () =>
+      mockApi.device_invite_cancel(q),
+    ),
+
+  /** Redeem an invite: pins the inviter and returns the acceptance blob to
+   * carry back. The key-name check is **mandatory** — pass the key-name the
+   * user typed, or `confirmed_by_human` only if this screen displayed it and
+   * got an affirmative. Supplying neither is refused by the backend. */
+  devicePairAccept: (q: PairRedeemRequest): Promise<PairingAcceptance> =>
+    call("device_pair_accept", { query: q }, () => mockApi.device_pair_accept(q)),
+
+  /** Redeem the acceptance blob: burns the single-use claim token and pins the
+   * accepter. Same mandatory key-name check. */
+  devicePairConfirm: (q: PairRedeemRequest): Promise<DevicePeer> =>
+    call("device_pair_confirm", { query: q }, () =>
+      mockApi.device_pair_confirm(q),
+    ),
 };
 
 export type Api = typeof api;

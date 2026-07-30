@@ -83,8 +83,8 @@ pub use git::{GitCheckout, GIT_CACHE_DIR};
 pub use https::{HttpBlob, HttpsDir, PackHttp};
 pub use local::LocalDir;
 pub use plan::{
-    install_bundle, install_verified, pinned_signer, plan, plan_bundle, signer_label,
-    signer_status, PackPlan, PlannedAction, SignerDecision,
+    install_bundle, install_verified, pinned_signer, plan, plan_bundle, plan_document,
+    signer_label, signer_status, PackPlan, PlannedAction, SignerDecision,
 };
 pub use source_store::{PackSourceRow, SourceStore};
 

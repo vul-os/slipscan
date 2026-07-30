@@ -13,7 +13,8 @@ crates/
   slipscan-ingest/         # email inbound (IMAP), file import/watch, bank-scraper framework
   slipscan-packs/          # signed classification/category packs: format, ed25519 verify, import/export
   slipscan-server/         # axum headless server (self-host mode), thin wrapper over core services
-  slipscan-cli/            # clap CLI: init, import, extract, mail-sync, recon, report, pack, vault, device, serve, list
+  slipscan-cli/            # clap CLI: init, import, watch, extract, mail-sync, recon, report, fx, tax,
+                           # account, member, attribute, split, pack, pay, vault, device, data, serve, list
   slipscan-sync/           # DMTAP Sync merge-algebra mapping ONLY — nothing else depends on it,
                            # and nothing syncs between devices yet (see below)
 apps/
@@ -226,7 +227,7 @@ Target: the full Vault22/22seven experience — nudges, spending insights, peer 
   - Coarse cohort buckets only (region, rough income band, household size) — chosen so every cohort clears a k-anonymity floor; submissions carrying no identifiers, no account, no stable pseudonym.
   - Anonymous transport (relay/onion-style submission, randomized timing); aggregators are community-run and can be anyone — the DP noise means even a malicious aggregator learns nothing about an individual.
   - Default is **off**. Turning it on shows exactly what would be sent, in plain language.
-- Parity North Star: feature-parity matrices vs Xero and Vault22/22seven will be maintained in [ROADMAP.md](../ROADMAP.md) (Phase 4.5 — not yet written); gaps are issues, not surprises.
+- Parity North Star: the feature-parity matrices vs Xero and Vault22/22seven are written — [PARITY.md](../PARITY.md), 24 capabilities scored Built / Partial / Not built with a file-level citation on every row, and blunt about the result (2 built, 10 partial, 12 not built; **zero of Xero's fourteen**). [ROADMAP.md](../ROADMAP.md) Phases 4.5 and 5 link it rather than restating it. Still owed: each gap filed as an issue, and something that re-scores the matrix instead of a human doing it.
 
 ## Non-negotiables (the mantra)
 

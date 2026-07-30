@@ -27,6 +27,16 @@ slipscan-core = { path = "../../../crates/slipscan-core" }
 # and region) that ops does not expose, and pulling axum into the desktop
 # binary to reach a shared helper would be the worse trade.
 slipscan-packs = { path = "../../../crates/slipscan-packs" }
+# Device identity and pairing go through `slipscan_server::devices::DeviceHandle`
+# — the one owning handle over core's `Devices` (SQLite connection + OS
+# keychain), and the one place the served/local-only split is written down. The
+# CLI drives the same handle, so the desktop cannot drift from it: a second
+# wrapper would be a second opinion about which operations may leave the
+# machine, which is exactly the mistake `pack verify` just had to be rescued
+# from. This does pull axum in behind an unused `app()` — the trade the pack
+# note above declined for a *helper*; taken here because the thing being shared
+# is a security boundary, not a convenience.
+slipscan-server = { path = "../../../crates/slipscan-server" }
 # Production FX transport (reqwest over rustls) for explicit OpenRate fetches.
 slipscan-ingest = { path = "../../../crates/slipscan-ingest" }
 # The explicit FX fetch drives core's `?Send` future on a self-contained

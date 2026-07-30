@@ -137,6 +137,26 @@ pub fn run() {
             commands::vault_set,
             commands::vault_replace,
             commands::vault_revoke,
+            // Device identity and pairing. The first five mirror routes the
+            // server serves; the rest are local-only there and refuse over
+            // HTTP — they create or destroy the private key, or they carry a
+            // single-use claim token and need a human in front of the screen.
+            // IPC is a local channel, so this surface has both halves (the
+            // same reason `vault_set` lives here with no route).
+            commands::device_status,
+            commands::device_list,
+            commands::device_get,
+            commands::device_invite_list,
+            commands::device_rotations,
+            commands::device_revoke,
+            commands::device_init,
+            commands::device_rotate,
+            commands::device_reset,
+            commands::device_forget,
+            commands::device_pair_invite,
+            commands::device_pair_accept,
+            commands::device_pair_confirm,
+            commands::device_invite_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running slip/scan");

@@ -8,7 +8,7 @@ Easier for the vendor. A finance aggregator is a honeypot: one service holding b
 
 ## How does this compare to 22seven / Vault22? To Xero?
 
-Same feature targets, inverted architecture. Vault22/22seven-class personal finance (accounts, categorisation, budgets, nudges, peer comparison) and Xero-class small-business accounting (double-entry ledger, VAT, reconciliation) — with no server-side aggregation, no credential custody, and no subscription. Peer comparison, their most "requires-a-cloud" feature, works here through [anonymous benchmark packs](BENCHMARKS.md) — reading is built and reachable (`slipscan pack benchmark`, `POST /api/v1/pack_benchmark`, and the desktop Packs screen), and the differentially-private *contribution* half is designed but not implemented. Feature-by-feature parity matrices are planned for [ROADMAP.md](../ROADMAP.md) (Phase 4.5 — they do not exist yet); gaps are issues, not surprises.
+Same feature targets, inverted architecture. Vault22/22seven-class personal finance (accounts, categorisation, budgets, nudges, peer comparison) and Xero-class small-business accounting (double-entry ledger, VAT, reconciliation) — with no server-side aggregation, no credential custody, and no subscription. Peer comparison, their most "requires-a-cloud" feature, works here through [anonymous benchmark packs](BENCHMARKS.md) — reading is built and reachable (`slipscan pack benchmark`, `POST /api/v1/pack_benchmark`, and the desktop Packs screen), and the differentially-private *contribution* half is designed but not implemented. Feature-by-feature parity matrices now exist and are worth reading before you decide: [PARITY.md](../PARITY.md) scores 24 capabilities Built / Partial / Not built with a citation per row, and it does not round up — **zero of Xero's fourteen core capabilities are built**, invoicing included.
 
 ## Does this work outside South Africa?
 
@@ -20,7 +20,7 @@ One SQLite database file (holding your books) plus a documents folder, at a visi
 
 ## What phones home?
 
-Nothing. No telemetry, no analytics, no update pings, no crash reports, no default network calls of any kind — the app is fully functional offline. Network egress happens only to endpoints **you** configured: your mail server, your bank, your LLM provider. That's non-negotiable #1 and #2 in [ARCHITECTURE.md](ARCHITECTURE.md#non-negotiables-the-mantra), and it's verifiable — the code is open, grep it.
+Nothing. No telemetry, no analytics, no update pings, no crash reports, no default network calls of any kind — the app is fully functional offline. Network egress happens only to endpoints **you** configured: your mail server, your bank, your LLM provider, your FX instance, and any pack source you added yourself. Pack distribution deserves a specific answer, since it is the one feature that sounds like it needs a registry: it does not have one. There is no built-in source and no default URL anywhere in the tree — the source list starts empty, so until you run `pack source add` nothing about packs touches the network, and a `file:` or `folder:` source never does at all ([PACKS.md](PACKS.md)). That's non-negotiable #1 and #2 in [ARCHITECTURE.md](ARCHITECTURE.md#non-negotiables-the-mantra), and it's verifiable — the code is open, grep it.
 
 ## Can I use my Proton Mail account?
 
@@ -40,7 +40,7 @@ SlipScan is a **standalone product in the VulOS family** — same principles (op
 
 ## Is there a mobile app? Sync between devices?
 
-Coming, in that order roadmap-wise: self-host server mode makes your devices clients of one always-on box ([SELFHOST.md](SELFHOST.md)), device-to-device E2E sync and a Tauri mobile companion follow (Phases 4–5). Today: desktop app, plus CLI and headless server.
+No mobile app yet, and **nothing syncs between devices yet** — be clear about that before you plan around it. What does exist is the groundwork, and it is real rather than sketched: your devices have identities and can pair with each other, no accounts involved (`slipscan device`, [NODES.md](NODES.md)), and the merge algebra that a sync would use is a shared, specified engine SlipScan takes as a crate rather than a CRDT invented here. What is missing is the middle: nothing records a write as an op, and nothing carries an op to another machine. Today: the desktop app, the CLI, and a headless server your other machines can call over HTTP ([SELFHOST.md](SELFHOST.md)) — though the desktop app itself cannot yet be pointed at a remote server. Device-to-device sync and a Tauri mobile companion are Phases 4–5.
 
 ## What happened to the old SlipScan?
 

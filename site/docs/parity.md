@@ -5,8 +5,10 @@ Xero does for small-business accounting", without a central server. This documen
 claim against the code, capability by capability.
 
 It exists because the claim is the first thing a reader meets and the hardest thing to check.
-[ROADMAP.md](ROADMAP.md) promised these matrices twice and never carried them; a phase list says
-what is *planned*, which is a different question from what is *there*.
+[ROADMAP.md](ROADMAP.md) had promised these matrices twice without ever carrying them; a phase list
+says what is *planned*, which is a different question from what is *there*. Phases 4.5 and 5 now
+link here instead of promising, and what they still owe is an issue per gap plus something that
+re-scores this document without a human doing it.
 
 **Scored 2026-07-29 against the working tree.** 24 capabilities:
 
