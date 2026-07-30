@@ -151,7 +151,7 @@ Reference watches and signed webhooks: watch reference codes on inbound transact
 
 ### Devices (identity & pairing)
 
-Per-device ed25519 identity and the pairing ceremony ([NODES.md](NODES.md)). **Nothing here syncs anything** — there is no oplog, no transport, no coordinator, no directory and no default endpoint, and no operation below moves a byte of book data. Pairing establishes that this key and that key belong together, and stops.
+Per-device ed25519 identity and the pairing ceremony ([NODES.md](NODES.md)). **Nothing here syncs anything** — there is no transport, no coordinator, no directory and no default endpoint, and no operation below moves a byte of book data. The signed operation log ([NODES.md](NODES.md#the-operation-log--phase-2)) is deliberately **not** exposed here either, on either surface: a route handing out operations would be the front half of a transport, with no authenticated peer, no replay defence and no admission check behind it. `slipscan sync` is CLI-only. Pairing establishes that this key and that key belong together, and stops.
 
 There are also no accounts: no email, no password, no username, no login. A device's **public key *is* its id**, and its human-comparable rendering (`keyname`, nine checksummed words) is what a person compares out of band.
 
@@ -179,7 +179,7 @@ Both redeem operations take the key-name check explicitly, and **it is not optio
 
 - **No vault-read operation.** Vault writes (`vault_set` / `vault_replace`) exist over desktop IPC only; over HTTP only `vault_list` (metadata) and `vault_revoke` exist. Nothing returns secret material over IPC or HTTP, to anyone, ever. This is structural, not policy — see [THREAT-MODEL.md](THREAT-MODEL.md).
 - **No remote data-folder move.** `data_move` exists over desktop IPC and the CLI only; over HTTP the data folder is read-only status (`data_status`). The rationale is in [Data folder](#data-folder) above and in the `data_status` handler's doc comment.
-- **No remote device pairing, and no accounts to pair.** `device_init`, `device_rotate`, `device_reset`, `device_forget` and the three `device_pair_*` operations are desktop IPC and CLI only; the routes exist solely to refuse and name the local command ([Devices](#devices-identity--pairing)). And **no operation anywhere syncs book data between devices** — identity is phase 1 of [NODES.md](NODES.md), with no oplog and no transport behind it.
+- **No remote device pairing, and no accounts to pair.** `device_init`, `device_rotate`, `device_reset`, `device_forget` and the three `device_pair_*` operations are desktop IPC and CLI only; the routes exist solely to refuse and name the local command ([Devices](#devices-identity--pairing)). And **no operation anywhere syncs book data between devices** — [NODES.md](NODES.md) phases 1 and 2 (identity, and a signed operation log) exist; the transport does not.
 - **No cloud concepts.** No orgs, no billing, no auth-as-a-service. Those died with the legacy stack ([CHANGELOG.md](../CHANGELOG.md)).
 - **No push from the server.** Clients poll or subscribe locally; the server only answers.
 

@@ -15,8 +15,8 @@ crates/
   slipscan-server/         # axum headless server (self-host mode), thin wrapper over core services
   slipscan-cli/            # clap CLI: init, import, watch, extract, mail-sync, recon, report, fx, tax,
                            # account, member, attribute, split, pack, pay, vault, device, data, serve, list
-  slipscan-sync/           # DMTAP Sync merge-algebra mapping ONLY — nothing else depends on it,
-                           # and nothing syncs between devices yet (see below)
+  slipscan-sync/           # DMTAP Sync merge-algebra mapping: which primitive each table maps to.
+                           # slipscan-core's oplog is built on it; nothing syncs between devices yet
 apps/
   desktop/                 # Tauri 2 + Svelte 5 + TypeScript + Vite + Tailwind v4
     src/                   # Svelte frontend
@@ -55,7 +55,8 @@ docs/                      # this file, guides
 - `report` — spending breakdowns, income/expense, VAT summary, trial balance, CSV export
 - `audit` — append-only local audit log of mutations
 - `settings` — provider configs (LLM, mailbox, scrapers); secret material referenced by keychain entry name
-- `device` — this device's ed25519 identity (public key = device id, private half in the vault), pinned peers, and the accountless pairing ceremony. **Identity only — nothing syncs** ([NODES.md](NODES.md))
+- `device` — this device's ed25519 identity (public key = device id, private half in the vault), pinned peers, and the accountless pairing ceremony ([NODES.md](NODES.md))
+- `sync` — the signed operation log: capture, seal, verify, replay. **A record, not a replication — there is no transport** ([NODES.md](NODES.md))
 
 Legacy SQL schemas (reference only, cloud concepts like orgs/billing/auth must NOT return) are in the session scratchpad, not the repo.
 
@@ -65,17 +66,19 @@ Legacy SQL schemas (reference only, cloud concepts like orgs/billing/auth must N
 - All payloads serde JSON. TypeScript mirrors are hand-maintained in `apps/desktop/src/lib/api/types.ts` — update both sides in the same change.
 - This parity is the contract; the current implementation does not fully meet it yet (the desktop IPC exposes a subset, with three divergent names). The honest gap list lives in [API.md](API.md) and closing it is on the roadmap. The three sets — HTTP routes, registered IPC commands, and the names the frontend client calls — are kept machine-readable in [parity.json](parity.json), derived from `routes.rs`, `src-tauri/src/lib.rs` and `client.ts`; regenerate it in the same change as any route or command you add.
 
-## Sync — an algebra mapping only; nothing syncs between devices
+## Sync — a signed operation log; still nothing syncs between devices
 
 `crates/slipscan-sync` expresses SlipScan's replicated state in the shared **DMTAP Sync** merge algebra (the VulOS substrate's `SYNC.md` capability ③). It is a **mapping and nothing else**, and the boundary is the point:
 
-- **What it is.** A translation between a SlipScan row change and a substrate op, and back. Editable rows (accounts, categories, budgets, members, merchant mappings, transactions) map to §4.4 last-writer-wins registers, one register per row because the repo layer writes whole rows. Posted journals and journal lines map to a §4.3 OR-Set that never mints a remove — SlipScan's ledger is immutable by construction and a correction is a reversal journal, so the mapping is an identity on existing behaviour rather than a new one to re-validate against the books. Money crosses as canonical decimal text; the substrate bans floats and that costs SlipScan nothing.
-- **What it is not.** No oplog, no identity, no transport, no storage. It opens no socket and touches no file. The convergence rules live in `dmtap-sync` and are deliberately not re-derived here.
-- **Therefore: nothing syncs between devices today.** There is now device identity and pairing ([NODES.md](NODES.md)) — two devices can learn and pin each other's keys — but there is still **no oplog, no replication loop, and no code path that ships an op anywhere**. Pairing changes nothing about your data. Sharing a book still means what [Data location](#data-location--backup--your-folder-your-cloud-your-responsibility) and [Household members](#household-members--per-person-attribution) say it means: a synced data folder, or the self-host server with other surfaces as clients.
+- **The mapping (`slipscan-sync`).** A translation between a SlipScan row change and a substrate op, and back. Editable rows (books, accounts, categories, transactions, splits, merchant mappings, budgets, members, the chart of accounts, its entity map, tax rates) map to §4.4 last-writer-wins registers, one register per row because the repo layer writes whole rows. Posted journals and journal lines map to a §4.3 OR-Set that never mints a remove — the ledger is immutable by construction and a correction is a reversal journal, so the mapping is an identity on existing behaviour rather than a new one to re-validate against the books. Both table lists are closed data: an unlisted table is a refusal, never a default, because mapping a ledger table onto a register would overwrite where a union belongs. **Money is `i64` minor units and crosses as a JSON integer** — no float on the path, no rounding step to get wrong.
+- **The log (`slipscan-core::sync`, migration `0700_oplog`).** Every write to a replicated table is captured **by a SQLite trigger** — not by a call from the repo layer, because a trigger catches a cascading delete, a migration and an importer nobody has written yet, and a call site catches only what somebody remembered to instrument. Captured writes are sealed into operations signed individually with the device key (RFC 9052 `COSE_Sign1`, EdDSA, the substrate's DS-tag), ordered by a persisted HLC, and stored keyed by the §4.1 **content address** — one identity per operation, never a content address beside a row id. The log is append-only and SQLite refuses to update it. The trigger set and the mapping registry are asserted equal, in both directions, so a new table cannot replicate by accident or fail to replicate silently.
+- **What it is not.** No transport, and no apply path. Nothing opens a socket, resolves a name, or reads an operation from anywhere but this device's own database. A fresh install makes no outbound call — not because a default endpoint is unset, but because no code exists that could make one.
+- **Therefore: nothing syncs between devices today.** Two devices can pin each other's keys ([NODES.md](NODES.md)) and each can show a verifiable log of its own changes; **nothing carries one device's operations to the other.** Pairing changes nothing about your data. Sharing a book still means what [Data location](#data-location--backup--your-folder-your-cloud-your-responsibility) and [Household members](#household-members--per-person-attribution) say it means: a synced data folder, or the self-host server with other surfaces as clients.
+- **The posted ledger cannot be mutated by any of it.** Migration `0101` blocks `UPDATE` and `DELETE` on `journals` and `journal_lines` in the database itself, so the ledger tables carry an insert capture trigger and no others, and a replication path has no statement that could reach a posted row. Reversal-not-edit is enforced by SQLite, not by convention.
 - **An ordinary workspace member, on a published engine.** The mapping lives behind the `sync-dmtap` feature (now on by default) and depends on `kotva-sync` from crates.io — the same compiled algebra Ofisi and FlowStock run, consumed under its old name via cargo's dependency-rename so this crate's source never moved. It was previously `exclude`d from the workspace, and that was load-bearing rather than tidiness: the dependency was a *git* dep, and Cargo resolves every optional dependency's source during workspace resolution regardless of active features, so a plain `cargo build` still reached out to a git remote. A registry dependency resolves from the committed `Cargo.lock` with no network at all, so the exclusion is gone and `cargo build --workspace --offline --locked` is green. The property that mattered is unchanged and still enforced: a bare `git clone && cargo build` of SlipScan fetches nothing from anywhere.
 - Nothing else in the workspace depends on this crate. Enabling the feature changes no other behaviour.
 
-## Nodes — device identity and pairing; still nothing syncs
+## Nodes — device identity and pairing; the transport is what is missing
 
 Phase 1 of the node model is implemented in `slipscan-core::device`: **identity and pairing only**. Full model, limits and gap list in [NODES.md](NODES.md).
 
@@ -85,7 +88,7 @@ Phase 1 of the node model is implemented in `slipscan-core::device`: **identity 
 - **A key change is a refusal, never a silent re-pin.** The peer key is accepted at exactly one moment and thereafter only a deliberate *local* reset can change it — the discipline copied from AQL's `proto/PAIRING-PROFILE.md`, and the same trust-on-first-use rule [packs](#classification-packs--one-install-pipeline) already applies to signers. Revocation leaves a **tombstone** so a revoked device cannot let itself back in; identity rotation must be **signed by the key it replaces**. A structural test asserts the *set* of code paths that write a pinned key, because what breaks a rule like this later is a new call site, not a changed behaviour.
 - **Nothing is load-bearing.** Laptop, home server and rented cloud box are the same binary with no roles between them: **no coordinator, no directory, no rendezvous, no default endpoint** — absent, not disabled. A pairing blob carries no hostname, port or URL.
 - **HTTP split.** Reading identity and revoking a peer are served; creating or rotating a key, forgetting a pin, and the whole pairing ceremony are local-only and answer 403 naming the local command — the same rule that keeps vault writes and webhook secrets off the wire.
-- **Therefore: still nothing syncs between devices.** Pairing two devices changes nothing about your data. There is no oplog, no transport, no reachability story, and no authorisation model; the merge algebra above has never been driven by a real peer. The honest gap list is [NODES.md](NODES.md#what-is-still-missing).
+- **Therefore: still nothing syncs between devices.** Pairing two devices changes nothing about your data. There is now a signed operation log (above), but no transport, no apply path, no reachability story and no authorisation model; the merge algebra has never been driven by a real peer. The honest gap list is [NODES.md](NODES.md#what-is-still-missing).
 
 ## Design system
 

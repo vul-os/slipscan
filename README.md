@@ -92,11 +92,21 @@ Your data lives on your machine, your bank and mailbox credentials stay in your 
   the DMTAP Sync algebra (`substrate/SYNC.md` ③): editable rows as
   last-writer-wins registers, the posted ledger as an add-only set, so
   concurrent edits converge the way double-entry requires and a journal is never
-  clobbered. Money crosses the wire as an exact decimal — the algebra forbids
-  floats, and so does SlipScan. As a native Rust product it takes the shared
-  engine as a plain crate dependency. **Status: the merge mapping and per-device
-  identity both exist; the oplog and the transport do not, so nothing syncs
-  between devices today** ([roadmap](ROADMAP.md))
+  clobbered. Money crosses as `i64` minor units — an exact integer, because the
+  algebra forbids floats and so does SlipScan. As a native Rust product it takes
+  the shared engine as a plain crate dependency. **Status: the merge mapping,
+  per-device identity, and a signed operation log all exist; the transport does
+  not, so nothing syncs between devices today** ([roadmap](ROADMAP.md))
+- **Every change is recorded as an operation you can verify on its own.** A
+  SQLite trigger on each replicated table records the write — so a cascading
+  delete or a future importer is caught too, not only the code paths somebody
+  remembered to instrument — and `slipscan sync seal` signs each one with this
+  device's key. Lift one operation out of the log and it still verifies, with no
+  connection and no server involved: that is what makes a replicated change
+  trustworthy on its own merits rather than because of how it travelled. The log
+  is append-only and the database refuses to edit it. **It records; it sends
+  nothing — there is no transport, and a fresh install makes no outbound call**
+  ([nodes](docs/NODES.md))
 - **Devices know each other without accounts** — a device's identity is an
   ed25519 keypair it generates itself, and the public half *is* the id: no
   email, no password, no username, no login, no server that decides who you

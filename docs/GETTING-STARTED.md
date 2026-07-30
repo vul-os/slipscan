@@ -114,7 +114,7 @@ Configuration is headless today, and honestly clunky: the CLI has no settings co
 - Automate bank pulls — [BANK-ADAPTERS.md](BANK-ADAPTERS.md)
 - Install a regional classification pack, or a `mailrules` pack for your bank's alerts — [PACKS.md](PACKS.md)
 - Run headless on your NAS — [SELFHOST.md](SELFHOST.md)
-- Give this device an identity and pair another one — [NODES.md](NODES.md) (identity and pairing only; nothing syncs yet)
+- Give this device an identity and pair another one — [NODES.md](NODES.md) (identity, pairing and a signed operation log; there is no transport, so nothing syncs yet)
 - See how much of Xero and Vault22 actually exists — [PARITY.md](../PARITY.md)
 - Understand what protects your credentials — [THREAT-MODEL.md](THREAT-MODEL.md)
 

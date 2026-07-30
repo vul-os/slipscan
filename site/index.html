@@ -968,14 +968,15 @@ h1 .slash{color:var(--accent-text)}
         <div class="not">
           <div>
             <h3>Device-to-device sync <span class="chip chip-planned">Planned</span></h3>
-            <p>Two of the three pieces now exist. The merge algebra is real and tested:
+            <p>Three of the four pieces now exist. The merge algebra is real and tested:
               <code>slipscan-sync</code> expresses replicated state in the shared algebra — editable
-              rows as last-writer-wins registers, the posted ledger as an add-only set, money on the
-              wire as an exact decimal. Device identity and pairing are real too: each device holds
-              its own key, a paired key is pinned and a changed key is refused rather than accepted.
-              What is missing is the part in between — there is no oplog and no transport, so
-              <b>nothing syncs between devices.</b> Pairing two devices today proves who they are and
-              then does nothing else.</p>
+              rows as last-writer-wins registers, the posted ledger as an add-only set, money as
+              exact minor units. Device identity and pairing are real: each device holds its own key,
+              a paired key is pinned and a changed key is refused rather than accepted. And every
+              change to replicated state is now recorded as an operation signed with that key, which
+              verifies on its own with no server involved. What is missing is the last piece — there
+              is <b>no transport</b>, so <b>nothing syncs between devices.</b> Your device keeps a
+              verifiable log of its own changes and carries it nowhere.</p>
           </div>
           <div class="today"><div class="h">what you have today</div>
             <p>One machine holds the book. Move the data folder, or point your own sync tool at it — the same folder that already backs up.</p></div>

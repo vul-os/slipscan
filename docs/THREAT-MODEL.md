@@ -47,7 +47,7 @@ Today, the guarantee on every platform is: using a secret requires *that machine
 
 ## Device identity and pairing
 
-Full model in [NODES.md](NODES.md). **Nothing syncs between devices yet** — this is identity only, so the attack surface below is deliberately small: there is no transport to attack, and a pinned peer is not authorised to do anything, because there is nothing to do.
+Full model in [NODES.md](NODES.md). **Nothing syncs between devices yet** — identity, pairing and a signed operation log exist, but no transport does, so the attack surface below is deliberately small: there is no connection to attack, and a pinned peer is not authorised to do anything, because there is nothing to do. The log itself is local and append-only; each operation carries its own signature, so tampering with one is detectable without reference to anything else (`slipscan sync verify`).
 
 - **No accounts means no account attacks.** There is no email, password, login, session or reset flow, so there is no credential stuffing, no phishable login page, no password-reset takeover, and no server whose breach hands over your books. The device's ed25519 keypair is generated **on the device**, and nothing is provisioned or escrowed — there is no factory secret for a supply-chain attacker to copy.
 - **The private key is a vault secret like any other.** Write-only, envelope-encrypted, zeroized after use, and audited. Everything in [Write-only semantics](#write-only-semantics) applies to it unchanged: it can be created, rotated, revoked and used; it cannot be displayed or exported.

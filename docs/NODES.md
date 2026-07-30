@@ -1,6 +1,6 @@
-# Nodes — device identity and pairing
+# Nodes — device identity, pairing, and the operation log
 
-> **Nothing syncs yet.** This document describes **phase 1 of the node model: identity only.** Two SlipScan devices can now generate keys, learn each other's keys, and refuse impostors. There is no oplog, no transport, no replication loop, and no code path anywhere in the tree that ships a change from one device to another. If you pair two devices today, nothing happens afterwards. The [gap list](#what-is-still-missing) at the bottom is the honest accounting of what would have to exist before that sentence changes.
+> **Nothing syncs yet.** Phases 1 and 2 of the node model exist: **identity** (two devices generate keys, learn each other's keys, and refuse impostors) and **an operation log** (every change to replicated state is recorded as an individually signed operation). What does not exist is **phase 3, the transport**. No code path anywhere in the tree opens a connection to a peer, and none reads an operation from anywhere but this device's own database. If you pair two devices today, nothing is carried between them afterwards. The [gap list](#what-is-still-missing) at the bottom is the honest accounting of what is left.
 
 ## No accounts. Not "optional accounts" — none.
 
@@ -126,18 +126,51 @@ The pairing ceremony is local for two independent reasons, either sufficient: in
 
 The local-only routes are registered and answer **403 with the local command to run**, rather than 404 — an absent route reads like an oversight, a refusal reads like a decision.
 
+## The operation log — phase 2
+
+Every change to a replicated table is recorded as one DMTAP Sync operation (`substrate/SYNC.md` §4), signed with this device's key, and kept in the same SQLite file as the books. That is a record, not a replication: **nothing sends it anywhere.**
+
+```
+slipscan sync status
+slipscan sync seal        # sign everything captured since the last seal
+slipscan sync log
+slipscan sync verify
+```
+
+Four things about it are worth stating plainly, because they are the ones a log like this is usually wrong about.
+
+**Capture is the database's job, not the code's.** Migration `0700_oplog` installs a trigger on every replicated table; a write that reaches the row reaches the log, whatever produced it. The alternative — calling a recorder from each of the ~39 write functions in the repo layer — is a completeness claim resting on nobody adding a fortieth. A cascading delete two tables away, a migration, and an importer nobody has written yet all reach a trigger and none of them reaches a call site. The trigger set and the mapping registry are compared as sets in the test suite, in both directions, so a table added without a sync decision fails the build rather than replicating by accident.
+
+**Each operation is verified on its own.** The signature is an RFC 9052 `COSE_Sign1` over the operation's own deterministic CBOR, made by the author's key, carrying the substrate's domain-separation tag. Lift one operation out of the log with nothing else and it still verifies. That is the property that matters when a transport does exist: a replicated change will be accepted because *it* is authentic, not because it arrived over a connection somebody had authenticated.
+
+**An operation has exactly one identity.** The primary key of `sync_oplog` is the §4.1 content address — the same identity the merge engine deduplicates on. Carrying a content address *and* a row id would give an operation two identities that disagree: one operation to the engine, two rows in the database.
+
+**Money stays exact.** It is `i64` minor units in every column that holds it, and it crosses into an operation as a JSON integer. No float appears on the path, so there is no rounding step to get wrong.
+
+The log is **append-only and immutable**: SQLite refuses an `UPDATE` on it, because an operation's content is its identity and editing one would produce a row whose id and signature both describe something else. And the posted ledger stays immutable through all of this — migration `0101` already blocks `UPDATE` and `DELETE` on `journals` and `journal_lines`, so the ledger tables have an insert capture trigger and no others. A correction is a reversal. There is no path, including a future replication path, by which a posted journal can be edited.
+
+Upgrading an existing database backfills every row it already has, so the log records the books as they stand rather than starting mid-history.
+
+### The clock
+
+Operations are ordered by a persisted hybrid logical clock (§3). It is persisted because an HLC's whole job is to be monotonic per author: a clock that restarted at zero would mint stamps sorting *before* operations this device had already signed, and the newer write would silently lose to its own predecessor.
+
+SlipScan puts a **drift bound above the engine**, and deliberately not the engine's own number. The engine's `HLC_SKEW_MS` is a *receiver's* bound — "is this operation plausibly from now?" — and has to be tight. SlipScan's is a *minter's*: sealing refuses when this machine's clock has run more than **24 hours** ahead, because a stamp that far out never practically becomes acceptable and is unfixable once signed, whereas two minutes of ordinary clock wander resolves itself and blocking a user over it would be the wrong trade. Pending writes are safe in the meantime — they sit unsealed and sign once the clock is sound.
+
 ## What is still missing
 
-Everything that would make the word "sync" apply. In rough dependency order:
+Phase 3 — everything that would make the word "sync" apply. In rough dependency order:
 
-1. **An oplog.** SlipScan has no per-device operation log — no monotonic counter, no causal metadata, nothing that records "this device made this change" in a form another device could replay. Today's `audit_log` is a local human-readable trail, not a replication source.
-2. **A transport.** Nothing opens a connection to a peer. There is no protocol, no framing, no session, no handshake beyond the paired keys sitting in a table. Deciding this is genuinely open: it may be DMTAP/Kotva, it may be something plainer.
+1. **A transport.** Nothing opens a connection to a peer. There is no protocol, no framing, no session, and no handshake beyond the paired keys sitting in a table. When it lands it owes: symmetric push/pull over an **operator-supplied** address (no directory, no default endpoint, no LAN assumption), mutual key authentication using the identities pairing already established, replay defence, and fail-closed refusal on any mismatch.
+2. **An apply path.** Verified operations from a peer have to become rows. The engine's merge is already there and the ordering property is already tested, but nothing writes the result back into SQLite. Two obligations belong specifically to this step:
+   - **Admission.** An arriving operation must be checked against a *pinned, non-revoked* peer key before it is applied. Today every operation in the log is this device's own, and a test asserts that.
+   - **The remote half of the clock bound.** The engine's `Hlc::observe` takes no receiver clock and therefore structurally cannot check one, so a far-future stamp folded in poisons the local clock permanently. The bound must be applied *before* observing a remote stamp, above the engine, exactly as the local mint guard is today. The capture-suppression flag the apply path needs already exists (`sync_control.applying`) and its mechanism is tested, but no shipped code sets it.
 3. **Reachability.** Two paired devices still have to *find* each other, which is the hard part of a design with no coordinator and no directory. A broker is possible (Ephor is the candidate named in the README) but nothing is built and nothing is committed to.
-4. **Authorisation.** A pinned peer currently means "I know this key". It does not say which books it may read, which it may write, or how a device is scoped to a subset. That model does not exist yet.
-5. **Conflict handling in practice.** The merge algebra exists — `crates/slipscan-sync` maps SlipScan's state into the shared DMTAP Sync algebra ([ARCHITECTURE.md](ARCHITECTURE.md#sync--an-algebra-mapping-only-nothing-syncs-between-devices)) — but it is a mapping and nothing else. It has never been driven by real ops from a real peer.
+4. **Authorisation.** A pinned peer currently means "I know this key". It does not say which books it may read, which it may write, or how a device is scoped to a subset. Operations are already namespaced per book, which is where such a model would attach, but the model itself does not exist.
+5. **Blobs.** Documents are files in the movable data folder and are **not** replicated; neither are the tables that point at them. That needs a separate content-addressed transfer, and until it exists a synced book would arrive without its receipts.
 6. **Recovery.** What happens when a device is lost, when the vault is gone, or when the last device holding a book dies. There is no answer yet; do not build a workflow that assumes one.
 
-Until at least 1–3 exist, **pairing two devices changes nothing about your data.** Sharing a book still means what [Data location](ARCHITECTURE.md#data-location--backup--your-folder-your-cloud-your-responsibility) and [Household members](ARCHITECTURE.md#household-members--per-person-attribution) say it means: a synced data folder, or the self-host server with other surfaces as clients.
+Until 1 and 2 exist, **pairing two devices changes nothing about your data.** Sharing a book still means what [Data location](ARCHITECTURE.md#data-location--backup--your-folder-your-cloud-your-responsibility) and [Household members](ARCHITECTURE.md#household-members--per-person-attribution) say it means: a synced data folder, or the self-host server with other surfaces as clients.
 
 ## Command reference
 
@@ -155,8 +188,14 @@ Until at least 1–3 exist, **pairing two devices changes nothing about your dat
 | `device forget <device-id>` | Drop the pin entirely — the deliberate local reset. |
 | `device rotate` / `device rotations` | Rotate this device's key, signed by the outgoing one / show the chain. |
 | `device reset --yes` | Destroy this device's key and identity. Peer pins are kept. |
+| `sync status` | What the log holds; the clock; the authors seen. |
+| `sync seal` | Sign every change captured since the last seal. |
+| `sync log [--book] [--limit]` | Operations in order. |
+| `sync verify` | Verify every operation independently. Exits non-zero if any fails. |
 
 `--json` works on all of them. `accept` and `confirm` require either `--expect-keyname` or an explicit `--unverified`.
+
+The `sync` commands are **local-only**, and not as a policy: there is no transport, so there is nothing for a served route to talk to. A route that handed out operations would be the front half of one — it would look like a sync endpoint, invite a client to poll it, and have no authenticated peer, no replay defence and no admission check behind it. It belongs with the phase that builds those.
 
 ---
 

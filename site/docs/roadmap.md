@@ -42,7 +42,7 @@ Share the smarts, not the data.
 - [ ] **Classification packs**: category taxonomies, merchant→category mappings, and classification rules as signed, versioned packs *(partial: three pack kinds ship — `taxonomy`, `benchmark`, and `mailrules` for [bank-alert formats](docs/EMAIL.md#formats-are-packs-not-code). Install, seed, uninstall and list are on CLI + HTTP + desktop IPC; ed25519 verification is on CLI + desktop IPC (there is no `/pack_verify` route — installing over HTTP verifies, inspecting-without-installing does not); every binary registers the pack classifier at startup, so `contains`/`regex`/`keyword` rules apply on every surface. Missing: a `pack sign` helper — signing is a library function, and both `pack publish` and `pack install` take a signature you produced elsewhere — and export of your own merchant mappings as a pack)*
 - [x] Distribution with no central registry: four transports in `slipscan-packs/src/transport/` — `file:`, `folder:` (a synced folder, a NAS mount, a USB stick), `git:` (any remote git accepts, `#ref` pinning) and `https://` — every one of them ending at the same `verify_detached` check, so no channel grants any authority and an `index.json` is a hint rather than a fact. There is no built-in source and no default endpoint: the source list starts empty, so a fresh install makes zero pack network calls until you name a source yourself. Source management, fetch and install ship on all three surfaces (`pack source add|remove|list`, `pack fetch`, `pack pull` on the CLI; `pack_source_*` over HTTP and desktop IPC, with the desktop Packs screen showing a publisher's fingerprint before you accept it); `publish` into a folder source is CLI + HTTP. *(p2p is not implemented — `BlobStore` is the one seam it would land on.)*
 - [ ] Opt-in, privacy-preserving contribution flow (rules only — never transactions)
-- [ ] Device-to-device sync (your own devices, end-to-end encrypted) — **nothing syncs between devices today.** Two of the four pieces below exist and neither of them moves a byte between machines; the parent stays open until the other two do.
+- [ ] Device-to-device sync (your own devices, end-to-end encrypted) — **nothing syncs between devices today.** Three of the four pieces below exist and not one of them moves a byte between machines; the parent stays open until the transport does.
   - [x] Merge algebra: `slipscan-sync` maps SlipScan's replicated state onto the
         shared DMTAP Sync engine (`substrate/SYNC.md` ③) rather than a private
         CRDT — editable rows as §4.4 LWW registers, the posted ledger as a §4.3
@@ -63,9 +63,27 @@ Share the smarts, not the data.
         There is no Devices *screen* in the desktop app, so pairing is a CLI
         job today. There are no accounts anywhere in this — no email,
         password, username or login.
-  - [ ] Oplog: record each repo write as a signed op (nothing mints ops yet)
+  - [x] Oplog: every write to a replicated table is recorded as one
+        individually signed operation (phase 2 of the node model — migration
+        `0700_oplog`, `crates/slipscan-core/src/sync/`). Capture is a **SQLite
+        trigger** per replicated table rather than a call from the repo layer,
+        so a cascading delete, a migration or a future importer is recorded
+        too — and the trigger set is asserted equal to the mapping registry in
+        both directions, so a new table cannot replicate by accident or fail
+        to replicate silently. Operations are signed one at a time as RFC 9052
+        `COSE_Sign1` under the device key pairing already established, so a
+        replicated change is verified **on its own** rather than trusted for
+        the connection it arrived over; they are ordered by a persisted HLC
+        with a drift bound kept above the engine; and they are stored keyed by
+        the §4.1 content address, which is the operation's only identity.
+        Money stays `i64` minor units end to end. `slipscan sync
+        status|seal|log|verify`. **This records; it sends nothing.**
   - [ ] Transport: nothing carries an op from one paired device to another —
-        no endpoint, no discovery, no coordinator, no default anything
+        no endpoint, no discovery, no coordinator, no default anything. Nor is
+        there an **apply path**: a peer's verified operations do not become
+        rows, no admission check against a pinned key exists, and the remote
+        half of the clock-drift bound is unwritten
+        ([docs/NODES.md](docs/NODES.md#what-is-still-missing))
 
 ## Phase 4.5 — Insights, nudges & anonymous benchmarks
 
