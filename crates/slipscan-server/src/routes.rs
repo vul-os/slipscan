@@ -156,6 +156,19 @@ impl From<CoreError> for ApiError {
             | CoreError::DeviceKeynameMistyped { .. }
             | CoreError::DevicePairing(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
             CoreError::DeviceRotationUnsigned => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
+            // The operation log (docs/NODES.md). None of these is reachable
+            // over HTTP today — sealing and verifying the log are local-only,
+            // like every other operation that touches the device key — but the
+            // mapping stays total so the surface cannot silently become a 500.
+            //
+            // A drifted clock is the operator's machine to fix, and retrying
+            // will not help until they do: a precondition, not a fault.
+            CoreError::SyncClockDrift { .. } => (StatusCode::CONFLICT, "sync_clock_drift"),
+            // An op that does not verify is a refusal with its own code, so a
+            // client can say "this device's log has been tampered with" rather
+            // than "something went wrong".
+            CoreError::SyncOpUnverified { .. } => (StatusCode::FORBIDDEN, "sync_op_unverified"),
+            CoreError::SyncMapping(_) => (StatusCode::UNPROCESSABLE_ENTITY, "validation"),
             CoreError::Sqlite(_)
             | CoreError::Migration { .. }
             | CoreError::Secret(_)
@@ -997,7 +1010,7 @@ async fn vault_revoke(
 // -- Device identity & pairing (docs/NODES.md) ---------------------------
 //
 // **Nothing here syncs anything.** These routes read and revoke identity;
-// there is no oplog, no transport, no endpoint to point at, and no
+// there is no transport, no endpoint to point at, and no
 // coordinator. Phase 1 of the node model is identity only.
 //
 // The split follows the vault's rule exactly: an operation that would put

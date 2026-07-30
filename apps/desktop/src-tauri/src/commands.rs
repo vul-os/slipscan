@@ -2368,9 +2368,21 @@ pub async fn vault_revoke(
 
 // ---------------------------------------------------------------------------
 // device identity and pairing — **identity only; nothing syncs yet**
-// (docs/NODES.md). There is no oplog, no transport, no coordinator and no
-// endpoint. Pairing two devices establishes that this key and that key belong
-// together, and then does nothing else.
+// (docs/NODES.md). There is no transport, no coordinator and no endpoint.
+// Pairing two devices establishes that this key and that key belong together,
+// and then does nothing else.
+//
+// The signed operation log (docs/NODES.md phase 2) has **no desktop surface at
+// all** — it is `slipscan sync` on the CLI only. What the desktop would need to
+// grow one is small and specific, and is written down here rather than half
+// built: IPC adapters over `slipscan_server::oplog::OplogHandle`
+// (`sync_status`, `sync_seal`, `sync_log`, `sync_verify`), TypeScript mirrors
+// for `SyncStatus`/`SealReport`/`VerifyReport` in
+// `apps/desktop/src/lib/api/types.ts`, a `parity.json` regeneration, and a
+// screen that can say "N changes recorded, nothing sent anywhere" without
+// implying a sync exists. There is no Devices screen either, for the same
+// reason: a UI for a capability that does nothing invites the belief that it
+// does something.
 //
 // Every command below goes through `slipscan_server::devices::DeviceHandle`,
 // the same handle the CLI drives, so the desktop cannot form its own opinion

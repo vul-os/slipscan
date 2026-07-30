@@ -40,6 +40,7 @@ use slipscan_ingest::import::{import_document_file, FileImport};
 use slipscan_ingest::watch::{import_paths, scan_folder, FolderImportOutcome, FolderWatcher};
 use slipscan_ingest::{IngestError, SettingsCursorStore};
 use slipscan_server::devices::DeviceHandle;
+use slipscan_server::oplog::OplogHandle;
 use slipscan_server::vault::VaultHandle;
 use slipscan_server::{ops, AuthToken, ServerConfig};
 use std::net::SocketAddr;
@@ -345,6 +346,13 @@ enum Command {
     Device {
         #[command(subcommand)]
         action: DeviceAction,
+    },
+    /// The signed operation log: what this device would replicate, if it
+    /// could. There is no transport — nothing is sent anywhere
+    /// (docs/NODES.md).
+    Sync {
+        #[command(subcommand)]
+        action: SyncAction,
     },
     /// The movable data folder: where the database and documents live, and
     /// how to move it (your folder, your cloud, your responsibility).
@@ -816,6 +824,37 @@ enum DeviceAction {
     },
 }
 
+/// The signed operation log — **the record half of sync; there is no
+/// transport** (docs/NODES.md).
+///
+/// Every change to a replicated table is captured by the database itself and
+/// sealed into an operation signed with this device's key. Each op is
+/// verifiable on its own, by anyone holding the author's public key, with no
+/// connection and no server involved.
+///
+/// None of these commands sends anything anywhere. There is no endpoint to
+/// configure, and a fresh install makes no outbound call — not because a
+/// default is unset, but because no code exists that could make one.
+#[derive(Debug, Subcommand)]
+enum SyncAction {
+    /// What the log holds, and what still cannot be done with it.
+    Status,
+    /// Sign every change captured since the last seal.
+    Seal,
+    /// List operations in order.
+    Log {
+        /// Restrict to one book (operations are namespaced per book).
+        #[arg(long)]
+        book: Option<String>,
+        /// Show at most this many, oldest first.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Verify every operation independently: its signature, and that the
+    /// indexed columns still agree with what was signed.
+    Verify,
+}
+
 fn main() -> anyhow::Result<()> {
     register_pack_classifier();
     run(Cli::parse())
@@ -974,6 +1013,29 @@ struct PackVerifyOutput {
     valid: bool,
     #[serde(flatten)]
     plan: ops::PackOfferPlan,
+}
+
+/// `""` or `"s"`, for a count in a sentence.
+fn plural(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
+}
+
+/// The human name of an operation kind.
+///
+/// The discriminators are read from the engine rather than written out here:
+/// the substrate's own adoption notes say never to hard-code them, and a
+/// display helper is exactly where a stale copy would go unnoticed.
+fn kind_name(kind: u8) -> &'static str {
+    use slipscan_core::sync::op_kinds;
+    match kind {
+        k if k == op_kinds::LWW_SET => "set",
+        k if k == op_kinds::SET_ADD => "add",
+        _ => "?",
+    }
 }
 
 fn emit<T: serde::Serialize>(
@@ -2944,7 +3006,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         }
 
         // Device identity & pairing (docs/NODES.md). Identity only: no
-        // oplog, no transport, no endpoint — nothing here syncs anything.
+        // transport, no endpoint — nothing here syncs anything. The signed
+        // operation log is `Command::Sync` below, and it sends nothing either.
         // The whole ceremony is local, which is why it lives here in full
         // while the server serves only the read and revoke halves.
         Command::Device { ref action } => {
@@ -3087,8 +3150,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         }
                         println!();
                         println!(
-                            "Both devices are now paired. Nothing syncs yet: there is no oplog \
-                             and no transport (docs/NODES.md)."
+                            "Both devices are now paired. Nothing syncs yet: each device keeps \
+                             a signed log of its own changes and there is no transport to carry \
+                             it (docs/NODES.md)."
                         );
                     })
                 }
@@ -3205,6 +3269,176 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         println!("Destroyed this device's key and identity.");
                         println!("Peer pins were kept — use `slipscan device forget` for those.");
                     })
+                }
+            }
+        }
+
+        // The signed operation log (docs/NODES.md phase 2). Local-only, and
+        // not because of a policy: there is no transport, so there is nothing
+        // for a served route to talk to.
+        Command::Sync { ref action } => {
+            ensure_parent_dir(&env.db)?;
+            let oplog = OplogHandle::open(&env.db)
+                .with_context(|| format!("opening the operation log in {}", env.db.display()))?;
+            match action {
+                SyncAction::Status => {
+                    let status = oplog.status()?;
+                    emit(cli.json, &status, || {
+                        match (&status.device, &status.keyname) {
+                            (Some(id), Some(name)) => {
+                                println!("This device  {name}");
+                                println!("             {id}");
+                            }
+                            _ => println!(
+                                "This device has no identity yet — run `slipscan device init`. \
+                                 Changes are being recorded and will sign once it does."
+                            ),
+                        }
+                        println!();
+                        println!("Operations   {}", status.ops);
+                        println!(
+                            "Unsealed     {}{}",
+                            status.pending,
+                            if status.pending > 0 {
+                                "  (run `slipscan sync seal`)"
+                            } else {
+                                ""
+                            }
+                        );
+                        if let Some((wall, counter)) = status.clock {
+                            println!("Clock        {wall}.{counter}");
+                        }
+                        if !status.namespaces.is_empty() {
+                            println!();
+                            println!("Per book:");
+                            for entry in &status.namespaces {
+                                println!("  {}\t{} operations", entry.ns, entry.ops);
+                            }
+                        }
+                        if !status.version_vector.is_empty() {
+                            println!();
+                            println!("Authors seen:");
+                            for (author, wall, counter) in &status.version_vector {
+                                println!("  {author}\tup to {wall}.{counter}");
+                            }
+                        }
+                        println!();
+                        println!("Paired devices: {}", status.live_peers);
+                        println!(
+                            "Nothing is sent anywhere. SlipScan has no sync transport yet: \
+                             this log records and signs what WOULD replicate, and that is all."
+                        );
+                    })
+                }
+                SyncAction::Seal => {
+                    let report = oplog.seal()?;
+                    emit(cli.json, &report, || {
+                        if report.captured == 0 {
+                            println!("Nothing to seal — every change is already signed.");
+                            return;
+                        }
+                        println!(
+                            "Sealed {} operation{} from {} captured change{}.",
+                            report.sealed,
+                            plural(report.sealed),
+                            report.captured,
+                            plural(report.captured),
+                        );
+                        if report.captured > report.sealed + report.already_present {
+                            println!(
+                                "  {} change{} collapsed: several edits to one row are one \
+                                 last-writer-wins operation.",
+                                report.captured - report.sealed - report.already_present,
+                                plural(report.captured - report.sealed - report.already_present),
+                            );
+                        }
+                        if report.already_present > 0 {
+                            println!(
+                                "  {} were already recorded (an operation's content is its id).",
+                                report.already_present
+                            );
+                        }
+                    })
+                }
+                SyncAction::Log { book, limit } => {
+                    let ops = oplog.ops(book.as_deref(), Some(*limit))?;
+                    let rendered: Vec<_> = ops
+                        .iter()
+                        .map(|op| {
+                            serde_json::json!({
+                                "op_id": op.op_id,
+                                "book": op.ns,
+                                "kind": kind_name(op.kind),
+                                "target": op.target,
+                                "author": op.author,
+                                "hlc": format!("{}.{}", op.hlc_wall, op.hlc_counter),
+                                "origin": op.origin.as_str(),
+                                "recorded_at": op.recorded_at,
+                            })
+                        })
+                        .collect();
+                    emit(cli.json, &rendered, || {
+                        if ops.is_empty() {
+                            println!(
+                                "The log is empty. `slipscan sync seal` signs pending changes."
+                            );
+                            return;
+                        }
+                        for op in &ops {
+                            println!(
+                                "{}.{}\t{}\t{}\t{}",
+                                op.hlc_wall,
+                                op.hlc_counter,
+                                kind_name(op.kind),
+                                op.target,
+                                &op.op_id[..16],
+                            );
+                        }
+                    })
+                }
+                SyncAction::Verify => {
+                    let report = oplog.verify()?;
+                    emit(cli.json, &report, || {
+                        if report.checked == 0 {
+                            // "0 verified, all sound" is a vacuous green, and
+                            // a scripted check would read it as an answer. Say
+                            // what was actually examined: nothing.
+                            println!(
+                                "The log is empty — nothing was verified. \
+                                 `slipscan sync seal` signs pending changes."
+                            );
+                            return;
+                        }
+                        if report.is_sound() {
+                            println!(
+                                "{} operation{} verified — every signature checks out under its \
+                                 own author's key.",
+                                report.checked,
+                                plural(report.checked)
+                            );
+                            return;
+                        }
+                        println!(
+                            "{} of {} operation{} DO NOT VERIFY:",
+                            report.failures.len(),
+                            report.checked,
+                            plural(report.checked)
+                        );
+                        for (op_id, reason) in &report.failures {
+                            println!("  {op_id}\t{reason}");
+                        }
+                    })?;
+                    // A log that does not verify is a failure, not a report.
+                    // Exiting 0 here would let a scripted check pass over a
+                    // tampered log — the one thing this command exists to
+                    // catch.
+                    if !report.is_sound() {
+                        bail!(
+                            "{} operation(s) in this device's log do not verify",
+                            report.failures.len()
+                        );
+                    }
+                    Ok(())
                 }
             }
         }
@@ -5204,6 +5438,92 @@ mod tests {
         // Assert the scan actually walked something.
         assert!(
             seen > 5,
+            "the scan is broken, not the code: {seen} args seen"
+        );
+    }
+
+    #[test]
+    fn parses_sync_actions() {
+        assert!(matches!(
+            Cli::try_parse_from(["slipscan", "sync", "status"])
+                .unwrap()
+                .command,
+            Command::Sync {
+                action: SyncAction::Status
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["slipscan", "sync", "seal"])
+                .unwrap()
+                .command,
+            Command::Sync {
+                action: SyncAction::Seal
+            }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["slipscan", "sync", "verify"])
+                .unwrap()
+                .command,
+            Command::Sync {
+                action: SyncAction::Verify
+            }
+        ));
+        match Cli::try_parse_from(["slipscan", "sync", "log", "--book", "b-1", "--limit", "3"])
+            .unwrap()
+            .command
+        {
+            Command::Sync {
+                action: SyncAction::Log { book, limit },
+            } => {
+                assert_eq!(book.as_deref(), Some("b-1"));
+                assert_eq!(limit, 3);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// **The sovereignty rule, held at the surface.** Peer enrolment is
+    /// manual over an operator-supplied address: there is no directory, no
+    /// default endpoint and no LAN assumption.
+    ///
+    /// Today no `sync` command takes an address at all, because there is no
+    /// transport. When one does, this test stays exactly as useful: what it
+    /// forbids is not the argument, it is the *default* — a built-in host,
+    /// URL or port that a fresh install would reach for without the user
+    /// naming it.
+    #[test]
+    fn no_sync_command_has_a_built_in_endpoint() {
+        use clap::CommandFactory;
+        let mut cli = Cli::command();
+        let sync = cli
+            .get_subcommands_mut()
+            .find(|sub| sub.get_name() == "sync")
+            .expect("a `sync` subcommand exists");
+
+        let mut seen = 0;
+        for sub in sync.get_subcommands() {
+            for arg in sub.get_arguments() {
+                seen += 1;
+                let defaults = arg
+                    .get_default_values()
+                    .iter()
+                    .map(|value| value.to_string_lossy().to_ascii_lowercase())
+                    .collect::<Vec<_>>();
+                for value in &defaults {
+                    for forbidden in ["://", "http", "localhost", "127.0.0.1", ".local", ":7151"] {
+                        assert!(
+                            !value.contains(forbidden),
+                            "`sync {}` defaults {} to {value:?} — a fresh install must reach \
+                             for no address the user did not name",
+                            sub.get_name(),
+                            arg.get_id()
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            seen > 1,
             "the scan is broken, not the code: {seen} args seen"
         );
     }

@@ -2587,6 +2587,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kotva-sync"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f67a0a0ba142ac67a83885a843d0a4169eff60b687970c4e54d7bdba50764a19"
+dependencies = [
+ "kotva-core",
+]
+
+[[package]]
 name = "kqueue"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4412,11 +4421,13 @@ dependencies = [
  "ed25519-dalek",
  "keyring",
  "kotva-core",
+ "kotva-sync",
  "rusqlite",
  "rust_decimal",
  "serde",
  "serde_json",
  "sha2",
+ "slipscan-sync",
  "thiserror 2.0.18",
  "time",
  "uuid",
@@ -4494,6 +4505,16 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "slipscan-sync"
+version = "0.2.0"
+dependencies = [
+ "kotva-sync",
+ "rust_decimal",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

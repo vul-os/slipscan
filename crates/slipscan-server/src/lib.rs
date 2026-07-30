@@ -24,6 +24,9 @@ use slipscan_core::{CoreError, CoreService};
 use slipscan_packs::transport::TransportContext;
 
 pub mod devices;
+/// The signed operation log, for the CLI. Local-only — nothing here is
+/// served, and nothing here syncs (see the module docs).
+pub mod oplog;
 pub mod ops;
 mod routes;
 pub mod vault;

@@ -8,7 +8,8 @@
 //! self-contained way in.
 //!
 //! **Nothing here syncs anything** — see `docs/NODES.md`. This is identity
-//! and pairing only: no oplog, no transport, no endpoint.
+//! and pairing only. The signed operation log is [`crate::oplog`], and it does
+//! not sync anything either: there is no transport and no endpoint.
 //!
 //! ## What crosses HTTP, and what does not
 //!
