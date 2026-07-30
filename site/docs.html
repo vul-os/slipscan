@@ -158,7 +158,7 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
 .docs-main{min-width:0}
 
 /* Markdown */
-.markdown{font-size:16px}
+.markdown{font-size:16px;overflow-wrap:anywhere}
 .markdown>*:first-child{margin-top:0}
 .markdown :is(h1,h2,h3,h4,h5,h6){scroll-margin-top:80px;letter-spacing:-.022em;font-weight:650}
 .markdown h1{font-size:clamp(28px,4vw,36px);letter-spacing:-.035em;margin:.2em 0 .5em;border-bottom:1px solid var(--line);padding-bottom:.35em}
@@ -205,7 +205,7 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
    nothing to mirror and its viewer/published cross-check is untouched (that
    audit only matches DOCS entries carrying a "path": "./docs/…").
    These rules are lifted from index.html so the two pages stay one object. */
-.builtin{font-size:16px}
+.builtin{font-size:16px;overflow-wrap:anywhere}
 .builtin>*:first-child{margin-top:0}
 .builtin :is(h1,h2,h3){scroll-margin-top:80px;letter-spacing:-.022em;font-weight:650}
 .builtin h1{font-size:clamp(28px,4vw,36px);letter-spacing:-.035em;margin:.2em 0 .5em;border-bottom:1px solid var(--line);padding-bottom:.35em}
@@ -251,13 +251,13 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
 .flow .box-opt{fill:none;stroke:var(--line-2);stroke-width:1;stroke-dasharray:5 4}
 .flow .db{fill:var(--sunken);stroke:var(--line-2);stroke-width:1}
 .flow .t{font-family:var(--sans);font-size:12.5px;font-weight:600;fill:var(--t1)}
-.flow .sub{font-family:var(--mono);font-size:10px;font-weight:400;fill:var(--t3)}
+.flow .sub{font-family:var(--mono);font-size:10.5px;font-weight:400;fill:var(--t3)}
 .flow .wire{stroke:var(--line-2);stroke-width:1.5;fill:none}
 .flow .wire-opt{stroke:var(--t3);stroke-width:1.4;fill:none;stroke-dasharray:5 5}
 .flow .pkt{fill:var(--accent)}
-.flow .cap{font-family:var(--mono);font-size:9.5px;fill:var(--t3)}
+.flow .cap{font-family:var(--mono);font-size:10.5px;fill:var(--t3)}
 .flow .zone{fill:none;stroke:var(--accent-edge);stroke-width:1;stroke-dasharray:3 5}
-.flow .zonelbl{font-family:var(--mono);font-size:10px;fill:var(--accent-text);letter-spacing:.08em}
+.flow .zonelbl{font-family:var(--mono);font-size:10.5px;fill:var(--accent-text);letter-spacing:.08em}
 @keyframes pkt-a{0%{transform:translateX(0);opacity:0}8%{opacity:1}92%{opacity:1}100%{transform:translateX(var(--d));opacity:0}}
 .flow .pkt{animation:pkt-a 2.6s var(--ease) infinite}
 .flow .p2{animation-delay:.45s}.flow .p3{animation-delay:.9s}
@@ -296,6 +296,16 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
   html{scroll-behavior:auto}
   *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
   .flow .pkt{opacity:.75}
+}
+
+/* ── legibility floor, phones and small tablets only ────────────────────
+   Everything above this point is untouched at >=1280px. Below that, the
+   engineering-contract inline code and the footer credit line sat under
+   the 12px prose minimum; this brings them up to the same footnote scale
+   used elsewhere (.flowfoot, .builtin .card p) without touching layout. */
+@media(max-width:1279px){
+  .contract code{font-size:max(12px,.87em)}
+  .foot-bar{font-size:12.5px}
 }
 </style>
 <script src="./assets/vendor/marked.umd.js"></script>
