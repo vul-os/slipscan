@@ -29,13 +29,22 @@
 //!
 //! ## Editable rows → §4.4 LWW register ([`Kind::LwwSet`])
 //!
-//! Accounts, categories, budgets, members, merchant mappings and transactions.
+//! Books, accounts, categories, transactions, transaction splits, merchant
+//! mappings, budgets, members, the chart of accounts, its entity map and the
+//! VAT-rate table — the full list is [`LWW_TABLES`].
 //!
 //! ```text
 //! target  "<table>/<row-id>"      field "row"
-//! value   tstr, "v" + canonical JSON of the row  (live)
-//!         tstr, "x" + canonical JSON of the row  (deleted)
+//! value   tstr, "v" + canonical JSON of the row       (live)
+//!         tstr, "x" + canonical JSON of {"id": "…"}   (deleted)
 //! ```
+//!
+//! A **live** write carries the whole row. A **tombstone** carries identity
+//! only, because that is all a tombstone needs and all the producer still has:
+//! the delete is observed after the row is gone (see `slipscan-core`'s
+//! `sync::capture` — the outbox records that a row died, and the row itself is
+//! no longer there to read). Reviving the row is an ordinary live write
+//! carrying full content again, so nothing is lost by not embalming it.
 //!
 //! These are rows a person edits: recategorising a transaction, renaming an
 //! account, moving a budget limit. Last-writer-wins is what a user means by
@@ -65,12 +74,33 @@
 //!
 //! SlipScan's ledger is immutable by construction: a posted journal is never
 //! edited, and a correction is a **reversal** — a new journal carrying
-//! `reversal_of`. The repo layer contains no `UPDATE` against either table.
+//! `reversal_of`. That is not merely a convention in the repo layer; migration
+//! `0101_ledger_hardening` installs `BEFORE UPDATE` and `BEFORE DELETE`
+//! triggers on both tables that `RAISE(ABORT)`, so SQLite itself refuses. A
+//! replication path cannot mutate a posted journal even by mistake, because the
+//! statement never reaches the row.
 //!
 //! No set-remove is ever minted, so this is an OR-Set with no removes, which is
 //! a grow-only set whose merge is plain union. The mapping is therefore an
 //! identity on SlipScan's existing behaviour rather than a new one that has to
-//! be re-validated against the books.
+//! be re-validated against the books. [`op_for_write`] refuses a ledger delete
+//! rather than mapping it onto anything.
+//!
+//! ### §4.3 identifies an element BY ITS VALUE
+//!
+//! That is the trap that cost a sibling product a stock movement: two
+//! genuinely distinct facts that happened to serialize identically collapsed
+//! into one under union, and a −2 became a −1. It does not bite here, and the
+//! reason is worth stating rather than assuming — every ledger row carries its
+//! own UUID v7 `id` inside the payload, minted once at creation. Two distinct
+//! journal lines with the same account, amount, description and order still
+//! differ in `id`, so the union keeps both. [`tests::two_ledger_rows_alike_in_
+//! everything_but_id_both_survive_the_union`] holds that, because the property
+//! that matters is "distinct facts survive", not "the payload has an id field".
+//!
+//! Adding a table to [`LEDGER_TABLES`] whose rows have no unique id would
+//! reintroduce the trap, which is the other reason the table set is data
+//! rather than a naming convention.
 //!
 //! A PN-counter (§4.6) would be the wrong reach even though balances are sums:
 //! §4.6 is for a scalar whose history need not be retained, and it would
@@ -80,32 +110,39 @@
 //! # Money never becomes a float
 //!
 //! §4.1 excludes floats from `ext-value` entirely. For a product carrying
-//! `REAL` columns that is an obstacle — FlowStock had to push its rows through
-//! an opaque canonical payload for exactly this reason.
+//! `REAL` money columns that is an obstacle — FlowStock had to push its rows
+//! through an opaque canonical payload for exactly this reason.
 //!
-//! SlipScan has the opposite problem, which is to say none: money is
-//! `rust_decimal::Decimal` throughout and floats are already banned from money
-//! math. [`decimal_value`] encodes a decimal as its canonical text form, which
-//! is exact, and the substrate's no-float rule costs SlipScan nothing.
+//! SlipScan has the opposite problem, which is to say none: **money is `i64`
+//! minor units** in every column that holds it (`amount_minor`,
+//! `debit_minor`, `credit_minor`, `share_minor`, `opening_balance_minor`, …)
+//! and floats are banned from money math throughout. A minor-unit integer
+//! crosses the wire inside the row payload as a JSON integer and comes back
+//! bit-identical: exact by construction, with no rounding step anywhere to get
+//! wrong. The substrate's no-float rule costs SlipScan nothing.
+//!
+//! [`decimal_value`] exists for the one place SlipScan holds a non-integer
+//! *rate* rather than an amount — an FX rate — and encodes it as its canonical
+//! text form, which is exact and round-trips through `parse`. It is never a
+//! money amount.
 //!
 //! # Feature-gated
 //!
-//! Everything below is behind the `sync-dmtap` feature, default-off. With it
-//! off this crate compiles to an empty, dependency-free no-op — it is
-//! `exclude`d from the root workspace precisely so that pulling in nothing
-//! here doesn't require touching `envoir` at all (see the root `Cargo.toml`
-//! and this crate's `Cargo.toml` for why `optional` alone isn't sufficient).
-//! Enable with `--features sync-dmtap` when building this crate on its own.
+//! Everything below is behind the `sync-dmtap` feature, **default-on** since
+//! the engine was published to crates.io. It was default-off only while
+//! `dmtap-sync` was a git dependency, which cargo fetches during resolution
+//! regardless of which features are active; a registry dependency resolves
+//! from the committed `Cargo.lock` with no network at all, which is what let
+//! this crate rejoin the workspace.
 //!
 //! The gate is written per item rather than as a crate-level
 //! `#![cfg(feature = "sync-dmtap")]`, and that is deliberate: a crate-level
 //! gate strips *every* item in this file when the feature is off, including a
-//! test, so a bare `cargo test` compiled an empty crate, ran zero tests and
-//! printed `test result: ok`. Seven real tests had silently not run. Per-item
-//! gating leaves room for the `feature_gate` guard below, which fails that bare
-//! run and says what was not checked. The library itself is still empty and
-//! dependency-free without the feature — the guard is `cfg(test)`-only and
-//! links nothing.
+//! test, so `--no-default-features` would compile an empty crate, run zero
+//! tests and print `test result: ok`. Per-item gating leaves room for the
+//! `feature_gate` guard below, which fails that run and says what was not
+//! checked. The library itself is still empty and dependency-free without the
+//! feature — the guard is `cfg(test)`-only and links nothing.
 
 /// Fails a bare `cargo test` on this crate, on purpose.
 ///
@@ -124,23 +161,16 @@ mod feature_gate {
     fn dmtap_mapping_suite_did_not_run() {
         panic!(
             "\n\
-             slipscan-sync was tested WITHOUT --features sync-dmtap, so nothing was verified.\n\
+             slipscan-sync was tested WITHOUT the `sync-dmtap` feature, so nothing was\n\
+             verified: the whole mapping and the whole suite in src/lib.rs are gated on it.\n\
              \n\
-             Not run (7 tests, all of src/lib.rs's suite):\n\
-             \x20 - editable_rows_are_lww_registers\n\
-             \x20 - ledger_rows_are_set_adds_keyed_by_table\n\
-             \x20 - deleting_a_ledger_row_is_refused\n\
-             \x20 - a_deleted_row_round_trips_and_can_be_revived\n\
-             \x20 - decimals_encode_exactly\n\
-             \x20 - canonical_json_rejects_non_objects\n\
-             \x20 - canonical_json_is_key_order_independent\n\
+             Not run: every test in `mod tests` — the primitive selection per table, the\n\
+             ledger-delete refusal, the unmapped-table refusal, the OR-Set element-identity\n\
+             property, the tombstone round trip, and the canonical-JSON guarantees.\n\
              \n\
-             Run them with:\n\
-             \x20 cargo test --manifest-path crates/slipscan-sync/Cargo.toml --features sync-dmtap\n\
-             \n\
-             That invocation fetches the pinned `envoir` git dependency, which is why it is not\n\
-             the default and why this crate is excluded from the root workspace (a bare\n\
-             `git clone && cargo build` of SlipScan must never reach for envoir).\n"
+             The feature is ON by default. Reaching this means --no-default-features was\n\
+             passed. Run the suite with:\n\
+             \x20 cargo test -p slipscan-sync\n"
         );
     }
 }
@@ -179,13 +209,66 @@ impl Kind {
 #[cfg(feature = "sync-dmtap")]
 pub const LWW_FIELD: &str = "row";
 
+/// The §4.1.1 address of an editable row's register.
+///
+/// One function rather than a `format!` at each site, because the producer and
+/// any future consumer must agree on it byte-for-byte: two spellings of the
+/// same row's address are two registers, and neither ever sees the other's
+/// writes.
+#[cfg(feature = "sync-dmtap")]
+pub fn lww_target(table: &str, id: &str) -> String {
+    format!("{table}/{id}")
+}
+
+/// Split a [`lww_target`] back into `(table, row-id)`.
+///
+/// Row ids are UUID v7 and contain no `/`, so the first separator is the only
+/// one. Returns `None` for an address that is not of this shape rather than
+/// guessing at a table name.
+#[cfg(feature = "sync-dmtap")]
+pub fn parse_lww_target(target: &str) -> Option<(&str, &str)> {
+    let (table, id) = target.split_once('/')?;
+    if table.is_empty() || id.is_empty() {
+        return None;
+    }
+    Some((table, id))
+}
+
 /// Tables whose rows are immutable ledger facts, merged by union.
 ///
 /// Kept as data rather than as a predicate on the table name so that adding a
 /// table is a deliberate act with a matching mapping decision, not something a
-/// naming convention can do by accident.
+/// naming convention can do by accident. Every row in every one of these
+/// tables carries a unique `id` in its payload — see the §4.3 note in the
+/// module docs for why that is load-bearing rather than incidental.
 #[cfg(feature = "sync-dmtap")]
 pub const LEDGER_TABLES: &[&str] = &["journals", "journal_lines"];
+
+/// Tables whose rows are editable and merge last-writer-wins.
+///
+/// Also data, and for a sharper reason than [`LEDGER_TABLES`]: [`kind_for`]
+/// used to answer "LWW" for *any* string, so a typo'd or brand-new table name
+/// silently acquired a mapping nobody chose. Both lists are now closed, and an
+/// unlisted table is a [`MapError::UnmappedTable`] refusal.
+///
+/// `slipscan-core`'s migration `0700_oplog` installs one capture trigger set
+/// per table named here, and its `sync::capture::tests` assert the two agree
+/// in both directions — a table in this list with no trigger, or a trigger for
+/// a table not in this list, fails the suite.
+#[cfg(feature = "sync-dmtap")]
+pub const LWW_TABLES: &[&str] = &[
+    "books",
+    "accounts",
+    "categories",
+    "transactions",
+    "transaction_splits",
+    "merchant_mappings",
+    "budgets",
+    "members",
+    "chart_of_accounts",
+    "coa_map",
+    "vat_rates",
+];
 
 /// Whether `table` is an immutable ledger, and so maps to the OR-Set.
 #[cfg(feature = "sync-dmtap")]
@@ -193,13 +276,38 @@ pub fn is_ledger(table: &str) -> bool {
     LEDGER_TABLES.contains(&table)
 }
 
-/// The primitive `table` maps to.
+/// Whether `table` replicates at all.
 #[cfg(feature = "sync-dmtap")]
-pub fn kind_for(table: &str) -> Kind {
+pub fn is_replicated(table: &str) -> bool {
+    is_ledger(table) || LWW_TABLES.contains(&table)
+}
+
+/// Every replicated table, ledger tables last.
+#[cfg(feature = "sync-dmtap")]
+pub fn replicated_tables() -> Vec<&'static str> {
+    LWW_TABLES
+        .iter()
+        .chain(LEDGER_TABLES.iter())
+        .copied()
+        .collect()
+}
+
+/// The primitive `table` maps to, or a refusal.
+///
+/// **Fails closed on an unknown table.** The previous signature was infallible
+/// and answered [`Kind::LwwSet`] for anything it did not recognise, which is
+/// the worst possible default: a ledger table whose name was misspelled at a
+/// call site would have been mapped to a register, and a register overwrites
+/// where a set unions. Silent, permanent, converged data loss — exactly what
+/// §4.10's selection test exists to prevent.
+#[cfg(feature = "sync-dmtap")]
+pub fn kind_for(table: &str) -> Result<Kind, MapError> {
     if is_ledger(table) {
-        Kind::SetAdd
+        Ok(Kind::SetAdd)
+    } else if LWW_TABLES.contains(&table) {
+        Ok(Kind::LwwSet)
     } else {
-        Kind::LwwSet
+        Err(MapError::UnmappedTable(table.to_owned()))
     }
 }
 
@@ -212,6 +320,13 @@ pub enum MapError {
     /// Row payloads must be JSON objects so the id can be carried inside them.
     #[error("row payload must be a JSON object, got {0}")]
     NotAnObject(&'static str),
+    /// The table has no mapping decision recorded, so it has no primitive.
+    /// Never guessed at — see [`kind_for`].
+    #[error(
+        "{0} has no sync mapping: add it to LWW_TABLES or LEDGER_TABLES with a \
+         §4.10 selection-test answer, or leave it device-local"
+    )]
+    UnmappedTable(String),
 }
 
 /// A decimal as an exact `ext-value`.
@@ -264,7 +379,7 @@ pub fn op_for_write(
     deleted: bool,
     hlc: Hlc,
 ) -> Result<SyncOp, MapError> {
-    match kind_for(table) {
+    match kind_for(table)? {
         Kind::SetAdd => {
             if deleted {
                 return Err(MapError::LedgerDelete(table.to_owned()));
@@ -283,7 +398,7 @@ pub fn op_for_write(
         Kind::LwwSet => Ok(SyncOp {
             kind: Kind::LwwSet.code(),
             ns: ns.to_owned(),
-            target: format!("{table}/{id}"),
+            target: lww_target(table, id),
             field: Some(LWW_FIELD.to_owned()),
             value: Some(row_value(row, deleted)?),
             hlc,
@@ -419,5 +534,153 @@ mod tests {
         let a = canonical_json(&row(r#"{"b":2,"a":1}"#)).unwrap();
         let b = canonical_json(&row(r#"{"a":1,"b":2}"#)).unwrap();
         assert_eq!(a, b);
+    }
+
+    /// **The trap this programme has already hit.** §4.3 identifies a set
+    /// element by its value, so two genuinely distinct facts that serialize
+    /// identically merge into one — a sibling product turned a −2 into a −1
+    /// exactly this way.
+    ///
+    /// SlipScan's ledger rows carry their own UUID v7 `id`, so two lines alike
+    /// in every accounting respect still differ. This test holds *that*, not
+    /// the weaker "the payload happens to contain an id".
+    #[test]
+    fn two_ledger_rows_alike_in_everything_but_id_both_survive_the_union() {
+        // The same amount, account, description and order, posted twice — a
+        // real double charge that must not be silently deduplicated.
+        let make = |id: &str, hlc_wall: u64| {
+            op_for_write(
+                "book-1",
+                "journal_lines",
+                id,
+                &row(&format!(
+                    r#"{{"id":"{id}","journal_id":"j-1","coa_id":"c-1",
+                        "debit_minor":250,"credit_minor":0,"currency":"ZAR",
+                        "description":"Coffee","line_order":0}}"#
+                )),
+                false,
+                hlc(hlc_wall, 1),
+            )
+            .unwrap()
+        };
+        let first = make("0190a1b2-0000-7000-8000-000000000001", 10);
+        let second = make("0190a1b2-0000-7000-8000-000000000002", 11);
+
+        assert_eq!(first.target, second.target, "same OR-Set target");
+        assert_ne!(
+            first.value, second.value,
+            "two distinct movements must be two distinct elements, or the union \
+             collapses them and the books lose one"
+        );
+
+        // And the union really does keep two, checked through the engine
+        // rather than by eyeballing the values.
+        let mut state = dmtap_sync::SyncState::new();
+        let now = 20_000;
+        state.ingest(&first, now).unwrap();
+        state.ingest(&second, now).unwrap();
+        assert_eq!(state.present_members().len(), 2);
+    }
+
+    /// The same op ingested twice is one element, not two. The other half of
+    /// the property above: distinct facts survive, identical ones do not
+    /// multiply.
+    #[test]
+    fn the_same_ledger_op_twice_is_one_element() {
+        let op = op_for_write(
+            "book-1",
+            "journals",
+            "j-1",
+            &row(r#"{"id":"j-1","narrative":"Opening"}"#),
+            false,
+            hlc(10, 1),
+        )
+        .unwrap();
+        let mut state = dmtap_sync::SyncState::new();
+        assert!(state.ingest(&op, 20_000).unwrap(), "newly applied");
+        assert!(
+            !state.ingest(&op, 20_000).unwrap(),
+            "a duplicate is a no-op"
+        );
+        assert_eq!(state.present_members().len(), 1);
+    }
+
+    /// An unmapped table is refused, never defaulted. Mapping a ledger table
+    /// onto a register would overwrite where a union belongs, so a table name
+    /// nobody made a decision about must not acquire one by falling through.
+    #[test]
+    fn an_unmapped_table_is_refused_rather_than_defaulted_to_lww() {
+        for unknown in ["documents", "audit_log", "transactionss", ""] {
+            assert_eq!(
+                kind_for(unknown).unwrap_err(),
+                MapError::UnmappedTable(unknown.to_owned()),
+                "{unknown:?} must have no primitive"
+            );
+            assert!(op_for_write("b", unknown, "x", &row("{}"), false, hlc(1, 1)).is_err());
+            assert!(!is_replicated(unknown));
+        }
+    }
+
+    #[test]
+    fn every_listed_table_has_exactly_one_primitive() {
+        for table in replicated_tables() {
+            let kind = kind_for(table).expect("a listed table has a primitive");
+            assert_eq!(
+                kind == Kind::SetAdd,
+                is_ledger(table),
+                "{table} disagrees with is_ledger"
+            );
+            assert!(is_replicated(table));
+        }
+        // No table may be in both lists — the two primitives are mutually
+        // exclusive, and a table in both would resolve by list order.
+        for table in LEDGER_TABLES {
+            assert!(
+                !LWW_TABLES.contains(table),
+                "{table} is in both mapping lists"
+            );
+        }
+        assert_eq!(
+            replicated_tables().len(),
+            LWW_TABLES.len() + LEDGER_TABLES.len()
+        );
+    }
+
+    /// The address is produced in one place and parsed in one place. A row id
+    /// is a UUID v7, so the first `/` is the separator.
+    #[test]
+    fn lww_targets_round_trip() {
+        let target = lww_target("transactions", "0190a1b2-0000-7000-8000-000000000001");
+        assert_eq!(
+            parse_lww_target(&target),
+            Some(("transactions", "0190a1b2-0000-7000-8000-000000000001"))
+        );
+        assert_eq!(parse_lww_target("no-separator"), None);
+        assert_eq!(parse_lww_target("/no-table"), None);
+        assert_eq!(parse_lww_target("no-id/"), None);
+    }
+
+    /// Money is `i64` minor units and crosses the wire as a JSON integer
+    /// inside the row payload — exact in, exact out, with no float anywhere on
+    /// the path and no rounding step to get wrong.
+    #[test]
+    fn minor_units_cross_the_wire_exactly() {
+        // A value that cannot be represented in an f64 without loss: if
+        // anything on this path went through a double, it would come back
+        // 9007199254740993 → 9007199254740992.
+        let awkward: i64 = 9_007_199_254_740_993;
+        let op = op_for_write(
+            "book-1",
+            "transactions",
+            "t-1",
+            &row(&format!(r#"{{"id":"t-1","amount_minor":{awkward}}}"#)),
+            false,
+            hlc(10, 1),
+        )
+        .unwrap();
+        let (back, _) = parse_row_value(op.value.as_ref().unwrap()).unwrap();
+        let amount = back.get("amount_minor").unwrap();
+        assert!(amount.is_i64(), "money must stay an integer, never a float");
+        assert_eq!(amount.as_i64().unwrap(), awkward);
     }
 }
