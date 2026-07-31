@@ -195,6 +195,17 @@
   footer a{color:var(--ink-2);} footer a:hover{color:var(--ink);}
 
   .pill{display:inline-flex; gap:8px; align-items:center; font-size:12.5px; color:var(--ink-2); background:var(--surface-2); border:1px solid var(--line); padding:5px 11px; border-radius:999px;}
+
+  /* ── Vulos suite chrome — identical on every product landing ───────────────
+     Two elements, and only two: a logo-only home button in the top bar, and
+     one line in the footer. Deliberately free of repo variables so the block
+     is byte-identical across the suite and can be diffed as one thing. */
+  .vulos-home { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto; opacity: .72; transition: opacity .15s ease, transform .15s ease; }
+  .vulos-home:hover, .vulos-home:focus-visible { opacity: 1; transform: translateY(-1px); }
+  .vulos-home img { display: block; width: 22px; height: 22px; border-radius: 6px; }
+  .vulos-foot { display: inline-flex; align-items: center; gap: 9px; font-size: 13.5px; line-height: 1.45; text-decoration: none; color: inherit; opacity: .85; transition: opacity .15s ease; }
+  .vulos-foot:hover { opacity: 1; text-decoration: none; }
+  .vulos-foot img { display: block; width: 18px; height: 18px; border-radius: 5px; flex: 0 0 auto; }
 </style>
 </head>
 <body>
@@ -207,7 +218,7 @@
       <a class="sect" href="#sync">Sync</a>
       <a class="sect" href="#install">Install</a>
       <a href="./docs.html">Docs</a>
-      <a class="suite" href="https://vulos.org/projects" title="Back to the Vulos suite" aria-label="Back to Vulos">Vulos</a>
+      <a class="vulos-home" href="https://vulos.org" target="_blank" rel="noopener" title="Vulos — open, self-hostable software" aria-label="Vulos — open, self-hostable software"><img src="./assets/vulos-logo.png" alt="" width="22" height="22"></a>
       <div class="toggle" role="group" aria-label="Theme">
         <button data-theme-val="light" title="Light">☀</button>
         <button data-theme-val="dark" title="Dark">☾</button>
@@ -220,7 +231,7 @@
 
 <header class="hero">
   <div class="wrap">
-    <span class="eyebrow">● Part of VulOS — the open, self-hostable web OS</span>
+    <span class="eyebrow">● Self-hosted inventory, stock and accounts</span>
     <h1>Inventory that keeps every branch in sync — even offline.</h1>
     <p class="lead">FlowStock is a single self-hosted binary for multi-branch stock control: products, stock, orders, purchasing and accounts. Each branch runs its own copy, works fully offline, and syncs peer-to-peer with the others. No cloud, no accounts, no central server.</p>
     <div class="hero-cta">
@@ -318,7 +329,7 @@ cd flowstock && npm install && npm run build:all
 <section class="cta">
   <div class="wrap">
     <h2>Sovereign inventory for the whole business.</h2>
-    <p>Free and open source. Runs standalone, or as an app inside the Vulos OS.</p>
+    <p>Free and open source, MIT licensed. Runs standalone — one binary, no dependencies.</p>
     <div class="hero-cta" style="justify-content:center;">
       <a class="btn btn-primary" href="https://github.com/vul-os/flowstock">Get FlowStock</a>
       <a class="btn btn-ghost" href="./docs.html">Documentation</a>
@@ -328,7 +339,7 @@ cd flowstock && npm install && npm run build:all
 
 <footer>
   <div class="wrap">
-    <span>FlowStock — part of <a href="https://vulos.org">VulOS</a>. MIT licensed.</span>
+    <a class="vulos-foot" href="https://vulos.org" target="_blank" rel="noopener"><img src="./assets/vulos-logo.png" alt="" width="18" height="18"><span>Part of <strong>Vulos</strong> — open, self-hostable software</span></a>
     <span><a href="https://github.com/vul-os/flowstock">GitHub</a> · <a href="./docs.html">Docs</a> · <em>vula — Zulu &amp; Xhosa for “open”.</em></span>
   </div>
 </footer>
