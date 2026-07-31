@@ -307,6 +307,17 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
   .contract code{font-size:max(12px,.87em)}
   .foot-bar{font-size:12.5px}
 }
+
+  /* ── Vulos suite chrome — identical on every product landing ───────────────
+     Two elements, and only two: a logo-only home button in the top bar, and
+     one line in the footer. Deliberately free of repo variables so the block
+     is byte-identical across the suite and can be diffed as one thing. */
+  .vulos-home { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto; opacity: .72; transition: opacity .15s ease, transform .15s ease; }
+  .vulos-home:hover, .vulos-home:focus-visible { opacity: 1; transform: translateY(-1px); }
+  .vulos-home img { display: block; width: 22px; height: 22px; border-radius: 6px; }
+  .vulos-foot { display: inline-flex; align-items: center; gap: 9px; font-size: 13.5px; line-height: 1.45; text-decoration: none; color: inherit; opacity: .85; transition: opacity .15s ease; }
+  .vulos-foot:hover { opacity: 1; text-decoration: none; }
+  .vulos-foot img { display: block; width: 18px; height: 18px; border-radius: 5px; flex: 0 0 auto; }
 </style>
 <script src="./assets/vendor/marked.umd.js"></script>
 <script src="./assets/vendor/mermaid.min.js"></script>
@@ -331,6 +342,7 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
     <svg class="t-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
   </button>
   <a class="btn" href="./index.html#install">Download</a>
+  <a class="vulos-home" href="https://vulos.org" target="_blank" rel="noopener" title="Vulos — open, self-hostable software" aria-label="Vulos — open, self-hostable software"><img src="./assets/vulos-logo.png" alt="" width="22" height="22"></a>
 </header>
 
 <div class="wrap docs-shell">
@@ -539,14 +551,7 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
 </template>
 
 <footer class="site-footer">
-  <div class="foot-bar">
-    <a class="v" href="https://vulos.org" target="_blank" rel="noopener"><img src="./assets/vulos-logo.png" alt="">Part of Vulos — open by design</a>
-    <span class="sp"></span>
-    <a href="./index.html">Landing</a>
-    <a href="https://github.com/vul-os/slipscan" target="_blank" rel="noopener">GitHub</a>
-    <a href="./LICENSE.txt">Licenses</a>
-    <span>MIT OR Apache-2.0</span>
-  </div>
+  <a class="vulos-foot" href="https://vulos.org" target="_blank" rel="noopener"><img src="./assets/vulos-logo.png" alt="" width="18" height="18"><span>Part of <strong>Vulos</strong> — open, self-hostable software</span></a>
 </footer>
 <script>
 // The site is served from the repo root; docs render straight from the repo's own markdown.
