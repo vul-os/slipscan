@@ -95,7 +95,7 @@ Vault22/22seven-class intelligence, decentralized (design in [docs/ARCHITECTURE.
 - [ ] Optional OS notifications (local only)
 - [ ] Benchmark packs: signed aggregate-statistics packs; local peer comparison ("you vs households like yours") *(partial: pack format, comparison math and the read path all ship — `ops::pack_benchmark`, `slipscan pack benchmark`, `POST /api/v1/pack_benchmark`. Missing: any published benchmark pack to compare against — publishing one needs contributors, which is the line below)*
 - [ ] Opt-in anonymous contribution: local differential privacy, coarse k-anonymous cohorts, anonymous transport, off by default *(not started: no differential-privacy code exists anywhere in the tree)*
-- [ ] **Parity matrices**: tracked feature-by-feature vs Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency) and Vault22/22seven (net worth, goals, nudges, peer comparison) — each gap becomes an issue *(written: [PARITY.md](PARITY.md) scores 24 capabilities Built / Partial / Not built with a file-level citation for every row — 2 built, 10 partial, 12 not built. Still missing: the gaps are not filed as issues, and nothing re-scores the matrix automatically)*
+- [ ] **Parity matrices**: tracked feature-by-feature vs Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency) and Vault22/22seven (net worth, goals, nudges, peer comparison) — each gap becomes an issue *(written: [PARITY.md](PARITY.md) scores 24 capabilities Built / Partial / Not built with a file-level citation for every row — re-scored 2026-08-03 after Phase 6.1–6.5 to 5 built, 12 partial, 7 not built. Still missing: the gaps are not filed as issues, and nothing re-scores the matrix automatically — it is re-scored by hand, which is why it went stale for a whole wave before this)*
 
 ## Phase 4.7 — Global by default + OpenRate FX
 
@@ -150,8 +150,8 @@ No fabricated credential scrapers. Real, testable, ToS-respecting integrations p
 
 Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Feature parity". Every screen held to the design-system bar.
 
-- [ ] **Parity matrices** written and tracked: Vault22/22seven (net worth, accounts, goals, nudges, household, peer comparison) and Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency, reconciliation) *(written — [PARITY.md](PARITY.md), and it is blunt: **zero of Xero's 14 core capabilities are built**, including no invoicing of any kind. Not tracked: no issue per gap yet. The ranked gap list at the end of that document is what the rest of this phase has to close)*
-- [ ] Xero-side gaps: invoicing + quotes, fixed-asset register, multi-currency converted views (OpenRate FX already wired)
+- [ ] **Parity matrices** written and tracked: Vault22/22seven (net worth, accounts, goals, nudges, household, peer comparison) and Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency, reconciliation) *(written — [PARITY.md](PARITY.md). It opened blunt — *zero* of Xero's 14 core capabilities built, no invoicing of any kind — and as of 2026-08-03 reads **2 of 14 built** (invoicing, contacts) with purchasing and aged receivables partial. Not tracked: no issue per gap yet. The ranked gap list at the end of that document is what the rest of this phase has to close)*
+- [ ] Xero-side gaps: ~~invoicing~~ (built, Phase 6.5) + quotes, fixed-asset register, multi-currency converted views (OpenRate FX already wired)
 - [ ] Vault22-side gaps: net-worth over time, goals, the remaining nudge tiers
 - [ ] UI/UX parity pass: deep design-system CSS across every screen, responsive, both themes — no screen ships below the bar
 - [ ] Headless mode: run the core on your own home server / NAS, desktop and mobile as clients *(partial: `slipscan-server` serves the core surface over HTTP with optional bearer auth; no in-server connectors/scheduler yet, and the desktop cannot connect to a remote server yet)*
@@ -241,11 +241,27 @@ These were settled rather than escalated, and are recorded here so the reasoning
       summing to zero; on-hand is proven order-independent. Not built: no surface reaches stock,
       `ref_kind` has no constrained vocabulary until purchasing and sales define one, and
       `created_by` is free text until roles land)*
-- [ ] **6.4 Purchasing.** Purchase orders and goods receipts, receipts insert-only so partial
-      deliveries recorded at two locations merge by union *(PARITY "Bills / accounts payable")*
-- [ ] **6.5 Sales orders → invoicing.** Draft → confirm (deducts stock) → paid, cancel reverses
+- [x] **6.4 Purchasing.** Purchase orders and goods receipts, receipts insert-only so partial
+      deliveries recorded at two locations merge by union *(shipped, migration `0013_purchasing`.
+      `po_receipts` is in `LEDGER_TABLES` with `RAISE(ABORT)` immutability triggers, so a line's
+      received quantity is `SUM(qty)` over receipts rather than a stored counter — two sites
+      receiving against the same line while disconnected converge by union. Not built: no
+      Purchasing screen calls any of it (6.9); the 18 `po_*` IPC commands and their `client.ts`
+      wrappers are wired ahead of it)*
+- [x] **6.5 Sales orders → invoicing.** Draft → confirm (deducts stock) → paid, cancel reverses
       stock. Carried to a real invoice entity with numbering, delivery and paid/unpaid state, this
-      is the single largest hole in PARITY — *"there is no invoicing at all"*
+      is the single largest hole in PARITY — *"there is no invoicing at all"* *(shipped, migration
+      `0014_sales`. Two mappings on purpose: `sales_orders`/`_items` are editable LWW registers,
+      `invoices`/`_items`/`_payments` are insert-only ledger facts with immutability triggers, and
+      paid/unpaid is derived from `SUM(invoice_payments)` rather than stored. Numbering is a single
+      `UPSERT ... RETURNING`, proven gapless and duplicate-free under 8 concurrent issuers on one
+      machine. Known gaps, all named rather than implied: **multi-device numbering is unsolved**
+      (two offline devices would both mint #47 — the `UNIQUE (book_id, series, number)` index turns
+      that into a loud failure, not a silent collision; 6.7's problem once a transport exists), no
+      credit notes or voiding, no quotes, no partial fulfilment, no posting to `journals` (that is
+      6.6), and the 21 sales IPC commands have **no `client.ts` wrapper yet** — tracked as
+      `missing_from_client` in `docs/parity.json`, the only exception to "every registered command
+      has a wrapper")*
 - [ ] **6.6 Stock posts to the ledger.** The keystone, and the one piece neither codebase had: a
       goods receipt debits inventory-asset and credits accounts-payable; a confirmed sale posts
       revenue, VAT and cost-of-goods-sold against the existing chart of accounts and `journals` /

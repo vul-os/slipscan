@@ -10,29 +10,37 @@ says what is *planned*, which is a different question from what is *there*. Phas
 link here instead of promising, and what they still owe is an issue per gap plus something that
 re-scores this document without a human doing it.
 
-**Scored 2026-07-29 against the working tree.** 24 capabilities:
+**Scored 2026-07-29, re-scored 2026-08-03 against the working tree after ROADMAP Phase 6.1–6.5.** 24 capabilities:
 
 | | Built | Partial | Not built |
 |---|---:|---:|---:|
-| **Xero axis** (14) | 0 | 5 | 9 |
-| **Vault22 / 22seven axis** (10) | 2 | 5 | 3 |
-| **Total** (24) | **2** | **10** | **12** |
+| **Xero axis** (14) | 2 | 7 | 5 |
+| **Vault22 / 22seven axis** (10) | 3 | 5 | 2 |
+| **Total** (24) | **5** | **12** | **7** |
 
 ## The honest headline
 
-**SlipScan is not a Xero alternative today, and the distance is not small.** Zero of Xero's
-fourteen core capabilities are built. In particular **there is no invoicing at all** — no invoice
-entity, no numbering, no delivery, no paid/unpaid state — and none of quotes, bills, contacts,
-aged receivables/payables, fixed assets, payroll or tracking categories exist in any form. What
-SlipScan has on the accounting side is the *ledger underneath* an accounting product — double-entry
-journals, a chart of accounts, reconciliation suggestions, tax-period summaries — not the documents
-and workflows people actually buy Xero for.
+**SlipScan is not a Xero alternative today, but the distance is no longer the whole road.** Two of
+Xero's fourteen core capabilities are now built — **invoicing** (invoice entity, gapless numbering,
+line items, payments, derived paid/unpaid state) and **contacts** — with purchasing and aged
+receivables landing as partials. That is a real change from this document's first scoring, when the
+honest sentence was "there is no invoicing at all".
+
+What is still missing is most of the rest, and the shape of the gap has changed rather than closed:
+quotes, credit notes, fixed assets, payroll and tracking categories do not exist in any form; the
+*payable* half of bills is unbuilt, so aged payables cannot exist either; and — the one that matters
+most — **nothing an invoice or a goods receipt does reaches the ledger yet**. A confirmed sale moves
+stock but posts no revenue, VAT or cost-of-goods-sold, and a receipt debits no inventory asset. Until
+ROADMAP 6.6 lands, SlipScan is an inventory-and-invoicing app sharing a binary with an accounting
+app, which is precisely the outcome that fold exists to avoid. There is also no desktop screen for
+any of it (6.9); the sales commands do not even have a `client.ts` wrapper yet.
 
 **On the Vault22 / 22seven axis it is much closer.** The core loop — accounts, transactions in,
 automatic categorisation that learns from your corrections, budgets, household attribution — is
-real and works end to end. Two structural things are missing: **no live bank connection anywhere**
-(every path in is a file you hand it or an email it reads) and **no time series at all** (there is
-a current net balance, and nothing that plots it over time).
+real and works end to end, and **net worth over time is now built** — `networth_snapshots` records
+an immutable balance per account per date, backfills history from the transaction ledger, and is
+charted on the Dashboard. The one structural thing still missing is **no live bank connection
+anywhere**: every path in is a file you hand it or an email it reads.
 
 **Surface coverage is uneven, and it matters.** Statement CSV import and bank-alert email parsing
 run from the CLI only; budgets have no CLI command at all; the profit-and-loss and balance-sheet
@@ -62,11 +70,11 @@ them stops resolving. Paths are shortened for width: **`core/`** = `crates/slips
 
 | Capability | Status | Evidence | What's missing |
 |---|---|---|---|
-| **Invoicing** | **Not built** | No `invoices` table in [`core/src/migrations/`](crates/slipscan-core/src/migrations/); the only `Invoice` in the tree is a *document kind* for a supplier invoice you scan — [`core/src/domain.rs`](crates/slipscan-core/src/domain.rs) | Everything. No invoice entity, numbering, line items, delivery, payment status, or unpaid-invoice view exists anywhere. |
+| **Invoicing** | **Built** | `invoices` / `invoice_items` / `invoice_payments` (migration `0014_sales`), issued through `CoreService::invoice_issue` with gapless per-book numbering, and reachable over HTTP, the CLI and desktop IPC | An issued invoice is immutable by trigger, so correcting one needs a credit note — **not built**, along with voiding, quotes, repeating invoices, partial fulfilment, per-line currency, and any posting to `journals` (that is ROADMAP 6.6). Multi-device numbering is unsolved: two offline devices would both mint the same number, caught loudly by `UNIQUE (book_id, series, number)` rather than silently. No desktop screen yet (6.9). |
 | **Quotes / estimates** | **Not built** | — | Everything, and it is blocked behind invoicing, which a quote converts into. |
-| **Bills / accounts payable** | **Not built** | `Accounts Payable` exists only as a chart-of-accounts *seed line* in [`core/src/region.rs`](crates/slipscan-core/src/region.rs) | A CoA account name is not a subledger: no bill entity, due dates, supplier balances, or payment run. |
-| **Contacts (customers & suppliers)** | **Not built** | A transaction carries a free-text `merchant` plus a normalised key used only for classification — [`core/src/domain.rs`](crates/slipscan-core/src/domain.rs), [`core/src/repo/category.rs`](crates/slipscan-core/src/repo/category.rs) | Merchants are strings for categorising, not records: no contact entity, tax numbers, addresses, terms, or anything to hang a bill or invoice on. |
-| **Aged receivables / payables** | **Not built** | — | Aging needs invoices, bills and contacts, none of which exist; the reports that do exist have no aging dimension. |
+| **Bills / accounts payable** | **Partial** | `purchase_orders` / `purchase_order_items` / `po_receipts` (migration `0013_purchasing`) give the ordering and receiving half, with receipts insert-only so partial deliveries merge by union | The **payable** half is missing: no bill entity distinct from the order, no supplier payment or paid/unpaid state (a PO is only `draft`/`ordered`/`cancelled`), no due dates, no supplier balances, no payment run, and nothing posts to the Accounts Payable CoA line. |
+| **Contacts (customers & suppliers)** | **Built** | One `contacts` table (migration `0010_contacts`) deliberately not split into `customers`/`suppliers`, because a real party is often both; referenced by `sales_orders`, `invoices` and `purchase_orders` with `ON DELETE RESTRICT`, so trade history cannot be deleted out from under itself | Tax numbers, addresses and payment terms are stored but nothing consumes them yet — no statement, no per-contact balance beyond aged receivables, and no merge/dedupe of contacts. |
+| **Aged receivables / payables** | **Partial** | `report_aged_receivables` (migration `0014_sales`) buckets every outstanding invoice by age per contact, backed by the `invoices (book_id, due_date)` index | **Receivables only.** Aged *payables* needs the bill/payment half of purchasing, which is not built — see that row. No statement rendering or emailing. |
 | **Fixed-asset register** | **Not built** | `Accumulated Depreciation` and `Depreciation` are chart-of-accounts seed lines in [`core/src/region.rs`](crates/slipscan-core/src/region.rs) and nothing more | No asset records, cost/life/method, depreciation run, or disposal. You can hand-post a depreciation journal; nothing computes one. |
 | **Bank rules** | **Partial** | Categorisation cascade on every inbound transaction (`transaction_create` → `classify_by_packs`) in [`core/src/service.rs`](crates/slipscan-core/src/service.rs); rule kinds `Contains` / `Regex` / `KeywordRule` in [`packs/src/model.rs`](crates/slipscan-packs/src/model.rs); classifier registration in [`packs/src/engine.rs`](crates/slipscan-packs/src/engine.rs) | Rules only ever set a **category**, match only on merchant/description text, and arrive as installed signed packs — there is no in-app rule editor, no amount/date/account conditions, and no rule that codes to a ledger account, tax rate or contact. |
 | **Repeating invoices / recurring transactions** | **Not built** | — | No schedule, template or generator; the only "recurring" code is a read-only detector of recurring charges in [`desktop/src/lib/nudges.ts`](apps/desktop/src/lib/nudges.ts), which creates nothing. |
@@ -109,7 +117,7 @@ but it is real, and leaving it out would misrepresent the codebase in the other 
 | Capability | Status | Evidence | What's missing |
 |---|---|---|---|
 | **Account aggregation** | **Partial** | Accounts in [`core/src/repo/account.rs`](crates/slipscan-core/src/repo/account.rs); statement CSV import with bank presets in [`ingest/src/bank/`](crates/slipscan-ingest/src/bank); mailbox sync over IMAP, Gmail and Graph in [`ingest/src/email/`](crates/slipscan-ingest/src/email); bank-alert emails → transactions via signed `mailrules` packs ([`ingest/src/email/alerts.rs`](crates/slipscan-ingest/src/email/alerts.rs), [`packs/src/mailrules.rs`](crates/slipscan-packs/src/mailrules.rs)); the only non-test `BankAdapter` implementation reads files ([`ingest/src/bank/csv_statement.rs`](crates/slipscan-ingest/src/bank/csv_statement.rs)) | **Nothing connects to a bank**: no adapter talks to a bank API or feed, nothing runs on a schedule, and both the statement import and the alert parser run from the CLI only (`slipscan import --preset`, `slipscan mail-sync --alerts`). |
-| **Net worth over time** | **Not built** | A *current* net figure only, derived in the desktop IPC layer as opening balance + transaction sum ([`desktop/src-tauri/src/dto.rs`](apps/desktop/src-tauri/src/dto.rs)) and summed on [`desktop/src/routes/Dashboard.svelte`](apps/desktop/src/routes/Dashboard.svelte) | There is no series: no balance snapshots, no history, no chart, no asset/liability valuation — and the core itself exposes no computed balance at all, only the stored `opening_balance_minor` column ([`core/src/repo/account.rs`](crates/slipscan-core/src/repo/account.rs)), so the current figure exists on the desktop and nowhere else. |
+| **Net worth over time** | **Built** | `networth_snapshots` (migration `0015_networth`) records one immutable balance snapshot per account per date; `networth_capture` stamps today, `networth_backfill` reconstructs history from the transaction ledger, and `networth_series` reads the series back. Charted on [`desktop/src/lib/components/NetWorthChart.svelte`](apps/desktop/src/lib/components/NetWorthChart.svelte), reached from the Dashboard. | A snapshot is a fact about a date, not an editable value, so the table is an insert-only ledger with `RAISE(ABORT)` triggers and is registered in `LEDGER_TABLES` — two devices that captured the same account and date offline keep both facts and the read side picks the freshest, rather than one silently overwriting the other. Still not built: no asset/liability valuation beyond account balances, and no goals or peer comparison. |
 | **Goals** | **Not built** | — | No goal table, type, endpoint or screen exists anywhere in the tree. |
 | **Budgets** | **Partial** | `budget_upsert` / `budget_status` / `budget_list` in [`core/src/service.rs`](crates/slipscan-core/src/service.rs), [`core/src/repo/budget.rs`](crates/slipscan-core/src/repo/budget.rs), screen at [`desktop/src/routes/Budgets.svelte`](apps/desktop/src/routes/Budgets.svelte), HTTP routes in [`server/src/routes.rs`](crates/slipscan-server/src/routes.rs) | Monthly per-category only; the stored `rollover` flag ([`core/src/domain.rs`](crates/slipscan-core/src/domain.rs)) is **never applied to any number** — `budget_status` does not even carry it — so there is no envelope budgeting, no non-monthly period and no income budgeting; and there is no `slipscan budget` command at all, so budgets are unreachable from the CLI. |
 | **Nudges** | **Partial** | Three kinds — budget over/drift, duplicate charges, recurring subscriptions — computed in [`desktop/src/lib/nudges.ts`](apps/desktop/src/lib/nudges.ts) and rendered with actions on [`desktop/src/routes/Dashboard.svelte`](apps/desktop/src/routes/Dashboard.svelte) | It is desktop-UI code, not core: no CLI, no HTTP, no persistence, no dismissal, no OS notifications — and the category-spike, fee-creep and tax-deadline tiers the roadmap promises do not exist. |
@@ -132,7 +140,7 @@ Ordered by how far the gap sits from the claim on the front page, not by effort.
    invoices, which are meaningless without contacts.
 3. **Live bank connection** — the `BankAdapter` trait is designed and its file-based implementation
    works, but no adapter reaches a bank, and nothing schedules a sync. Every path in is manual.
-4. **Net worth over time** — the whole Vault22 headline number, and there is no series behind it.
+4. ~~**Net worth over time**~~ — **closed**: `networth_snapshots` is the series, captured forward and backfilled from the ledger.
    Needs periodic balance snapshots; nothing else on this list is closer to shipping.
 5. **Converted multi-currency reports** — the FX plumbing is done and unused by every report; this
    is wiring, not new machinery.
