@@ -1105,6 +1105,34 @@ export interface JournalEntry {
   created_at: string;
 }
 
+/** Chart-of-accounts entry as the desktop renders it — `LedgerAccount` is
+ * this app's display name for core's `CoaAccount`, which is why the IPC
+ * command `ledger_account_list` maps to the HTTP route `coa_list`. */
+export interface NewLedgerAccount {
+  book_id: string;
+  code: string;
+  name: string;
+  kind: LedgerAccountType;
+  description?: string;
+  /** Defaults to the book's currency. */
+  currency?: string;
+}
+
+/** Which side of the personal-finance model maps onto a chart entry. */
+export type CoaMapEntity = "account" | "category";
+
+/** One mapping from an account or category to a chart-of-accounts entry —
+ * what makes automatic journal generation possible. */
+export interface CoaMapEntry {
+  id: string;
+  book_id: string;
+  entity_type: CoaMapEntity;
+  entity_id: string;
+  coa_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface JournalPostRequest {
   book_id: string;
   entry_date: string;

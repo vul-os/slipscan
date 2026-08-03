@@ -305,6 +305,43 @@ struct StockRefReq {
 }
 
 #[derive(Debug, Deserialize)]
+struct CoaMapSetReq {
+    book_id: String,
+    entity_type: CoaMapEntity,
+    entity_id: String,
+    coa_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct JournalGenerateTxnReq {
+    transaction_id: String,
+    #[serde(default)]
+    vat_rate_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JournalGenerateDocReq {
+    document_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct JournalReverseReq {
+    journal_id: String,
+    #[serde(default)]
+    posted_date: Option<String>,
+    #[serde(default)]
+    narrative: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BookLockDateReq {
+    book_id: String,
+    /// `null` clears the lock date.
+    #[serde(default)]
+    lock_date: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct StockTransferReq {
     variant_id: String,
     from_location_id: String,
@@ -834,6 +871,85 @@ async fn location_update(
 async fn location_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
     s.service()?.location_delete(&req.id)?;
     Ok(Json(OK))
+}
+
+// -- Chart of accounts, journal generation, and the book lock date. Routed
+// late: `coa_list`/`coa_seed` and `journal_post`/`journal_get` were on the
+// API from the start, but nothing could add an account, map an entity to
+// one, generate a journal from a transaction or document, reverse a posted
+// journal, or set the lock date — the operations that make double-entry
+// usable rather than merely present.
+
+async fn coa_create(
+    State(s): State<AppState>,
+    Json(req): Json<NewCoaAccount>,
+) -> ApiResult<CoaAccount> {
+    Ok(Json(s.service()?.coa_create(req)?))
+}
+
+/// Archive rather than delete: the entry stops accepting new journal lines
+/// and its history is preserved. Accounts are never deleted.
+async fn coa_archive(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<CoaAccount> {
+    Ok(Json(s.service()?.coa_archive(&req.id)?))
+}
+
+/// Map a personal-finance entity (account or category) to a chart-of-accounts
+/// entry — what makes automatic journal generation possible.
+async fn coa_map_set(
+    State(s): State<AppState>,
+    Json(req): Json<CoaMapSetReq>,
+) -> ApiResult<CoaMapEntry> {
+    Ok(Json(s.service()?.coa_map_set(
+        &req.book_id,
+        req.entity_type,
+        &req.entity_id,
+        &req.coa_id,
+    )?))
+}
+
+async fn journal_generate_for_transaction(
+    State(s): State<AppState>,
+    Json(req): Json<JournalGenerateTxnReq>,
+) -> ApiResult<PostedJournal> {
+    Ok(Json(s.service()?.journal_generate_for_transaction(
+        &req.transaction_id,
+        req.vat_rate_id.as_deref(),
+    )?))
+}
+
+async fn journal_generate_for_document(
+    State(s): State<AppState>,
+    Json(req): Json<JournalGenerateDocReq>,
+) -> ApiResult<PostedJournal> {
+    Ok(Json(
+        s.service()?
+            .journal_generate_for_document(&req.document_id)?,
+    ))
+}
+
+/// A posted journal is immutable, so a correction is a reversal: a new
+/// journal with every line's sides swapped.
+async fn journal_reverse(
+    State(s): State<AppState>,
+    Json(req): Json<JournalReverseReq>,
+) -> ApiResult<PostedJournal> {
+    Ok(Json(s.service()?.journal_reverse(
+        &req.journal_id,
+        req.posted_date.as_deref(),
+        req.narrative.as_deref(),
+    )?))
+}
+
+/// Set or clear the book's financial lock date. Journals may not be posted on
+/// or before it.
+async fn book_set_lock_date(
+    State(s): State<AppState>,
+    Json(req): Json<BookLockDateReq>,
+) -> ApiResult<Book> {
+    Ok(Json(s.service()?.book_set_lock_date(
+        &req.book_id,
+        req.lock_date.as_deref(),
+    )?))
 }
 
 // -- Stock: the append-only movement ledger (Phase 6.3b — the flowstock
@@ -2373,6 +2489,19 @@ pub fn app(state: AppState) -> Router {
         .route("/stock_movements_for_ref", post(stock_movements_for_ref))
         .route("/stock_transfer", post(stock_transfer))
         .route("/stock_low_variants", post(stock_low_variants))
+        .route("/coa_create", post(coa_create))
+        .route("/coa_archive", post(coa_archive))
+        .route("/coa_map_set", post(coa_map_set))
+        .route(
+            "/journal_generate_for_transaction",
+            post(journal_generate_for_transaction),
+        )
+        .route(
+            "/journal_generate_for_document",
+            post(journal_generate_for_document),
+        )
+        .route("/journal_reverse", post(journal_reverse))
+        .route("/book_set_lock_date", post(book_set_lock_date))
         .route("/po_create", post(po_create))
         .route("/po_get", post(po_get))
         .route("/po_list", post(po_list))
@@ -2533,6 +2662,125 @@ pub fn app(state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The chart of accounts could be listed and seeded from the API but not
+    /// added to, and the book's financial lock date could not be set at all —
+    /// so the controls that make double-entry usable rather than merely
+    /// present were unreachable. Asserts the two behaviours worth having:
+    /// account codes are unique per book, and archiving preserves the row.
+    #[tokio::test]
+    async fn chart_of_accounts_entries_can_be_added_archived_and_are_code_unique() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Biz", "kind": "business", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let (status, acct) = call(
+            &app,
+            post_req(
+                "/api/v1/coa_create",
+                json!({"book_id": book_id, "code": "4000", "name": "Sales", "kind": "income"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "coa_create: {acct}");
+        let acct_id = acct["id"].as_str().unwrap().to_string();
+        assert_eq!(acct["is_archived"], false);
+
+        // Codes are unique per book.
+        let (status, dup) = call(
+            &app,
+            post_req(
+                "/api/v1/coa_create",
+                json!({"book_id": book_id, "code": "4000", "name": "Clash", "kind": "income"}),
+                None,
+            ),
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "a duplicate code must be refused, got {dup}"
+        );
+
+        // Archiving preserves the row rather than deleting it — accounts are
+        // never deleted, because their history has to stay readable.
+        let (status, archived) = call(
+            &app,
+            post_req("/api/v1/coa_archive", json!({"id": acct_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "coa_archive: {archived}");
+        assert_eq!(archived["is_archived"], true);
+        let (_, listed) = call(
+            &app,
+            post_req("/api/v1/coa_list", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert!(
+            listed
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|a| a["id"] == acct_id.as_str()),
+            "an archived account must still be listed, not removed"
+        );
+    }
+
+    /// The lock date is a real accounting control — journals may not be posted
+    /// on or before it — and no surface could set it.
+    #[tokio::test]
+    async fn the_book_lock_date_round_trips_and_clears() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Biz", "kind": "business", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let (status, set) = call(
+            &app,
+            post_req(
+                "/api/v1/book_set_lock_date",
+                json!({"book_id": book_id, "lock_date": "2026-02-28"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "book_set_lock_date: {set}");
+        assert_eq!(set["financial_lock_date"], "2026-02-28");
+
+        // Absent/null clears it — the same JSON convention as every other
+        // nullable field on this API.
+        let (status, cleared) = call(
+            &app,
+            post_req(
+                "/api/v1/book_set_lock_date",
+                json!({"book_id": book_id, "lock_date": null}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "book_set_lock_date clear: {cleared}"
+        );
+        assert_eq!(cleared["financial_lock_date"], Value::Null);
+    }
+
     /// Stock was the last of the three Phase 6 foundations with nothing on any
     /// surface — on-hand could not be read and a movement could not be written
     /// except as a side effect of confirming an order. Asserts the two

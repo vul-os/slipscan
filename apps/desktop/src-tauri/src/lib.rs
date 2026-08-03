@@ -82,6 +82,16 @@ pub fn run() {
             // Purchasing (Phase 6.4). No screen calls these yet (ROADMAP.md
             // 6.9) — wired now so the IPC layer is not the surface left
             // waiting on a UI, the same posture the CLI and HTTP routes take.
+            // Chart of accounts, journal generation, lock date. Wired late —
+            // the chart could be listed and seeded but not added to, and a
+            // journal could be posted but not generated or reversed.
+            commands::coa_create,
+            commands::coa_archive,
+            commands::coa_map_set,
+            commands::journal_generate_for_transaction,
+            commands::journal_generate_for_document,
+            commands::journal_reverse,
+            commands::book_set_lock_date,
             // Stock (Phase 6.3b). On-hand is derived, never stored — there
             // is no "set level" command and there never will be.
             commands::stock_movement_record,

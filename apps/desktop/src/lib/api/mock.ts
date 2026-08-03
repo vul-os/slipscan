@@ -17,6 +17,8 @@ import type {
   BudgetUpsert,
   BudgetWithSpend,
   Category,
+  CoaMapEntity,
+  CoaMapEntry,
   Contact,
   ContactUpdateRequest,
   DataMoveRequest,
@@ -59,6 +61,7 @@ import type {
   NewContact,
   NewInvoice,
   NewInvoicePayment,
+  NewLedgerAccount,
   NewLocation,
   NewMember,
   NewPayEndpoint,
@@ -173,6 +176,10 @@ const locations: Location[] = [];
  * append-only, mirroring core's own insert-only `po_receipts` table: nothing
  * here ever mutates or removes a row out of it.
  */
+/** Chart-of-accounts mapping and per-book lock dates (mock-only state). */
+const coaMap: CoaMapEntry[] = [];
+const lockDates = new Map<string, string | null>();
+
 /** Stock (Phase 6.3b). Append-only, exactly like core's table: nothing in
  * this file ever mutates or removes a movement, because the database would
  * refuse to. On-hand is summed on every read, never stored. */
@@ -2218,6 +2225,105 @@ export const mockApi = {
     if (i === -1) throw new Error(`location not found: ${q.location_id}`);
     locations.splice(i, 1);
     return null;
+  },
+
+  // -- chart of accounts, journal generation, lock date. --
+
+  coa_create: async (q: NewLedgerAccount): Promise<LedgerAccount> => {
+    const code = q.code.trim();
+    if (!code) throw new Error("account code must not be empty");
+    if (ledgerAccounts.some((a) => a.book_id === q.book_id && a.code === code))
+      throw new Error(`account code "${code}" already exists in this book`);
+    const created: LedgerAccount = {
+      id: id("coa0"),
+      book_id: q.book_id,
+      code,
+      name: q.name.trim(),
+      type: q.kind,
+      vat_rate_bp: null,
+      archived: false,
+    };
+    ledgerAccounts.push(created);
+    return clone(created);
+  },
+
+  /** Archive, never delete — the row stays and stops accepting new lines. */
+  coa_archive: async (q: { id: string }): Promise<LedgerAccount> => {
+    const a = ledgerAccounts.find((x) => x.id === q.id);
+    if (!a) throw new Error(`no ledger account with id ${q.id}`);
+    a.archived = true;
+    return clone(a);
+  },
+
+  coa_map_set: async (q: {
+    book_id: string;
+    entity_type: CoaMapEntity;
+    entity_id: string;
+    coa_id: string;
+  }): Promise<CoaMapEntry> => {
+    const now = new Date().toISOString();
+    const existing = coaMap.find(
+      (m) =>
+        m.book_id === q.book_id &&
+        m.entity_type === q.entity_type &&
+        m.entity_id === q.entity_id,
+    );
+    if (existing) {
+      existing.coa_id = q.coa_id;
+      existing.updated_at = now;
+      return clone(existing);
+    }
+    const created: CoaMapEntry = {
+      id: id("cmap"),
+      book_id: q.book_id,
+      entity_type: q.entity_type,
+      entity_id: q.entity_id,
+      coa_id: q.coa_id,
+      created_at: now,
+      updated_at: now,
+    };
+    coaMap.push(created);
+    return clone(created);
+  },
+
+  // Journal generation depends on the CoA mapping and VAT rules that only
+  // core implements; the mock refuses rather than inventing a journal that
+  // would not match what the real service posts.
+  journal_generate_for_transaction: async (_q: {
+    transaction_id: string;
+    vat_rate_id?: string;
+  }): Promise<JournalEntry> => {
+    throw new Error(
+      "journal generation is not simulated in the browser mock — run the desktop app",
+    );
+  },
+
+  journal_generate_for_document: async (_q: {
+    document_id: string;
+  }): Promise<JournalEntry> => {
+    throw new Error(
+      "journal generation is not simulated in the browser mock — run the desktop app",
+    );
+  },
+
+  journal_reverse: async (_q: {
+    journal_id: string;
+    posted_date?: string;
+    narrative?: string;
+  }): Promise<JournalEntry> => {
+    throw new Error(
+      "journal reversal is not simulated in the browser mock — run the desktop app",
+    );
+  },
+
+  book_set_lock_date: async (q: {
+    book_id: string;
+    lock_date?: string | null;
+  }): Promise<Book> => {
+    const b = books.find((x) => x.id === q.book_id);
+    if (!b) throw new Error(`book not found: ${q.book_id}`);
+    lockDates.set(q.book_id, q.lock_date ?? null);
+    return clone(b);
   },
 
   // -- stock: the append-only movement ledger (Phase 6.3b). --

@@ -236,6 +236,152 @@ pub async fn location_delete(
 }
 
 // ---------------------------------------------------------------------------
+// chart of accounts, journal generation, and the book lock date. Wired late:
+// listing and seeding the chart, and posting/reading a journal, were here
+// from the start — but nothing could add an account, map an entity to one,
+// generate a journal from a transaction or document, reverse a posted
+// journal, or set the lock date.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct CoaIdQuery {
+    pub id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct CoaMapSetQuery {
+    pub book_id: String,
+    pub entity_type: core::CoaMapEntity,
+    pub entity_id: String,
+    pub coa_id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct JournalGenerateTxnQuery {
+    pub transaction_id: String,
+    #[serde(default)]
+    pub vat_rate_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct JournalGenerateDocQuery {
+    pub document_id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct JournalReverseQuery {
+    pub journal_id: String,
+    #[serde(default)]
+    pub posted_date: Option<String>,
+    #[serde(default)]
+    pub narrative: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct BookLockDateQuery {
+    pub book_id: String,
+    #[serde(default)]
+    pub lock_date: Option<String>,
+}
+
+#[tauri::command]
+pub async fn coa_create(
+    state: State<'_, AppState>,
+    query: core::NewCoaAccount,
+) -> Result<LedgerAccountDto, String> {
+    let coa = state.service()?.coa_create(query).map_err(err)?;
+    Ok(ledger_account_dto(&coa))
+}
+
+/// Archive rather than delete — history is preserved, accounts are never
+/// removed.
+#[tauri::command]
+pub async fn coa_archive(
+    state: State<'_, AppState>,
+    query: CoaIdQuery,
+) -> Result<LedgerAccountDto, String> {
+    let coa = state.service()?.coa_archive(&query.id).map_err(err)?;
+    Ok(ledger_account_dto(&coa))
+}
+
+#[tauri::command]
+pub async fn coa_map_set(
+    state: State<'_, AppState>,
+    query: CoaMapSetQuery,
+) -> Result<core::CoaMapEntry, String> {
+    state
+        .service()?
+        .coa_map_set(
+            &query.book_id,
+            query.entity_type,
+            &query.entity_id,
+            &query.coa_id,
+        )
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn journal_generate_for_transaction(
+    state: State<'_, AppState>,
+    query: JournalGenerateTxnQuery,
+) -> Result<JournalEntryDto, String> {
+    let service = state.service()?;
+    let posted = service
+        .journal_generate_for_transaction(&query.transaction_id, query.vat_rate_id.as_deref())
+        .map_err(err)?;
+    let names = coa_names(&service, &posted.journal.book_id)?;
+    Ok(journal_entry_dto(&posted, |id| {
+        names.get(id).cloned().unwrap_or_default()
+    }))
+}
+
+#[tauri::command]
+pub async fn journal_generate_for_document(
+    state: State<'_, AppState>,
+    query: JournalGenerateDocQuery,
+) -> Result<JournalEntryDto, String> {
+    let service = state.service()?;
+    let posted = service
+        .journal_generate_for_document(&query.document_id)
+        .map_err(err)?;
+    let names = coa_names(&service, &posted.journal.book_id)?;
+    Ok(journal_entry_dto(&posted, |id| {
+        names.get(id).cloned().unwrap_or_default()
+    }))
+}
+
+/// A posted journal is immutable; a correction is a reversal.
+#[tauri::command]
+pub async fn journal_reverse(
+    state: State<'_, AppState>,
+    query: JournalReverseQuery,
+) -> Result<JournalEntryDto, String> {
+    let service = state.service()?;
+    let posted = service
+        .journal_reverse(
+            &query.journal_id,
+            query.posted_date.as_deref(),
+            query.narrative.as_deref(),
+        )
+        .map_err(err)?;
+    let names = coa_names(&service, &posted.journal.book_id)?;
+    Ok(journal_entry_dto(&posted, |id| {
+        names.get(id).cloned().unwrap_or_default()
+    }))
+}
+
+#[tauri::command]
+pub async fn book_set_lock_date(
+    state: State<'_, AppState>,
+    query: BookLockDateQuery,
+) -> Result<core::Book, String> {
+    state
+        .service()?
+        .book_set_lock_date(&query.book_id, query.lock_date.as_deref())
+        .map_err(err)
+}
+
+// ---------------------------------------------------------------------------
 // stock — the append-only movement ledger (Phase 6.3b, the flowstock fold).
 // On-hand is ALWAYS `SUM(qty_delta)` over immutable rows, never a stored
 // counter, so there is deliberately no "set stock level" command: a

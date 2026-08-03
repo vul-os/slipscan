@@ -20,6 +20,8 @@ import type {
   BudgetUpsert,
   BudgetWithSpend,
   Category,
+  CoaMapEntity,
+  CoaMapEntry,
   Contact,
   ContactUpdateRequest,
   DataMoveRequest,
@@ -57,6 +59,7 @@ import type {
   NewContact,
   NewInvoice,
   NewInvoicePayment,
+  NewLedgerAccount,
   NewLocation,
   NewMember,
   NewPayEndpoint,
@@ -198,6 +201,59 @@ export const api = {
 
   locationDelete: (q: { location_id: string }): Promise<null> =>
     call("location_delete", { query: q }, () => mockApi.location_delete(q)),
+
+  // -- chart of accounts, journal generation, and the book lock date. The
+  // chart could be listed and seeded but not added to; a journal could be
+  // posted but not generated from a transaction or document, nor reversed. --
+
+  ledgerAccountCreate: (q: NewLedgerAccount): Promise<LedgerAccount> =>
+    call("coa_create", { query: q }, () => mockApi.coa_create(q)),
+
+  /** Archive, never delete — history is preserved. */
+  ledgerAccountArchive: (q: { id: string }): Promise<LedgerAccount> =>
+    call("coa_archive", { query: q }, () => mockApi.coa_archive(q)),
+
+  /** Map an account or category onto a chart entry. */
+  coaMapSet: (q: {
+    book_id: string;
+    entity_type: CoaMapEntity;
+    entity_id: string;
+    coa_id: string;
+  }): Promise<CoaMapEntry> =>
+    call("coa_map_set", { query: q }, () => mockApi.coa_map_set(q)),
+
+  journalGenerateForTransaction: (q: {
+    transaction_id: string;
+    vat_rate_id?: string;
+  }): Promise<JournalEntry> =>
+    call("journal_generate_for_transaction", { query: q }, () =>
+      mockApi.journal_generate_for_transaction(q),
+    ),
+
+  journalGenerateForDocument: (q: {
+    document_id: string;
+  }): Promise<JournalEntry> =>
+    call("journal_generate_for_document", { query: q }, () =>
+      mockApi.journal_generate_for_document(q),
+    ),
+
+  /** A posted journal is immutable; a correction is a reversal. */
+  journalReverse: (q: {
+    journal_id: string;
+    posted_date?: string;
+    narrative?: string;
+  }): Promise<JournalEntry> =>
+    call("journal_reverse", { query: q }, () => mockApi.journal_reverse(q)),
+
+  /** Set or clear the book's financial lock date — journals may not be
+   * posted on or before it. `null` clears. */
+  bookSetLockDate: (q: {
+    book_id: string;
+    lock_date?: string | null;
+  }): Promise<Book> =>
+    call("book_set_lock_date", { query: q }, () =>
+      mockApi.book_set_lock_date(q),
+    ),
 
   // -- stock: the append-only movement ledger (Phase 6.3b). On-hand is
   // derived on every read; there is no "set level" call, on purpose. --

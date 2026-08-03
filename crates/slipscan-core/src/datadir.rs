@@ -407,9 +407,17 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 /// Move the data folder to `target` per the contract: copy + per-file
 /// checksum verify, open/migrate + integrity check on the copy, atomic
-/// pointer swap, then remove the old copy. Any open service on this folder
-/// must be flagged read-only first ([`crate::CoreService::set_read_only`])
-/// and reopened at the new location afterwards.
+/// pointer swap, then remove the old copy.
+///
+/// **No open handle may write to the folder while this runs.** The desktop —
+/// the only surface that offers a move — does the strong version: it swaps
+/// its live service, vault and devices handles for closed placeholders,
+/// moves, then reopens at the new location. Flagging the service read-only
+/// ([`crate::CoreService::set_read_only`], enforced by `PRAGMA query_only`)
+/// is the weaker alternative for a caller that cannot close, and is why that
+/// method exists even though nothing in this repo currently needs it. This
+/// comment used to say read-only was required, which no caller did and none
+/// needed to.
 pub fn move_data_dir(
     resolver: &DataDirResolver,
     target: &Path,

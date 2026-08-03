@@ -8,15 +8,8 @@
     "work; re-record with --write when you do."
   ],
   "total": 167,
-  "unreachable": 14,
+  "unreachable": 7,
   "methods": [
-    "book_set_lock_date",
-    "coa_archive",
-    "coa_create",
-    "coa_map_set",
-    "journal_generate_for_document",
-    "journal_generate_for_transaction",
-    "journal_reverse",
     "new",
     "report_balance_sheet",
     "report_income_statement",
