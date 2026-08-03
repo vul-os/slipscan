@@ -45,6 +45,7 @@ import type {
   LedgerAccount,
   Location,
   LocationUpdateRequest,
+  LowStockVariant,
   Member,
   MemberAmountRow,
   MemberCategoryRow,
@@ -68,6 +69,7 @@ import type {
   NewPurchaseOrderItem,
   NewSalesOrder,
   NewSalesOrderItem,
+  NewStockMovement,
   PackDocumentRequest,
   PackInstallOutcome,
   PackOffer,
@@ -105,9 +107,11 @@ import type {
   Settings,
   SpendingReport,
   SplitShare,
+  StockMovement,
   Transaction,
   TransactionListQuery,
   TransactionSplit,
+  TransferResult,
   TrialBalance,
   VatRate,
   VatSummary,
@@ -194,6 +198,72 @@ export const api = {
 
   locationDelete: (q: { location_id: string }): Promise<null> =>
     call("location_delete", { query: q }, () => mockApi.location_delete(q)),
+
+  // -- stock: the append-only movement ledger (Phase 6.3b). On-hand is
+  // derived on every read; there is no "set level" call, on purpose. --
+
+  stockMovementRecord: (q: NewStockMovement): Promise<StockMovement> =>
+    call("stock_movement_record", { query: q }, () =>
+      mockApi.stock_movement_record(q),
+    ),
+
+  /** `SUM(qty_delta)` for one variant at one location. */
+  stockOnHand: (q: {
+    variant_id: string;
+    location_id: string;
+  }): Promise<number> =>
+    call("stock_on_hand", { query: q }, () => mockApi.stock_on_hand(q)),
+
+  /** On-hand per location, as `[location_id, qty]` pairs. */
+  stockOnHandByLocation: (q: {
+    variant_id: string;
+  }): Promise<[string, number][]> =>
+    call("stock_on_hand_by_location", { query: q }, () =>
+      mockApi.stock_on_hand_by_location(q),
+    ),
+
+  stockOnHandTotal: (q: { variant_id: string }): Promise<number> =>
+    call("stock_on_hand_total", { query: q }, () =>
+      mockApi.stock_on_hand_total(q),
+    ),
+
+  stockMovementsForVariant: (q: {
+    variant_id: string;
+  }): Promise<StockMovement[]> =>
+    call("stock_movements_for_variant", { query: q }, () =>
+      mockApi.stock_movements_for_variant(q),
+    ),
+
+  stockMovementsForLocation: (q: {
+    location_id: string;
+  }): Promise<StockMovement[]> =>
+    call("stock_movements_for_location", { query: q }, () =>
+      mockApi.stock_movements_for_location(q),
+    ),
+
+  /** Every movement written by one source document. */
+  stockMovementsForRef: (q: {
+    ref_kind: string;
+    ref_id: string;
+  }): Promise<StockMovement[]> =>
+    call("stock_movements_for_ref", { query: q }, () =>
+      mockApi.stock_movements_for_ref(q),
+    ),
+
+  stockTransfer: (q: {
+    variant_id: string;
+    from_location_id: string;
+    to_location_id: string;
+    qty: number;
+    note?: string;
+    created_by?: string;
+  }): Promise<TransferResult> =>
+    call("stock_transfer", { query: q }, () => mockApi.stock_transfer(q)),
+
+  stockLowVariants: (q: { book_id: string }): Promise<LowStockVariant[]> =>
+    call("stock_low_variants", { query: q }, () =>
+      mockApi.stock_low_variants(q),
+    ),
 
   // -- catalogue: product categories, products, and their variants (Phase
   // 6.3a). The variant is the unit stock movements and order lines reference;

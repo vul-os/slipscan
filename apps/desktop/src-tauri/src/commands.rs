@@ -236,6 +236,152 @@ pub async fn location_delete(
 }
 
 // ---------------------------------------------------------------------------
+// stock — the append-only movement ledger (Phase 6.3b, the flowstock fold).
+// On-hand is ALWAYS `SUM(qty_delta)` over immutable rows, never a stored
+// counter, so there is deliberately no "set stock level" command: a
+// correction is a new `adjustment` movement. Wired last — 6.3b shipped with
+// none of its nine operations on any surface.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct VariantScopedQuery {
+    pub variant_id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct StockOnHandQuery {
+    pub variant_id: String,
+    pub location_id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct LocationScopedQuery {
+    pub location_id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct StockRefQuery {
+    pub ref_kind: String,
+    pub ref_id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct StockTransferQuery {
+    pub variant_id: String,
+    pub from_location_id: String,
+    pub to_location_id: String,
+    pub qty: i64,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+}
+
+#[tauri::command]
+pub async fn stock_movement_record(
+    state: State<'_, AppState>,
+    query: core::NewStockMovement,
+) -> Result<core::StockMovement, String> {
+    state.service()?.stock_movement_record(query).map_err(err)
+}
+
+#[tauri::command]
+pub async fn stock_on_hand(
+    state: State<'_, AppState>,
+    query: StockOnHandQuery,
+) -> Result<i64, String> {
+    state
+        .service()?
+        .stock_on_hand(&query.variant_id, &query.location_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn stock_on_hand_by_location(
+    state: State<'_, AppState>,
+    query: VariantScopedQuery,
+) -> Result<Vec<(String, i64)>, String> {
+    state
+        .service()?
+        .stock_on_hand_by_location(&query.variant_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn stock_on_hand_total(
+    state: State<'_, AppState>,
+    query: VariantScopedQuery,
+) -> Result<i64, String> {
+    state
+        .service()?
+        .stock_on_hand_total(&query.variant_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn stock_movements_for_variant(
+    state: State<'_, AppState>,
+    query: VariantScopedQuery,
+) -> Result<Vec<core::StockMovement>, String> {
+    state
+        .service()?
+        .stock_movements_for_variant(&query.variant_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn stock_movements_for_location(
+    state: State<'_, AppState>,
+    query: LocationScopedQuery,
+) -> Result<Vec<core::StockMovement>, String> {
+    state
+        .service()?
+        .stock_movements_for_location(&query.location_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn stock_movements_for_ref(
+    state: State<'_, AppState>,
+    query: StockRefQuery,
+) -> Result<Vec<core::StockMovement>, String> {
+    state
+        .service()?
+        .stock_movements_for_ref(&query.ref_kind, &query.ref_id)
+        .map_err(err)
+}
+
+/// Two movements summing to zero, in one transaction.
+#[tauri::command]
+pub async fn stock_transfer(
+    state: State<'_, AppState>,
+    query: StockTransferQuery,
+) -> Result<core::TransferResult, String> {
+    state
+        .service()?
+        .stock_transfer(
+            &query.variant_id,
+            &query.from_location_id,
+            &query.to_location_id,
+            query.qty,
+            query.note,
+            query.created_by,
+        )
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn stock_low_variants(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::LowStockVariant>, String> {
+    state
+        .service()?
+        .stock_low_variants(&query.book_id)
+        .map_err(err)
+}
+
+// ---------------------------------------------------------------------------
 // catalogue — product categories, products, and their variants (Phase 6.3a,
 // the flowstock fold). Wired late, like contacts: only
 // `product_variant_list_for_book` was on any surface, so an order line could

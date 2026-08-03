@@ -243,10 +243,11 @@ These were settled rather than escalated, and are recorded here so the reasoning
       wrong. Money follows the existing INTEGER-minor-units + ISO-4217 convention rather than a
       second representation)*
 - [x] **6.3b Stock ledger.** The **append-only stock-movement ledger** — on-hand is always
-      `SUM(qty_delta)` over immutable movements, never a stored counter *(shipped in core, and
-      **reachable from nothing at all**: 0 of 9 stock operations are on the CLI, the HTTP API or the
-      desktop, so on-hand cannot be read and a movement cannot be recorded by anyone. Tracked by
-      `npm run reachable:check`. Otherwise: immutability is
+      `SUM(qty_delta)` over immutable movements, never a stored counter *(shipped, and reachable on
+      all four surfaces as of 2026-08-03 — `slipscan stock …`, HTTP, desktop IPC and a `client.ts`
+      wrapper. It shipped with **zero** of its nine operations routed anywhere, so on-hand could not
+      be read and a movement could only be written as a side effect of confirming an order or
+      receiving a PO; `npm run reachable:check` now fails CI on that. Otherwise: immutability is
       enforced by `RAISE(ABORT)` triggers rather than convention, and `repo/stock.rs` has no update
       or delete function at all. Registered in `LEDGER_TABLES`, so two locations that both traded
       offline converge by union instead of one overwriting the other. Transfers write two movements

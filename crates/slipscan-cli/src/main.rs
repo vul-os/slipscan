@@ -23,10 +23,10 @@ use slipscan_core::domain::{
     LocationKind, LocationPatch, Member, MemberPatch, NewBook, NewContact, NewInvoice,
     NewInvoiceItemInput, NewInvoicePayment, NewLocation, NewMember, NewPayEndpoint, NewPayWatch,
     NewPoReceipt, NewProduct, NewProductCategory, NewProductVariant, NewPurchaseOrder,
-    NewPurchaseOrderItem, NewSalesOrder, NewSalesOrderItem, PayDeliveryState,
+    NewPurchaseOrderItem, NewSalesOrder, NewSalesOrderItem, NewStockMovement, PayDeliveryState,
     PayEndpointWithSecret, ProductPatch, ProductVariant, ProductVariantPatch,
     PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus, SalesOrderItemPatch,
-    SalesOrderPatch, SplitShare, TransactionFilter, TransactionSource,
+    SalesOrderPatch, SplitShare, StockMovementKind, TransactionFilter, TransactionSource,
 };
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
@@ -376,6 +376,12 @@ enum Command {
     Catalogue {
         #[command(subcommand)]
         action: CatalogueAction,
+    },
+
+    /// Stock — the append-only movement ledger (Phase 6.3b).
+    Stock {
+        #[command(subcommand)]
+        action: StockAction,
     },
     /// Purchase orders and goods receipts (Phase 6.4 — the flowstock fold).
     /// A goods receipt writes a stock movement in the same transaction, so
@@ -818,6 +824,93 @@ enum CatalogueAction {
         /// Variant id.
         id: String,
     },
+}
+
+/// On-hand is **always** `SUM(qty_delta)` over immutable movements, never a
+/// stored counter — so there is no `stock set` command and there never will
+/// be. A correction is a new `adjustment` movement.
+#[derive(Debug, Subcommand)]
+enum StockAction {
+    /// Record one movement against a variant at a location.
+    ///
+    /// `allow_negative_numbers` because a negative `qty` is the ordinary case,
+    /// not an edge one — this ledger is signed, and taking stock out is how
+    /// most movements are written. Without it clap reads `-6` as a flag and
+    /// the most common invocation is unreachable.
+    #[command(allow_negative_numbers = true)]
+    Record {
+        /// Variant id.
+        variant_id: String,
+        /// Location id.
+        location_id: String,
+        /// Signed quantity; negative takes stock out. Never zero.
+        qty: i64,
+        /// receipt, sale, adjustment, transfer or count.
+        #[arg(long, value_enum, default_value = "adjustment")]
+        kind: CliStockKind,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// On-hand for a variant: total, per location, or at one location.
+    OnHand {
+        /// Variant id.
+        variant_id: String,
+        /// Restrict to one location.
+        #[arg(long)]
+        location: Option<String>,
+        /// Break the total down per location.
+        #[arg(long, conflicts_with = "location")]
+        by_location: bool,
+    },
+    /// Movement history for a variant, a location, or one source document.
+    History {
+        #[arg(long, conflicts_with_all = ["location", "ref_kind"])]
+        variant: Option<String>,
+        #[arg(long, conflicts_with = "ref_kind")]
+        location: Option<String>,
+        /// Source document kind, e.g. "sales_order" or "po_receipt".
+        #[arg(long, requires = "ref_id")]
+        ref_kind: Option<String>,
+        /// Source document id.
+        #[arg(long)]
+        ref_id: Option<String>,
+    },
+    /// Move stock between two locations: two movements summing to zero.
+    Transfer {
+        /// Variant id.
+        variant_id: String,
+        /// Source location id.
+        from: String,
+        /// Destination location id.
+        to: String,
+        /// Positive quantity to move.
+        qty: i64,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Variants at or below their reorder point.
+    Low,
+}
+
+#[derive(Debug, Copy, Clone, ValueEnum)]
+enum CliStockKind {
+    Receipt,
+    Sale,
+    Adjustment,
+    Transfer,
+    Count,
+}
+
+impl From<CliStockKind> for StockMovementKind {
+    fn from(v: CliStockKind) -> Self {
+        match v {
+            CliStockKind::Receipt => StockMovementKind::Receipt,
+            CliStockKind::Sale => StockMovementKind::Sale,
+            CliStockKind::Adjustment => StockMovementKind::Adjustment,
+            CliStockKind::Transfer => StockMovementKind::Transfer,
+            CliStockKind::Count => StockMovementKind::Count,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, ValueEnum)]
@@ -2518,6 +2611,118 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 None => "auto (derived)",
                             }
                         );
+                    })
+                }
+            }
+        }
+
+        Command::Stock { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                StockAction::Record {
+                    variant_id,
+                    location_id,
+                    qty,
+                    kind,
+                    note,
+                } => {
+                    let movement = svc.stock_movement_record(NewStockMovement {
+                        variant_id: variant_id.clone(),
+                        location_id: location_id.clone(),
+                        qty_delta: *qty,
+                        kind: (*kind).into(),
+                        ref_kind: None,
+                        ref_id: None,
+                        note: note.clone(),
+                        created_by: None,
+                    })?;
+                    emit(cli.json, &movement, || {
+                        println!(
+                            "Recorded {} {} for variant {}",
+                            movement.kind, movement.qty_delta, movement.variant_id
+                        );
+                    })
+                }
+                StockAction::OnHand {
+                    variant_id,
+                    location,
+                    by_location,
+                } => {
+                    if *by_location {
+                        let rows = svc.stock_on_hand_by_location(variant_id)?;
+                        emit(cli.json, &rows, || {
+                            if rows.is_empty() {
+                                println!("No movements for this variant yet.");
+                            }
+                            for (loc, qty) in &rows {
+                                println!("{loc}\t{qty}");
+                            }
+                        })
+                    } else if let Some(loc) = location {
+                        let qty = svc.stock_on_hand(variant_id, loc)?;
+                        emit(cli.json, &qty, || println!("{qty}"))
+                    } else {
+                        let qty = svc.stock_on_hand_total(variant_id)?;
+                        emit(cli.json, &qty, || println!("{qty}"))
+                    }
+                }
+                StockAction::History {
+                    variant,
+                    location,
+                    ref_kind,
+                    ref_id,
+                } => {
+                    let rows = match (variant, location, ref_kind, ref_id) {
+                        (Some(v), _, _, _) => svc.stock_movements_for_variant(v)?,
+                        (_, Some(l), _, _) => svc.stock_movements_for_location(l)?,
+                        (_, _, Some(k), Some(r)) => svc.stock_movements_for_ref(k, r)?,
+                        _ => {
+                            return Err(anyhow::anyhow!(
+                                "pass --variant, --location, or --ref-kind with --ref-id"
+                            ))
+                        }
+                    };
+                    emit(cli.json, &rows, || {
+                        if rows.is_empty() {
+                            println!("No movements.");
+                        }
+                        for m in &rows {
+                            println!(
+                                "{}\t{}\t{}\t{}\t{}",
+                                m.created_at, m.kind, m.qty_delta, m.variant_id, m.location_id
+                            );
+                        }
+                    })
+                }
+                StockAction::Transfer {
+                    variant_id,
+                    from,
+                    to,
+                    qty,
+                    note,
+                } => {
+                    let result =
+                        svc.stock_transfer(variant_id, from, to, *qty, note.clone(), None)?;
+                    emit(cli.json, &result, || {
+                        println!(
+                            "Transferred {} of {} from {} to {}",
+                            qty, variant_id, from, to
+                        );
+                    })
+                }
+                StockAction::Low => {
+                    let rows = svc.stock_low_variants(&book.id)?;
+                    emit(cli.json, &rows, || {
+                        if rows.is_empty() {
+                            println!("Nothing at or below its reorder point.");
+                        }
+                        for r in &rows {
+                            println!(
+                                "{}\t{}\t{}\t(reorder at {})",
+                                r.variant.sku, r.variant.name, r.on_hand, r.variant.reorder_point
+                            );
+                        }
                     })
                 }
             }

@@ -124,6 +124,63 @@ export interface LocationUpdateRequest {
 }
 
 // ---------------------------------------------------------------------------
+// stock — the append-only movement ledger (Phase 6.3b, the flowstock fold).
+//
+// **On-hand is always `SUM(qty_delta)` over immutable movements**, computed on
+// every read, never a stored counter. There is deliberately no "set stock
+// level" call and there never will be: a correction is a new `adjustment`
+// movement, which is what lets two locations that traded while disconnected
+// converge by union instead of one overwriting the other.
+// ---------------------------------------------------------------------------
+
+export type StockMovementKind =
+  | "receipt"
+  | "sale"
+  | "adjustment"
+  | "transfer"
+  | "count";
+
+export interface StockMovement {
+  id: string;
+  book_id: string;
+  variant_id: string;
+  location_id: string;
+  /** Signed. Negative takes stock out. Never zero. */
+  qty_delta: number;
+  kind: StockMovementKind;
+  /** What caused it, e.g. "po_receipt" or "sales_order". */
+  ref_kind: string | null;
+  ref_id: string | null;
+  note: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface NewStockMovement {
+  variant_id: string;
+  location_id: string;
+  qty_delta: number;
+  kind: StockMovementKind;
+  ref_kind?: string;
+  ref_id?: string;
+  note?: string;
+  created_by?: string;
+}
+
+/** A transfer is two movements summing to zero, written in one transaction —
+ * stock never leaks in transit because it is never in transit. */
+export interface TransferResult {
+  out: StockMovement;
+  in_: StockMovement;
+}
+
+/** A variant whose total on-hand is at or below its reorder point. */
+export interface LowStockVariant {
+  variant: ProductVariant;
+  on_hand: number;
+}
+
+// ---------------------------------------------------------------------------
 // catalogue — product categories, products, and their variants (Phase 6.3a,
 // the flowstock fold).
 //

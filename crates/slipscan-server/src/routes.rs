@@ -282,6 +282,40 @@ struct ProductVariantUpdateReq {
     patch: ProductVariantPatch,
 }
 
+#[derive(Debug, Deserialize)]
+struct VariantIdReq {
+    variant_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockOnHandReq {
+    variant_id: String,
+    location_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocationIdOnlyReq {
+    location_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockRefReq {
+    ref_kind: String,
+    ref_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StockTransferReq {
+    variant_id: String,
+    from_location_id: String,
+    to_location_id: String,
+    qty: i64,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    created_by: Option<String>,
+}
+
 // -- Purchasing (Phase 6.4) request shapes -----------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -800,6 +834,105 @@ async fn location_update(
 async fn location_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
     s.service()?.location_delete(&req.id)?;
     Ok(Json(OK))
+}
+
+// -- Stock: the append-only movement ledger (Phase 6.3b — the flowstock
+// fold). On-hand is ALWAYS `SUM(qty_delta)` over immutable rows, never a
+// stored counter, so there is no "set stock level" operation here and there
+// never will be — a correction is a new `adjustment` movement.
+//
+// Routed last of all: 6.3b shipped with none of its nine operations on any
+// surface, so on-hand could not be read anywhere and a movement could only be
+// written as a side effect of confirming an order or receiving a PO.
+
+async fn stock_movement_record(
+    State(s): State<AppState>,
+    Json(req): Json<NewStockMovement>,
+) -> ApiResult<StockMovement> {
+    Ok(Json(s.service()?.stock_movement_record(req)?))
+}
+
+/// On-hand for one variant at one location: `SUM(qty_delta)`, computed now.
+async fn stock_on_hand(
+    State(s): State<AppState>,
+    Json(req): Json<StockOnHandReq>,
+) -> ApiResult<i64> {
+    Ok(Json(
+        s.service()?
+            .stock_on_hand(&req.variant_id, &req.location_id)?,
+    ))
+}
+
+/// On-hand for one variant, split per location.
+async fn stock_on_hand_by_location(
+    State(s): State<AppState>,
+    Json(req): Json<VariantIdReq>,
+) -> ApiResult<Vec<(String, i64)>> {
+    Ok(Json(
+        s.service()?.stock_on_hand_by_location(&req.variant_id)?,
+    ))
+}
+
+async fn stock_on_hand_total(
+    State(s): State<AppState>,
+    Json(req): Json<VariantIdReq>,
+) -> ApiResult<i64> {
+    Ok(Json(s.service()?.stock_on_hand_total(&req.variant_id)?))
+}
+
+async fn stock_movements_for_variant(
+    State(s): State<AppState>,
+    Json(req): Json<VariantIdReq>,
+) -> ApiResult<Vec<StockMovement>> {
+    Ok(Json(
+        s.service()?.stock_movements_for_variant(&req.variant_id)?,
+    ))
+}
+
+async fn stock_movements_for_location(
+    State(s): State<AppState>,
+    Json(req): Json<LocationIdOnlyReq>,
+) -> ApiResult<Vec<StockMovement>> {
+    Ok(Json(
+        s.service()?
+            .stock_movements_for_location(&req.location_id)?,
+    ))
+}
+
+/// Every movement written by one source document — the audit trail behind a
+/// goods receipt or a confirmed sale.
+async fn stock_movements_for_ref(
+    State(s): State<AppState>,
+    Json(req): Json<StockRefReq>,
+) -> ApiResult<Vec<StockMovement>> {
+    Ok(Json(
+        s.service()?
+            .stock_movements_for_ref(&req.ref_kind, &req.ref_id)?,
+    ))
+}
+
+/// Two movements summing to zero, in one transaction — stock never leaks in
+/// transit because it is never in transit.
+async fn stock_transfer(
+    State(s): State<AppState>,
+    Json(req): Json<StockTransferReq>,
+) -> ApiResult<TransferResult> {
+    Ok(Json(s.service()?.stock_transfer(
+        &req.variant_id,
+        &req.from_location_id,
+        &req.to_location_id,
+        req.qty,
+        req.note,
+        req.created_by,
+    )?))
+}
+
+/// Variants whose total on-hand is at or below their reorder point.
+async fn stock_low_variants(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<LowStockVariant>> {
+    Ok(Json(s.service()?.stock_low_variants(&req.book_id)?))
 }
 
 // -- Catalogue: product categories, products, and their variants (Phase 6.3a
@@ -2222,6 +2355,24 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/product_variant_update", post(product_variant_update))
         .route("/product_variant_delete", post(product_variant_delete))
+        .route("/stock_movement_record", post(stock_movement_record))
+        .route("/stock_on_hand", post(stock_on_hand))
+        .route(
+            "/stock_on_hand_by_location",
+            post(stock_on_hand_by_location),
+        )
+        .route("/stock_on_hand_total", post(stock_on_hand_total))
+        .route(
+            "/stock_movements_for_variant",
+            post(stock_movements_for_variant),
+        )
+        .route(
+            "/stock_movements_for_location",
+            post(stock_movements_for_location),
+        )
+        .route("/stock_movements_for_ref", post(stock_movements_for_ref))
+        .route("/stock_transfer", post(stock_transfer))
+        .route("/stock_low_variants", post(stock_low_variants))
         .route("/po_create", post(po_create))
         .route("/po_get", post(po_get))
         .route("/po_list", post(po_list))
@@ -2382,6 +2533,238 @@ pub fn app(state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Stock was the last of the three Phase 6 foundations with nothing on any
+    /// surface — on-hand could not be read and a movement could not be written
+    /// except as a side effect of confirming an order. Asserts the two
+    /// properties the ledger design exists for: on-hand is derived by summing,
+    /// and a transfer is two movements that cancel, so moving stock never
+    /// changes how much of it there is.
+    #[tokio::test]
+    async fn on_hand_is_summed_and_a_transfer_conserves_the_total() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Biz", "kind": "business", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+        let (_, product) = call(
+            &app,
+            post_req(
+                "/api/v1/product_create",
+                json!({"book_id": book_id, "name": "T"}),
+                None,
+            ),
+        )
+        .await;
+        let (_, variant) = call(
+            &app,
+            post_req(
+                "/api/v1/product_variant_add",
+                json!({"product_id": product["id"].as_str().unwrap(), "sku": "S1",
+                       "name": "V", "currency": "ZAR", "reorder_point": 5}),
+                None,
+            ),
+        )
+        .await;
+        let variant_id = variant["id"].as_str().unwrap().to_string();
+        let (_, l1) = call(
+            &app,
+            post_req(
+                "/api/v1/location_create",
+                json!({"book_id": book_id, "name": "JHB"}),
+                None,
+            ),
+        )
+        .await;
+        let jhb = l1["id"].as_str().unwrap().to_string();
+        let (_, l2) = call(
+            &app,
+            post_req(
+                "/api/v1/location_create",
+                json!({"book_id": book_id, "name": "CPT"}),
+                None,
+            ),
+        )
+        .await;
+        let cpt = l2["id"].as_str().unwrap().to_string();
+
+        let (status, mv) = call(
+            &app,
+            post_req(
+                "/api/v1/stock_movement_record",
+                json!({"variant_id": variant_id, "location_id": jhb,
+                       "qty_delta": 10, "kind": "receipt"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "stock_movement_record: {mv}");
+
+        macro_rules! on_hand_total {
+            () => {{
+                let (_, v) = call(
+                    &app,
+                    post_req(
+                        "/api/v1/stock_on_hand_total",
+                        json!({"variant_id": variant_id}),
+                        None,
+                    ),
+                )
+                .await;
+                v.as_i64().unwrap()
+            }};
+        }
+        assert_eq!(on_hand_total!(), 10);
+
+        let (status, transfer) = call(
+            &app,
+            post_req(
+                "/api/v1/stock_transfer",
+                json!({"variant_id": variant_id, "from_location_id": jhb,
+                       "to_location_id": cpt, "qty": 4}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "stock_transfer: {transfer}");
+        assert_eq!(
+            transfer["out"]["qty_delta"].as_i64().unwrap()
+                + transfer["in_"]["qty_delta"].as_i64().unwrap(),
+            0,
+            "a transfer's two movements must sum to zero"
+        );
+
+        // The invariant: moving stock does not change how much there is.
+        assert_eq!(on_hand_total!(), 10, "a transfer must conserve the total");
+
+        let (_, per_loc) = call(
+            &app,
+            post_req(
+                "/api/v1/stock_on_hand_by_location",
+                json!({"variant_id": variant_id}),
+                None,
+            ),
+        )
+        .await;
+        let mut split: Vec<i64> = per_loc
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p[1].as_i64().unwrap())
+            .collect();
+        split.sort();
+        assert_eq!(
+            split,
+            vec![4, 6],
+            "the total must be split across the two locations"
+        );
+
+        // Reorder point 5, on-hand 10: not low. Sell 6 and it must become low.
+        let (_, low) = call(
+            &app,
+            post_req(
+                "/api/v1/stock_low_variants",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert!(
+            low.as_array().unwrap().is_empty(),
+            "10 on hand is not low, got {low}"
+        );
+
+        call(
+            &app,
+            post_req(
+                "/api/v1/stock_movement_record",
+                json!({"variant_id": variant_id, "location_id": jhb,
+                       "qty_delta": -6, "kind": "sale"}),
+                None,
+            ),
+        )
+        .await;
+        let (_, low) = call(
+            &app,
+            post_req(
+                "/api/v1/stock_low_variants",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(
+            low.as_array().unwrap().len(),
+            1,
+            "4 on hand is at or below 5, got {low}"
+        );
+        assert_eq!(low[0]["on_hand"], 4);
+
+        // The boundary, which is the whole difference between `<` and `<=`:
+        // "at or below" means on-hand EQUAL to the reorder point is low. With
+        // 4 vs 5 the two predicates agree, so without this the off-by-one is
+        // untested.
+        call(
+            &app,
+            post_req(
+                "/api/v1/stock_movement_record",
+                json!({"variant_id": variant_id, "location_id": jhb,
+                       "qty_delta": 1, "kind": "adjustment"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(
+            on_hand_total!(),
+            5,
+            "on-hand is now exactly the reorder point"
+        );
+        let (_, low) = call(
+            &app,
+            post_req(
+                "/api/v1/stock_low_variants",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(
+            low.as_array().unwrap().len(),
+            1,
+            "on-hand EQUAL to the reorder point is low — 'at or below', got {low}"
+        );
+
+        // And one above it is not.
+        call(
+            &app,
+            post_req(
+                "/api/v1/stock_movement_record",
+                json!({"variant_id": variant_id, "location_id": jhb,
+                       "qty_delta": 1, "kind": "adjustment"}),
+                None,
+            ),
+        )
+        .await;
+        let (_, low) = call(
+            &app,
+            post_req(
+                "/api/v1/stock_low_variants",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert!(
+            low.as_array().unwrap().is_empty(),
+            "6 on hand is above 5, got {low}"
+        );
+    }
+
     /// The catalogue was in the same state contacts were: shipped in core with
     /// Phase 6.3a, routed nowhere, so an order line could name a `variant_id`
     /// nothing could create. This drives the chain that was impossible —

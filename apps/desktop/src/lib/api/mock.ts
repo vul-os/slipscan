@@ -45,6 +45,7 @@ import type {
   LedgerAccount,
   Location,
   LocationUpdateRequest,
+  LowStockVariant,
   Member,
   MemberAmountRow,
   MemberCategoryRow,
@@ -70,6 +71,7 @@ import type {
   NewPurchaseOrderItem,
   NewSalesOrder,
   NewSalesOrderItem,
+  NewStockMovement,
   PackDocumentRequest,
   PackInstallOutcome,
   PackKind,
@@ -109,9 +111,11 @@ import type {
   Settings,
   SpendingReport,
   SplitShare,
+  StockMovement,
   Transaction,
   TransactionListQuery,
   TransactionSplit,
+  TransferResult,
   TrialBalance,
   VatRate,
   VatSummary,
@@ -169,6 +173,11 @@ const locations: Location[] = [];
  * append-only, mirroring core's own insert-only `po_receipts` table: nothing
  * here ever mutates or removes a row out of it.
  */
+/** Stock (Phase 6.3b). Append-only, exactly like core's table: nothing in
+ * this file ever mutates or removes a movement, because the database would
+ * refuse to. On-hand is summed on every read, never stored. */
+const stockMovements: StockMovement[] = [];
+
 /** Catalogue (Phase 6.3a). Empty by default, like contacts and purchasing. */
 const productCategories: ProductCategory[] = [];
 const products: Product[] = [];
@@ -2209,6 +2218,121 @@ export const mockApi = {
     if (i === -1) throw new Error(`location not found: ${q.location_id}`);
     locations.splice(i, 1);
     return null;
+  },
+
+  // -- stock: the append-only movement ledger (Phase 6.3b). --
+
+  stock_movement_record: async (
+    q: NewStockMovement,
+  ): Promise<StockMovement> => {
+    if (q.qty_delta === 0)
+      throw new Error("a stock movement must not be zero");
+    const variant = requireVariant(q.variant_id);
+    const created: StockMovement = {
+      id: id("stkm"),
+      book_id: variant.book_id,
+      variant_id: variant.id,
+      location_id: q.location_id,
+      qty_delta: q.qty_delta,
+      kind: q.kind,
+      ref_kind: q.ref_kind ?? null,
+      ref_id: q.ref_id ?? null,
+      note: q.note?.trim() || null,
+      created_by: q.created_by ?? null,
+      created_at: new Date().toISOString(),
+    };
+    stockMovements.push(created);
+    return clone(created);
+  },
+
+  stock_on_hand: async (q: {
+    variant_id: string;
+    location_id: string;
+  }): Promise<number> =>
+    stockMovements
+      .filter(
+        (m) => m.variant_id === q.variant_id && m.location_id === q.location_id,
+      )
+      .reduce((sum, m) => sum + m.qty_delta, 0),
+
+  stock_on_hand_by_location: async (q: {
+    variant_id: string;
+  }): Promise<[string, number][]> => {
+    const per = new Map<string, number>();
+    for (const m of stockMovements.filter((x) => x.variant_id === q.variant_id))
+      per.set(m.location_id, (per.get(m.location_id) ?? 0) + m.qty_delta);
+    return [...per.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  },
+
+  stock_on_hand_total: async (q: { variant_id: string }): Promise<number> =>
+    stockMovements
+      .filter((m) => m.variant_id === q.variant_id)
+      .reduce((sum, m) => sum + m.qty_delta, 0),
+
+  stock_movements_for_variant: async (q: {
+    variant_id: string;
+  }): Promise<StockMovement[]> =>
+    clone(stockMovements.filter((m) => m.variant_id === q.variant_id)),
+
+  stock_movements_for_location: async (q: {
+    location_id: string;
+  }): Promise<StockMovement[]> =>
+    clone(stockMovements.filter((m) => m.location_id === q.location_id)),
+
+  stock_movements_for_ref: async (q: {
+    ref_kind: string;
+    ref_id: string;
+  }): Promise<StockMovement[]> =>
+    clone(
+      stockMovements.filter(
+        (m) => m.ref_kind === q.ref_kind && m.ref_id === q.ref_id,
+      ),
+    ),
+
+  /** Two movements summing to zero — stock is never "in transit". */
+  stock_transfer: async (q: {
+    variant_id: string;
+    from_location_id: string;
+    to_location_id: string;
+    qty: number;
+    note?: string;
+    created_by?: string;
+  }): Promise<TransferResult> => {
+    if (q.qty <= 0) throw new Error("a transfer quantity must be positive");
+    if (q.from_location_id === q.to_location_id)
+      throw new Error("a transfer needs two different locations");
+    const variant = requireVariant(q.variant_id);
+    const now = new Date().toISOString();
+    const mk = (location_id: string, qty_delta: number): StockMovement => ({
+      id: id("stkm"),
+      book_id: variant.book_id,
+      variant_id: variant.id,
+      location_id,
+      qty_delta,
+      kind: "transfer",
+      ref_kind: null,
+      ref_id: null,
+      note: q.note?.trim() || null,
+      created_by: q.created_by ?? null,
+      created_at: now,
+    });
+    const out = mk(q.from_location_id, -q.qty);
+    const in_ = mk(q.to_location_id, q.qty);
+    stockMovements.push(out, in_);
+    return clone({ out, in_ });
+  },
+
+  stock_low_variants: async (q: {
+    book_id: string;
+  }): Promise<LowStockVariant[]> => {
+    const rows: LowStockVariant[] = [];
+    for (const variant of productVariants.filter((v) => v.book_id === q.book_id)) {
+      const on_hand = stockMovements
+        .filter((m) => m.variant_id === variant.id)
+        .reduce((sum, m) => sum + m.qty_delta, 0);
+      if (on_hand <= variant.reorder_point) rows.push({ variant: clone(variant), on_hand });
+    }
+    return rows;
   },
 
   // -- catalogue: categories, products, variants (Phase 6.3a). --

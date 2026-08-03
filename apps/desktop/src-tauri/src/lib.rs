@@ -82,6 +82,17 @@ pub fn run() {
             // Purchasing (Phase 6.4). No screen calls these yet (ROADMAP.md
             // 6.9) — wired now so the IPC layer is not the surface left
             // waiting on a UI, the same posture the CLI and HTTP routes take.
+            // Stock (Phase 6.3b). On-hand is derived, never stored — there
+            // is no "set level" command and there never will be.
+            commands::stock_movement_record,
+            commands::stock_on_hand,
+            commands::stock_on_hand_by_location,
+            commands::stock_on_hand_total,
+            commands::stock_movements_for_variant,
+            commands::stock_movements_for_location,
+            commands::stock_movements_for_ref,
+            commands::stock_transfer,
+            commands::stock_low_variants,
             // Catalogue (Phase 6.3a). Wired late for the same reason as
             // contacts below — an order line could name a variant_id that
             // nothing on any surface could create.

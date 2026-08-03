@@ -33,10 +33,12 @@ all three surfaces, sitting on foundations a user could not put a row into. Both
 2026-08-03, and the whole chain now runs end to end: category, product, variant, contact, location,
 order, catalogue line priced from the variant, confirm, stock movement written.
 
-**Stock itself is the remaining hole**: none of its nine operations is on any surface, so on-hand
-cannot be read and a movement cannot be recorded directly — it only moves as a side effect of
-confirming an order or receiving a PO. `npm run reachable:check` keeps the count honest: 21 of 167
-core operations reachable from nothing, down from 42.
+Stock was the last of the three and is closed too: on-hand can be read, a movement recorded, and
+stock transferred between locations, on every surface. `npm run reachable:check` keeps the count
+honest — **12 of 167 core operations reachable from nothing, down from 42**, and none of the twelve
+belongs to Phase 6. What remains unreachable is older accounting-side work: three chart-of-accounts
+operations, three journal-generation ones, three reports, and the lock-date, read-only and
+secret-settings toggles.
 
 The rest is still missing outright: quotes, credit notes, fixed assets, payroll and tracking
 categories do not exist in any form, and the *payable* half of bills is unbuilt, so aged payables

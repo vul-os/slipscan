@@ -8,7 +8,7 @@
     "work; re-record with --write when you do."
   ],
   "total": 167,
-  "unreachable": 21,
+  "unreachable": 12,
   "methods": [
     "book_set_lock_date",
     "coa_archive",
@@ -21,15 +21,6 @@
     "report_spending_by_month",
     "report_vat201",
     "set_read_only",
-    "settings_use_secret",
-    "stock_low_variants",
-    "stock_movement_record",
-    "stock_movements_for_location",
-    "stock_movements_for_ref",
-    "stock_movements_for_variant",
-    "stock_on_hand",
-    "stock_on_hand_by_location",
-    "stock_on_hand_total",
-    "stock_transfer"
+    "settings_use_secret"
   ]
 }
