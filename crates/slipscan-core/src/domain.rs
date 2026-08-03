@@ -141,6 +141,18 @@ str_enum!(
     }
 );
 
+str_enum!(
+    /// Which side(s) of trade a [`Contact`] is on. `Both` is not a "not sure
+    /// yet" placeholder — it is the ordinary case of a party a business both
+    /// buys from and sells to, which is exactly why contacts are one table
+    /// with a role rather than two tables.
+    ContactRole {
+        Customer => "customer",
+        Supplier => "supplier",
+        Both => "both",
+    }
+);
+
 // ---------------------------------------------------------------------------
 // Book
 // ---------------------------------------------------------------------------
@@ -949,6 +961,89 @@ pub struct MemberSettleRow {
     pub contributions_minor: i64,
     pub expenses_minor: i64,
     pub net_minor: i64,
+}
+
+// ---------------------------------------------------------------------------
+// Contacts (Xero axis — PARITY.md "Contacts (customers & suppliers)")
+// ---------------------------------------------------------------------------
+
+/// A party a book trades with, on either side or both — see migration
+/// `0810_contacts` for why this is one table with a `role` rather than
+/// separate customer/supplier tables. `credit_limit_minor` is in the book's
+/// own `currency`; SlipScan has no per-contact currency concept yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Contact {
+    pub id: String,
+    pub book_id: String,
+    pub role: ContactRole,
+    pub name: String,
+    pub company_name: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub billing_address: Option<String>,
+    pub shipping_address: Option<String>,
+    pub tax_number: Option<String>,
+    /// Net payment terms in days (e.g. 30 for "Net 30"). `None` = no term on
+    /// record.
+    pub payment_terms_days: Option<i64>,
+    pub credit_limit_minor: Option<i64>,
+    pub notes: Option<String>,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewContact {
+    pub book_id: String,
+    pub role: ContactRole,
+    pub name: String,
+    #[serde(default)]
+    pub company_name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub phone: Option<String>,
+    #[serde(default)]
+    pub billing_address: Option<String>,
+    #[serde(default)]
+    pub shipping_address: Option<String>,
+    #[serde(default)]
+    pub tax_number: Option<String>,
+    #[serde(default)]
+    pub payment_terms_days: Option<i64>,
+    #[serde(default)]
+    pub credit_limit_minor: Option<i64>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// Selective update; `None` fields are left untouched. The nullable fields
+/// use `Option<Option<T>>` (as `MemberPatch::default_account_id` does):
+/// `Some(None)` explicitly clears the field, plain `None` leaves it as-is.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContactPatch {
+    pub role: Option<ContactRole>,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub company_name: Option<Option<String>>,
+    #[serde(default)]
+    pub email: Option<Option<String>>,
+    #[serde(default)]
+    pub phone: Option<Option<String>>,
+    #[serde(default)]
+    pub billing_address: Option<Option<String>>,
+    #[serde(default)]
+    pub shipping_address: Option<Option<String>>,
+    #[serde(default)]
+    pub tax_number: Option<Option<String>>,
+    #[serde(default)]
+    pub payment_terms_days: Option<Option<i64>>,
+    #[serde(default)]
+    pub credit_limit_minor: Option<Option<i64>>,
+    #[serde(default)]
+    pub notes: Option<Option<String>>,
+    pub is_active: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
