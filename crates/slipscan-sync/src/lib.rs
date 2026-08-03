@@ -31,7 +31,8 @@
 //!
 //! Books, accounts, categories, transactions, transaction splits, merchant
 //! mappings, budgets, members, locations, contacts, the chart of accounts, its
-//! entity map and the VAT-rate table — the full list is [`LWW_TABLES`].
+//! entity map, the VAT-rate table, and the product catalogue (product
+//! categories, products, product variants) — the full list is [`LWW_TABLES`].
 //!
 //! ```text
 //! target  "<table>/<row-id>"      field "row"
@@ -270,6 +271,9 @@ pub const LWW_TABLES: &[&str] = &[
     "coa_map",
     "vat_rates",
     "contacts",
+    "product_categories",
+    "products",
+    "product_variants",
 ];
 
 /// Whether `table` is an immutable ledger, and so maps to the OR-Set.

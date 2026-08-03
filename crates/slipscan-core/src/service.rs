@@ -96,6 +96,23 @@ fn normalize_optional(raw: Option<String>) -> Option<String> {
     })
 }
 
+/// A product variant's `attributes` column is stored and returned verbatim —
+/// nothing in this crate reads a specific key out of it — but it must at
+/// least be the JSON object shape the column's own doc comment promises, so
+/// a caller that later does read a key does not have to also handle "this is
+/// a JSON array" or "this is not JSON at all".
+fn validate_attributes_json(raw: &str) -> CoreResult<()> {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(serde_json::Value::Object(_)) => Ok(()),
+        Ok(_) => Err(CoreError::Validation(
+            "variant attributes must be a JSON object".into(),
+        )),
+        Err(e) => Err(CoreError::Validation(format!(
+            "variant attributes is not valid JSON: {e}"
+        ))),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Reconciliation matcher tuning.
 // ---------------------------------------------------------------------------
@@ -1455,6 +1472,393 @@ impl CoreService {
     pub fn category_tree(&self, book_id: &str) -> CoreResult<Vec<CategoryNode>> {
         let flat = repo::category::list(self.conn(), book_id)?;
         Ok(build_tree(flat))
+    }
+
+    // -----------------------------------------------------------------------
+    // Product catalogue (ROADMAP.md Phase 6.3a). `product_categories` is a
+    // deliberately separate concept from the transaction `categories` just
+    // above — see migration 0820's header. A book with no catalogue entries
+    // behaves exactly as before: nothing here is read by any other service
+    // function yet.
+    // -----------------------------------------------------------------------
+
+    pub fn product_category_create(&self, new: NewProductCategory) -> CoreResult<ProductCategory> {
+        let book = self.book_get(&new.book_id)?;
+        let name = new.name.trim().to_string();
+        if name.is_empty() {
+            return Err(CoreError::Validation(
+                "product category name must not be empty".into(),
+            ));
+        }
+        let now = now_iso();
+        let category = ProductCategory {
+            id: new_id(),
+            book_id: book.id,
+            name,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::catalogue::category_insert(&tx, &category)?;
+        self.emit_audit(
+            &tx,
+            Some(&category.book_id),
+            "product_category",
+            Some(&category.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&category)?),
+        )?;
+        tx.commit()?;
+        Ok(category)
+    }
+
+    pub fn product_category_get(&self, id: &str) -> CoreResult<ProductCategory> {
+        repo::catalogue::category_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "product_category",
+            id: id.to_string(),
+        })
+    }
+
+    /// Every product category in the book, empty for a book that has not
+    /// created one yet — the common case for anyone not running a shop.
+    pub fn product_category_list(&self, book_id: &str) -> CoreResult<Vec<ProductCategory>> {
+        repo::catalogue::category_list(self.conn(), book_id)
+    }
+
+    pub fn product_category_rename(&self, id: &str, name: String) -> CoreResult<ProductCategory> {
+        let before = self.product_category_get(id)?;
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(CoreError::Validation(
+                "product category name must not be empty".into(),
+            ));
+        }
+        let mut after = before.clone();
+        after.name = name;
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::catalogue::category_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "product_category",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Hard delete. Products in the category are detached (`ON DELETE SET
+    /// NULL`), never removed with it.
+    pub fn product_category_delete(&self, id: &str) -> CoreResult<()> {
+        let before = self.product_category_get(id)?;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::catalogue::category_delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "product_category",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn product_create(&self, new: NewProduct) -> CoreResult<Product> {
+        let book = self.book_get(&new.book_id)?;
+        let name = new.name.trim().to_string();
+        if name.is_empty() {
+            return Err(CoreError::Validation(
+                "product name must not be empty".into(),
+            ));
+        }
+        if let Some(category_id) = &new.product_category_id {
+            let category = self.product_category_get(category_id)?;
+            if category.book_id != book.id {
+                return Err(CoreError::Validation(
+                    "product category belongs to a different book".into(),
+                ));
+            }
+        }
+        let now = now_iso();
+        let product = Product {
+            id: new_id(),
+            book_id: book.id,
+            product_category_id: new.product_category_id,
+            name,
+            description: new.description,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::catalogue::product_insert(&tx, &product)?;
+        self.emit_audit(
+            &tx,
+            Some(&product.book_id),
+            "product",
+            Some(&product.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&product)?),
+        )?;
+        tx.commit()?;
+        Ok(product)
+    }
+
+    pub fn product_get(&self, id: &str) -> CoreResult<Product> {
+        repo::catalogue::product_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "product",
+            id: id.to_string(),
+        })
+    }
+
+    pub fn product_list(&self, book_id: &str) -> CoreResult<Vec<Product>> {
+        repo::catalogue::product_list(self.conn(), book_id)
+    }
+
+    pub fn product_update(&self, id: &str, patch: ProductPatch) -> CoreResult<Product> {
+        let before = self.product_get(id)?;
+        let mut after = before.clone();
+        if let Some(name) = patch.name {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err(CoreError::Validation(
+                    "product name must not be empty".into(),
+                ));
+            }
+            after.name = name;
+        }
+        if let Some(description) = patch.description {
+            after.description = description;
+        }
+        if let Some(product_category_id) = patch.product_category_id {
+            if let Some(category_id) = &product_category_id {
+                let category = self.product_category_get(category_id)?;
+                if category.book_id != before.book_id {
+                    return Err(CoreError::Validation(
+                        "product category belongs to a different book".into(),
+                    ));
+                }
+            }
+            after.product_category_id = product_category_id;
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::catalogue::product_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "product",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Hard delete. `product_variants.product_id` is `ON DELETE CASCADE`, so
+    /// every variant of this product goes with it — there is no stock
+    /// ledger yet to leave a dangling reference in (ROADMAP.md 6.3 lands
+    /// that separately, over the `locations` table).
+    pub fn product_delete(&self, id: &str) -> CoreResult<()> {
+        let before = self.product_get(id)?;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::catalogue::product_delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "product",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn product_variant_add(&self, new: NewProductVariant) -> CoreResult<ProductVariant> {
+        let product = self.product_get(&new.product_id)?;
+        let sku = new.sku.trim().to_string();
+        if sku.is_empty() {
+            return Err(CoreError::Validation(
+                "variant SKU must not be empty".into(),
+            ));
+        }
+        let name = new.name.trim().to_string();
+        if name.is_empty() {
+            return Err(CoreError::Validation(
+                "variant name must not be empty".into(),
+            ));
+        }
+        let currency = normalize_currency_code(&new.currency)?;
+        let price_minor = new.price_minor.unwrap_or(0);
+        if price_minor < 0 {
+            return Err(CoreError::Validation(
+                "variant price must not be negative".into(),
+            ));
+        }
+        let cost_price_minor = new.cost_price_minor.unwrap_or(0);
+        if cost_price_minor < 0 {
+            return Err(CoreError::Validation(
+                "variant cost price must not be negative".into(),
+            ));
+        }
+        let reorder_point = new.reorder_point.unwrap_or(0);
+        if reorder_point < 0 {
+            return Err(CoreError::Validation(
+                "variant reorder point must not be negative".into(),
+            ));
+        }
+        if let Some(attributes) = &new.attributes {
+            validate_attributes_json(attributes)?;
+        }
+
+        let now = now_iso();
+        let variant = ProductVariant {
+            id: new_id(),
+            product_id: product.id,
+            book_id: product.book_id,
+            sku,
+            name,
+            price_minor,
+            cost_price_minor,
+            currency,
+            reorder_point,
+            attributes: new.attributes,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::catalogue::variant_insert(&tx, &variant)?;
+        self.emit_audit(
+            &tx,
+            Some(&variant.book_id),
+            "product_variant",
+            Some(&variant.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&variant)?),
+        )?;
+        tx.commit()?;
+        Ok(variant)
+    }
+
+    pub fn product_variant_get(&self, id: &str) -> CoreResult<ProductVariant> {
+        repo::catalogue::variant_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "product_variant",
+            id: id.to_string(),
+        })
+    }
+
+    pub fn product_variant_list(&self, product_id: &str) -> CoreResult<Vec<ProductVariant>> {
+        repo::catalogue::variant_list_for_product(self.conn(), product_id)
+    }
+
+    /// Every variant in the book, across every product — the scope SKU
+    /// uniqueness is enforced over.
+    pub fn product_variant_list_for_book(&self, book_id: &str) -> CoreResult<Vec<ProductVariant>> {
+        repo::catalogue::variant_list_for_book(self.conn(), book_id)
+    }
+
+    pub fn product_variant_update(
+        &self,
+        id: &str,
+        patch: ProductVariantPatch,
+    ) -> CoreResult<ProductVariant> {
+        let before = self.product_variant_get(id)?;
+        let mut after = before.clone();
+        if let Some(sku) = patch.sku {
+            let sku = sku.trim().to_string();
+            if sku.is_empty() {
+                return Err(CoreError::Validation(
+                    "variant SKU must not be empty".into(),
+                ));
+            }
+            after.sku = sku;
+        }
+        if let Some(name) = patch.name {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err(CoreError::Validation(
+                    "variant name must not be empty".into(),
+                ));
+            }
+            after.name = name;
+        }
+        if let Some(price_minor) = patch.price_minor {
+            if price_minor < 0 {
+                return Err(CoreError::Validation(
+                    "variant price must not be negative".into(),
+                ));
+            }
+            after.price_minor = price_minor;
+        }
+        if let Some(cost_price_minor) = patch.cost_price_minor {
+            if cost_price_minor < 0 {
+                return Err(CoreError::Validation(
+                    "variant cost price must not be negative".into(),
+                ));
+            }
+            after.cost_price_minor = cost_price_minor;
+        }
+        if let Some(reorder_point) = patch.reorder_point {
+            if reorder_point < 0 {
+                return Err(CoreError::Validation(
+                    "variant reorder point must not be negative".into(),
+                ));
+            }
+            after.reorder_point = reorder_point;
+        }
+        if let Some(attributes) = patch.attributes {
+            if let Some(raw) = &attributes {
+                validate_attributes_json(raw)?;
+            }
+            after.attributes = attributes;
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::catalogue::variant_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "product_variant",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    pub fn product_variant_delete(&self, id: &str) -> CoreResult<()> {
+        let before = self.product_variant_get(id)?;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::catalogue::variant_delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "product_variant",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -4675,6 +5079,312 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, CoreError::Validation(_)));
+    }
+
+    // -- product catalogue ----------------------------------------------------
+
+    #[test]
+    fn product_category_crud() {
+        let svc = svc();
+        let book = make_book(&svc);
+
+        let cat = svc
+            .product_category_create(NewProductCategory {
+                book_id: book.id.clone(),
+                name: "  Beverages  ".into(),
+            })
+            .unwrap();
+        assert_eq!(cat.name, "Beverages", "name is trimmed");
+        assert_eq!(
+            svc.product_category_list(&book.id).unwrap(),
+            vec![cat.clone()]
+        );
+
+        let renamed = svc
+            .product_category_rename(&cat.id, "Drinks".into())
+            .unwrap();
+        assert_eq!(renamed.name, "Drinks");
+        assert_eq!(svc.product_category_get(&cat.id).unwrap().name, "Drinks");
+
+        svc.product_category_delete(&cat.id).unwrap();
+        assert!(matches!(
+            svc.product_category_get(&cat.id),
+            Err(CoreError::NotFound { .. })
+        ));
+
+        let audits = svc.audit_list(Some(&book.id), 50).unwrap();
+        for action in ["create", "update", "delete"] {
+            assert!(
+                audits
+                    .iter()
+                    .any(|a| a.entity_type == "product_category" && a.action == action),
+                "missing product_category audit {action}"
+            );
+        }
+    }
+
+    #[test]
+    fn product_category_create_rejects_empty_name() {
+        let svc = svc();
+        let book = make_book(&svc);
+        assert!(matches!(
+            svc.product_category_create(NewProductCategory {
+                book_id: book.id,
+                name: "   ".into(),
+            }),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn product_crud_with_category_scoping_and_deleting_a_category_detaches_products() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let other_book = svc
+            .book_create(NewBook {
+                name: "Other".into(),
+                kind: BookKind::Business,
+                currency: None,
+                country: None,
+                region: None,
+            })
+            .unwrap();
+        let category = svc
+            .product_category_create(NewProductCategory {
+                book_id: book.id.clone(),
+                name: "Beverages".into(),
+            })
+            .unwrap();
+        let foreign_category = svc
+            .product_category_create(NewProductCategory {
+                book_id: other_book.id.clone(),
+                name: "Foreign".into(),
+            })
+            .unwrap();
+
+        // Cross-book category is refused.
+        assert!(matches!(
+            svc.product_create(NewProduct {
+                book_id: book.id.clone(),
+                product_category_id: Some(foreign_category.id.clone()),
+                name: "Cola".into(),
+                description: None,
+            }),
+            Err(CoreError::Validation(_))
+        ));
+
+        let product = svc
+            .product_create(NewProduct {
+                book_id: book.id.clone(),
+                product_category_id: Some(category.id.clone()),
+                name: "  Cola  ".into(),
+                description: Some("Fizzy drink".into()),
+            })
+            .unwrap();
+        assert_eq!(product.name, "Cola", "name is trimmed");
+        assert_eq!(svc.product_list(&book.id).unwrap(), vec![product.clone()]);
+
+        let updated = svc
+            .product_update(
+                &product.id,
+                ProductPatch {
+                    name: Some("Cola Classic".into()),
+                    description: Some(None),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.name, "Cola Classic");
+        assert_eq!(updated.description, None, "explicit clear");
+        assert_eq!(
+            updated.product_category_id.as_deref(),
+            Some(category.id.as_str()),
+            "untouched field stays as-is"
+        );
+
+        // Deleting the category detaches the product rather than deleting it.
+        svc.product_category_delete(&category.id).unwrap();
+        let detached = svc.product_get(&product.id).unwrap();
+        assert_eq!(detached.product_category_id, None);
+
+        svc.product_delete(&product.id).unwrap();
+        assert!(matches!(
+            svc.product_get(&product.id),
+            Err(CoreError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn product_variant_crud_normalizes_and_validates() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let product = svc
+            .product_create(NewProduct {
+                book_id: book.id.clone(),
+                product_category_id: None,
+                name: "Cola".into(),
+                description: None,
+            })
+            .unwrap();
+
+        let variant = svc
+            .product_variant_add(NewProductVariant {
+                product_id: product.id.clone(),
+                sku: "  cola-330  ".into(),
+                name: "  330ml can  ".into(),
+                price_minor: Some(1500),
+                cost_price_minor: Some(900),
+                currency: "zar".into(),
+                reorder_point: Some(24),
+                attributes: Some(r#"{"size":"330ml"}"#.into()),
+            })
+            .unwrap();
+        assert_eq!(variant.sku, "cola-330", "sku is trimmed");
+        assert_eq!(variant.name, "330ml can", "name is trimmed");
+        assert_eq!(variant.currency, "ZAR", "currency is normalized");
+        assert_eq!(
+            variant.book_id, book.id,
+            "book id denormalized from product"
+        );
+        assert_eq!(
+            svc.product_variant_list(&product.id).unwrap(),
+            vec![variant.clone()]
+        );
+        assert_eq!(
+            svc.product_variant_list_for_book(&book.id).unwrap(),
+            vec![variant.clone()]
+        );
+
+        // Defaults: an omitted price/cost/reorder point is zero, not an error.
+        let bare = svc
+            .product_variant_add(NewProductVariant {
+                product_id: product.id.clone(),
+                sku: "cola-500".into(),
+                name: "500ml bottle".into(),
+                price_minor: None,
+                cost_price_minor: None,
+                currency: "ZAR".into(),
+                reorder_point: None,
+                attributes: None,
+            })
+            .unwrap();
+        assert_eq!(bare.price_minor, 0);
+        assert_eq!(bare.cost_price_minor, 0);
+        assert_eq!(bare.reorder_point, 0);
+        assert_eq!(bare.attributes, None);
+
+        // Duplicate SKU within the same book is refused by the schema.
+        assert!(svc
+            .product_variant_add(NewProductVariant {
+                product_id: product.id.clone(),
+                sku: "cola-330".into(),
+                name: "Duplicate".into(),
+                price_minor: None,
+                cost_price_minor: None,
+                currency: "ZAR".into(),
+                reorder_point: None,
+                attributes: None,
+            })
+            .is_err());
+
+        // Negative money and a non-object attributes payload are refused.
+        for bad in [
+            NewProductVariant {
+                product_id: product.id.clone(),
+                sku: "neg-price".into(),
+                name: "Bad".into(),
+                price_minor: Some(-1),
+                cost_price_minor: None,
+                currency: "ZAR".into(),
+                reorder_point: None,
+                attributes: None,
+            },
+            NewProductVariant {
+                product_id: product.id.clone(),
+                sku: "bad-attrs".into(),
+                name: "Bad".into(),
+                price_minor: None,
+                cost_price_minor: None,
+                currency: "ZAR".into(),
+                reorder_point: None,
+                attributes: Some("[1,2,3]".into()),
+            },
+        ] {
+            assert!(matches!(
+                svc.product_variant_add(bad),
+                Err(CoreError::Validation(_))
+            ));
+        }
+
+        let patched = svc
+            .product_variant_update(
+                &variant.id,
+                ProductVariantPatch {
+                    price_minor: Some(1600),
+                    attributes: Some(None),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(patched.price_minor, 1600);
+        assert_eq!(patched.attributes, None, "explicit clear");
+        assert_eq!(patched.sku, "cola-330", "untouched field stays as-is");
+
+        svc.product_variant_delete(&variant.id).unwrap();
+        assert!(matches!(
+            svc.product_variant_get(&variant.id),
+            Err(CoreError::NotFound { .. })
+        ));
+
+        let audits = svc.audit_list(Some(&book.id), 50).unwrap();
+        for action in ["create", "update", "delete"] {
+            assert!(
+                audits
+                    .iter()
+                    .any(|a| a.entity_type == "product_variant" && a.action == action),
+                "missing product_variant audit {action}"
+            );
+        }
+    }
+
+    #[test]
+    fn product_variant_cascade_deletes_with_its_product() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let product = svc
+            .product_create(NewProduct {
+                book_id: book.id.clone(),
+                product_category_id: None,
+                name: "Cola".into(),
+                description: None,
+            })
+            .unwrap();
+        let variant = svc
+            .product_variant_add(NewProductVariant {
+                product_id: product.id.clone(),
+                sku: "cola-330".into(),
+                name: "330ml can".into(),
+                price_minor: None,
+                cost_price_minor: None,
+                currency: "ZAR".into(),
+                reorder_point: None,
+                attributes: None,
+            })
+            .unwrap();
+
+        svc.product_delete(&product.id).unwrap();
+        // The variant row is gone via ON DELETE CASCADE, not merely
+        // unreachable — check the raw table, since `product_variant_get`
+        // returning NotFound is consistent with either.
+        let remaining: i64 = svc
+            .conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM product_variants WHERE id = ?1",
+                rusqlite::params![variant.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0, "cascade delete did not reach the variant");
     }
 
     // -- budgets ------------------------------------------------------------
