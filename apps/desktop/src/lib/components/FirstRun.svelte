@@ -35,7 +35,14 @@
     FIRST_RUN_STEPS,
   } from "../onboarding.svelte";
   import { router } from "../router.svelte";
-  import type { Book, BookKind, DataStatus, RegionInfo } from "../api/types";
+  import type {
+    Book,
+    BookKind,
+    DataStatus,
+    Location,
+    LocationKind,
+    RegionInfo,
+  } from "../api/types";
   import Badge from "./Badge.svelte";
   import Dialog from "./Dialog.svelte";
   import Icon from "./Icon.svelte";
@@ -88,6 +95,9 @@
     bookError = null;
     bookName = "Personal";
     bookKind = "personal";
+    locationsForBook = [];
+    newLocationName = "";
+    locationError = null;
     void api
       .bookList()
       .then((list) => (existingBooks = list))
@@ -138,6 +148,45 @@
       bookError = String(err);
     } finally {
       creating = false;
+    }
+  }
+
+  // -- locations (Phase 6.0, business books only) --------------------------
+  // Real `location_create` calls against the book the region step just
+  // made — not a form whose values are thrown away. Two of these already
+  // existing is what derives the multi-location flag on by itself
+  // (decision #3); this step never sets the override directly.
+  let locationsForBook = $state<Location[]>([]);
+  let newLocationName = $state("");
+  let newLocationKind = $state<LocationKind>("branch");
+  let addingLocation = $state(false);
+  let locationError = $state<string | null>(null);
+
+  async function addLocation() {
+    if (!createdBook || newLocationName.trim() === "") return;
+    addingLocation = true;
+    locationError = null;
+    try {
+      const made = await api.locationCreate({
+        book_id: createdBook.id,
+        name: newLocationName.trim(),
+        kind: newLocationKind,
+      });
+      locationsForBook = [...locationsForBook, made];
+      newLocationName = "";
+    } catch (err) {
+      locationError = String(err);
+    } finally {
+      addingLocation = false;
+    }
+  }
+
+  async function removeLocation(id: string) {
+    try {
+      await api.locationDelete({ location_id: id });
+      locationsForBook = locationsForBook.filter((l) => l.id !== id);
+    } catch (err) {
+      locationError = String(err);
     }
   }
 
@@ -415,6 +464,112 @@
           >
             <Icon name="alert-circle" size={13} class="mt-px shrink-0" />
             {bookError}
+          </p>
+        {/if}
+      {/if}
+    {:else if firstRun.step === "locations"}
+      <h3 class="text-[14px] font-semibold">Locations</h3>
+      {#if !createdBook}
+        <p class="mt-1.5 text-[12.5px] leading-relaxed text-t2">
+          Nothing to do here yet — go back and create the book first. A
+          business book can add its branches, sites or warehouses below;
+          this is entirely optional and always reachable later from
+          Settings.
+        </p>
+      {:else if createdBook.kind !== "business"}
+        <p class="mt-1.5 text-[12.5px] leading-relaxed text-t2">
+          Locations are a business-book axis — branches, sites and
+          warehouses a multi-location business trades from. “{createdBook.name}”
+          is a personal book, so there is nothing to set up here. Change its
+          kind later in Settings if that turns out to be wrong; nothing this
+          flow already saved is lost either way.
+        </p>
+      {:else}
+        <p class="mt-1.5 text-[12.5px] leading-relaxed text-t2">
+          Optional: add the branches, sites or warehouses “{createdBook.name}”
+          already trades from. A second one is what turns the location axis
+          on by itself — there is no separate switch to flip. Nothing here
+          is required; add none now and add them later from Settings instead.
+        </p>
+
+        {#if locationsForBook.length > 0}
+          <ul class="mt-3 divide-y divide-line rounded-lg border border-line">
+            {#each locationsForBook as loc (loc.id)}
+              <li class="flex items-center gap-2 px-3 py-2 text-[12px]">
+                <span class="font-medium">{loc.name}</span>
+                <Badge tone="neutral" dot={false} label={loc.kind} />
+                <button
+                  type="button"
+                  class="btn btn-ghost ml-auto h-6 px-2 text-t3"
+                  onclick={() => removeLocation(loc.id)}
+                >
+                  Remove
+                </button>
+              </li>
+            {/each}
+          </ul>
+          {#if locationsForBook.length === 1}
+            <p class="mt-2 text-[11.5px] text-t3">
+              One location does not turn the axis on — add a second, or
+              pin it on early from Settings › General.
+            </p>
+          {:else}
+            <p class="mt-2 flex items-center gap-1.5 text-[11.5px] text-success">
+              <Icon name="check-circle" size={12} />
+              Two or more locations — the location axis is now on.
+            </p>
+          {/if}
+        {/if}
+
+        <div class="mt-3 flex flex-wrap items-end gap-2">
+          <label class="block">
+            <span class="mb-1.5 block text-[12px] font-medium">Name</span>
+            <input
+              class="input w-48"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              disabled={addingLocation}
+              placeholder="e.g. Johannesburg"
+              bind:value={newLocationName}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addLocation();
+                }
+              }}
+            />
+          </label>
+          <label class="block">
+            <span class="mb-1.5 block text-[12px] font-medium">Kind</span>
+            <select
+              class="input w-32"
+              disabled={addingLocation}
+              bind:value={newLocationKind}
+            >
+              <option value="branch">Branch</option>
+              <option value="warehouse">Warehouse</option>
+              <option value="site">Site</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            class="btn"
+            disabled={addingLocation || newLocationName.trim() === ""}
+            onclick={addLocation}
+          >
+            <Icon name="plus" size={13} />
+            {addingLocation ? "Adding…" : "Add"}
+          </button>
+        </div>
+
+        {#if locationError}
+          <p
+            class="mt-3 flex items-start gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+            role="alert"
+          >
+            <Icon name="alert-circle" size={13} class="mt-px shrink-0" />
+            {locationError}
           </p>
         {/if}
       {/if}

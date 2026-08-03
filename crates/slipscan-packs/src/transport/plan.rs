@@ -349,6 +349,7 @@ mod tests {
             locale: "en".into(),
             timezone: "UTC".into(),
             financial_lock_date: None,
+            multi_location_override: None,
             created_at: now.clone(),
             updated_at: now,
         };

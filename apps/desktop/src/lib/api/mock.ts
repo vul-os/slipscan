@@ -8,6 +8,8 @@ import type {
   BenchmarkCohort,
   BenchmarkReport,
   Book,
+  BookKind,
+  BookProfile,
   Budget,
   BudgetUpsert,
   BudgetWithSpend,
@@ -31,12 +33,15 @@ import type {
   JournalPostRequest,
   InstalledPackInfo,
   LedgerAccount,
+  Location,
+  LocationUpdateRequest,
   Member,
   MemberAmountRow,
   MemberCategoryRow,
   MemberPatch,
   MemberSettleRow,
   NewBook,
+  NewLocation,
   NewMember,
   NewPayEndpoint,
   NewPayWatch,
@@ -99,6 +104,43 @@ const book: Book = {
 
 /** A database file can hold several books; `book_create` appends here. */
 const books: Book[] = [book];
+
+/**
+ * Phase 6.0 (Book profiles): the multi-location override, per book. `books`
+ * carries `kind` itself (mutated directly by `book_set_kind`), but the
+ * override has no home on the `Book` DTO, so it lives here — the same
+ * separation `crate::profile::resolve` draws in core between the book row
+ * and the resolved flag.
+ */
+const multiLocationOverrides = new Map<string, boolean | null>();
+
+/**
+ * Locations: branches, sites and warehouses (Phase 6.1). Empty by default —
+ * a book with none behaves exactly as it always has, the same as core.
+ */
+const locations: Location[] = [];
+
+function resolveProfile(b: Book): BookProfile {
+  const locationCount = locations.filter((l) => l.book_id === b.id).length;
+  const override = multiLocationOverrides.get(b.id) ?? null;
+  const multiLocation = override ?? locationCount > 1;
+  const isBusiness = b.kind === "business";
+  return {
+    kind: b.kind,
+    location_count: locationCount,
+    multi_location_override: override,
+    multi_location: multiLocation,
+    show_accounts: true,
+    show_transactions: true,
+    show_budgets: true,
+    show_members: true,
+    show_contacts: isBusiness,
+    show_catalogue: isBusiness,
+    show_purchasing: isBusiness,
+    show_sales: isBusiness,
+    show_locations: isBusiness && multiLocation,
+  };
+}
 
 const regions: RegionInfo[] = [
   {
@@ -1809,6 +1851,93 @@ export const mockApi = {
     };
     books.push(created);
     return clone(created);
+  },
+
+  // -- book profiles (Phase 6.0): personal / business / business-multi-
+  // location, derived from `kind` and the `locations` count with an
+  // explicit override — see `resolveProfile` above. --
+
+  book_profile: async (q: { book_id: string }): Promise<BookProfile> => {
+    const b = books.find((x) => x.id === q.book_id);
+    if (!b) throw new Error(`book not found: ${q.book_id}`);
+    return clone(resolveProfile(b));
+  },
+
+  book_set_kind: async (q: {
+    book_id: string;
+    kind: BookKind;
+  }): Promise<BookProfile> => {
+    const b = books.find((x) => x.id === q.book_id);
+    if (!b) throw new Error(`book not found: ${q.book_id}`);
+    b.kind = q.kind;
+    return clone(resolveProfile(b));
+  },
+
+  book_set_multi_location_override: async (q: {
+    book_id: string;
+    multi_location_override?: boolean | null;
+  }): Promise<BookProfile> => {
+    const b = books.find((x) => x.id === q.book_id);
+    if (!b) throw new Error(`book not found: ${q.book_id}`);
+    multiLocationOverrides.set(q.book_id, q.multi_location_override ?? null);
+    return clone(resolveProfile(b));
+  },
+
+  // -- locations: branches, sites and warehouses (Phase 6.1). --
+
+  location_list: async (q: { book_id: string }): Promise<Location[]> =>
+    clone(locations.filter((l) => l.book_id === q.book_id)),
+
+  location_create: async (q: NewLocation): Promise<Location> => {
+    const name = q.name.trim();
+    if (!name) throw new Error("location name must not be empty");
+    if (locations.some((l) => l.book_id === q.book_id && l.name === name))
+      throw new Error(`a location named "${name}" already exists in this book`);
+    const code = q.code?.trim() || null;
+    if (
+      code &&
+      locations.some((l) => l.book_id === q.book_id && l.code === code)
+    )
+      throw new Error(`location code "${code}" is already used in this book`);
+    const now = new Date().toISOString();
+    const created: Location = {
+      id: id("lc00"),
+      book_id: q.book_id,
+      name,
+      kind: q.kind ?? "branch",
+      code,
+      address: q.address?.trim() || null,
+      is_archived: false,
+      created_at: now,
+      updated_at: now,
+    };
+    locations.push(created);
+    return clone(created);
+  },
+
+  location_update: async (q: LocationUpdateRequest): Promise<Location> => {
+    const l = locations.find((x) => x.id === q.id);
+    if (!l) throw new Error(`location not found: ${q.id}`);
+    if (q.name !== undefined) {
+      const name = q.name.trim();
+      if (!name) throw new Error("location name must not be empty");
+      l.name = name;
+    }
+    if (q.kind !== undefined) l.kind = q.kind;
+    if (q.clear_code) l.code = null;
+    else if (q.code !== undefined) l.code = q.code.trim() || null;
+    if (q.clear_address) l.address = null;
+    else if (q.address !== undefined) l.address = q.address.trim() || null;
+    if (q.is_archived !== undefined) l.is_archived = q.is_archived;
+    l.updated_at = new Date().toISOString();
+    return clone(l);
+  },
+
+  location_delete: async (q: { location_id: string }): Promise<null> => {
+    const i = locations.findIndex((x) => x.id === q.location_id);
+    if (i === -1) throw new Error(`location not found: ${q.location_id}`);
+    locations.splice(i, 1);
+    return null;
   },
 
   data_status: async (): Promise<DataStatus> =>

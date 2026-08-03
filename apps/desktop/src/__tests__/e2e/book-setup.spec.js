@@ -109,7 +109,8 @@ test.describe("first-run setup is reachable", () => {
       await page.keyboard.press("Enter");
       const dialog = setupDialog(page);
       await expect(dialog).toBeVisible();
-      await expect(dialog).toContainText("Step 1 of 5");
+      // Phase 6.0 added a "locations" step between region and data.
+      await expect(dialog).toContainText("Step 1 of 6");
       await page.keyboard.press("Escape");
       await expect(dialog).toHaveCount(0);
     }

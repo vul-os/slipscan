@@ -13,6 +13,8 @@ import type {
   Account,
   BenchmarkReport,
   Book,
+  BookKind,
+  BookProfile,
   Budget,
   BudgetUpsert,
   BudgetWithSpend,
@@ -33,12 +35,15 @@ import type {
   JournalEntry,
   JournalPostRequest,
   LedgerAccount,
+  Location,
+  LocationUpdateRequest,
   Member,
   MemberAmountRow,
   MemberCategoryRow,
   MemberPatch,
   MemberSettleRow,
   NewBook,
+  NewLocation,
   NewMember,
   InstalledPackInfo,
   NewPayEndpoint,
@@ -113,6 +118,45 @@ export const api = {
    * caller took from `regionList`, and core rejects one it does not know. */
   bookCreate: (q: NewBook): Promise<Book> =>
     call("book_create", { query: q }, () => mockApi.book_create(q)),
+
+  // -- book profiles (Phase 6.0 — ROADMAP.md "Phase 6", Book profiles):
+  // which capability groups a book should show right now. Settings and
+  // first-run setup both call these instead of re-deriving `kind ===
+  // "business"` or a locations count themselves. --
+
+  bookProfile: (q: { book_id: string }): Promise<BookProfile> =>
+    call("book_profile", { query: q }, () => mockApi.book_profile(q)),
+
+  /** Change a book's kind later, in either direction. Downgrading only
+   * hides screens — it deletes nothing in locations/contacts/catalogue. */
+  bookSetKind: (q: { book_id: string; kind: BookKind }): Promise<BookProfile> =>
+    call("book_set_kind", { query: q }, () => mockApi.book_set_kind(q)),
+
+  /** Pin (`true`/`false`) or clear (`null`/omitted) the multi-location
+   * override (decision #3: derived by default, overridable either way). */
+  bookSetMultiLocationOverride: (q: {
+    book_id: string;
+    multi_location_override?: boolean | null;
+  }): Promise<BookProfile> =>
+    call("book_set_multi_location_override", { query: q }, () =>
+      mockApi.book_set_multi_location_override(q),
+    ),
+
+  // -- locations: branches, sites and warehouses within a book (Phase 6.1,
+  // the flowstock fold foundation). A book with none behaves exactly as it
+  // always has; a second one is what the multi-location flag derives from. --
+
+  locationList: (q: { book_id: string }): Promise<Location[]> =>
+    call("location_list", { query: q }, () => mockApi.location_list(q)),
+
+  locationCreate: (q: NewLocation): Promise<Location> =>
+    call("location_create", { query: q }, () => mockApi.location_create(q)),
+
+  locationUpdate: (q: LocationUpdateRequest): Promise<Location> =>
+    call("location_update", { query: q }, () => mockApi.location_update(q)),
+
+  locationDelete: (q: { location_id: string }): Promise<null> =>
+    call("location_delete", { query: q }, () => mockApi.location_delete(q)),
 
   // -- data folder: one movable folder holds everything durable. Backup is
   // the user's own cloud syncing that folder; SlipScan ships no backup

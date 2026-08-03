@@ -55,6 +55,77 @@ export interface NewBook {
 }
 
 // ---------------------------------------------------------------------------
+// book profiles (Phase 6.0 — ROADMAP.md "Phase 6", Book profiles). One data
+// model, three presentations: personal / business / business-multi-location
+// are progressive disclosure over one schema, never a schema fork. Mirrors
+// core's `profile::BookProfile` — the single source every surface (CLI,
+// HTTP, this app) resolves the capability groups from.
+// ---------------------------------------------------------------------------
+
+export interface BookProfile {
+  kind: BookKind;
+  /** Rows currently in `locations` for this book. */
+  location_count: number;
+  /** The stored override, verbatim: `null` means "derive it". */
+  multi_location_override: boolean | null;
+  /** The resolved flag — what the UI should branch on, not the override
+   * field above. */
+  multi_location: boolean;
+  show_accounts: boolean;
+  show_transactions: boolean;
+  show_budgets: boolean;
+  show_members: boolean;
+  show_contacts: boolean;
+  show_catalogue: boolean;
+  show_purchasing: boolean;
+  show_sales: boolean;
+  show_locations: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// locations — branches, sites and warehouses within a book (Phase 6.1, the
+// flowstock fold foundation). Additive and optional: a book with none
+// behaves exactly as it always has.
+// ---------------------------------------------------------------------------
+
+export type LocationKind = "branch" | "warehouse" | "site";
+
+export interface Location {
+  id: string;
+  book_id: string;
+  name: string;
+  kind: LocationKind;
+  code: string | null;
+  address: string | null;
+  is_archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewLocation {
+  book_id: string;
+  name: string;
+  /** Defaults to "branch" when omitted. */
+  kind?: LocationKind;
+  code?: string;
+  address?: string;
+}
+
+/** Mirrors src-tauri's `LocationUpdateRequest`: the `clear_*` flags are how
+ * plain JSON expresses "explicitly clear this field" for a nested-optional
+ * column, the same convention `MemberUpdateRequest` uses. */
+export interface LocationUpdateRequest {
+  id: string;
+  name?: string;
+  kind?: LocationKind;
+  code?: string;
+  clear_code?: boolean;
+  address?: string;
+  clear_address?: boolean;
+  is_archived?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // data folder (movable) — contract: "Data location & backup". One folder
 // holds everything durable; backup is the user's own cloud syncing it.
 // ---------------------------------------------------------------------------

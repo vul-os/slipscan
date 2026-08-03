@@ -22,6 +22,7 @@ use slipscan_core::domain::{
     self as core, CategoryNode, DocumentKind, DocumentSource, JournalSourceType, NewDocument,
     NewJournal, NewJournalLine, TransactionFilter,
 };
+use slipscan_core::profile::BookProfile;
 use slipscan_core::secrets::{SecretStore, SecretString, Vault};
 use slipscan_core::util::{new_id, now_iso};
 use slipscan_core::CoreService;
@@ -120,6 +121,118 @@ pub async fn book_create(
 #[derive(serde::Deserialize)]
 pub struct BookScopedQuery {
     pub book_id: String,
+}
+
+/// Resolve which capability groups this book should show right now —
+/// personal / business / business-multi-location (Phase 6.0, ROADMAP.md
+/// "Phase 6" — Book profiles). The one function Settings and first-run
+/// setup both call instead of re-deriving `kind == "business"` themselves.
+#[tauri::command]
+pub async fn book_profile(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<BookProfile, String> {
+    state.service()?.book_profile(&query.book_id).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct BookSetKindQuery {
+    pub book_id: String,
+    pub kind: core::BookKind,
+}
+
+/// Change a book's kind later, in either direction — downgrading only
+/// hides screens (see the core service doc comment); it deletes nothing in
+/// `locations`, `contacts`, `product_categories`, `products` or
+/// `product_variants`.
+///
+/// **One payload divergence from the HTTP route of the same name:** this
+/// returns the resolved [`BookProfile`], not the updated `Book` — the
+/// Settings screen that calls this redraws its capability list from the one
+/// round trip rather than following up with a second `book_profile` call.
+#[tauri::command]
+pub async fn book_set_kind(
+    state: State<'_, AppState>,
+    query: BookSetKindQuery,
+) -> Result<BookProfile, String> {
+    let service = state.service()?;
+    service
+        .book_set_kind(&query.book_id, query.kind)
+        .map_err(err)?;
+    service.book_profile(&query.book_id).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct BookSetMultiLocationOverrideQuery {
+    pub book_id: String,
+    /// Omitted or `null` clears the override back to derived; `true`/
+    /// `false` pins it either way (Phase 6 decision #3).
+    #[serde(default)]
+    pub multi_location_override: Option<bool>,
+}
+
+/// Same payload divergence as `book_set_kind` above, for the same reason:
+/// returns the resolved [`BookProfile`].
+#[tauri::command]
+pub async fn book_set_multi_location_override(
+    state: State<'_, AppState>,
+    query: BookSetMultiLocationOverrideQuery,
+) -> Result<BookProfile, String> {
+    let service = state.service()?;
+    service
+        .book_set_multi_location_override(&query.book_id, query.multi_location_override)
+        .map_err(err)?;
+    service.book_profile(&query.book_id).map_err(err)
+}
+
+// ---------------------------------------------------------------------------
+// locations — branches, sites and warehouses (Phase 6.1, the flowstock fold
+// foundation). Core's domain types serialize straight across IPC, the same
+// pattern as household members.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn location_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::Location>, String> {
+    state.service()?.location_list(&query.book_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn location_create(
+    state: State<'_, AppState>,
+    query: core::NewLocation,
+) -> Result<core::Location, String> {
+    state.service()?.location_create(query).map_err(err)
+}
+
+#[tauri::command]
+pub async fn location_update(
+    state: State<'_, AppState>,
+    query: LocationUpdateRequest,
+) -> Result<core::Location, String> {
+    let id = query.id.clone();
+    state
+        .service()?
+        .location_update(&id, query.into_patch())
+        .map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct LocationIdQuery {
+    pub location_id: String,
+}
+
+#[tauri::command]
+pub async fn location_delete(
+    state: State<'_, AppState>,
+    query: LocationIdQuery,
+) -> Result<(), String> {
+    state
+        .service()?
+        .location_delete(&query.location_id)
+        .map_err(err)
 }
 
 #[tauri::command]

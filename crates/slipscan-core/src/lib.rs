@@ -18,6 +18,9 @@ pub mod domain;
 pub mod error;
 pub mod fx;
 pub mod pay;
+/// Book profiles — the personal/business/multi-location disclosure rules
+/// (Phase 6.0, the flowstock fold entry point). See `profile::resolve`.
+pub mod profile;
 pub mod region;
 pub mod repo;
 pub mod secrets;
