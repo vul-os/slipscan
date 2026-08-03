@@ -189,8 +189,9 @@
         label: editLabel.trim(),
         initial: editInitial.trim(),
         colour: editColour,
-        clear_default_account: editDefaultAccount === "",
-        default_account_id: editDefaultAccount || undefined,
+        // "" means the user chose no default account: send an explicit null
+        // to clear it, rather than omitting the key, which means "leave as is".
+        default_account_id: editDefaultAccount || null,
       });
       editingMemberId = null;
       data = reload(true);
@@ -252,7 +253,7 @@
     const columns: Array<{ id: string | null; label: string }> = [];
     const seen = new Set<string>();
     for (const r of rows) {
-      const key = r.member_id ?? " unattributed";
+      const key = r.member_id ?? "\0unattributed";
       if (!seen.has(key)) {
         seen.add(key);
         columns.push({ id: r.member_id, label: r.member_label });
@@ -266,13 +267,13 @@
       { name: string; cells: Map<string, number>; total: number }
     >();
     for (const r of rows) {
-      const key = r.category_id ?? " uncategorized";
+      const key = r.category_id ?? "\0uncategorized";
       const entry = byCategory.get(key) ?? {
         name: r.category_name,
         cells: new Map<string, number>(),
         total: 0,
       };
-      const cell = r.member_id ?? " unattributed";
+      const cell = r.member_id ?? "\0unattributed";
       entry.cells.set(cell, (entry.cells.get(cell) ?? 0) + r.total_minor);
       entry.total += r.total_minor;
       byCategory.set(key, entry);
@@ -284,7 +285,7 @@
   }
 
   const cellKey = (memberId: string | null): string =>
-    memberId ?? " unattributed";
+    memberId ?? "\0unattributed";
 
   /** Widest absolute net in the period — the scale the diverging settle-up
    * bars are drawn against. Never zero, so the divide is always safe. */

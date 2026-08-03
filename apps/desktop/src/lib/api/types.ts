@@ -111,17 +111,15 @@ export interface NewLocation {
   address?: string;
 }
 
-/** Mirrors src-tauri's `LocationUpdateRequest`: the `clear_*` flags are how
+/** Mirrors src-tauri's `LocationUpdateRequest`: omit a key to leave it alone,
  * plain JSON expresses "explicitly clear this field" for a nested-optional
  * column, the same convention `MemberUpdateRequest` uses. */
 export interface LocationUpdateRequest {
   id: string;
   name?: string;
   kind?: LocationKind;
-  code?: string;
-  clear_code?: boolean;
-  address?: string;
-  clear_address?: boolean;
+  code?: string | null;
+  address?: string | null;
   is_archived?: boolean;
 }
 
@@ -178,11 +176,9 @@ export interface PoUpdateRequest {
   location_id?: string;
   po_number?: string;
   order_date?: string;
-  expected_delivery?: string;
-  clear_expected_delivery?: boolean;
+  expected_delivery?: string | null;
   tax_minor?: number;
-  notes?: string;
-  clear_notes?: boolean;
+  notes?: string | null;
 }
 
 export interface PurchaseOrderItem {
@@ -255,12 +251,8 @@ export interface PurchaseOrderItemReceiving {
 // paid/unpaid is `InvoiceTotals.status`, derived from the payments each time
 // rather than stored.
 //
-// **Clearing a nullable field differs from the purchasing block above, and the
-// difference is real rather than stylistic.** `PoUpdateRequest` carries
-// `clear_notes`-style booleans because its Tauri command takes a hand-rolled
-// `dto.rs` struct that translates them. The sales commands take core's
-// `SalesOrderPatch`/`SalesOrderItemPatch` directly, so they use the plain JSON
-// convention: omit a key to leave it alone, send `null` to clear it.
+// Nullable fields follow the one convention this whole surface uses: omit a
+// key to leave it alone, send `null` to clear it, send a value to set it.
 // ---------------------------------------------------------------------------
 
 export type SalesOrderStatus = "draft" | "confirmed" | "paid" | "cancelled";
@@ -680,18 +672,16 @@ export interface NewMember {
 }
 
 /**
- * Selective update. Omitted fields are left untouched.
- * `clear_default_account: true` explicitly clears the default account;
- * otherwise `default_account_id` (if present) sets a new one and omitting
- * it leaves the current value as-is.
+ * Selective update. Omit a key to leave it untouched, send `null` to clear it,
+ * send a value to set it — plain JSON, the same convention every nullable
+ * field on this surface uses.
  */
 export interface MemberPatch {
   id: string;
   label?: string;
   initial?: string;
   colour?: string;
-  clear_default_account?: boolean;
-  default_account_id?: string;
+  default_account_id?: string | null;
 }
 
 /** One `(member, share)` row of a split transaction, as stored. `share_minor`

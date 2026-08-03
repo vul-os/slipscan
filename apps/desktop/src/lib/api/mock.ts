@@ -2152,10 +2152,9 @@ export const mockApi = {
       l.name = name;
     }
     if (q.kind !== undefined) l.kind = q.kind;
-    if (q.clear_code) l.code = null;
-    else if (q.code !== undefined) l.code = q.code.trim() || null;
-    if (q.clear_address) l.address = null;
-    else if (q.address !== undefined) l.address = q.address.trim() || null;
+    // `null` clears, an absent key leaves alone.
+    if (q.code !== undefined) l.code = q.code?.trim() || null;
+    if (q.address !== undefined) l.address = q.address?.trim() || null;
     if (q.is_archived !== undefined) l.is_archived = q.is_archived;
     l.updated_at = new Date().toISOString();
     return clone(l);
@@ -2227,15 +2226,13 @@ export const mockApi = {
       po.po_number = poNumber;
     }
     if (q.order_date !== undefined) po.order_date = q.order_date;
-    if (q.clear_expected_delivery) po.expected_delivery = null;
-    else if (q.expected_delivery !== undefined)
-      po.expected_delivery = q.expected_delivery;
+    if (q.expected_delivery !== undefined)
+      po.expected_delivery = q.expected_delivery ?? null;
     if (q.tax_minor !== undefined) {
       po.tax_minor = q.tax_minor;
       po.total_minor = po.subtotal_minor + q.tax_minor;
     }
-    if (q.clear_notes) po.notes = null;
-    else if (q.notes !== undefined) po.notes = q.notes.trim() || null;
+    if (q.notes !== undefined) po.notes = q.notes?.trim() || null;
     po.updated_at = new Date().toISOString();
     return clone(po);
   },
@@ -2874,10 +2871,11 @@ export const mockApi = {
       if (!colour) throw new Error("member colour must not be empty");
       m.colour = colour;
     }
-    if (q.clear_default_account) {
-      m.default_account_id = null;
-    } else if (q.default_account_id !== undefined) {
-      if (!accounts.some((a) => a.id === q.default_account_id))
+    if (q.default_account_id !== undefined) {
+      if (
+        q.default_account_id !== null &&
+        !accounts.some((a) => a.id === q.default_account_id)
+      )
         throw new Error(`account not found: ${q.default_account_id}`);
       m.default_account_id = q.default_account_id;
     }

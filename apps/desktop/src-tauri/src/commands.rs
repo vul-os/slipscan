@@ -545,10 +545,7 @@ pub async fn sales_order_confirm(
     state: State<'_, AppState>,
     query: SalesOrderIdQuery,
 ) -> Result<core::SalesOrder, String> {
-    state
-        .service()?
-        .sales_order_confirm(&query.id)
-        .map_err(err)
+    state.service()?.sales_order_confirm(&query.id).map_err(err)
 }
 
 #[tauri::command]
@@ -575,10 +572,7 @@ pub async fn sales_order_totals(
     state: State<'_, AppState>,
     query: SalesOrderIdQuery,
 ) -> Result<core::SalesOrderTotals, String> {
-    state
-        .service()?
-        .sales_order_totals(&query.id)
-        .map_err(err)
+    state.service()?.sales_order_totals(&query.id).map_err(err)
 }
 
 #[tauri::command]
@@ -639,10 +633,7 @@ pub async fn invoice_payment_record(
     state: State<'_, AppState>,
     query: core::NewInvoicePayment,
 ) -> Result<core::InvoicePayment, String> {
-    state
-        .service()?
-        .invoice_payment_record(query)
-        .map_err(err)
+    state.service()?.invoice_payment_record(query).map_err(err)
 }
 
 #[tauri::command]
@@ -715,9 +706,7 @@ pub async fn networth_capture(
     state: State<'_, AppState>,
     query: NetWorthCaptureQuery,
 ) -> Result<Vec<core::NetWorthSnapshot>, String> {
-    let as_of_date = query
-        .as_of_date
-        .unwrap_or_else(slipscan_core::util::today);
+    let as_of_date = query.as_of_date.unwrap_or_else(slipscan_core::util::today);
     state
         .service()?
         .networth_capture(&query.book_id, &as_of_date)
@@ -2001,7 +1990,6 @@ fn verify_request(query: &PackDocumentRequest) -> Result<slipscan_packs::Verifie
 /// The label a first-use trust decision is recorded under. Comes from
 /// slipscan-packs so the CLI, the server and this screen record the same
 /// thing: the pack's own author when it declares one, else the fingerprint.
-use slipscan_packs::transport::signer_label;
 
 #[tauri::command]
 pub async fn pack_list(
@@ -2124,10 +2112,9 @@ pub async fn pack_install(
     state: State<'_, AppState>,
     query: PackDocumentRequest,
 ) -> Result<PackInstallDto, String> {
-    use slipscan_packs::{engine, InstallOutcome, Installer, TrustStatus, TrustStore};
+    use slipscan_packs::{engine, InstallOutcome};
 
     let verified = verify_request(&query)?;
-    let label = signer_label(&verified);
     let service = state.service()?;
     book_by_id(&service, &query.book_id)?;
     // Installing a pack is also where this process picks up the classifier:

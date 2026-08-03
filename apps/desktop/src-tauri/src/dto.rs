@@ -222,15 +222,17 @@ pub struct MemberUpdateRequest {
     pub initial: Option<String>,
     #[serde(default)]
     pub colour: Option<String>,
-    /// Plain JSON can't tell "field absent" from "field explicitly null"
-    /// inside a nested `Option<Option<T>>`, so the clear intent travels as
-    /// its own flag instead of `default_account_id: null`: `true` clears the
-    /// default account; otherwise `default_account_id` (if present) sets a
-    /// new one and omitting it leaves the current value untouched.
-    #[serde(default)]
-    pub clear_default_account: bool,
-    #[serde(default)]
-    pub default_account_id: Option<String>,
+    /// Omit to leave untouched, send `null` to clear, send a value to set —
+    /// see `slipscan_core::util::double_option`. This used to travel as a
+    /// separate `clear_default_account` boolean because plain serde could not
+    /// tell an absent key from an explicit null; that is fixed at the source
+    /// now, so the workaround is gone and JSON means what it says.
+    #[serde(
+        default,
+        deserialize_with = "slipscan_core::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub default_account_id: Option<Option<String>>,
 }
 
 impl MemberUpdateRequest {
@@ -239,11 +241,7 @@ impl MemberUpdateRequest {
             label: self.label,
             initial: self.initial,
             colour: self.colour,
-            default_account_id: if self.clear_default_account {
-                Some(None)
-            } else {
-                self.default_account_id.map(Some)
-            },
+            default_account_id: self.default_account_id,
         }
     }
 }
@@ -266,17 +264,19 @@ pub struct LocationUpdateRequest {
     pub name: Option<String>,
     #[serde(default)]
     pub kind: Option<core::LocationKind>,
-    #[serde(default)]
-    pub code: Option<String>,
-    /// Same clear-flag convention as `MemberUpdateRequest::clear_default_account`
-    /// — plain JSON cannot tell "field absent" from "field explicitly null"
-    /// inside a nested `Option<Option<T>>`.
-    #[serde(default)]
-    pub clear_code: bool,
-    #[serde(default)]
-    pub address: Option<String>,
-    #[serde(default)]
-    pub clear_address: bool,
+    /// Omit / `null` / value — see `MemberUpdateRequest::default_account_id`.
+    #[serde(
+        default,
+        deserialize_with = "slipscan_core::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub code: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "slipscan_core::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub address: Option<Option<String>>,
     #[serde(default)]
     pub is_archived: Option<bool>,
 }
@@ -286,16 +286,8 @@ impl LocationUpdateRequest {
         core::LocationPatch {
             name: self.name,
             kind: self.kind,
-            code: if self.clear_code {
-                Some(None)
-            } else {
-                self.code.map(Some)
-            },
-            address: if self.clear_address {
-                Some(None)
-            } else {
-                self.address.map(Some)
-            },
+            code: self.code,
+            address: self.address,
             is_archived: self.is_archived,
         }
     }
@@ -322,17 +314,21 @@ pub struct PoUpdateRequest {
     pub po_number: Option<String>,
     #[serde(default)]
     pub order_date: Option<String>,
-    #[serde(default)]
-    pub expected_delivery: Option<String>,
-    /// Same clear-flag convention as `LocationUpdateRequest::clear_code`.
-    #[serde(default)]
-    pub clear_expected_delivery: bool,
+    /// Omit / `null` / value — see `MemberUpdateRequest::default_account_id`.
+    #[serde(
+        default,
+        deserialize_with = "slipscan_core::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expected_delivery: Option<Option<String>>,
     #[serde(default)]
     pub tax_minor: Option<i64>,
-    #[serde(default)]
-    pub notes: Option<String>,
-    #[serde(default)]
-    pub clear_notes: bool,
+    #[serde(
+        default,
+        deserialize_with = "slipscan_core::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub notes: Option<Option<String>>,
 }
 
 impl PoUpdateRequest {
@@ -342,17 +338,9 @@ impl PoUpdateRequest {
             location_id: self.location_id,
             po_number: self.po_number,
             order_date: self.order_date,
-            expected_delivery: if self.clear_expected_delivery {
-                Some(None)
-            } else {
-                self.expected_delivery.map(Some)
-            },
+            expected_delivery: self.expected_delivery,
             tax_minor: self.tax_minor,
-            notes: if self.clear_notes {
-                Some(None)
-            } else {
-                self.notes.map(Some)
-            },
+            notes: self.notes,
         }
     }
 }
@@ -1221,17 +1209,22 @@ mod tests {
         assert!(dto.confidence > 0.9);
     }
 
+    /// Absent / `null` / value, over the wire these requests actually travel
+    /// on. This used to assert a `clear_default_account: true` flag, which
+    /// existed only because plain serde could not tell an absent key from an
+    /// explicit null — fixed in `slipscan_core::util::double_option`, so the
+    /// flag is gone and `null` carries the intent directly.
     #[test]
-    fn member_update_request_maps_clear_set_and_leave_default_account() {
+    fn member_update_request_maps_leave_clear_and_set_default_account() {
         // Omitted entirely: leave the default account untouched.
         let leave: MemberUpdateRequest =
             serde_json::from_str(r#"{"id":"m1","label":"Alexis"}"#).unwrap();
         assert_eq!(leave.clone().into_patch().default_account_id, None);
         assert_eq!(leave.into_patch().label, Some("Alexis".to_string()));
 
-        // Explicit clear flag, no plain JSON `null` involved.
+        // Explicit null clears it.
         let clear: MemberUpdateRequest =
-            serde_json::from_str(r#"{"id":"m1","clear_default_account":true}"#).unwrap();
+            serde_json::from_str(r#"{"id":"m1","default_account_id":null}"#).unwrap();
         assert_eq!(clear.into_patch().default_account_id, Some(None));
 
         // A new account id sets it.
@@ -1241,6 +1234,30 @@ mod tests {
             set.into_patch().default_account_id,
             Some(Some("acc-1".to_string()))
         );
+    }
+
+    /// The same three states for the other two request shapes that carry
+    /// nullable fields, so this is not proven on one struct and assumed for
+    /// the rest.
+    #[test]
+    fn location_and_po_requests_map_leave_clear_and_set() {
+        let leave: LocationUpdateRequest =
+            serde_json::from_str(r#"{"id":"l1","name":"Main"}"#).unwrap();
+        assert_eq!(leave.into_patch().code, None);
+        let clear: LocationUpdateRequest =
+            serde_json::from_str(r#"{"id":"l1","code":null}"#).unwrap();
+        assert_eq!(clear.into_patch().code, Some(None));
+        let set: LocationUpdateRequest =
+            serde_json::from_str(r#"{"id":"l1","address":"1 Road"}"#).unwrap();
+        assert_eq!(set.into_patch().address, Some(Some("1 Road".to_string())));
+
+        let leave: PoUpdateRequest = serde_json::from_str(r#"{"id":"p1"}"#).unwrap();
+        assert_eq!(leave.into_patch().notes, None);
+        let clear: PoUpdateRequest =
+            serde_json::from_str(r#"{"id":"p1","expected_delivery":null}"#).unwrap();
+        assert_eq!(clear.into_patch().expected_delivery, Some(None));
+        let set: PoUpdateRequest = serde_json::from_str(r#"{"id":"p1","notes":"n"}"#).unwrap();
+        assert_eq!(set.into_patch().notes, Some(Some("n".to_string())));
     }
 
     /// A pairing blob carries a single-use claim token, which makes it a
