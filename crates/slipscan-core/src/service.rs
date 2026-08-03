@@ -2152,6 +2152,545 @@ impl CoreService {
     }
 
     // -----------------------------------------------------------------------
+    // Purchasing (migration 0013, ROADMAP.md Phase 6.4 — purchase orders and
+    // goods receipts, re-derived from the retired FlowStock product).
+    //
+    // `po_receive` is the keystone: it is the one function in this section
+    // that touches `repo::stock` as well as `repo::purchasing`, in the same
+    // transaction, so on-hand and purchasing can never disagree about how
+    // much actually arrived (see migration `0013_purchasing`'s header).
+    // -----------------------------------------------------------------------
+
+    pub fn po_create(&self, new: NewPurchaseOrder) -> CoreResult<PurchaseOrder> {
+        let book = self.book_get(&new.book_id)?;
+        let supplier = self.contact_get(&new.supplier_id)?;
+        if supplier.book_id != book.id {
+            return Err(CoreError::Validation(
+                "purchase order supplier belongs to a different book".into(),
+            ));
+        }
+        if supplier.role == ContactRole::Customer {
+            return Err(CoreError::Validation(
+                "contact is not marked as a supplier (role customer)".into(),
+            ));
+        }
+        let location = self.location_get(&new.location_id)?;
+        if location.book_id != book.id {
+            return Err(CoreError::Validation(
+                "purchase order location belongs to a different book".into(),
+            ));
+        }
+        let po_number = new.po_number.trim().to_string();
+        if po_number.is_empty() {
+            return Err(CoreError::Validation(
+                "purchase order number must not be empty".into(),
+            ));
+        }
+        parse_date(&new.order_date)?;
+        if let Some(expected) = &new.expected_delivery {
+            parse_date(expected)?;
+        }
+        let currency = normalize_currency_code(&new.currency)?;
+        let tax_minor = new.tax_minor.unwrap_or(0);
+        if tax_minor < 0 {
+            return Err(CoreError::Validation(
+                "purchase order tax must not be negative".into(),
+            ));
+        }
+
+        let now = now_iso();
+        let po = PurchaseOrder {
+            id: new_id(),
+            book_id: book.id,
+            supplier_id: supplier.id,
+            location_id: location.id,
+            po_number,
+            order_date: new.order_date,
+            expected_delivery: new.expected_delivery,
+            status: PurchaseOrderStatus::Draft,
+            subtotal_minor: 0,
+            tax_minor,
+            total_minor: tax_minor,
+            currency,
+            notes: normalize_optional(new.notes),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::purchasing::po_insert(&tx, &po)?;
+        self.emit_audit(
+            &tx,
+            Some(&po.book_id),
+            "purchase_order",
+            Some(&po.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&po)?),
+        )?;
+        tx.commit()?;
+        Ok(po)
+    }
+
+    pub fn po_get(&self, id: &str) -> CoreResult<PurchaseOrder> {
+        repo::purchasing::po_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "purchase_order",
+            id: id.to_string(),
+        })
+    }
+
+    /// Every PO in the book, most recently ordered first.
+    pub fn po_list(&self, book_id: &str) -> CoreResult<Vec<PurchaseOrder>> {
+        repo::purchasing::po_list(self.conn(), book_id)
+    }
+
+    /// Selective update over the header fields. `status` is not one of them —
+    /// see [`Self::po_set_status`].
+    pub fn po_update(&self, id: &str, patch: PurchaseOrderPatch) -> CoreResult<PurchaseOrder> {
+        let before = self.po_get(id)?;
+        let mut after = before.clone();
+        if let Some(supplier_id) = patch.supplier_id {
+            let supplier = self.contact_get(&supplier_id)?;
+            if supplier.book_id != before.book_id {
+                return Err(CoreError::Validation(
+                    "purchase order supplier belongs to a different book".into(),
+                ));
+            }
+            if supplier.role == ContactRole::Customer {
+                return Err(CoreError::Validation(
+                    "contact is not marked as a supplier (role customer)".into(),
+                ));
+            }
+            after.supplier_id = supplier.id;
+        }
+        if let Some(location_id) = patch.location_id {
+            let location = self.location_get(&location_id)?;
+            if location.book_id != before.book_id {
+                return Err(CoreError::Validation(
+                    "purchase order location belongs to a different book".into(),
+                ));
+            }
+            after.location_id = location.id;
+        }
+        if let Some(po_number) = patch.po_number {
+            let po_number = po_number.trim().to_string();
+            if po_number.is_empty() {
+                return Err(CoreError::Validation(
+                    "purchase order number must not be empty".into(),
+                ));
+            }
+            after.po_number = po_number;
+        }
+        if let Some(order_date) = patch.order_date {
+            parse_date(&order_date)?;
+            after.order_date = order_date;
+        }
+        if let Some(expected_delivery) = patch.expected_delivery {
+            if let Some(expected) = &expected_delivery {
+                parse_date(expected)?;
+            }
+            after.expected_delivery = expected_delivery;
+        }
+        if let Some(tax_minor) = patch.tax_minor {
+            if tax_minor < 0 {
+                return Err(CoreError::Validation(
+                    "purchase order tax must not be negative".into(),
+                ));
+            }
+            after.tax_minor = tax_minor;
+            after.total_minor = after.subtotal_minor + tax_minor;
+        }
+        if let Some(notes) = patch.notes {
+            after.notes = normalize_optional(notes);
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::purchasing::po_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "purchase_order",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// `draft -> ordered -> cancelled`, in either terminal direction from
+    /// `draft`, and never back out of `cancelled` — the guarded state machine
+    /// migration `0013_purchasing`'s header promises in place of a general
+    /// patch. Mirrors `document_transition`'s own shape (migration 0001).
+    fn po_status_transition_allowed(from: PurchaseOrderStatus, to: PurchaseOrderStatus) -> bool {
+        use PurchaseOrderStatus::*;
+        matches!((from, to), (Draft, Ordered) | (Draft, Cancelled) | (Ordered, Cancelled))
+    }
+
+    pub fn po_set_status(&self, id: &str, to: PurchaseOrderStatus) -> CoreResult<PurchaseOrder> {
+        let before = self.po_get(id)?;
+        if !Self::po_status_transition_allowed(before.status, to) {
+            return Err(CoreError::InvalidStatusTransition {
+                from: before.status.to_string(),
+                to: to.to_string(),
+            });
+        }
+        let mut after = before.clone();
+        after.status = to;
+        after.updated_at = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::purchasing::po_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "purchase_order",
+            Some(id),
+            "status",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Hard delete. Cascades the PO's own lines — unless one of them has a
+    /// receipt against it, in which case the database itself refuses (see
+    /// the migration header): there is no service-layer pre-check duplicating
+    /// that guard, the same trust boundary `repo::catalogue::variant_delete`
+    /// already has against `stock_movements`.
+    pub fn po_delete(&self, id: &str) -> CoreResult<()> {
+        let before = self.po_get(id)?;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::purchasing::po_delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "purchase_order",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Recompute and persist a PO's `subtotal_minor`/`total_minor` from its
+    /// current lines. Called after every line add/update/delete — the header
+    /// row is a plain LWW register (migration `0013_purchasing`'s header), so
+    /// writing the recomputed figure back is an ordinary update, not a second
+    /// source of truth: there is nowhere else `subtotal_minor` could come
+    /// from.
+    fn recalc_po_totals_in_tx(&self, tx: &Connection, purchase_order_id: &str) -> CoreResult<()> {
+        let items = repo::purchasing::item_list_for_po(tx, purchase_order_id)?;
+        let subtotal_minor: i64 = items.iter().map(|i| i.total_minor).sum();
+        let mut po = repo::purchasing::po_get(tx, purchase_order_id)?.ok_or_else(|| {
+            CoreError::NotFound {
+                entity: "purchase_order",
+                id: purchase_order_id.to_string(),
+            }
+        })?;
+        po.subtotal_minor = subtotal_minor;
+        po.total_minor = subtotal_minor + po.tax_minor;
+        po.updated_at = now_iso();
+        repo::purchasing::po_update(tx, &po)?;
+        Ok(())
+    }
+
+    pub fn po_item_add(&self, new: NewPurchaseOrderItem) -> CoreResult<PurchaseOrderItem> {
+        let po = self.po_get(&new.purchase_order_id)?;
+        if po.status == PurchaseOrderStatus::Cancelled {
+            return Err(CoreError::Validation(
+                "cannot add a line to a cancelled purchase order".into(),
+            ));
+        }
+        let variant = self.product_variant_get(&new.variant_id)?;
+        if variant.book_id != po.book_id {
+            return Err(CoreError::Validation(
+                "purchase order line variant belongs to a different book".into(),
+            ));
+        }
+        if new.qty_ordered <= 0 {
+            return Err(CoreError::Validation(
+                "purchase order line quantity must be positive".into(),
+            ));
+        }
+        let unit_price_minor = new.unit_price_minor.unwrap_or(0);
+        if unit_price_minor < 0 {
+            return Err(CoreError::Validation(
+                "purchase order line unit price must not be negative".into(),
+            ));
+        }
+
+        let now = now_iso();
+        let item = PurchaseOrderItem {
+            id: new_id(),
+            purchase_order_id: po.id.clone(),
+            book_id: po.book_id.clone(),
+            variant_id: variant.id,
+            qty_ordered: new.qty_ordered,
+            unit_price_minor,
+            total_minor: new.qty_ordered * unit_price_minor,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::purchasing::item_insert(&tx, &item)?;
+        self.recalc_po_totals_in_tx(&tx, &po.id)?;
+        self.emit_audit(
+            &tx,
+            Some(&item.book_id),
+            "purchase_order_item",
+            Some(&item.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&item)?),
+        )?;
+        tx.commit()?;
+        Ok(item)
+    }
+
+    pub fn po_item_get(&self, id: &str) -> CoreResult<PurchaseOrderItem> {
+        repo::purchasing::item_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "purchase_order_item",
+            id: id.to_string(),
+        })
+    }
+
+    /// A PO's own lines, in the order they were added.
+    pub fn po_item_list(&self, purchase_order_id: &str) -> CoreResult<Vec<PurchaseOrderItem>> {
+        repo::purchasing::item_list_for_po(self.conn(), purchase_order_id)
+    }
+
+    pub fn po_item_update(
+        &self,
+        id: &str,
+        patch: PurchaseOrderItemPatch,
+    ) -> CoreResult<PurchaseOrderItem> {
+        let before = self.po_item_get(id)?;
+        let po = self.po_get(&before.purchase_order_id)?;
+        if po.status == PurchaseOrderStatus::Cancelled {
+            return Err(CoreError::Validation(
+                "cannot edit a line on a cancelled purchase order".into(),
+            ));
+        }
+        let mut after = before.clone();
+        if let Some(qty_ordered) = patch.qty_ordered {
+            if qty_ordered <= 0 {
+                return Err(CoreError::Validation(
+                    "purchase order line quantity must be positive".into(),
+                ));
+            }
+            // A line already partly (or fully) received cannot be shrunk
+            // below what has actually arrived — that would make its own
+            // derived receiving status lie about what qty_ordered claims.
+            let received = self.po_item_received_qty(id)?;
+            if qty_ordered < received {
+                return Err(CoreError::Validation(format!(
+                    "cannot reduce ordered quantity to {qty_ordered}; {received} has already \
+                     been received against this line"
+                )));
+            }
+            after.qty_ordered = qty_ordered;
+        }
+        if let Some(unit_price_minor) = patch.unit_price_minor {
+            if unit_price_minor < 0 {
+                return Err(CoreError::Validation(
+                    "purchase order line unit price must not be negative".into(),
+                ));
+            }
+            after.unit_price_minor = unit_price_minor;
+        }
+        after.total_minor = after.qty_ordered * after.unit_price_minor;
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::purchasing::item_update(&tx, &after)?;
+        self.recalc_po_totals_in_tx(&tx, &after.purchase_order_id)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "purchase_order_item",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Hard delete. Fails at the database level (see the migration header)
+    /// if any `po_receipts` row references this line — the same trust
+    /// boundary `po_delete` documents above.
+    pub fn po_item_delete(&self, id: &str) -> CoreResult<()> {
+        let before = self.po_item_get(id)?;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::purchasing::item_delete(&tx, id)?;
+        self.recalc_po_totals_in_tx(&tx, &before.purchase_order_id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "purchase_order_item",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Record one goods receipt against a PO line **and** write the stock
+    /// movement it represents, in the same transaction — the keystone
+    /// invariant ROADMAP.md 6.4 names explicitly (see migration
+    /// `0013_purchasing`'s header). Blocked only once the PO itself is
+    /// `Cancelled`; a `Draft` PO may still receive (goods sometimes arrive
+    /// before the paperwork catches up, and nothing here should force a user
+    /// to backdate a status just to record what physically happened).
+    pub fn po_receive(&self, new: NewPoReceipt) -> CoreResult<PoReceipt> {
+        let item = self.po_item_get(&new.purchase_order_item_id)?;
+        let po = self.po_get(&item.purchase_order_id)?;
+        if po.status == PurchaseOrderStatus::Cancelled {
+            return Err(CoreError::Validation(
+                "cannot receive against a cancelled purchase order".into(),
+            ));
+        }
+        let location = self.location_get(&new.location_id)?;
+        if location.book_id != item.book_id {
+            return Err(CoreError::Validation(
+                "goods receipt location belongs to a different book".into(),
+            ));
+        }
+        if new.qty == 0 {
+            return Err(CoreError::Validation(
+                "goods receipt quantity must not be zero".into(),
+            ));
+        }
+
+        let receipt = PoReceipt {
+            id: new_id(),
+            book_id: item.book_id.clone(),
+            purchase_order_item_id: item.id.clone(),
+            location_id: location.id,
+            qty: new.qty,
+            note: new.note,
+            received_by: new.received_by,
+            created_at: now_iso(),
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::purchasing::receipt_insert(&tx, &receipt)?;
+        self.emit_audit(
+            &tx,
+            Some(&receipt.book_id),
+            "po_receipt",
+            Some(&receipt.id),
+            "record",
+            None,
+            Some(serde_json::to_string(&receipt)?),
+        )?;
+        // The keystone: the same insert_movement_in_tx helper stock_transfer
+        // and stock_movement_record already share, so on-hand and purchasing
+        // can never disagree about how much arrived.
+        self.insert_movement_in_tx(
+            &tx,
+            &receipt.book_id,
+            &item.variant_id,
+            &receipt.location_id,
+            receipt.qty,
+            StockMovementKind::Receipt,
+            Some("po_receipt".to_string()),
+            Some(receipt.id.clone()),
+            receipt.note.clone(),
+            receipt.received_by.clone(),
+        )?;
+        tx.commit()?;
+        Ok(receipt)
+    }
+
+    /// Every receipt recorded against one line, oldest first.
+    pub fn po_receipts_for_item(&self, item_id: &str) -> CoreResult<Vec<PoReceipt>> {
+        repo::purchasing::receipts_for_item(self.conn(), item_id)
+    }
+
+    /// Every receipt recorded against any of a PO's lines, oldest first.
+    pub fn po_receipts_for_po(&self, purchase_order_id: &str) -> CoreResult<Vec<PoReceipt>> {
+        repo::purchasing::receipts_for_po(self.conn(), purchase_order_id)
+    }
+
+    /// A line's received quantity: `SUM(qty)` over exactly its own receipts.
+    /// Never stored — see migration `0013_purchasing`.
+    pub fn po_item_received_qty(&self, item_id: &str) -> CoreResult<i64> {
+        repo::purchasing::received_qty_for_item(self.conn(), item_id)
+    }
+
+    /// `Unreceived` at zero or less, `Complete` at or beyond `qty_ordered`
+    /// (an over-receipt still reads `Complete`, not a fourth state),
+    /// `Partial` in between.
+    fn receipt_status_from(received: i64, ordered: i64) -> PoReceiptStatus {
+        if received <= 0 {
+            PoReceiptStatus::Unreceived
+        } else if received >= ordered {
+            PoReceiptStatus::Complete
+        } else {
+            PoReceiptStatus::Partial
+        }
+    }
+
+    /// One line's derived receiving status.
+    pub fn po_item_receiving_status(&self, item_id: &str) -> CoreResult<PoReceiptStatus> {
+        let item = self.po_item_get(item_id)?;
+        let received = self.po_item_received_qty(item_id)?;
+        Ok(Self::receipt_status_from(received, item.qty_ordered))
+    }
+
+    /// A PO's lines together with each one's derived receiving figure — the
+    /// pairing a purchasing screen actually renders, computed once here
+    /// rather than making every caller re-fan-out over `po_item_list` and
+    /// `po_item_received_qty` itself.
+    pub fn po_items_with_receiving(
+        &self,
+        purchase_order_id: &str,
+    ) -> CoreResult<Vec<PurchaseOrderItemReceiving>> {
+        self.po_item_list(purchase_order_id)?
+            .into_iter()
+            .map(|item| {
+                let received_qty = self.po_item_received_qty(&item.id)?;
+                let status = Self::receipt_status_from(received_qty, item.qty_ordered);
+                Ok(PurchaseOrderItemReceiving {
+                    item,
+                    received_qty,
+                    status,
+                })
+            })
+            .collect()
+    }
+
+    /// A whole PO's receiving progress, derived from its lines: `Complete`
+    /// only when every line is `Complete`, `Unreceived` only when every line
+    /// is `Unreceived` (including a PO with zero lines — nothing has
+    /// physically happened yet, the same reading a freshly created order
+    /// gets), `Partial` otherwise.
+    pub fn po_receiving_status(&self, purchase_order_id: &str) -> CoreResult<PoReceiptStatus> {
+        let rows = self.po_items_with_receiving(purchase_order_id)?;
+        if rows.is_empty() {
+            return Ok(PoReceiptStatus::Unreceived);
+        }
+        let all_complete = rows.iter().all(|r| r.status == PoReceiptStatus::Complete);
+        let all_unreceived = rows
+            .iter()
+            .all(|r| r.status == PoReceiptStatus::Unreceived);
+        Ok(if all_complete {
+            PoReceiptStatus::Complete
+        } else if all_unreceived {
+            PoReceiptStatus::Unreceived
+        } else {
+            PoReceiptStatus::Partial
+        })
+    }
+
+    // -----------------------------------------------------------------------
     // Budgets
     // -----------------------------------------------------------------------
 
@@ -6158,6 +6697,511 @@ mod tests {
             .find(|l| l.variant.id == low.id)
             .unwrap();
         assert_eq!(low_entry.on_hand, 10);
+    }
+
+    // -- purchasing (migration 0013, ROADMAP.md Phase 6.4) -------------------
+
+    fn make_supplier(svc: &CoreService, book: &Book, name: &str) -> Contact {
+        svc.contact_add(NewContact {
+            book_id: book.id.clone(),
+            role: ContactRole::Supplier,
+            name: name.into(),
+            company_name: None,
+            email: None,
+            phone: None,
+            billing_address: None,
+            shipping_address: None,
+            tax_number: None,
+            payment_terms_days: None,
+            credit_limit_minor: None,
+            notes: None,
+        })
+        .unwrap()
+    }
+
+    fn make_po(
+        svc: &CoreService,
+        book: &Book,
+        supplier: &Contact,
+        location: &Location,
+        po_number: &str,
+    ) -> PurchaseOrder {
+        svc.po_create(NewPurchaseOrder {
+            book_id: book.id.clone(),
+            supplier_id: supplier.id.clone(),
+            location_id: location.id.clone(),
+            po_number: po_number.into(),
+            order_date: "2026-07-01".into(),
+            expected_delivery: None,
+            currency: "ZAR".into(),
+            tax_minor: None,
+            notes: None,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn po_create_validates_supplier_role_and_book_scoping() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let other_book = svc
+            .book_create(NewBook {
+                name: "Other".into(),
+                kind: BookKind::Business,
+                currency: None,
+                country: None,
+                region: None,
+            })
+            .unwrap();
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let customer_only = svc
+            .contact_add(NewContact {
+                book_id: book.id.clone(),
+                role: ContactRole::Customer,
+                name: "Retail Buyer".into(),
+                company_name: None,
+                email: None,
+                phone: None,
+                billing_address: None,
+                shipping_address: None,
+                tax_number: None,
+                payment_terms_days: None,
+                credit_limit_minor: None,
+                notes: None,
+            })
+            .unwrap();
+        let location = make_location(&svc, &book, "Warehouse");
+        let foreign_location = make_location(&svc, &other_book, "Foreign");
+
+        let base = |supplier_id: &str, location_id: &str| NewPurchaseOrder {
+            book_id: book.id.clone(),
+            supplier_id: supplier_id.into(),
+            location_id: location_id.into(),
+            po_number: "PO-1".into(),
+            order_date: "2026-07-01".into(),
+            expected_delivery: None,
+            currency: "ZAR".into(),
+            tax_minor: None,
+            notes: None,
+        };
+
+        assert!(matches!(
+            svc.po_create(base(&customer_only.id, &location.id)),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.po_create(base(&supplier.id, &foreign_location.id)),
+            Err(CoreError::Validation(_))
+        ));
+
+        let po = svc.po_create(base(&supplier.id, &location.id)).unwrap();
+        assert_eq!(po.status, PurchaseOrderStatus::Draft);
+        assert_eq!(po.subtotal_minor, 0);
+        assert_eq!(po.total_minor, 0);
+
+        // PO number must be unique within the book — the schema's own
+        // UNIQUE(book_id, po_number) constraint.
+        assert!(svc.po_create(base(&supplier.id, &location.id)).is_err());
+    }
+
+    #[test]
+    fn po_item_add_update_and_delete_recompute_header_totals() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let location = make_location(&svc, &book, "Warehouse");
+        let po = make_po(&svc, &book, &supplier, &location, "PO-1");
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let variant_2 = make_variant(&svc, &book, "FANTA-330");
+
+        let item1 = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 10,
+                unit_price_minor: Some(500),
+            })
+            .unwrap();
+        assert_eq!(item1.total_minor, 5_000);
+
+        let item2 = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant_2.id.clone(),
+                qty_ordered: 2,
+                unit_price_minor: Some(1_000),
+            })
+            .unwrap();
+        assert_eq!(item2.total_minor, 2_000);
+
+        let reloaded = svc.po_get(&po.id).unwrap();
+        assert_eq!(reloaded.subtotal_minor, 7_000);
+        assert_eq!(reloaded.total_minor, 7_000, "tax_minor defaulted to 0");
+
+        let item1 = svc
+            .po_item_update(
+                &item1.id,
+                PurchaseOrderItemPatch {
+                    qty_ordered: Some(5),
+                    unit_price_minor: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(item1.total_minor, 2_500);
+        let reloaded = svc.po_get(&po.id).unwrap();
+        assert_eq!(reloaded.subtotal_minor, 4_500);
+
+        svc.po_item_delete(&item2.id).unwrap();
+        let reloaded = svc.po_get(&po.id).unwrap();
+        assert_eq!(reloaded.subtotal_minor, 2_500);
+        assert_eq!(reloaded.total_minor, 2_500);
+    }
+
+    /// **The keystone invariant, proven rather than assumed.** A goods
+    /// receipt must write a stock movement through the existing stock
+    /// service, so on-hand moves by exactly the received quantity — never a
+    /// second, disagreeing record of how much arrived.
+    #[test]
+    fn po_receive_writes_a_stock_movement_and_moves_on_hand_by_exactly_that_amount() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let location = make_location(&svc, &book, "Warehouse");
+        let po = make_po(&svc, &book, &supplier, &location, "PO-1");
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let item = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 20,
+                unit_price_minor: Some(500),
+            })
+            .unwrap();
+
+        assert_eq!(svc.stock_on_hand(&variant.id, &location.id).unwrap(), 0);
+
+        let receipt = svc
+            .po_receive(NewPoReceipt {
+                purchase_order_item_id: item.id.clone(),
+                location_id: location.id.clone(),
+                qty: 12,
+                note: Some("first delivery".into()),
+                received_by: Some("alice".into()),
+            })
+            .unwrap();
+        assert_eq!(receipt.qty, 12);
+
+        // On-hand moved by EXACTLY the received quantity.
+        assert_eq!(svc.stock_on_hand(&variant.id, &location.id).unwrap(), 12);
+
+        // And it moved because a real stock movement was written, pointing
+        // back at this receipt — not a parallel, disconnected record.
+        let movements = svc
+            .stock_movements_for_ref("po_receipt", &receipt.id)
+            .unwrap();
+        assert_eq!(movements.len(), 1);
+        assert_eq!(movements[0].qty_delta, 12);
+        assert_eq!(movements[0].kind, StockMovementKind::Receipt);
+        assert_eq!(movements[0].variant_id, variant.id);
+        assert_eq!(movements[0].location_id, location.id);
+
+        assert_eq!(svc.po_item_received_qty(&item.id).unwrap(), 12);
+        assert_eq!(
+            svc.po_item_receiving_status(&item.id).unwrap(),
+            PoReceiptStatus::Partial
+        );
+        assert_eq!(
+            svc.po_receiving_status(&po.id).unwrap(),
+            PoReceiptStatus::Partial
+        );
+
+        // Receive the rest.
+        svc.po_receive(NewPoReceipt {
+            purchase_order_item_id: item.id.clone(),
+            location_id: location.id.clone(),
+            qty: 8,
+            note: None,
+            received_by: None,
+        })
+        .unwrap();
+        assert_eq!(svc.stock_on_hand(&variant.id, &location.id).unwrap(), 20);
+        assert_eq!(
+            svc.po_item_receiving_status(&item.id).unwrap(),
+            PoReceiptStatus::Complete
+        );
+        assert_eq!(
+            svc.po_receiving_status(&po.id).unwrap(),
+            PoReceiptStatus::Complete
+        );
+    }
+
+    /// **Convergence, proven directly.** Two receipts recorded at two
+    /// different locations against the SAME line — exactly the "two
+    /// locations receiving against the same PO" scenario the migration
+    /// header names — sum by union rather than one clobbering the other.
+    #[test]
+    fn two_locations_receiving_against_one_line_converge_by_union() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let site_a = make_location(&svc, &book, "Site A");
+        let site_b = make_location(&svc, &book, "Site B");
+        let po = make_po(&svc, &book, &supplier, &site_a, "PO-1");
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let item = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 50,
+                unit_price_minor: Some(500),
+            })
+            .unwrap();
+
+        svc.po_receive(NewPoReceipt {
+            purchase_order_item_id: item.id.clone(),
+            location_id: site_a.id.clone(),
+            qty: 20,
+            note: None,
+            received_by: None,
+        })
+        .unwrap();
+        svc.po_receive(NewPoReceipt {
+            purchase_order_item_id: item.id.clone(),
+            location_id: site_b.id.clone(),
+            qty: 15,
+            note: None,
+            received_by: None,
+        })
+        .unwrap();
+
+        // Each location's own on-hand is independent...
+        assert_eq!(svc.stock_on_hand(&variant.id, &site_a.id).unwrap(), 20);
+        assert_eq!(svc.stock_on_hand(&variant.id, &site_b.id).unwrap(), 15);
+        // ...but the line's received quantity is the union of both receipts,
+        // never just the one recorded at the PO's own default location.
+        assert_eq!(svc.po_item_received_qty(&item.id).unwrap(), 35);
+        assert_eq!(
+            svc.po_item_receiving_status(&item.id).unwrap(),
+            PoReceiptStatus::Partial
+        );
+        assert_eq!(svc.po_receipts_for_item(&item.id).unwrap().len(), 2);
+    }
+
+    /// A recount finding fewer units than recorded corrects with a second,
+    /// negative receipt row — never an edit to the first one (the schema's
+    /// own triggers refuse that outright; see the sync-capture mutation
+    /// tests for the direct proof).
+    #[test]
+    fn po_receive_supports_a_signed_compensating_correction() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let location = make_location(&svc, &book, "Warehouse");
+        let po = make_po(&svc, &book, &supplier, &location, "PO-1");
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let item = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 50,
+                unit_price_minor: Some(500),
+            })
+            .unwrap();
+
+        svc.po_receive(NewPoReceipt {
+            purchase_order_item_id: item.id.clone(),
+            location_id: location.id.clone(),
+            qty: 50,
+            note: None,
+            received_by: None,
+        })
+        .unwrap();
+        assert_eq!(svc.stock_on_hand(&variant.id, &location.id).unwrap(), 50);
+
+        svc.po_receive(NewPoReceipt {
+            purchase_order_item_id: item.id.clone(),
+            location_id: location.id.clone(),
+            qty: -5,
+            note: Some("recount: 5 short".into()),
+            received_by: None,
+        })
+        .unwrap();
+        assert_eq!(svc.stock_on_hand(&variant.id, &location.id).unwrap(), 45);
+        assert_eq!(svc.po_item_received_qty(&item.id).unwrap(), 45);
+        assert_eq!(svc.po_receipts_for_item(&item.id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn po_receive_rejects_zero_qty_and_cancelled_orders() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let location = make_location(&svc, &book, "Warehouse");
+        let po = make_po(&svc, &book, &supplier, &location, "PO-1");
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let item = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 10,
+                unit_price_minor: Some(500),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            svc.po_receive(NewPoReceipt {
+                purchase_order_item_id: item.id.clone(),
+                location_id: location.id.clone(),
+                qty: 0,
+                note: None,
+                received_by: None,
+            }),
+            Err(CoreError::Validation(_))
+        ));
+
+        svc.po_set_status(&po.id, PurchaseOrderStatus::Ordered)
+            .unwrap();
+        svc.po_set_status(&po.id, PurchaseOrderStatus::Cancelled)
+            .unwrap();
+        assert!(matches!(
+            svc.po_receive(NewPoReceipt {
+                purchase_order_item_id: item.id.clone(),
+                location_id: location.id.clone(),
+                qty: 5,
+                note: None,
+                received_by: None,
+            }),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn po_set_status_only_allows_the_guarded_transitions() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let location = make_location(&svc, &book, "Warehouse");
+        let po = make_po(&svc, &book, &supplier, &location, "PO-1");
+
+        // draft -> cancelled: allowed (an order withdrawn before it was sent).
+        let cancelled_early = svc
+            .po_create(NewPurchaseOrder {
+                book_id: book.id.clone(),
+                supplier_id: supplier.id.clone(),
+                location_id: location.id.clone(),
+                po_number: "PO-2".into(),
+                order_date: "2026-07-01".into(),
+                expected_delivery: None,
+                currency: "ZAR".into(),
+                tax_minor: None,
+                notes: None,
+            })
+            .unwrap();
+        svc.po_set_status(&cancelled_early.id, PurchaseOrderStatus::Cancelled)
+            .unwrap();
+        // Never back out of cancelled.
+        assert!(matches!(
+            svc.po_set_status(&cancelled_early.id, PurchaseOrderStatus::Draft),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+
+        // draft -> ordered -> cancelled: allowed.
+        let ordered = svc.po_set_status(&po.id, PurchaseOrderStatus::Ordered).unwrap();
+        assert_eq!(ordered.status, PurchaseOrderStatus::Ordered);
+        // Never straight back to draft once ordered.
+        assert!(matches!(
+            svc.po_set_status(&po.id, PurchaseOrderStatus::Draft),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+        svc.po_set_status(&po.id, PurchaseOrderStatus::Cancelled)
+            .unwrap();
+    }
+
+    #[test]
+    fn po_item_update_refuses_to_shrink_below_what_has_already_arrived() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let location = make_location(&svc, &book, "Warehouse");
+        let po = make_po(&svc, &book, &supplier, &location, "PO-1");
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let item = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 20,
+                unit_price_minor: Some(500),
+            })
+            .unwrap();
+        svc.po_receive(NewPoReceipt {
+            purchase_order_item_id: item.id.clone(),
+            location_id: location.id.clone(),
+            qty: 12,
+            note: None,
+            received_by: None,
+        })
+        .unwrap();
+
+        assert!(matches!(
+            svc.po_item_update(
+                &item.id,
+                PurchaseOrderItemPatch {
+                    qty_ordered: Some(10),
+                    unit_price_minor: None,
+                },
+            ),
+            Err(CoreError::Validation(_))
+        ));
+        // Exactly at the received quantity is fine.
+        let updated = svc
+            .po_item_update(
+                &item.id,
+                PurchaseOrderItemPatch {
+                    qty_ordered: Some(12),
+                    unit_price_minor: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.qty_ordered, 12);
+    }
+
+    /// A PO with a receipt against one of its lines cannot be deleted — the
+    /// CASCADE from `purchase_orders` to `purchase_order_items` runs into
+    /// `po_receipts`' own `RESTRICT`, and SQLite fails the whole statement
+    /// (see the migration header). A PO with no receipts deletes cleanly.
+    #[test]
+    fn po_delete_is_blocked_once_a_line_has_a_receipt() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let location = make_location(&svc, &book, "Warehouse");
+        let po = make_po(&svc, &book, &supplier, &location, "PO-1");
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let item = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 20,
+                unit_price_minor: Some(500),
+            })
+            .unwrap();
+
+        // No receipts yet: deletes cleanly, taking its line with it.
+        let untouched_po = make_po(&svc, &book, &supplier, &location, "PO-3");
+        svc.po_delete(&untouched_po.id).unwrap();
+
+        svc.po_receive(NewPoReceipt {
+            purchase_order_item_id: item.id.clone(),
+            location_id: location.id.clone(),
+            qty: 1,
+            note: None,
+            received_by: None,
+        })
+        .unwrap();
+        assert!(
+            svc.po_delete(&po.id).is_err(),
+            "a PO with a receipt against one of its lines must not be deletable"
+        );
     }
 
     // -- budgets ------------------------------------------------------------

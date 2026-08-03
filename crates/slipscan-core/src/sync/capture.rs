@@ -376,6 +376,161 @@ mod tests {
         }
     }
 
+/// Migration `0013_purchasing`'s three tables, exercised directly against
+    /// their triggers rather than eyeballed — the same treatment migrations
+    /// 0011 and 0012 already got above. `purchase_orders`/
+    /// `purchase_order_items` capture all three verbs (editable LWW rows);
+    /// `po_receipts` captures its insert only and refuses to be edited or
+    /// removed at all, proven against the raw table rather than through
+    /// `repo::purchasing` (which has no update/delete function for receipts
+    /// to call in the first place — this is what stops someone from adding
+    /// one and believing it would work).
+    #[test]
+    fn purchasing_tables_capture_correctly_and_a_receipt_is_immutable() {
+        let db = Db::open_in_memory().unwrap();
+        let book = seed_book(&db);
+
+        db.conn()
+            .execute(
+                "INSERT INTO locations (id, book_id, name, kind, created_at, updated_at)
+                 VALUES ('loc-1', ?1, 'Warehouse', 'warehouse', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO contacts (id, book_id, role, name, is_active, created_at, updated_at)
+                 VALUES ('sup-1', ?1, 'supplier', 'Acme Wholesale', 1, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO products (id, book_id, name, created_at, updated_at)
+                 VALUES ('p-1', ?1, 'Cola', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO product_variants
+                     (id, product_id, book_id, sku, name, price_minor, cost_price_minor,
+                      currency, reorder_point, created_at, updated_at)
+                 VALUES ('v-1', 'p-1', ?1, 'COLA-330', '330ml can', 1500, 900, 'ZAR', 24, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn().execute("DELETE FROM sync_outbox", []).unwrap();
+
+        // -- purchase_orders: insert, update, delete all captured -----------
+        db.conn()
+            .execute(
+                "INSERT INTO purchase_orders
+                     (id, book_id, supplier_id, location_id, po_number, order_date,
+                      status, currency, created_at, updated_at)
+                 VALUES ('po-1', ?1, 'sup-1', 'loc-1', 'PO-1', '2026-07-01', 'draft',
+                         'ZAR', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute("UPDATE purchase_orders SET status = 'ordered' WHERE id = 'po-1'", [])
+            .unwrap();
+
+        // -- purchase_order_items: insert, update, delete all captured ------
+        db.conn()
+            .execute(
+                "INSERT INTO purchase_order_items
+                     (id, purchase_order_id, book_id, variant_id, qty_ordered,
+                      unit_price_minor, created_at, updated_at)
+                 VALUES ('poi-1', 'po-1', ?1, 'v-1', 20, 500, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE purchase_order_items SET qty_ordered = 15 WHERE id = 'poi-1'",
+                [],
+            )
+            .unwrap();
+
+        // -- po_receipts: insert captured, update/delete refused ------------
+        db.conn()
+            .execute(
+                "INSERT INTO po_receipts
+                     (id, book_id, purchase_order_item_id, location_id, qty, created_at)
+                 VALUES ('rcpt-1', ?1, 'poi-1', 'loc-1', 12, 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+
+        let captured = drain_list(db.conn()).unwrap();
+        let rows_for = |table: &str, id: &str| -> Vec<Captured> {
+            captured
+                .iter()
+                .filter(|c| c.table == table && c.row_id == id)
+                .cloned()
+                .collect()
+        };
+
+        let po_rows = rows_for("purchase_orders", "po-1");
+        assert_eq!(po_rows.len(), 2, "insert + update: {po_rows:?}");
+        assert!(po_rows.iter().all(|c| c.ns == book && !c.deleted));
+
+        let item_rows = rows_for("purchase_order_items", "poi-1");
+        assert_eq!(item_rows.len(), 2, "insert + update: {item_rows:?}");
+        assert!(item_rows.iter().all(|c| c.ns == book && !c.deleted));
+
+        let receipt_rows = rows_for("po_receipts", "rcpt-1");
+        assert_eq!(
+            receipt_rows.len(),
+            1,
+            "a receipt must capture exactly its insert: {receipt_rows:?}"
+        );
+        assert!(!receipt_rows[0].deleted);
+        assert_eq!(receipt_rows[0].ns, book, "the namespace is the book id");
+
+        // Deletes: purchase_orders/purchase_order_items are ordinary
+        // deletes (captured as tombstones); po_receipts refuses outright.
+        db.conn()
+            .execute("DELETE FROM purchase_order_items WHERE id = 'poi-1'", [])
+            .unwrap_err(); // RESTRICTed by the po_receipts row above.
+
+        for sql in [
+            "UPDATE po_receipts SET qty = 1 WHERE id = 'rcpt-1'",
+            "DELETE FROM po_receipts WHERE id = 'rcpt-1'",
+        ] {
+            let err = db.conn().execute(sql, []).unwrap_err();
+            assert!(
+                err.to_string().contains("immutable"),
+                "`{sql}` must be refused by the database itself, got {err}"
+            );
+        }
+
+        // With the receipt gone conceptually blocked, prove the ordinary
+        // (unreferenced) delete path still captures a tombstone: a second,
+        // receipt-free order deletes cleanly.
+        db.conn()
+            .execute(
+                "INSERT INTO purchase_orders
+                     (id, book_id, supplier_id, location_id, po_number, order_date,
+                      status, currency, created_at, updated_at)
+                 VALUES ('po-2', ?1, 'sup-1', 'loc-1', 'PO-2', '2026-07-02', 'draft',
+                         'ZAR', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute("DELETE FROM purchase_orders WHERE id = 'po-2'", [])
+            .unwrap();
+        let captured = drain_list(db.conn()).unwrap();
+        let po2_delete = captured
+            .iter()
+            .find(|c| c.table == "purchase_orders" && c.row_id == "po-2" && c.deleted)
+            .expect("the delete was captured as a tombstone");
+        assert_eq!(po2_delete.ns, book);
+    }
+
     #[test]
     fn an_ordinary_write_lands_in_the_outbox_with_its_namespace() {
         let db = Db::open_in_memory().unwrap();

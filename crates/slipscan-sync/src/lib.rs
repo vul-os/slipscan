@@ -31,8 +31,10 @@
 //!
 //! Books, accounts, categories, transactions, transaction splits, merchant
 //! mappings, budgets, members, locations, contacts, the chart of accounts, its
-//! entity map, the VAT-rate table, and the product catalogue (product
-//! categories, products, product variants) — the full list is [`LWW_TABLES`].
+//! entity map, the VAT-rate table, the product catalogue (product
+//! categories, products, product variants), and purchasing headers/lines
+//! (purchase orders, purchase order items) — the full list is
+//! [`LWW_TABLES`].
 //!
 //! ```text
 //! target  "<table>/<row-id>"      field "row"
@@ -66,10 +68,10 @@
 //! `field` the column name — deliberately not taken here, because it would be a
 //! behaviour change rather than a faithful mapping.
 //!
-//! ## Posted journals, their lines, and stock movements → §4.3 OR-Set ([`Kind::SetAdd`])
+//! ## Posted journals, their lines, stock movements, and goods receipts → §4.3 OR-Set ([`Kind::SetAdd`])
 //!
 //! ```text
-//! target  "journals" / "journal_lines" / "stock_movements"
+//! target  "journals" / "journal_lines" / "stock_movements" / "po_receipts"
 //! value   tstr, "v" + canonical JSON of the row including its id
 //! ```
 //!
@@ -87,6 +89,12 @@
 //! `stock_movements_no_update`/`_no_delete` give it the identical database-level
 //! refusal. Two locations that recorded movements while disconnected converge
 //! by union exactly like two devices that each posted journals offline.
+//!
+//! `po_receipts` (migration `0013_purchasing`, ROADMAP.md 6.4) extends the
+//! same shape one hop further: a purchase-order line's received quantity is
+//! `SUM(qty)` over its receipts, so two sites receiving against the same line
+//! while disconnected converge the same way two locations trading the same
+//! variant already do.
 //!
 //! No set-remove is ever minted, so this is an OR-Set with no removes, which is
 //! a grow-only set whose merge is plain union. The mapping is therefore an
@@ -253,7 +261,12 @@ pub fn parse_lww_target(target: &str) -> Option<(&str, &str)> {
 /// tables carries a unique `id` in its payload — see the §4.3 note in the
 /// module docs for why that is load-bearing rather than incidental.
 #[cfg(feature = "sync-dmtap")]
-pub const LEDGER_TABLES: &[&str] = &["journals", "journal_lines", "stock_movements"];
+pub const LEDGER_TABLES: &[&str] = &[
+    "journals",
+    "journal_lines",
+    "stock_movements",
+    "po_receipts",
+];
 
 /// Tables whose rows are editable and merge last-writer-wins.
 ///
@@ -286,6 +299,8 @@ pub const LWW_TABLES: &[&str] = &[
     "product_categories",
     "products",
     "product_variants",
+    "purchase_orders",
+    "purchase_order_items",
 ];
 
 /// Whether `table` is an immutable ledger, and so maps to the OR-Set.

@@ -115,6 +115,15 @@ CREATE INDEX pay_matches_book_idx ON pay_matches (book_id, matched_at DESC);
 -- index pay_watch_codes_book_idx
 CREATE INDEX pay_watch_codes_book_idx ON pay_watch_codes (book_id, enabled);
 
+-- index po_receipts_book_idx
+CREATE INDEX po_receipts_book_idx ON po_receipts (book_id);
+
+-- index po_receipts_item_idx
+CREATE INDEX po_receipts_item_idx ON po_receipts (purchase_order_item_id);
+
+-- index po_receipts_location_idx
+CREATE INDEX po_receipts_location_idx ON po_receipts (location_id);
+
 -- index product_categories_book_idx
 CREATE INDEX product_categories_book_idx ON product_categories (book_id);
 
@@ -129,6 +138,27 @@ CREATE INDEX products_book_idx ON products (book_id);
 
 -- index products_category_idx
 CREATE INDEX products_category_idx ON products (product_category_id);
+
+-- index purchase_order_items_book_idx
+CREATE INDEX purchase_order_items_book_idx ON purchase_order_items (book_id);
+
+-- index purchase_order_items_po_idx
+CREATE INDEX purchase_order_items_po_idx ON purchase_order_items (purchase_order_id);
+
+-- index purchase_order_items_variant_idx
+CREATE INDEX purchase_order_items_variant_idx ON purchase_order_items (variant_id);
+
+-- index purchase_orders_book_idx
+CREATE INDEX purchase_orders_book_idx ON purchase_orders (book_id);
+
+-- index purchase_orders_book_status_idx
+CREATE INDEX purchase_orders_book_status_idx ON purchase_orders (book_id, status);
+
+-- index purchase_orders_location_idx
+CREATE INDEX purchase_orders_location_idx ON purchase_orders (location_id);
+
+-- index purchase_orders_supplier_idx
+CREATE INDEX purchase_orders_supplier_idx ON purchase_orders (supplier_id);
 
 -- index recon_matches_book_state_idx
 CREATE INDEX recon_matches_book_state_idx ON recon_matches (book_id, state);
@@ -236,6 +266,9 @@ CREATE UNIQUE INDEX recon_matches_tx_active_unique
 -- index sqlite_autoindex_pay_watch_codes_1
 ;
 
+-- index sqlite_autoindex_po_receipts_1
+;
+
 -- index sqlite_autoindex_product_categories_1
 ;
 
@@ -249,6 +282,15 @@ CREATE UNIQUE INDEX recon_matches_tx_active_unique
 ;
 
 -- index sqlite_autoindex_products_1
+;
+
+-- index sqlite_autoindex_purchase_order_items_1
+;
+
+-- index sqlite_autoindex_purchase_orders_1
+;
+
+-- index sqlite_autoindex_purchase_orders_2
 ;
 
 -- index sqlite_autoindex_recon_matches_1
@@ -706,6 +748,27 @@ CREATE TABLE pay_watch_codes (
     created_at            TEXT NOT NULL
 );
 
+-- table po_receipts
+CREATE TABLE po_receipts (
+    id                       TEXT PRIMARY KEY,
+    -- Denormalized from purchase_order_items.book_id via the item, the same
+    -- reason stock_movements.book_id is denormalized from the variant.
+    book_id                  TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    purchase_order_item_id   TEXT NOT NULL REFERENCES purchase_order_items (id) ON DELETE RESTRICT,
+    -- The location THIS receipt happened at — see the header note on why
+    -- this is not simply inherited from the parent PO.
+    location_id              TEXT NOT NULL REFERENCES locations (id) ON DELETE RESTRICT,
+    -- Signed, like stock_movements.qty_delta, and for the identical reason:
+    -- a correction is a second row, never an edit to this one.
+    qty                      INTEGER NOT NULL CHECK (qty != 0),
+    note                     TEXT,
+    -- Free text, no FK — SlipScan has no user/staff identity yet (see
+    -- stock_movements.created_by in migration 0012 for the same limitation,
+    -- ROADMAP.md 6.8 is where it gets built).
+    received_by              TEXT,
+    created_at               TEXT NOT NULL
+);
+
 -- table product_categories
 CREATE TABLE product_categories (
     id         TEXT PRIMARY KEY,
@@ -747,6 +810,49 @@ CREATE TABLE products (
     description         TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
+);
+
+-- table purchase_order_items
+CREATE TABLE purchase_order_items (
+    id                 TEXT PRIMARY KEY,
+    purchase_order_id  TEXT NOT NULL REFERENCES purchase_orders (id) ON DELETE CASCADE,
+    -- Denormalized from purchase_orders.book_id, the same choice migration
+    -- 0011 made for product_variants.book_id: needed for a per-book scan and
+    -- for this table's own sync-capture trigger's `ns` below.
+    book_id            TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    variant_id         TEXT NOT NULL REFERENCES product_variants (id) ON DELETE RESTRICT,
+    qty_ordered        INTEGER NOT NULL CHECK (qty_ordered > 0),
+    unit_price_minor   INTEGER NOT NULL DEFAULT 0 CHECK (unit_price_minor >= 0),
+    -- qty_ordered * unit_price_minor, kept in step by the service layer
+    -- (CoreService::po_item_add/_update) — no CHECK enforces the product
+    -- itself, the same trust boundary migration 0011 already gives
+    -- product_variants.price_minor/cost_price_minor.
+    total_minor        INTEGER NOT NULL DEFAULT 0 CHECK (total_minor >= 0),
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL
+);
+
+-- table purchase_orders
+CREATE TABLE purchase_orders (
+    id                 TEXT PRIMARY KEY,
+    book_id            TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    supplier_id        TEXT NOT NULL REFERENCES contacts (id) ON DELETE RESTRICT,
+    location_id        TEXT NOT NULL REFERENCES locations (id) ON DELETE RESTRICT,
+    po_number          TEXT NOT NULL,
+    order_date         TEXT NOT NULL,
+    expected_delivery  TEXT,
+    -- Hand-maintained workflow state — see the header note on why this is
+    -- the one field here that is *not* derived from po_receipts.
+    status             TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'ordered', 'cancelled')),
+    subtotal_minor     INTEGER NOT NULL DEFAULT 0 CHECK (subtotal_minor >= 0),
+    tax_minor          INTEGER NOT NULL DEFAULT 0 CHECK (tax_minor >= 0),
+    total_minor        INTEGER NOT NULL DEFAULT 0 CHECK (total_minor >= 0),
+    currency           TEXT NOT NULL CHECK (length(currency) = 3),
+    notes              TEXT,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    UNIQUE (book_id, po_number)
 );
 
 -- table recon_matches
@@ -961,6 +1067,20 @@ CREATE TRIGGER journals_no_update
 BEFORE UPDATE ON journals
 BEGIN
     SELECT RAISE(ABORT, 'posted journals are immutable; post a reversal instead');
+END;
+
+-- trigger po_receipts_no_delete
+CREATE TRIGGER po_receipts_no_delete
+BEFORE DELETE ON po_receipts
+BEGIN
+    SELECT RAISE(ABORT, 'goods receipts are immutable; record a compensating receipt instead');
+END;
+
+-- trigger po_receipts_no_update
+CREATE TRIGGER po_receipts_no_update
+BEFORE UPDATE ON po_receipts
+BEGIN
+    SELECT RAISE(ABORT, 'goods receipts are immutable; record a compensating receipt instead');
 END;
 
 -- trigger stock_movements_no_delete
@@ -1233,6 +1353,14 @@ BEGIN
     VALUES ('merchant_mappings', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 END;
 
+-- trigger sync_capture_po_receipts_ins
+CREATE TRIGGER sync_capture_po_receipts_ins AFTER INSERT ON po_receipts
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('po_receipts', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
 -- trigger sync_capture_product_categories_del
 CREATE TRIGGER sync_capture_product_categories_del AFTER DELETE ON product_categories
 WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
@@ -1303,6 +1431,54 @@ WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
 BEGIN
     INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
     VALUES ('products', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_purchase_order_items_del
+CREATE TRIGGER sync_capture_purchase_order_items_del AFTER DELETE ON purchase_order_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('purchase_order_items', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_purchase_order_items_ins
+CREATE TRIGGER sync_capture_purchase_order_items_ins AFTER INSERT ON purchase_order_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('purchase_order_items', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_purchase_order_items_upd
+CREATE TRIGGER sync_capture_purchase_order_items_upd AFTER UPDATE ON purchase_order_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('purchase_order_items', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_purchase_orders_del
+CREATE TRIGGER sync_capture_purchase_orders_del AFTER DELETE ON purchase_orders
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('purchase_orders', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_purchase_orders_ins
+CREATE TRIGGER sync_capture_purchase_orders_ins AFTER INSERT ON purchase_orders
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('purchase_orders', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_purchase_orders_upd
+CREATE TRIGGER sync_capture_purchase_orders_upd AFTER UPDATE ON purchase_orders
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('purchase_orders', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 END;
 
 -- trigger sync_capture_stock_movements_ins
