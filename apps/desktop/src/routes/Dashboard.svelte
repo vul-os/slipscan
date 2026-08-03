@@ -22,8 +22,10 @@
     fmtMonth,
     fmtPct,
     greeting,
+    localDate,
     localMonth,
     monthEnd,
+    shiftMonth,
   } from "../lib/format";
   import { swrLoad } from "../lib/loadCache";
   import { computeNudges, type Nudge, type NudgeSeverity } from "../lib/nudges";
@@ -38,6 +40,11 @@
   import Badge from "../lib/components/Badge.svelte";
   import Icon from "../lib/components/Icon.svelte";
   import MemberAvatar from "../lib/components/MemberAvatar.svelte";
+  import NetWorthChart from "../lib/components/NetWorthChart.svelte";
+
+  // Twelve-month window ending today for the net-worth chart.
+  const networthFrom = `${shiftMonth(localMonth(), -11)}-01`;
+  const networthTo = localDate();
 
   const month = localMonth();
   const periodFrom = `${month}-01`;
@@ -139,6 +146,23 @@
     ];
   }
 
+  /**
+   * Ensure this book has net-worth history, then read the last 12 months as
+   * a series. Backfill reconstructs from the transaction ledger and capture
+   * records today's total; both are idempotent per `(account, date)` in
+   * core, so calling them on every Dashboard load never duplicates a row —
+   * see `CoreService::networth_capture`/`networth_backfill`.
+   */
+  async function loadNetworth(bookId: string) {
+    await api.networthBackfill({ book_id: bookId });
+    await api.networthCapture({ book_id: bookId });
+    return api.networthSeries({
+      book_id: bookId,
+      from: networthFrom,
+      to: networthTo,
+    });
+  }
+
   async function load() {
     const book = requireBook(await api.bookList());
     const [
@@ -151,6 +175,7 @@
       spending,
       memberExpense,
       memberContribution,
+      networth,
     ] = await Promise.all([
       api.accountList({ book_id: book.id }),
       api.categoryList({ book_id: book.id }),
@@ -165,6 +190,7 @@
         from: periodFrom,
         to: periodTo,
       }),
+      loadNetworth(book.id),
     ]);
     // Nudges are computed right here, on-device, from the stats above.
     const nudges = computeNudges({ transactions, budgets, categories, month });
@@ -180,6 +206,7 @@
       nudges,
       members,
       household: joinHousehold(members, memberExpense, memberContribution),
+      networth,
     };
   }
 
@@ -352,6 +379,33 @@
       </span>
     </button>
   {/if}
+
+  <!-- Net worth over time (PARITY.md "Net worth over time"): a series of
+       periodic per-account balance snapshots, backfilled from the
+       transaction ledger on first use so this is never a single point. -->
+  <section class="card mt-4">
+    <header class="flex items-center justify-between px-4 pt-4">
+      <h2 class="text-[13px] font-semibold">Net worth</h2>
+      {#if d.networth.points.length > 0}
+        {@const latest = d.networth.points[d.networth.points.length - 1]}
+        <span class="num text-[12.5px] text-t2">
+          {fmtMoney(latest.total_minor, d.networth.currency)}
+          <span class="text-t3">· last 12 months</span>
+        </span>
+      {/if}
+    </header>
+    <div class="px-4 pb-4 pt-2">
+      {#if d.networth.points.length === 0}
+        <EmptyState
+          icon="reports"
+          title="No net-worth history yet"
+          body="SlipScan reconstructs history from transactions already on record and records a new snapshot each time you open this book — the chart fills in from here."
+        />
+      {:else}
+        <NetWorthChart points={d.networth.points} currency={d.networth.currency} />
+      {/if}
+    </div>
+  </section>
 
   <!-- nudges: 100% local rules + stats over your own data, each with
        somewhere to go -->

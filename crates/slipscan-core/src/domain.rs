@@ -1809,6 +1809,96 @@ pub struct AgedReceivables {
 }
 
 // ---------------------------------------------------------------------------
+// Net worth — periodic per-account balance snapshots (migration 0015,
+// PARITY.md gap #4 "Net worth over time"). See that migration's header for
+// the full reasoning; the short version is repeated on each type below.
+// ---------------------------------------------------------------------------
+
+str_enum!(
+    /// How a [`NetWorthSnapshot`] came to exist: `Captured` — recorded at
+    /// (approximately) the moment it describes, via
+    /// `CoreService::networth_capture`. `Backfilled` — reconstructed after
+    /// the fact from the transaction ledger, via
+    /// `CoreService::networth_backfill`. Both are equally valid facts; the
+    /// tag exists so a reader can tell a live recording from a
+    /// reconstruction, never so one is preferred over the other at query
+    /// time.
+    NetWorthSnapshotSource {
+        Captured => "captured",
+        Backfilled => "backfilled",
+    }
+);
+
+/// One `(account, date)` balance fact, in the account's own currency —
+/// migration 0015's append-only ledger. Insert-only: see that migration's
+/// header for why this is a fact rather than an editable row, and
+/// `slipscan_sync::LEDGER_TABLES` for the sync mapping this earns it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetWorthSnapshot {
+    pub id: String,
+    pub book_id: String,
+    pub account_id: String,
+    /// `YYYY-MM-DD`. The balance is "as of the end of this day" — it
+    /// includes every transaction posted on this date.
+    pub as_of_date: String,
+    /// Signed; a liability account legitimately reads negative, same as
+    /// `Account::opening_balance_minor`.
+    pub balance_minor: i64,
+    /// The account's own currency — a snapshot never converts anything.
+    pub currency: String,
+    pub source: NetWorthSnapshotSource,
+    pub created_at: String,
+}
+
+/// One account's balance inside a [`NetWorthPoint`] — its own currency,
+/// never converted. `NetWorthPoint::total_minor` is where conversion (when
+/// possible) happens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetWorthAccountBalance {
+    pub account_id: String,
+    pub currency: String,
+    pub balance_minor: i64,
+}
+
+/// One point in a net-worth series (`CoreService::networth_series`): every
+/// account's most recent known balance at or before this date — a sparse
+/// per-account history read back as a step function — plus the total
+/// converted to the book's currency.
+///
+/// `total_minor` only ever folds in a balance already in `currency` or with
+/// a resolvable exchange rate; see `CoreService::networth_series`'s doc
+/// comment for exactly which rate that is and its honest limits.
+/// `unconverted` names every currency this point could not fold in, so a
+/// caller — or the desktop chart — states that plainly instead of silently
+/// understating (or, worse, silently mis-summing) net worth.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NetWorthPoint {
+    pub as_of_date: String,
+    pub by_account: Vec<NetWorthAccountBalance>,
+    /// The book's currency — what `total_minor` is denominated in.
+    pub currency: String,
+    pub total_minor: i64,
+    /// Currencies present in `by_account` that had no resolvable rate to
+    /// `currency` and so are excluded from `total_minor`. Empty when every
+    /// account is already in `currency`, or every foreign balance converted.
+    pub unconverted: Vec<String>,
+}
+
+/// A net-worth series for one book: every point in range, plus the exchange
+/// rate provenance behind every conversion any point performed — the same
+/// shape `fx_convert` already reports (`crate::fx::FxCachedRate`), one entry
+/// per foreign currency that appears anywhere in `points`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NetWorthSeries {
+    pub book_id: String,
+    /// The book's currency — what every point's `total_minor` is denominated
+    /// in.
+    pub currency: String,
+    pub points: Vec<NetWorthPoint>,
+    pub conversions: Vec<crate::fx::FxCachedRate>,
+}
+
+// ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------
 

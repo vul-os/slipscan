@@ -68,10 +68,12 @@
 //! `field` the column name — deliberately not taken here, because it would be a
 //! behaviour change rather than a faithful mapping.
 //!
-//! ## Posted journals, their lines, stock movements, and goods receipts → §4.3 OR-Set ([`Kind::SetAdd`])
+//! ## Posted journals, their lines, stock movements, goods receipts, and net-worth snapshots → §4.3 OR-Set ([`Kind::SetAdd`])
 //!
 //! ```text
 //! target  "journals" / "journal_lines" / "stock_movements" / "po_receipts"
+//!         / "invoices" / "invoice_items" / "invoice_payments"
+//!         / "networth_snapshots"
 //! value   tstr, "v" + canonical JSON of the row including its id
 //! ```
 //!
@@ -95,6 +97,21 @@
 //! `SUM(qty)` over its receipts, so two sites receiving against the same line
 //! while disconnected converge the same way two locations trading the same
 //! variant already do.
+//!
+//! `networth_snapshots` (migration `0015_networth`, PARITY.md "Net worth over
+//! time") is the same shape for the same reason again, and it is worth being
+//! explicit about why this one is a §4.3 OR-Set rather than a §4.4 register
+//! keyed on `(account_id, as_of_date)`: a balance snapshot is a **fact about a
+//! date**, not a value someone edits. §4.10's selection test — *is there any
+//! user action that restores this thing, using the same ordinary operation
+//! that created it?* — has no "restore" here at all: nothing ever supersedes
+//! a snapshot in place, a better one is simply recorded alongside it, and the
+//! read side (`CoreService::networth_series`) already has to pick the
+//! freshest fact for a given account and date out of however many exist. Two
+//! devices that each captured or backfilled the same account's balance for
+//! the same date while offline must converge by keeping **both** facts, not
+//! by one silently overwriting the other — exactly the stock-movements case,
+//! and for the identical reason the migration's own header spells out.
 //!
 //! No set-remove is ever minted, so this is an OR-Set with no removes, which is
 //! a grow-only set whose merge is plain union. The mapping is therefore an
@@ -275,6 +292,10 @@ pub const LEDGER_TABLES: &[&str] = &[
     "invoices",
     "invoice_items",
     "invoice_payments",
+    // Migration 0015 (PARITY.md "Net worth over time"): a balance snapshot is
+    // a fact about a date, never a value someone edits — see the module
+    // header above for the §4.10 selection test this one turns on.
+    "networth_snapshots",
 ];
 
 /// Tables whose rows are editable and merge last-writer-wins.

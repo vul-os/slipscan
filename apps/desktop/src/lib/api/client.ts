@@ -42,6 +42,8 @@ import type {
   MemberCategoryRow,
   MemberPatch,
   MemberSettleRow,
+  NetWorthSeries,
+  NetWorthSnapshot,
   NewBook,
   NewLocation,
   NewMember,
@@ -268,6 +270,27 @@ export const api = {
 
   accountList: (q: { book_id: string }): Promise<Account[]> =>
     call("account_list", { query: q }, () => mockApi.account_list(q)),
+
+  /** Records today's (or `as_of_date`'s) balance for every account, one
+   * snapshot each. Safe to call on every Dashboard load — an account that
+   * already has a snapshot for that date keeps it rather than duplicating. */
+  networthCapture: (q: {
+    book_id: string;
+    as_of_date?: string;
+  }): Promise<NetWorthSnapshot[]> =>
+    call("networth_capture", { query: q }, () => mockApi.networth_capture(q)),
+
+  /** Reconstructs historical snapshots from the transaction ledger. Safe to
+   * call repeatedly: only dates still missing a snapshot ever gain one. */
+  networthBackfill: (q: { book_id: string }): Promise<NetWorthSnapshot[]> =>
+    call("networth_backfill", { query: q }, () => mockApi.networth_backfill(q)),
+
+  networthSeries: (q: {
+    book_id: string;
+    from: string;
+    to: string;
+  }): Promise<NetWorthSeries> =>
+    call("networth_series", { query: q }, () => mockApi.networth_series(q)),
 
   transactionList: (q: TransactionListQuery): Promise<Transaction[]> =>
     call("transaction_list", { query: q }, () => mockApi.transaction_list(q)),

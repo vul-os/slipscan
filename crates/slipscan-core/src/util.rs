@@ -197,6 +197,18 @@ pub fn days_between(a: &str, b: &str) -> crate::error::CoreResult<i64> {
     Ok((parse_date(a)? - parse_date(b)?).whole_days().abs())
 }
 
+/// Today's date, `YYYY-MM-DD`, UTC — the same day boundary `posted_date`
+/// itself uses everywhere in the schema. Used where a caller wants "as of
+/// now" without pinning an exact instant, e.g. the default `as_of_date` for
+/// `CoreService::networth_capture`.
+pub fn today() -> String {
+    let fmt = time::macros::format_description!("[year]-[month]-[day]");
+    OffsetDateTime::now_utc()
+        .date()
+        .format(&fmt)
+        .expect("YYYY-MM-DD formatting of the current date cannot fail")
+}
+
 /// Validate and normalize an ISO-4217 currency code: exactly 3 ASCII
 /// letters, uppercased. Mis-cased codes ("zar" vs "ZAR") would otherwise
 /// split per-currency sums and balance checks into distinct buckets.

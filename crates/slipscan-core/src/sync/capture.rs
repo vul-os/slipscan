@@ -531,6 +531,59 @@ mod tests {
         assert_eq!(po2_delete.ns, book);
     }
 
+    /// Migration `0015_networth`'s own trigger set, exercised directly
+    /// rather than eyeballed — the same treatment `stock_movements` got
+    /// above: a net-worth snapshot captures its insert and refuses to be
+    /// edited or removed at all, proven against the raw table rather than
+    /// through `repo::networth` (which has no update/delete function to call
+    /// in the first place).
+    #[test]
+    fn a_networth_snapshot_captures_its_insert_and_cannot_be_updated_or_deleted() {
+        let db = Db::open_in_memory().unwrap();
+        let book = seed_book(&db);
+        db.conn()
+            .execute(
+                "INSERT INTO accounts (id, book_id, name, kind, currency, created_at, updated_at)
+                 VALUES ('a-1', ?1, 'Cheque', 'bank', 'ZAR', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn().execute("DELETE FROM sync_outbox", []).unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO networth_snapshots
+                     (id, book_id, account_id, as_of_date, balance_minor, currency, source, created_at)
+                 VALUES ('nw-1', ?1, 'a-1', '2026-01-01', 100000, 'ZAR', 'captured', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+
+        let captured = drain_list(db.conn()).unwrap();
+        let rows: Vec<&Captured> = captured
+            .iter()
+            .filter(|c| c.table == "networth_snapshots" && c.row_id == "nw-1")
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "a net-worth snapshot must capture exactly its insert: {rows:?}"
+        );
+        assert!(!rows[0].deleted);
+        assert_eq!(rows[0].ns, book, "the namespace is the book id");
+
+        for sql in [
+            "UPDATE networth_snapshots SET balance_minor = 1 WHERE id = 'nw-1'",
+            "DELETE FROM networth_snapshots WHERE id = 'nw-1'",
+        ] {
+            let err = db.conn().execute(sql, []).unwrap_err();
+            assert!(
+                err.to_string().contains("immutable"),
+                "`{sql}` must be refused by the database itself, got {err}"
+            );
+        }
+    }
+
     #[test]
     fn an_ordinary_write_lands_in_the_outbox_with_its_namespace() {
         let db = Db::open_in_memory().unwrap();

@@ -5,13 +5,13 @@
 -- migration is what closes it.
 --
 -- **Why 0014 and not 0013.** ROADMAP.md numbers Phase 6's stages 6.1..6.9, and
--- the migrations so far have followed that order 1:1 (0009 = 6.1 locations,
--- 0010 = 6.2 contacts, 0011 = 6.3a catalogue, 0012 = 6.3b stock). 6.4
--- (purchasing — purchase orders and goods receipts) has not landed yet, so
--- 0013 is a deliberate gap, not a skipped number: it is purchasing's file
--- name, reserved the way a forward-declared header reserves a slot, and
--- `db.rs`'s migration list documents the same gap where it matters (the
--- version numbers only need to be monotonic, not contiguous).
+-- the migrations follow that order 1:1 (0009 = 6.1 locations, 0010 = 6.2
+-- contacts, 0011 = 6.3a catalogue, 0012 = 6.3b stock, 0013 = 6.4 purchasing).
+-- This file was written concurrently with 0013, on a separate branch, and
+-- took 0014 because that number was reserved for it up front rather than
+-- picked as "one past the highest I can see" — which is exactly how two
+-- branches both end up called 0013. Both landed, contiguous, needing no
+-- renumbering at merge time.
 --
 -- **Two tables, two different mapping decisions, on purpose.** This is the
 -- one design choice in this migration worth reading closely, because the

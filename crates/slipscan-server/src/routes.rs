@@ -376,6 +376,23 @@ struct ReportSpendingReq {
     to_date: String,
 }
 
+/// `networth_capture`'s request: `as_of_date` defaults to today (UTC) when
+/// omitted, the same default the CLI's `--date` flag and the desktop's
+/// on-launch capture both fall back to.
+#[derive(Debug, Deserialize)]
+struct NetworthCaptureReq {
+    book_id: String,
+    #[serde(default)]
+    as_of_date: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NetworthSeriesReq {
+    book_id: String,
+    from_date: String,
+    to_date: String,
+}
+
 /// Shared by every per-member report — same `(book_id, from_date, to_date)`
 /// shape as `ReportSpendingReq`, kept as its own type since the two are
 /// conceptually distinct report families.
@@ -682,6 +699,43 @@ async fn account_update(
 async fn account_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
     s.service()?.account_delete(&req.id)?;
     Ok(Json(OK))
+}
+
+// -- Net worth: periodic balance snapshots (PARITY.md "Net worth over
+// time"). See `slipscan_core::service::CoreService::networth_capture` /
+// `networth_backfill` / `networth_series` for the full contract — capture
+// and backfill are both idempotent per `(account, date)`, and the series'
+// multi-currency conversion uses today's cached FX rate rather than a
+// historical one, which is a real, stated limitation, not an oversight.
+
+async fn networth_capture(
+    State(s): State<AppState>,
+    Json(req): Json<NetworthCaptureReq>,
+) -> ApiResult<Vec<NetWorthSnapshot>> {
+    let as_of_date = req
+        .as_of_date
+        .unwrap_or_else(slipscan_core::util::today);
+    Ok(Json(
+        s.service()?.networth_capture(&req.book_id, &as_of_date)?,
+    ))
+}
+
+async fn networth_backfill(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<NetWorthSnapshot>> {
+    Ok(Json(s.service()?.networth_backfill(&req.book_id)?))
+}
+
+async fn networth_series(
+    State(s): State<AppState>,
+    Json(req): Json<NetworthSeriesReq>,
+) -> ApiResult<NetWorthSeries> {
+    Ok(Json(s.service()?.networth_series(
+        &req.book_id,
+        &req.from_date,
+        &req.to_date,
+    )?))
 }
 
 // -- Locations: branches, sites and warehouses (Phase 6.1 — the flowstock
@@ -1916,6 +1970,9 @@ pub fn app(state: AppState) -> Router {
         .route("/account_list", post(account_list))
         .route("/account_update", post(account_update))
         .route("/account_delete", post(account_delete))
+        .route("/networth_capture", post(networth_capture))
+        .route("/networth_backfill", post(networth_backfill))
+        .route("/networth_series", post(networth_series))
         .route("/location_create", post(location_create))
         .route("/location_get", post(location_get))
         .route("/location_list", post(location_list))
@@ -3945,6 +4002,113 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{gone}");
+    }
+
+    #[tokio::test]
+    async fn networth_routes_require_bearer_auth() {
+        let token = "correct-horse-battery";
+        let app = app(AppState::new(svc(), Some(token_hash(token))));
+        for (path, body) in [
+            ("/api/v1/networth_capture", json!({"book_id": "x"})),
+            ("/api/v1/networth_backfill", json!({"book_id": "x"})),
+            (
+                "/api/v1/networth_series",
+                json!({"book_id": "x", "from_date": "2026-01-01", "to_date": "2026-12-31"}),
+            ),
+        ] {
+            let (status, _) = call(&app, post_req(path, body, None)).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
+        }
+    }
+
+    /// Capture, backfill and series over HTTP, checked against a hand-worked
+    /// ledger — the same figures `slipscan-core`'s own unit tests check, so
+    /// this is the "does the route actually call the service and return its
+    /// exact shape" half, not a second copy of the arithmetic proof.
+    #[tokio::test]
+    async fn networth_capture_backfill_and_series_round_trip() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Personal", "kind": "personal", "currency": "ZAR"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let (_, account) = call(
+            &app,
+            post_req(
+                "/api/v1/account_create",
+                json!({
+                    "book_id": book_id, "name": "Cheque", "kind": "bank", "currency": "ZAR",
+                    "opening_balance_minor": 100_000,
+                }),
+                None,
+            ),
+        )
+        .await;
+        let account_id = account["id"].as_str().unwrap().to_string();
+
+        for (date, amount) in [("2026-01-10", 50_000), ("2026-01-20", -20_000)] {
+            let (status, _) = call(
+                &app,
+                post_req(
+                    "/api/v1/transaction_create",
+                    json!({
+                        "book_id": book_id, "account_id": account_id, "source": "manual",
+                        "posted_date": date, "amount_minor": amount, "currency": "ZAR",
+                    }),
+                    None,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+
+        // Backfill reconstructs both transaction dates from the ledger.
+        let (status, created) = call(
+            &app,
+            post_req("/api/v1/networth_backfill", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        assert_eq!(created.as_array().unwrap().len(), 2);
+
+        // An explicit capture for a later date picks up the current total.
+        let (status, captured) = call(
+            &app,
+            post_req(
+                "/api/v1/networth_capture",
+                json!({"book_id": book_id, "as_of_date": "2026-01-25"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{captured}");
+        assert_eq!(captured[0]["balance_minor"], 130_000);
+        assert_eq!(captured[0]["source"], "captured");
+
+        let (status, series) = call(
+            &app,
+            post_req(
+                "/api/v1/networth_series",
+                json!({"book_id": book_id, "from_date": "2026-01-01", "to_date": "2026-01-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{series}");
+        assert_eq!(series["currency"], "ZAR");
+        let points = series["points"].as_array().unwrap();
+        assert_eq!(points.len(), 3, "{points:#?}");
+        let point = |d: &str| points.iter().find(|p| p["as_of_date"] == d).unwrap();
+        assert_eq!(point("2026-01-10")["total_minor"], 150_000);
+        assert_eq!(point("2026-01-20")["total_minor"], 130_000);
+        assert_eq!(point("2026-01-25")["total_minor"], 130_000);
     }
 
     #[tokio::test]

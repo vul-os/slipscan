@@ -62,11 +62,18 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0013_purchasing",
         include_str!("migrations/0013_purchasing.sql"),
     ),
-    // 13 is a deliberate gap, not a skipped number: it is Phase 6.4
-    // (purchasing)'s reserved file name, and it has not landed yet. Versions
-    // only need to be monotonic here, not contiguous — see migration
-    // 0014_sales's header for the full reasoning.
+    // 13, 14 and 15 were written concurrently on separate branches, each
+    // holding a number reserved up front rather than picking "one past the
+    // highest I can see" — which is why all three land contiguous here
+    // instead of colliding on 13. Each file's own header explains its
+    // feature; the numbering needed no reconciliation at merge time, which
+    // was the point of assigning it first.
     (14, "0014_sales", include_str!("migrations/0014_sales.sql")),
+    (
+        15,
+        "0015_networth",
+        include_str!("migrations/0015_networth.sql"),
+    ),
 ];
 
 /// A configured, migrated SQLite database handle.
@@ -163,13 +170,13 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
         );
     }
 
@@ -206,6 +213,7 @@ mod tests {
             "members",
             "merchant_mappings",
             "number_sequences",
+            "networth_snapshots",
             "pay_deliveries",
             "pay_endpoints",
             "pay_matches",

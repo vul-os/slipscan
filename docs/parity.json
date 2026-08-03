@@ -20,7 +20,7 @@
   ],
   "http": {
     "prefix": "/api/v1",
-    "count": 141,
+    "count": 144,
     "routes": [
       "account_create",
       "account_delete",
@@ -83,6 +83,9 @@
       "member_list",
       "member_remove",
       "member_update",
+      "networth_backfill",
+      "networth_capture",
+      "networth_series",
       "pack_benchmark",
       "pack_install",
       "pack_install_seeds",
@@ -172,7 +175,7 @@
     }
   },
   "ipc": {
-    "count": 130,
+    "count": 133,
     "commands": [
       "account_list",
       "book_create",
@@ -225,6 +228,9 @@
       "member_list",
       "member_remove",
       "member_update",
+      "networth_backfill",
+      "networth_capture",
+      "networth_series",
       "pack_benchmark",
       "pack_install",
       "pack_install_seeds",
@@ -307,7 +313,7 @@
     ]
   },
   "client": {
-    "count": 109,
+    "count": 112,
     "calls": [
       "account_list",
       "book_create",
@@ -353,6 +359,9 @@
       "member_list",
       "member_remove",
       "member_update",
+      "networth_backfill",
+      "networth_capture",
+      "networth_series",
       "pack_benchmark",
       "pack_install",
       "pack_install_seeds",

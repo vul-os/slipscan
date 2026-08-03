@@ -15,6 +15,7 @@ pub mod document;
 pub mod ledger;
 pub mod location;
 pub mod member;
+pub mod networth;
 pub mod pay;
 pub mod purchasing;
 pub mod recon;

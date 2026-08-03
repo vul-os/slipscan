@@ -343,6 +343,13 @@ enum Command {
         #[command(subcommand)]
         action: AccountAction,
     },
+    /// Net worth over time (PARITY.md "Net worth over time"): periodic
+    /// per-account balance snapshots, backfilled from the transaction
+    /// ledger, queried as a series.
+    Networth {
+        #[command(subcommand)]
+        action: NetworthAction,
+    },
     /// The selected book's profile: kind, and the multi-location override
     /// (ROADMAP.md "Phase 6" — Book profiles). Create additional books with
     /// `slipscan init --name <name> --kind business` against an existing
@@ -506,6 +513,38 @@ enum AccountAction {
         /// Bank/institution label.
         #[arg(long)]
         institution: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum NetworthAction {
+    /// Record today's (or `--date`'s) balance for every account in the
+    /// book, one snapshot each. Safe to run repeatedly — an account that
+    /// already has a snapshot for that date keeps it rather than gaining a
+    /// duplicate.
+    Capture {
+        /// `YYYY-MM-DD`; defaults to today (UTC).
+        #[arg(long)]
+        date: Option<String>,
+    },
+    /// Reconstruct historical snapshots for every account from the
+    /// transaction ledger already recorded — the difference between a chart
+    /// that starts today and one that is useful on day one. Safe to run
+    /// repeatedly: only dates still missing a snapshot ever gain one.
+    Backfill,
+    /// The net-worth series over an inclusive date range: every account's
+    /// balance at each point plus the total converted to the book's
+    /// currency (see the command's own doc comment for the multi-currency
+    /// caveat: conversion uses today's cached FX rate, not a historical
+    /// one, and an unconvertible currency is excluded from the total and
+    /// named rather than mis-summed).
+    Series {
+        /// Start date (YYYY-MM-DD), inclusive.
+        #[arg(long)]
+        from: String,
+        /// End date (YYYY-MM-DD), inclusive.
+        #[arg(long)]
+        to: String,
     },
 }
 
@@ -2123,6 +2162,91 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             "Created account {} ({}) — {} {}",
                             account.name, account.id, account.kind, account.currency
                         );
+                    })
+                }
+            }
+        }
+
+        Command::Networth { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                NetworthAction::Capture { date } => {
+                    let as_of = date.clone().unwrap_or_else(slipscan_core::util::today);
+                    let snapshots = svc.networth_capture(&book.id, &as_of)?;
+                    emit(cli.json, &snapshots, || {
+                        println!(
+                            "Captured {} account snapshot{} as of {as_of} — {}",
+                            snapshots.len(),
+                            plural(snapshots.len()),
+                            book.name
+                        );
+                        for s in &snapshots {
+                            println!(
+                                "{}\t{} {}\t{}",
+                                s.account_id,
+                                fmt_minor(s.balance_minor),
+                                s.currency,
+                                s.source
+                            );
+                        }
+                    })
+                }
+                NetworthAction::Backfill => {
+                    let created = svc.networth_backfill(&book.id)?;
+                    emit(cli.json, &created, || {
+                        if created.is_empty() {
+                            println!(
+                                "Nothing to backfill — every account/date already has a snapshot."
+                            );
+                        } else {
+                            println!(
+                                "Backfilled {} snapshot{} from the transaction ledger.",
+                                created.len(),
+                                plural(created.len())
+                            );
+                        }
+                    })
+                }
+                NetworthAction::Series { from, to } => {
+                    let series = svc.networth_series(&book.id, from, to)?;
+                    emit(cli.json, &series, || {
+                        if series.points.is_empty() {
+                            println!(
+                                "No net-worth snapshots between {from} and {to}. \
+                                 Run `slipscan networth capture` or `slipscan networth backfill` first."
+                            );
+                            return;
+                        }
+                        println!("Net worth — {} ({from}..{to})", book.name);
+                        for p in &series.points {
+                            print!(
+                                "{}\t{} {}",
+                                p.as_of_date,
+                                fmt_minor(p.total_minor),
+                                series.currency
+                            );
+                            if !p.unconverted.is_empty() {
+                                print!(
+                                    "\t(excludes {}: no cached rate)",
+                                    p.unconverted.join(", ")
+                                );
+                            }
+                            println!();
+                        }
+                        if !series.conversions.is_empty() {
+                            println!("Converted using the cached rate (not historical):");
+                            for c in &series.conversions {
+                                println!(
+                                    "  {}/{} = {} (as of {}, age {})",
+                                    c.from_currency,
+                                    c.to_currency,
+                                    c.rate,
+                                    c.as_of,
+                                    fmt_age(c.age_secs)
+                                );
+                            }
+                        }
                     })
                 }
             }
@@ -7389,5 +7513,116 @@ mod tests {
         std::fs::write(&hex, "0102\n").unwrap();
         let arg = format!("@{}", hex.display());
         assert_eq!(read_bytes_arg(&arg, 2, "sig").unwrap(), vec![1, 2]);
+    }
+
+    // -- net worth --------------------------------------------------------
+
+    #[test]
+    fn parses_networth_actions() {
+        let cli = Cli::try_parse_from(["slipscan", "networth", "capture"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Networth {
+                action: NetworthAction::Capture { date: None }
+            }
+        ));
+        let cli =
+            Cli::try_parse_from(["slipscan", "networth", "capture", "--date", "2026-01-01"])
+                .unwrap();
+        match cli.command {
+            Command::Networth {
+                action: NetworthAction::Capture { date },
+            } => assert_eq!(date.as_deref(), Some("2026-01-01")),
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(matches!(
+            Cli::try_parse_from(["slipscan", "networth", "backfill"])
+                .unwrap()
+                .command,
+            Command::Networth {
+                action: NetworthAction::Backfill
+            }
+        ));
+        let cli = Cli::try_parse_from([
+            "slipscan",
+            "networth",
+            "series",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-12-31",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Networth {
+                action: NetworthAction::Series { from, to },
+            } => {
+                assert_eq!(from, "2026-01-01");
+                assert_eq!(to, "2026-12-31");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // `series` requires both bounds.
+        assert!(Cli::try_parse_from(["slipscan", "networth", "series", "--from", "2026-01-01"])
+            .is_err());
+    }
+
+    #[test]
+    fn networth_capture_backfill_series_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("nw.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let run_cli = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_cli(&["init", "--name", "Personal", "--currency", "zar"]).unwrap();
+        run_cli(&["account", "add", "Cheque"]).unwrap();
+
+        // Opens at 0; +500.00 on Jan 10, -200.00 on Jan 20 (MM/DD/YYYY).
+        let csv_path = dir.path().join("cheque.csv");
+        std::fs::write(
+            &csv_path,
+            "Date,Description,Amount\n\
+             01/10/2026,DEPOSIT,500.00\n\
+             01/20/2026,GROCERY,-200.00\n",
+        )
+        .unwrap();
+        run_cli(&[
+            "import",
+            csv_path.to_str().unwrap(),
+            "--preset",
+            "generic-mdy",
+            "--account",
+            "Cheque",
+        ])
+        .unwrap();
+
+        // Backfill reconstructs 2026-01-10 and 2026-01-20 from the ledger;
+        // an explicit capture adds a third point after both transactions.
+        run_cli(&["networth", "backfill"]).unwrap();
+        run_cli(&["networth", "capture", "--date", "2026-01-25"]).unwrap();
+        run_cli(&["networth", "series", "--from", "2026-01-01", "--to", "2026-01-31"]).unwrap();
+
+        let svc = CoreService::open(&db).unwrap();
+        let book = svc.book_list().unwrap().remove(0);
+        let series = svc
+            .networth_series(&book.id, "2026-01-01", "2026-01-31")
+            .unwrap();
+        assert_eq!(series.currency, "ZAR");
+        assert_eq!(series.points.len(), 3, "{:#?}", series.points);
+        let point = |d: &str| series.points.iter().find(|p| p.as_of_date == d).unwrap();
+        assert_eq!(point("2026-01-10").total_minor, 50_000);
+        assert_eq!(point("2026-01-20").total_minor, 30_000);
+        assert_eq!(point("2026-01-25").total_minor, 30_000);
+
+        // Re-running backfill after the explicit capture must not duplicate
+        // or disturb anything already on record.
+        run_cli(&["networth", "backfill"]).unwrap();
+        let unchanged = svc
+            .networth_series(&book.id, "2026-01-01", "2026-01-31")
+            .unwrap();
+        assert_eq!(unchanged, series);
     }
 }
