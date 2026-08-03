@@ -324,6 +324,116 @@ mod tests {
         assert!(!account.deleted);
     }
 
+    /// Migration 0820's three catalogue tables, exercised directly against
+    /// their triggers (raw SQL, not the service layer) so this test would
+    /// fail even if a future service-layer bug happened to route writes
+    /// around `repo::catalogue`. Insert, update and delete are each checked
+    /// to land in the outbox, for every one of the three tables — the
+    /// specific risk this migration named in its own header: a table that
+    /// compiles and passes ordinary CRUD tests while its capture triggers
+    /// are missing or misnamed, and so never replicates at all.
+    #[test]
+    fn catalogue_tables_capture_insert_update_and_delete() {
+        let db = Db::open_in_memory().unwrap();
+        let book = seed_book(&db);
+
+        // -- product_categories --------------------------------------------
+        db.conn()
+            .execute(
+                "INSERT INTO product_categories (id, book_id, name, created_at, updated_at)
+                 VALUES ('pc-1', ?1, 'Beverages', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE product_categories SET name = 'Drinks' WHERE id = 'pc-1'",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute("DELETE FROM product_categories WHERE id = 'pc-1'", [])
+            .unwrap();
+
+        // -- products ---------------------------------------------------------
+        db.conn()
+            .execute(
+                "INSERT INTO products (id, book_id, name, created_at, updated_at)
+                 VALUES ('p-1', ?1, 'Cola 330ml', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE products SET name = 'Cola 500ml' WHERE id = 'p-1'",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute("DELETE FROM products WHERE id = 'p-1'", [])
+            .unwrap();
+
+        // -- product_variants ---------------------------------------------------
+        // Re-insert the parent product: the delete above cascaded away the
+        // one from the previous block, and a variant needs a live parent.
+        db.conn()
+            .execute(
+                "INSERT INTO products (id, book_id, name, created_at, updated_at)
+                 VALUES ('p-2', ?1, 'Cola', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO product_variants
+                     (id, product_id, book_id, sku, name, price_minor, cost_price_minor,
+                      currency, reorder_point, created_at, updated_at)
+                 VALUES ('v-1', 'p-2', ?1, 'COLA-330', '330ml can', 1500, 900, 'ZAR', 24, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE product_variants SET price_minor = 1600 WHERE id = 'v-1'",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute("DELETE FROM product_variants WHERE id = 'v-1'", [])
+            .unwrap();
+
+        let captured = drain_list(db.conn()).unwrap();
+        for (table, row_id) in [
+            ("product_categories", "pc-1"),
+            ("products", "p-1"),
+            ("product_variants", "v-1"),
+        ] {
+            let rows: Vec<&Captured> = captured
+                .iter()
+                .filter(|c| c.table == table && c.row_id == row_id)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                3,
+                "{table}/{row_id}: expected an insert, update and delete capture, got {rows:?}"
+            );
+            assert_eq!(
+                rows.iter().filter(|c| !c.deleted).count(),
+                2,
+                "{table}/{row_id}: the insert and the update should both be live captures"
+            );
+            assert_eq!(
+                rows.iter().filter(|c| c.deleted).count(),
+                1,
+                "{table}/{row_id}: the delete should be a tombstone capture"
+            );
+            assert!(
+                rows.iter().all(|c| c.ns == book),
+                "{table}/{row_id}: namespace must be the book id"
+            );
+        }
+    }
+
     /// A `books` row is its own namespace — it has no `book_id` column to take
     /// one from.
     #[test]

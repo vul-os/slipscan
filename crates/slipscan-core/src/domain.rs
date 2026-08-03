@@ -952,6 +952,112 @@ pub struct MemberSettleRow {
 }
 
 // ---------------------------------------------------------------------------
+// Product catalogue (migration 0820, ROADMAP.md Phase 6.3a).
+//
+// Named `ProductCategory` rather than reusing `Category`: this groups
+// catalogue items, not transactions, and shares no columns, no hierarchy and
+// no reporting path with the transaction-categorisation `Category` above.
+// See the migration header for the full reasoning.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductCategory {
+    pub id: String,
+    pub book_id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewProductCategory {
+    pub book_id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Product {
+    pub id: String,
+    pub book_id: String,
+    pub product_category_id: Option<String>,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewProduct {
+    pub book_id: String,
+    pub product_category_id: Option<String>,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Selective update; `None` fields are left untouched.
+/// `product_category_id: Some(None)` explicitly clears the category (as
+/// opposed to `None`, which leaves it as-is).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProductPatch {
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<Option<String>>,
+    #[serde(default)]
+    pub product_category_id: Option<Option<String>>,
+}
+
+/// The catalogue's sellable/stockable unit. Carries no on-hand quantity —
+/// see the migration header: that is `SUM(qty_delta)` over a stock-movement
+/// ledger a later stage adds, never a stored counter here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProductVariant {
+    pub id: String,
+    pub product_id: String,
+    pub book_id: String,
+    pub sku: String,
+    pub name: String,
+    pub price_minor: i64,
+    pub cost_price_minor: i64,
+    pub currency: String,
+    pub reorder_point: i64,
+    /// Free-form JSON object (e.g. `{"size": "M", "colour": "Red"}`), stored
+    /// and returned verbatim — never parsed or validated beyond "is this
+    /// valid JSON" in the service layer. `None` = no attributes recorded.
+    pub attributes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewProductVariant {
+    pub product_id: String,
+    pub sku: String,
+    pub name: String,
+    #[serde(default)]
+    pub price_minor: Option<i64>,
+    #[serde(default)]
+    pub cost_price_minor: Option<i64>,
+    pub currency: String,
+    #[serde(default)]
+    pub reorder_point: Option<i64>,
+    #[serde(default)]
+    pub attributes: Option<String>,
+}
+
+/// Selective update; `None` fields are left untouched.
+/// `attributes: Some(None)` explicitly clears attributes.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProductVariantPatch {
+    pub sku: Option<String>,
+    pub name: Option<String>,
+    pub price_minor: Option<i64>,
+    pub cost_price_minor: Option<i64>,
+    pub reorder_point: Option<i64>,
+    #[serde(default)]
+    pub attributes: Option<Option<String>>,
+}
+
+// ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------
 

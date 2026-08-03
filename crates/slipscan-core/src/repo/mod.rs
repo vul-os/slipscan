@@ -8,6 +8,7 @@ pub mod account;
 pub mod audit;
 pub mod book;
 pub mod budget;
+pub mod catalogue;
 pub mod category;
 pub mod document;
 pub mod ledger;

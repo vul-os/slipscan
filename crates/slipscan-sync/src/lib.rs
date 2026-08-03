@@ -30,8 +30,9 @@
 //! ## Editable rows → §4.4 LWW register ([`Kind::LwwSet`])
 //!
 //! Books, accounts, categories, transactions, transaction splits, merchant
-//! mappings, budgets, members, the chart of accounts, its entity map and the
-//! VAT-rate table — the full list is [`LWW_TABLES`].
+//! mappings, budgets, members, the chart of accounts, its entity map, the
+//! VAT-rate table, and the product catalogue (product categories, products,
+//! product variants) — the full list is [`LWW_TABLES`].
 //!
 //! ```text
 //! target  "<table>/<row-id>"      field "row"
@@ -268,6 +269,9 @@ pub const LWW_TABLES: &[&str] = &[
     "chart_of_accounts",
     "coa_map",
     "vat_rates",
+    "product_categories",
+    "products",
+    "product_variants",
 ];
 
 /// Whether `table` is an immutable ledger, and so maps to the OR-Set.
