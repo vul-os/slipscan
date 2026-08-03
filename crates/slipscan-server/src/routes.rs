@@ -4976,25 +4976,63 @@ mod tests {
         assert!(!rendered.contains(&secret), "secret leaked to deliveries");
     }
 
+    /// **Every** route under `/api/v1` refuses an unauthenticated caller —
+    /// enumerated from this file's own source rather than hand-listed.
+    ///
+    /// This used to name four member routes. That is a sample, and a sample
+    /// cannot see the failure that matters: a route registered *outside* the
+    /// `.layer(require_bearer)` chain is wide open and every hand-listed path
+    /// still passes. The surface grew from 102 routes to 183 without this
+    /// check noticing, which is exactly the window such a mistake lives in.
+    ///
+    /// The auth middleware runs before any handler, so a route rejects an
+    /// anonymous request whatever its body would have deserialized to — which
+    /// is why `{}` is a legitimate body for all of them here.
     #[tokio::test]
-    async fn member_routes_require_bearer_auth() {
+    async fn every_api_route_requires_bearer_auth() {
         let token = "correct-horse-battery";
         let app = app(AppState::new(svc(), Some(token_hash(token))));
-        for (path, body) in [
-            ("/api/v1/member_add", json!({"book_id": "x", "label": "A"})),
-            ("/api/v1/member_list", json!({"book_id": "x"})),
-            (
-                "/api/v1/transaction_attribute",
-                json!({"transaction_id": "x", "member_id": null}),
-            ),
-            (
-                "/api/v1/report_settle_up",
-                json!({"book_id": "x", "from_date": "2026-01-01", "to_date": "2026-12-31"}),
-            ),
-        ] {
-            let (status, _) = call(&app, post_req(path, body, None)).await;
-            assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
+
+        let src = include_str!("routes.rs");
+        let mut paths: Vec<&str> = Vec::new();
+        let mut rest = src;
+        while let Some(i) = rest.find(".route(") {
+            rest = &rest[i + ".route(".len()..];
+            let Some(open) = rest.find('"') else { break };
+            let after = &rest[open + 1..];
+            let Some(close) = after.find('"') else { break };
+            let path = &after[..close];
+            if path.starts_with('/') && path != "/health" {
+                paths.push(path);
+            }
         }
+        paths.sort_unstable();
+        paths.dedup();
+
+        // A parse that finds a handful has failed, not succeeded — and would
+        // otherwise report every route protected while checking almost none.
+        assert!(
+            paths.len() >= 150,
+            "only parsed {} routes out of this file; fix the parser rather than \
+             trusting a near-empty sweep",
+            paths.len()
+        );
+
+        for path in &paths {
+            let (status, _) =
+                call(&app, post_req(&format!("/api/v1{path}"), json!({}), None)).await;
+            assert_eq!(
+                status,
+                StatusCode::UNAUTHORIZED,
+                "{path} answered an anonymous caller — is it registered outside the \
+                 require_bearer layer?"
+            );
+        }
+
+        // And the same routes are reachable with the token, so the sweep above
+        // is not passing because every path 404s.
+        let (status, _) = call(&app, post_req("/api/v1/book_list", json!({}), Some(token))).await;
+        assert_eq!(status, StatusCode::OK, "a correct token must still work");
     }
 
     /// End-to-end household flow over HTTP: members CRUD, default-owner
