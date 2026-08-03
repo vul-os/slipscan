@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 0800: locations (Phase 6.1 — the FlowStock fold, foundation).
+-- Migration 0009: locations (Phase 6.1 — the FlowStock fold, foundation).
 --
 -- FlowStock was a retired, offline-first multi-branch inventory product. Its
 -- domain is being re-derived here in Rust rather than ported from Go, and this
@@ -7,7 +7,7 @@
 -- axis of physical places — branches, sites, warehouses — that later stock
 -- movements, counts and transfers will reference.
 --
--- Backward compatible, the same way migration 0500 made members additive: a
+-- Backward compatible, the same way migration 0006 made members additive: a
 -- location is a brand new, wholly optional table with nothing pointing at it
 -- yet. A book with zero locations keeps working exactly as it does today —
 -- every existing screen, report and CLI command is untouched by this file.
@@ -16,7 +16,7 @@
 -- there is nothing for a location to be referenced by. That is deliberate
 -- scope: this migration lands the axis, not the inventory it will eventually
 -- carry. A location can therefore be hard-deleted with no reassignment guard,
--- unlike a member (`0500_members.sql`) whose removal must consider attributed
+-- unlike a member (`0006_members.sql`) whose removal must consider attributed
 -- transactions — there is nothing yet for a location's removal to orphan.
 --
 -- `kind` names the sense in which FlowStock used the word: a branch (a
@@ -29,14 +29,13 @@
 -- Sync capture
 -- -----------------------------------------------------------------------------
 --
--- Members (0500) and devices (0600) predate the oplog (0700), so their capture
--- triggers had to be added retroactively, in 0700 itself, once the mechanism
--- existed. `locations` is the first table created *after* migration 0700, so
--- there is no such retrofit here: the capture triggers are installed in this
--- same migration, at the same time as the table. Every future table added
--- after this one should do the same — create its own triggers in its own
--- migration — rather than waiting for a later "add sync to the new tables"
--- migration that is easy to forget to write.
+-- Every replicated table in this schema creates its own capture triggers in
+-- the same migration that creates the table — `locations` is no exception,
+-- and neither is anything created before it (see migration 0008's header for
+-- the full map of which migration owns which table's triggers). The capture
+-- triggers below are installed here, at the same time as the table, and
+-- every future table should do the same — rather than waiting for a later
+-- "add sync to the new tables" migration that is easy to forget to write.
 --
 -- `locations` is an editable row like `accounts` or `members`: a person
 -- renames a branch or edits its address, and last-writer-wins is what they

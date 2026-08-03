@@ -76,7 +76,7 @@
 //! SlipScan's ledger is immutable by construction: a posted journal is never
 //! edited, and a correction is a **reversal** — a new journal carrying
 //! `reversal_of`. That is not merely a convention in the repo layer; migration
-//! `0101_ledger_hardening` installs `BEFORE UPDATE` and `BEFORE DELETE`
+//! `0001_init` installs `BEFORE UPDATE` and `BEFORE DELETE`
 //! triggers on both tables that `RAISE(ABORT)`, so SQLite itself refuses. A
 //! replication path cannot mutate a posted journal even by mistake, because the
 //! statement never reaches the row.
@@ -252,10 +252,12 @@ pub const LEDGER_TABLES: &[&str] = &["journals", "journal_lines"];
 /// silently acquired a mapping nobody chose. Both lists are now closed, and an
 /// unlisted table is a [`MapError::UnmappedTable`] refusal.
 ///
-/// `slipscan-core`'s migration `0700_oplog` installs one capture trigger set
-/// per table named here, and its `sync::capture::tests` assert the two agree
-/// in both directions — a table in this list with no trigger, or a trigger for
-/// a table not in this list, fails the suite.
+/// `slipscan-core` installs one capture trigger set per table named here,
+/// beside that table's own `CREATE TABLE` (migration `0008_oplog`'s header
+/// maps every replicated table to the migration that owns its triggers), and
+/// its `sync::capture::tests` assert the two agree in both directions — a
+/// table in this list with no trigger, or a trigger for a table not in this
+/// list, fails the suite.
 #[cfg(feature = "sync-dmtap")]
 pub const LWW_TABLES: &[&str] = &[
     "books",

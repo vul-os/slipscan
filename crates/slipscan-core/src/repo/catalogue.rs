@@ -1,4 +1,4 @@
-//! Product catalogue: categories, products, variants (migration 0820).
+//! Product catalogue: categories, products, variants (migration 0011).
 //!
 //! Raw SQL only — validation (book/category scoping, currency
 //! normalization, attribute-JSON shape) lives in the service layer, same as

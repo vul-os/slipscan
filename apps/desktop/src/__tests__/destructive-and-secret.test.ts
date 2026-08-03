@@ -318,7 +318,7 @@ describe("payments · removing a watch code", () => {
       const prompt = dialog(target)!;
       expect(text(prompt)).toContain("Stop watching RENT-12B?");
       // pay_matches cascades from pay_watch_codes and pay_deliveries cascades
-      // from pay_matches (migration 0400_shapepay), so the match and its
+      // from pay_matches (migration 0005_shapepay), so the match and its
       // delivery go too. A prompt that said the history was kept would be
       // describing a different schema.
       expect(text(prompt)).toContain("This also deletes what it has already matched");

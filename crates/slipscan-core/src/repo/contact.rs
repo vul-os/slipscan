@@ -1,7 +1,7 @@
 //! Contacts (customers & suppliers, Xero axis): CRUD and role-scoped listing.
 //!
 //! Raw SQL only — validation (non-empty name, book scoping, amount bounds)
-//! lives in the service layer. See migration `0810_contacts` for why this is
+//! lives in the service layer. See migration `0010_contacts` for why this is
 //! one table with a `role` column rather than separate customer/supplier
 //! tables.
 

@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 0820: product catalogue (Phase 6.3a, ROADMAP.md "Inventory &
+-- Migration 0011: product catalogue (Phase 6.3a, ROADMAP.md "Inventory &
 -- trade").
 --
 -- Three tables, all additive: a book with none of them behaves exactly as
@@ -46,7 +46,7 @@
 -- `credit_minor` share one `currency`.
 --
 -- `product_variants.book_id` is denormalized off `products.book_id` rather
--- than reached through a join, the same choice migration 0500 made for
+-- than reached through a join, the same choice migration 0006 made for
 -- `transaction_splits.book_id`: it is what per-book SKU uniqueness needs to
 -- enforce directly, and it is what the sync capture trigger below needs for
 -- its `ns`.
@@ -101,7 +101,7 @@ CREATE INDEX product_variants_product_idx ON product_variants (product_id);
 CREATE INDEX product_variants_book_idx ON product_variants (book_id);
 
 -- =============================================================================
--- Sync capture. See migration 0700's header for why this is a trigger and
+-- Sync capture. See migration 0008's header for why this is a trigger and
 -- not a call from the repo layer.
 --
 -- All three tables are ordinary editable rows (a name gets renamed, a price

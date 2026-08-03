@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 0810: contacts (Xero axis — PARITY.md "Contacts (customers &
+-- Migration 0010: contacts (Xero axis — PARITY.md "Contacts (customers &
 -- suppliers)", scored Not built).
 --
 -- FlowStock (the retired inventory product this table is re-derived from, not
@@ -64,7 +64,7 @@ CREATE INDEX contacts_book_idx ON contacts (book_id);
 CREATE INDEX contacts_book_role_idx ON contacts (book_id, role);
 
 -- -----------------------------------------------------------------------------
--- Sync capture (docs/NODES.md phase 2 — see migration 0700_oplog's header for
+-- Sync capture (docs/NODES.md phase 2 — see migration 0008_oplog's header for
 -- why this is a trigger rather than a call from the repo layer: a trigger
 -- catches every write path, a call site only catches the ones somebody
 -- remembered to instrument). `crate::sync::capture::tests` asserts this
@@ -95,5 +95,4 @@ BEGIN
 END;
 
 -- No backfill needed: `contacts` did not exist before this migration, so
--- there are no pre-existing rows for the outbox to catch up on (contrast
--- migration 0700_oplog, which backfilled tables that already held data).
+-- there are no pre-existing rows for the outbox to catch up on.

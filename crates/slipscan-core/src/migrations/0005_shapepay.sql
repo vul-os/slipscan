@@ -1,7 +1,8 @@
 -- =============================================================================
--- Migration 0400: payments — reference watches and signed webhooks. The
--- filename and migration id are historical (the feature once carried a
--- product name); applied ids are never renamed.
+-- Migration 0005: payments — reference watches and signed webhooks. The
+-- table names (`pay_*`) and the old filename ("shapepay") are historical:
+-- the feature once carried a product name that the tables never bothered to
+-- shed.
 --
 -- Deliberately SIMPLE: watch codes are a flat list — no expiry, no
 -- recurrence, no lifecycle machinery. When an inbound (positive)

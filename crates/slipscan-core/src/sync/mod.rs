@@ -5,7 +5,7 @@
 //!
 //! Every replicable write this device makes is recorded as one DMTAP Sync
 //! operation (`substrate/SYNC.md` §4), individually signed with the device key
-//! that migration 0600 minted, stored in the same SQLite file as the books, and
+//! that migration 0007 minted, stored in the same SQLite file as the books, and
 //! ordered by a persisted hybrid logical clock.
 //!
 //! Three properties are worth naming because they are the ones a replication
@@ -49,7 +49,7 @@
 //!   ───────                    ────                       ───────
 //!   INSERT/UPDATE/DELETE
 //!         │
-//!         │  SQLite trigger (migration 0700)
+//!         │  SQLite trigger (beside the table's own migration)
 //!         ▼
 //!    sync_outbox  ──────►  read the row whole
 //!    (which row)           tick the HLC
@@ -59,7 +59,7 @@
 //! ```
 //!
 //! Capture is a trigger rather than a call from the repo layer for the reason
-//! given in migration 0700's header: a trigger is not a completeness claim
+//! given in migration 0008's header: a trigger is not a completeness claim
 //! resting on nobody adding a fortieth write function. A cascade, a migration
 //! and an importer nobody has written yet all reach the trigger.
 

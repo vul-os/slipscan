@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 0300: local exchange-rate cache (OpenRate).
+-- Migration 0004: local exchange-rate cache (OpenRate).
 --
 -- One row per currency pair, latest rate only — OpenRate serves no history,
 -- so conversions record the rate they used at booking time (audit log +

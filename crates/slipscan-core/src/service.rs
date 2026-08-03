@@ -1107,7 +1107,7 @@ impl CoreService {
     //
     // One table per book with a `role` (customer / supplier / both) rather
     // than separate customer and supplier tables — see migration
-    // `0810_contacts` for why. Nothing posts a bill or invoice off a contact
+    // `0010_contacts` for why. Nothing posts a bill or invoice off a contact
     // yet; this is the record the next link in that chain hangs off.
     // -----------------------------------------------------------------------
 
@@ -1402,7 +1402,7 @@ impl CoreService {
     }
 
     /// Hard delete. Nothing references a location yet (see migration
-    /// `0800_locations`), so unlike `member_remove` there is no reassignment
+    /// `0009_locations`), so unlike `member_remove` there is no reassignment
     /// guard to run first.
     pub fn location_delete(&self, id: &str) -> CoreResult<()> {
         let before = self.location_get(id)?;
@@ -1477,7 +1477,7 @@ impl CoreService {
     // -----------------------------------------------------------------------
     // Product catalogue (ROADMAP.md Phase 6.3a). `product_categories` is a
     // deliberately separate concept from the transaction `categories` just
-    // above — see migration 0820's header. A book with no catalogue entries
+    // above — see migration 0011's header. A book with no catalogue entries
     // behaves exactly as before: nothing here is read by any other service
     // function yet.
     // -----------------------------------------------------------------------

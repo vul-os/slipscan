@@ -1,15 +1,15 @@
 -- =============================================================================
--- Migration 0600: device identity & accountless pairing (docs/NODES.md).
+-- Migration 0007: device identity & accountless pairing (docs/NODES.md).
 --
 -- Phase 1 of the node model. This migration stores IDENTITY ONLY, and nothing
--- here causes anything to sync between devices. The signed operation log
--- arrived later, in migration 0700, and consumes the key this one mints; there
+-- here causes anything to sync between devices. The signed operation log is
+-- phase 2, in migration 0008, and consumes the key this one mints; there
 -- is still no transport — see docs/NODES.md "What is still missing".
 --
 -- There are NO ACCOUNTS. A device's ed25519 public key IS its id; there is
 -- no email, no login, no username, and no directory that maps a name to a
 -- device. The private half never appears in this file: it lives in the
--- write-only credential vault (migration 0200) under a single entry name,
+-- write-only credential vault (migration 0003) under a single entry name,
 -- so a copy of this database yields public keys and nothing usable.
 --
 -- Pinning discipline (copied from AQL's proto/PAIRING-PROFILE.md, and the

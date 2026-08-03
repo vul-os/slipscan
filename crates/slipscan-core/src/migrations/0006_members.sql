@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 0500: household members & per-person attribution.
+-- Migration 0006: household members & per-person attribution.
 --
 -- A book can belong to a household of several people sharing one set of
 -- books. Members are local data, never logins — a label, initial/colour, and
@@ -8,9 +8,10 @@
 -- actually incurred it), orthogonal to the ledger: it never touches
 -- journals/journal_lines, so double-entry integrity is untouched.
 --
--- Backward compatible: attributed_member_id is additive and nullable —
--- every pre-existing transaction becomes NULL (unattributed), and a book
--- with zero members keeps working exactly as before.
+-- `transactions.attributed_member_id` (and its index) lives on `transactions`
+-- itself, in migration 0001 — see the comment there. NULL is the only state
+-- a book with zero members ever has, and stays a legitimate "unattributed"
+-- state going forward, not a placeholder for one.
 --
 -- Splits: a transaction may be split across members as (member, share_minor)
 -- rows summing to the transaction's absolute amount — the extension of the
@@ -36,15 +37,28 @@ CREATE TABLE members (
 CREATE INDEX members_book_idx ON members (book_id);
 CREATE INDEX members_default_account_idx ON members (default_account_id);
 
--- Who actually incurred the transaction — independent of which account it
--- hit. NULL is the only state a pre-existing transaction can be in after
--- this migration, and stays a legitimate "unattributed" state going
--- forward.
-ALTER TABLE transactions
-    ADD COLUMN attributed_member_id TEXT REFERENCES members (id) ON DELETE SET NULL;
+-- Sync capture. See migration 0008's header for why this is a trigger and
+-- the full replicated table list.
+CREATE TRIGGER sync_capture_members_ins AFTER INSERT ON members
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('members', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
 
-CREATE INDEX transactions_attributed_member_idx
-    ON transactions (book_id, attributed_member_id);
+CREATE TRIGGER sync_capture_members_upd AFTER UPDATE ON members
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('members', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER sync_capture_members_del AFTER DELETE ON members
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('members', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
 
 -- member_id is intentionally NOT NULL and ON DELETE RESTRICT: "unattributed"
 -- is expressed by the absence of a split row, never a NULL member on one — a
@@ -63,3 +77,26 @@ CREATE TABLE transaction_splits (
 
 CREATE INDEX transaction_splits_txn_idx ON transaction_splits (transaction_id);
 CREATE INDEX transaction_splits_member_idx ON transaction_splits (member_id);
+
+-- Sync capture. See migration 0008's header for why this is a trigger and
+-- the full replicated table list.
+CREATE TRIGGER sync_capture_transaction_splits_ins AFTER INSERT ON transaction_splits
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('transaction_splits', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER sync_capture_transaction_splits_upd AFTER UPDATE ON transaction_splits
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('transaction_splits', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER sync_capture_transaction_splits_del AFTER DELETE ON transaction_splits
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('transaction_splits', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;

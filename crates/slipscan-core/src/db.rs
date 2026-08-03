@@ -10,74 +10,53 @@ use rusqlite::Connection;
 use std::path::Path;
 
 /// Embedded, ordered migrations: (version, name, sql).
+///
+/// SlipScan has never shipped, so there is no deployed database whose
+/// `schema_migrations` history has to be honoured — this is a single baseline
+/// schema split across files by subsystem, not a chain of patches applied to
+/// each other over time. Every table is created once, in its final shape,
+/// with its own indexes and triggers beside it.
 const MIGRATIONS: &[(i64, &str, &str)] = &[
     (1, "0001_init", include_str!("migrations/0001_init.sql")),
     (
-        100,
-        "0100_accounting",
-        include_str!("migrations/0100_accounting.sql"),
+        2,
+        "0002_accounting",
+        include_str!("migrations/0002_accounting.sql"),
+    ),
+    (3, "0003_vault", include_str!("migrations/0003_vault.sql")),
+    (4, "0004_fx", include_str!("migrations/0004_fx.sql")),
+    (
+        5,
+        "0005_shapepay",
+        include_str!("migrations/0005_shapepay.sql"),
     ),
     (
-        101,
-        "0101_ledger_hardening",
-        include_str!("migrations/0101_ledger_hardening.sql"),
-    ),
-    (200, "0200_vault", include_str!("migrations/0200_vault.sql")),
-    (
-        201,
-        "0201_regenerable_sources",
-        include_str!("migrations/0201_regenerable_sources.sql"),
-    ),
-    (300, "0300_fx", include_str!("migrations/0300_fx.sql")),
-    (
-        301,
-        "0301_region",
-        include_str!("migrations/0301_region.sql"),
-    ),
-    // The payments migration. Its id and filename are historical (the feature
-    // once carried a product name) — applied ids are recorded in every
-    // existing database's `schema_migrations`, so renaming one is not an
-    // option.
-    (
-        400,
-        "0400_shapepay",
-        include_str!("migrations/0400_shapepay.sql"),
+        6,
+        "0006_members",
+        include_str!("migrations/0006_members.sql"),
     ),
     (
-        500,
-        "0500_members",
-        include_str!("migrations/0500_members.sql"),
+        7,
+        "0007_devices",
+        include_str!("migrations/0007_devices.sql"),
+    ),
+    (8, "0008_oplog", include_str!("migrations/0008_oplog.sql")),
+    (
+        9,
+        "0009_locations",
+        include_str!("migrations/0009_locations.sql"),
     ),
     (
-        600,
-        "0600_devices",
-        include_str!("migrations/0600_devices.sql"),
-    ),
-    (700, "0700_oplog", include_str!("migrations/0700_oplog.sql")),
-    (
-        800,
-        "0800_locations",
-        include_str!("migrations/0800_locations.sql"),
+        10,
+        "0010_contacts",
+        include_str!("migrations/0010_contacts.sql"),
     ),
     (
-        810,
-        "0810_contacts",
-        include_str!("migrations/0810_contacts.sql"),
-    ),
-    (
-        820,
-        "0820_catalogue",
-        include_str!("migrations/0820_catalogue.sql"),
+        11,
+        "0011_catalogue",
+        include_str!("migrations/0011_catalogue.sql"),
     ),
 ];
-
-/// The embedded migration set, for tests that need to stop part-way through
-/// it — replaying an upgrade from an older schema, which is the only way to
-/// check that a migration does the right thing to data that already exists.
-#[cfg(test)]
-pub(crate) fn migrations_for_test() -> &'static [(i64, &'static str, &'static str)] {
-    MIGRATIONS
-}
 
 /// A configured, migrated SQLite database handle.
 #[derive(Debug)]
@@ -173,94 +152,14 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 100, 101, 200, 201, 300, 301, 400, 500, 600, 700, 800, 810, 820]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 100, 101, 200, 201, 300, 301, 400, 500, 600, 700, 800, 810, 820]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
         );
-    }
-
-    /// A database from the implicit-SA era (pre-0301) migrates its books onto
-    /// region profiles: SA evidence (ZA VAT seeds / country / the old ZAR
-    /// currency default) maps to 'za', everything else to 'generic'.
-    #[test]
-    fn region_migration_maps_implicit_sa_books_to_za() {
-        let conn = Connection::open_in_memory().unwrap();
-        configure(&conn).unwrap();
-        // Apply everything before the region migration.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (
-                version    INTEGER PRIMARY KEY,
-                name       TEXT NOT NULL,
-                applied_at TEXT NOT NULL
-            );",
-        )
-        .unwrap();
-        for &(version, name, sql) in MIGRATIONS {
-            if version >= 301 {
-                continue;
-            }
-            conn.execute_batch(sql).unwrap();
-            conn.execute(
-                "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
-                rusqlite::params![version, name, now_iso()],
-            )
-            .unwrap();
-        }
-
-        // Old-world books (no region column yet).
-        let insert_book = "INSERT INTO books (id, kind, name, currency, country, locale,
-                                             timezone, created_at, updated_at)
-                           VALUES (?1, 'personal', ?2, ?3, ?4, 'en', 'UTC', 't', 't')";
-        // Seeded SA book: has the ZA VAT rate table.
-        conn.execute(
-            insert_book,
-            rusqlite::params!["b-seeded", "Seeded", "ZAR", Option::<String>::None],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO vat_rates (id, book_id, code, name, rate_bps, country,
-                                    is_active, created_at, updated_at)
-             VALUES ('r1', 'b-seeded', 'STD', 'Standard rate (15%)', 1500, 'ZA', 1, 't', 't')",
-            [],
-        )
-        .unwrap();
-        // Unseeded book that used the implicit ZAR default.
-        conn.execute(
-            insert_book,
-            rusqlite::params!["b-zar", "Implicit", "ZAR", Option::<String>::None],
-        )
-        .unwrap();
-        // Explicit ZA country, never seeded.
-        conn.execute(
-            insert_book,
-            rusqlite::params!["b-country", "Country", "USD", Some("ZA")],
-        )
-        .unwrap();
-        // Explicitly foreign book: not implicitly SA.
-        conn.execute(
-            insert_book,
-            rusqlite::params!["b-usd", "Foreign", "USD", Option::<String>::None],
-        )
-        .unwrap();
-
-        migrate(&conn).unwrap();
-
-        let region = |id: &str| -> String {
-            conn.query_row(
-                "SELECT region FROM books WHERE id = ?1",
-                rusqlite::params![id],
-                |row| row.get(0),
-            )
-            .unwrap()
-        };
-        assert_eq!(region("b-seeded"), "za");
-        assert_eq!(region("b-zar"), "za");
-        assert_eq!(region("b-country"), "za");
-        assert_eq!(region("b-usd"), "generic");
     }
 
     #[test]
@@ -318,5 +217,55 @@ mod tests {
             [],
         );
         assert!(err.is_err(), "FK violation must be rejected");
+    }
+
+    /// Every table, column, type, constraint, index, trigger and view a fresh
+    /// database produces, sorted by (type, name) and rendered as literal
+    /// `CREATE ...` SQL straight from `sqlite_master`.
+    ///
+    /// This is the exact text captured at
+    /// `crates/slipscan-core/tests/schema_baseline.sql` before the migration
+    /// files were folded from a patch chain (0001, 0100, 0101, 0200, 0201,
+    /// 0300, 0301, 0400, 0500, 0600, 0700, 0800, 0810, 0820 — several of them
+    /// pure `ALTER TABLE`/`DROP INDEX` patches to tables an earlier file
+    /// created) into today's baseline (0001..0011, one `CREATE TABLE` per
+    /// table, in its final shape, with its own indexes and triggers beside
+    /// it). Comparing raw `sqlite_master.sql` text — not a hand-rolled
+    /// projection of "the columns that matter" — is deliberate: a
+    /// projection only catches drift in the fields somebody thought to
+    /// project.
+    fn dump_schema(db: &Db) -> String {
+        let mut stmt = db
+            .conn()
+            .prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+            .unwrap();
+        let rows: Vec<(String, String, Option<String>)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let mut out = String::new();
+        for (ty, name, sql) in rows {
+            out.push_str(&format!("-- {ty} {name}\n{};\n\n", sql.unwrap_or_default()));
+        }
+        out
+    }
+
+    /// **The gate this whole migration layout exists to satisfy.** Folding
+    /// the patch chain into a baseline must not change the schema it
+    /// produces by so much as a byte — same tables, same columns in the same
+    /// order, same constraints, same indexes, same triggers. If this test
+    /// goes red, the fold changed the schema, which was never the ask.
+    #[test]
+    fn schema_matches_the_pre_fold_baseline_byte_for_byte() {
+        let db = Db::open_in_memory().unwrap();
+        let actual = dump_schema(&db);
+        let expected = include_str!("../tests/schema_baseline.sql");
+        assert_eq!(
+            actual, expected,
+            "the generated schema no longer matches tests/schema_baseline.sql \
+             byte-for-byte — a migration changed structure rather than just \
+             moving where a table/column/trigger is declared"
+        );
     }
 }

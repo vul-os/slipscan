@@ -981,7 +981,7 @@ pub struct MemberSettleRow {
 /// A physical place a book's activity happens at — a branch, a warehouse, a
 /// site. Additive and optional, the same way [`Member`] is: a book with zero
 /// locations behaves exactly as it did before this axis existed. Nothing
-/// references a location yet (see migration `0800_locations`) — later
+/// references a location yet (see migration `0009_locations`) — later
 /// inventory (Phase 6.2+) will.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Location {
@@ -1032,7 +1032,7 @@ pub struct LocationPatch {
 // ---------------------------------------------------------------------------
 
 /// A party a book trades with, on either side or both — see migration
-/// `0810_contacts` for why this is one table with a `role` rather than
+/// `0010_contacts` for why this is one table with a `role` rather than
 /// separate customer/supplier tables. `credit_limit_minor` is in the book's
 /// own `currency`; SlipScan has no per-contact currency concept yet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1111,7 +1111,7 @@ pub struct ContactPatch {
 }
 
 // ---------------------------------------------------------------------------
-// Product catalogue (migration 0820, ROADMAP.md Phase 6.3a).
+// Product catalogue (migration 0011, ROADMAP.md Phase 6.3a).
 //
 // Named `ProductCategory` rather than reusing `Category`: this groups
 // catalogue items, not transactions, and shares no columns, no hierarchy and

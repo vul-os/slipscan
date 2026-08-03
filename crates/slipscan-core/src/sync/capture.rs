@@ -1,10 +1,11 @@
 //! Reading captured writes back out of the outbox, and turning a live row into
 //! the JSON payload an op carries.
 //!
-//! The capture itself is SQL — migration `0700_oplog` installs a trigger set
-//! per replicated table — and the reasoning for that choice is in the
-//! migration's header. This module is the Rust half: it drains the outbox,
-//! collapses redundant entries, and reflects each row's current contents.
+//! The capture itself is SQL — every replicated table's own migration installs
+//! its trigger set beside it (migration `0008_oplog`'s header maps table to
+//! migration and carries the reasoning for that choice). This module is the
+//! Rust half: it drains the outbox, collapses redundant entries, and reflects
+//! each row's current contents.
 //!
 //! # Why the row is read here rather than captured in the trigger
 //!
@@ -214,7 +215,7 @@ mod tests {
     }
 
     /// An editable table needs all three verbs. A ledger table needs exactly
-    /// one, because migration 0101 makes the other two impossible — and the
+    /// one, because migration 0001 makes the other two impossible — and the
     /// suite must notice if that ever stops being true.
     #[test]
     fn lww_tables_capture_all_three_verbs_and_ledger_tables_only_insert() {
@@ -324,7 +325,7 @@ mod tests {
         assert!(!account.deleted);
     }
 
-    /// **The trigger set migration 0800 installs for `locations`, proven
+    /// **The trigger set migration 0009 installs for `locations`, proven
     /// directly rather than assumed.** Insert, update and delete each land
     /// their own outbox row — this is the concrete evidence that the new
     /// table's triggers actually fire, not just that they parse.
@@ -376,7 +377,7 @@ mod tests {
         assert!(delete_row.deleted, "a delete must be flagged as a tombstone");
     }
 
-    /// Migration 0820's three catalogue tables, exercised directly against
+    /// Migration 0011's three catalogue tables, exercised directly against
     /// their triggers (raw SQL, not the service layer) so this test would
     /// fail even if a future service-layer bug happened to route writes
     /// around `repo::catalogue`. Insert, update and delete are each checked
@@ -498,7 +499,7 @@ mod tests {
         assert_eq!(row.ns, book);
     }
 
-    /// Migration `0810_contacts`'s trigger set, exercised directly rather
+    /// Migration `0010_contacts`'s trigger set, exercised directly rather
     /// than eyeballed: all three verbs must actually land a row in the
     /// outbox, not merely exist in `sqlite_master` (the structural tests
     /// above only check that a trigger by the right name exists — they would

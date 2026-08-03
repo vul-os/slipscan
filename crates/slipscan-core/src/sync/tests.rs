@@ -712,59 +712,6 @@ fn every_service_layer_write_reaches_the_log() {
     assert!(oplog.verify_all().unwrap().is_sound());
 }
 
-/// An upgraded database must not get a log that starts mid-history. Migration
-/// 0700 backfills every existing row, so the first seal after an upgrade
-/// records the books as they stand.
-#[test]
-fn an_upgrade_backfills_the_existing_rows_rather_than_starting_from_empty() {
-    let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS schema_migrations (
-             version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL);",
-    )
-    .unwrap();
-    // Everything up to but excluding the oplog migration.
-    for &(version, name, sql) in crate::db::migrations_for_test() {
-        if version >= 700 {
-            continue;
-        }
-        conn.execute_batch(sql).unwrap();
-        conn.execute(
-            "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, 't')",
-            rusqlite::params![version, name],
-        )
-        .unwrap();
-    }
-
-    // A book that existed before the log did.
-    conn.execute(
-        "INSERT INTO books (id, kind, name, currency, locale, timezone,
-                            created_at, updated_at, region)
-         VALUES ('b-old', 'personal', 'Old', 'ZAR', 'en', 'UTC', 't', 't', 'za')",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO accounts (id, book_id, name, kind, currency, created_at, updated_at)
-         VALUES ('a-old', 'b-old', 'Cheque', 'bank', 'ZAR', 't', 't')",
-        [],
-    )
-    .unwrap();
-
-    crate::db::migrate(&conn).unwrap();
-
-    let queued: Vec<(String, String)> = conn
-        .prepare("SELECT table_name, row_id FROM sync_outbox ORDER BY seq")
-        .unwrap()
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-        .unwrap()
-        .collect::<Result<_, _>>()
-        .unwrap();
-    assert!(queued.contains(&("books".into(), "b-old".into())));
-    assert!(queued.contains(&("accounts".into(), "a-old".into())));
-}
-
 // ---------------------------------------------------------------------------
 // Convergence
 // ---------------------------------------------------------------------------

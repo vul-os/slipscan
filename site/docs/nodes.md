@@ -139,7 +139,7 @@ slipscan sync verify
 
 Four things about it are worth stating plainly, because they are the ones a log like this is usually wrong about.
 
-**Capture is the database's job, not the code's.** Migration `0700_oplog` installs a trigger on every replicated table; a write that reaches the row reaches the log, whatever produced it. The alternative — calling a recorder from each of the ~39 write functions in the repo layer — is a completeness claim resting on nobody adding a fortieth. A cascading delete two tables away, a migration, and an importer nobody has written yet all reach a trigger and none of them reaches a call site. The trigger set and the mapping registry are compared as sets in the test suite, in both directions, so a table added without a sync decision fails the build rather than replicating by accident.
+**Capture is the database's job, not the code's.** Every replicated table's own migration installs a trigger set beside it (migration `0008_oplog`'s header maps each table to the migration that owns its triggers); a write that reaches the row reaches the log, whatever produced it. The alternative — calling a recorder from each of the ~39 write functions in the repo layer — is a completeness claim resting on nobody adding a fortieth. A cascading delete two tables away, a migration, and an importer nobody has written yet all reach a trigger and none of them reaches a call site. The trigger set and the mapping registry are compared as sets in the test suite, in both directions, so a table added without a sync decision fails the build rather than replicating by accident.
 
 **Each operation is verified on its own.** The signature is an RFC 9052 `COSE_Sign1` over the operation's own deterministic CBOR, made by the author's key, carrying the substrate's domain-separation tag. Lift one operation out of the log with nothing else and it still verifies. That is the property that matters when a transport does exist: a replicated change will be accepted because *it* is authentic, not because it arrived over a connection somebody had authenticated.
 
@@ -147,9 +147,7 @@ Four things about it are worth stating plainly, because they are the ones a log 
 
 **Money stays exact.** It is `i64` minor units in every column that holds it, and it crosses into an operation as a JSON integer. No float appears on the path, so there is no rounding step to get wrong.
 
-The log is **append-only and immutable**: SQLite refuses an `UPDATE` on it, because an operation's content is its identity and editing one would produce a row whose id and signature both describe something else. And the posted ledger stays immutable through all of this — migration `0101` already blocks `UPDATE` and `DELETE` on `journals` and `journal_lines`, so the ledger tables have an insert capture trigger and no others. A correction is a reversal. There is no path, including a future replication path, by which a posted journal can be edited.
-
-Upgrading an existing database backfills every row it already has, so the log records the books as they stand rather than starting mid-history.
+The log is **append-only and immutable**: SQLite refuses an `UPDATE` on it, because an operation's content is its identity and editing one would produce a row whose id and signature both describe something else. And the posted ledger stays immutable through all of this — migration `0001` already blocks `UPDATE` and `DELETE` on `journals` and `journal_lines`, so the ledger tables have an insert capture trigger and no others. A correction is a reversal. There is no path, including a future replication path, by which a posted journal can be edited.
 
 ### The clock
 

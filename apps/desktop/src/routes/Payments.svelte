@@ -120,7 +120,7 @@
     if (c.kind === "watch-remove") {
       // Removing a watch is a wider blast radius than it looks: pay_matches
       // is ON DELETE CASCADE from pay_watch_codes, and pay_deliveries is ON
-      // DELETE CASCADE from pay_matches (migration 0400_shapepay), so the
+      // DELETE CASCADE from pay_matches (migration 0005_shapepay), so the
       // record of what this code ever matched goes too. Pause keeps all of
       // it, so the prompt names it rather than making removal the only exit.
       const hits = matchCount(c.watch.id);

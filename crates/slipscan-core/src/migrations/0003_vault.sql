@@ -1,5 +1,5 @@
 -- =============================================================================
--- Migration 0200: credential vault (envelope encryption).
+-- Migration 0003: credential vault (envelope encryption).
 --
 -- Write-only secret storage per docs/ARCHITECTURE.md "Credential vault":
 --   * vault_keys holds the per-machine data-encryption key (DEK), wrapped
