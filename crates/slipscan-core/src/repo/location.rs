@@ -55,6 +55,19 @@ pub fn get(conn: &Connection, id: &str) -> CoreResult<Option<Location>> {
         .optional()?)
 }
 
+/// Every location row for the book, archived included — the input Phase
+/// 6.0's multi-location derivation (`crate::profile::resolve`) counts.
+/// Deliberately not archived-filtered: a business that archives its second
+/// branch has still run two locations, and `multi_location_override` exists
+/// precisely for a business that disagrees with what the count implies.
+pub fn count(conn: &Connection, book_id: &str) -> CoreResult<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM locations WHERE book_id = ?1",
+        params![book_id],
+        |row| row.get(0),
+    )?)
+}
+
 pub fn list(conn: &Connection, book_id: &str) -> CoreResult<Vec<Location>> {
     let mut stmt =
         conn.prepare("SELECT * FROM locations WHERE book_id = ?1 ORDER BY created_at, id")?;

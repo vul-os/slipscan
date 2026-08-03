@@ -356,16 +356,17 @@ CREATE TABLE audit_log (
 
 -- table books
 CREATE TABLE books (
-    id                  TEXT PRIMARY KEY,
-    kind                TEXT NOT NULL CHECK (kind IN ('personal', 'business')),
-    name                TEXT NOT NULL,
-    currency            TEXT NOT NULL DEFAULT 'ZAR' CHECK (length(currency) = 3),
-    country             TEXT CHECK (country IS NULL OR length(country) = 2),
-    locale              TEXT NOT NULL DEFAULT 'en',
-    timezone            TEXT NOT NULL DEFAULT 'UTC',
-    financial_lock_date TEXT,
-    created_at          TEXT NOT NULL,
-    updated_at          TEXT NOT NULL
+    id                       TEXT PRIMARY KEY,
+    kind                     TEXT NOT NULL CHECK (kind IN ('personal', 'business')),
+    name                     TEXT NOT NULL,
+    currency                 TEXT NOT NULL DEFAULT 'ZAR' CHECK (length(currency) = 3),
+    country                  TEXT CHECK (country IS NULL OR length(country) = 2),
+    locale                   TEXT NOT NULL DEFAULT 'en',
+    timezone                 TEXT NOT NULL DEFAULT 'UTC',
+    financial_lock_date      TEXT,
+    multi_location_override  INTEGER CHECK (multi_location_override IN (0, 1)),
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL
 , region TEXT NOT NULL DEFAULT 'generic');
 
 -- table budgets

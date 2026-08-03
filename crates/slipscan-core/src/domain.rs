@@ -181,6 +181,13 @@ pub struct Book {
     pub locale: String,
     pub timezone: String,
     pub financial_lock_date: Option<String>,
+    /// The stored multi-location override (Phase 6 decision #3): `None`
+    /// means "derive it from the `locations` row count", `Some(true)` /
+    /// `Some(false)` pin the flag either way regardless of how many
+    /// locations exist. Read this through [`crate::profile::resolve`] (or
+    /// `CoreService::book_profile`) rather than directly — the resolved
+    /// flag, not this raw field, is what a UI should branch on.
+    pub multi_location_override: Option<bool>,
     pub created_at: String,
     pub updated_at: String,
 }

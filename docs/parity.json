@@ -15,7 +15,7 @@
   ],
   "http": {
     "prefix": "/api/v1",
-    "count": 94,
+    "count": 102,
     "routes": [
       "account_create",
       "account_delete",
@@ -26,6 +26,9 @@
       "book_create",
       "book_get",
       "book_list",
+      "book_profile",
+      "book_set_kind",
+      "book_set_multi_location_override",
       "budget_status",
       "budget_upsert",
       "category_create",
@@ -58,6 +61,11 @@
       "fx_status",
       "journal_get",
       "journal_post",
+      "location_create",
+      "location_delete",
+      "location_get",
+      "location_list",
+      "location_update",
       "member_add",
       "member_get",
       "member_list",
@@ -120,11 +128,14 @@
     }
   },
   "ipc": {
-    "count": 84,
+    "count": 91,
     "commands": [
       "account_list",
       "book_create",
       "book_list",
+      "book_profile",
+      "book_set_kind",
+      "book_set_multi_location_override",
       "budget_list",
       "budget_upsert",
       "category_list",
@@ -155,6 +166,10 @@
       "journal_list",
       "journal_post",
       "ledger_account_list",
+      "location_create",
+      "location_delete",
+      "location_list",
+      "location_update",
       "member_add",
       "member_list",
       "member_remove",
@@ -209,11 +224,14 @@
     ]
   },
   "client": {
-    "count": 84,
+    "count": 91,
     "calls": [
       "account_list",
       "book_create",
       "book_list",
+      "book_profile",
+      "book_set_kind",
+      "book_set_multi_location_override",
       "budget_list",
       "budget_upsert",
       "category_list",
@@ -244,6 +262,10 @@
       "journal_list",
       "journal_post",
       "ledger_account_list",
+      "location_create",
+      "location_delete",
+      "location_list",
+      "location_update",
       "member_add",
       "member_list",
       "member_remove",
@@ -303,7 +325,7 @@
     "category_list": "category_tree"
   },
   "missing_from_ipc": {
-    "count": 19,
+    "count": 20,
     "operations": [
       "account_create",
       "account_delete",
@@ -318,6 +340,7 @@
       "document_record_extraction",
       "document_transition",
       "journal_get",
+      "location_get",
       "member_get",
       "pack_source_publish",
       "report_balance_sheet",

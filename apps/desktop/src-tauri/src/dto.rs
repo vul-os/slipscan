@@ -232,6 +232,52 @@ pub struct MemberRemoveRequest {
     pub reassign_to: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// locations (Phase 6.1 — the flowstock fold, foundation).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LocationUpdateRequest {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub kind: Option<core::LocationKind>,
+    #[serde(default)]
+    pub code: Option<String>,
+    /// Same clear-flag convention as `MemberUpdateRequest::clear_default_account`
+    /// — plain JSON cannot tell "field absent" from "field explicitly null"
+    /// inside a nested `Option<Option<T>>`.
+    #[serde(default)]
+    pub clear_code: bool,
+    #[serde(default)]
+    pub address: Option<String>,
+    #[serde(default)]
+    pub clear_address: bool,
+    #[serde(default)]
+    pub is_archived: Option<bool>,
+}
+
+impl LocationUpdateRequest {
+    pub fn into_patch(self) -> core::LocationPatch {
+        core::LocationPatch {
+            name: self.name,
+            kind: self.kind,
+            code: if self.clear_code {
+                Some(None)
+            } else {
+                self.code.map(Some)
+            },
+            address: if self.clear_address {
+                Some(None)
+            } else {
+                self.address.map(Some)
+            },
+            is_archived: self.is_archived,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TransactionIdQuery {
     pub transaction_id: String,

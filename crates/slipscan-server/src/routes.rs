@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use slipscan_core::domain::*;
+use slipscan_core::profile::BookProfile;
 use slipscan_core::region::RegionInfo;
 use slipscan_core::{datadir, fx, CoreError};
 
@@ -225,6 +226,28 @@ struct AccountUpdateReq {
     id: String,
     #[serde(flatten)]
     patch: AccountPatch,
+}
+
+#[derive(Debug, Deserialize)]
+struct BookSetKindReq {
+    book_id: String,
+    kind: BookKind,
+}
+
+#[derive(Debug, Deserialize)]
+struct BookSetMultiLocationOverrideReq {
+    book_id: String,
+    /// Omitted or `null` clears the override back to derived; `true`/
+    /// `false` pins it either way.
+    #[serde(default)]
+    multi_location_override: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LocationUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: LocationPatch,
 }
 
 #[derive(Debug, Deserialize)]
@@ -541,6 +564,33 @@ async fn book_get(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResul
     Ok(Json(s.service()?.book_get(&req.id)?))
 }
 
+/// Resolve which capability groups a book should show right now (Phase 6.0
+/// — personal / business / business-multi-location, ROADMAP.md "Phase 6").
+async fn book_profile(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<BookProfile> {
+    Ok(Json(s.service()?.book_profile(&req.id)?))
+}
+
+/// Change a book's kind later, in either direction — see the core service
+/// doc comment for what does and does not move as a result (nothing does,
+/// other than what `book_profile` reports).
+async fn book_set_kind(
+    State(s): State<AppState>,
+    Json(req): Json<BookSetKindReq>,
+) -> ApiResult<Book> {
+    Ok(Json(s.service()?.book_set_kind(&req.book_id, req.kind)?))
+}
+
+/// Pin or clear the multi-location override (Phase 6 decision #3).
+async fn book_set_multi_location_override(
+    State(s): State<AppState>,
+    Json(req): Json<BookSetMultiLocationOverrideReq>,
+) -> ApiResult<Book> {
+    Ok(Json(s.service()?.book_set_multi_location_override(
+        &req.book_id,
+        req.multi_location_override,
+    )?))
+}
+
 async fn account_create(
     State(s): State<AppState>,
     Json(req): Json<NewAccount>,
@@ -568,6 +618,40 @@ async fn account_update(
 
 async fn account_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
     s.service()?.account_delete(&req.id)?;
+    Ok(Json(OK))
+}
+
+// -- Locations: branches, sites and warehouses (Phase 6.1 — the flowstock
+// fold, foundation). Additive and optional, the same as `members`; a book
+// with zero locations behaves exactly as it always has.
+
+async fn location_create(
+    State(s): State<AppState>,
+    Json(req): Json<NewLocation>,
+) -> ApiResult<Location> {
+    Ok(Json(s.service()?.location_create(req)?))
+}
+
+async fn location_get(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<Location> {
+    Ok(Json(s.service()?.location_get(&req.id)?))
+}
+
+async fn location_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<Location>> {
+    Ok(Json(s.service()?.location_list(&req.book_id)?))
+}
+
+async fn location_update(
+    State(s): State<AppState>,
+    Json(req): Json<LocationUpdateReq>,
+) -> ApiResult<Location> {
+    Ok(Json(s.service()?.location_update(&req.id, req.patch)?))
+}
+
+async fn location_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
+    s.service()?.location_delete(&req.id)?;
     Ok(Json(OK))
 }
 
@@ -1476,11 +1560,22 @@ pub fn app(state: AppState) -> Router {
         .route("/book_create", post(book_create))
         .route("/book_list", post(book_list))
         .route("/book_get", post(book_get))
+        .route("/book_profile", post(book_profile))
+        .route("/book_set_kind", post(book_set_kind))
+        .route(
+            "/book_set_multi_location_override",
+            post(book_set_multi_location_override),
+        )
         .route("/account_create", post(account_create))
         .route("/account_get", post(account_get))
         .route("/account_list", post(account_list))
         .route("/account_update", post(account_update))
         .route("/account_delete", post(account_delete))
+        .route("/location_create", post(location_create))
+        .route("/location_get", post(location_get))
+        .route("/location_list", post(location_list))
+        .route("/location_update", post(location_update))
+        .route("/location_delete", post(location_delete))
         .route("/transaction_create", post(transaction_create))
         .route("/transaction_get", post(transaction_get))
         .route("/transaction_list", post(transaction_list))
@@ -1703,6 +1798,196 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(missing["error"]["code"], "not_found");
+    }
+
+    /// Phase 6.0 (Book profiles): `book_profile` reflects `kind` and the
+    /// real `locations` row count, `book_set_multi_location_override` pins
+    /// and clears the flag, and `book_set_kind` changes kind in both
+    /// directions without deleting anything the resolver stops
+    /// recommending — the same downgrade guarantee the core service test
+    /// (`downgrading_a_business_book_to_personal_hides_screens_but_never_deletes_rows`)
+    /// proves at the service layer, exercised here over HTTP.
+    #[tokio::test]
+    async fn book_profile_set_kind_and_multi_location_override_round_trip_over_http() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Biz", "kind": "business", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let (status, profile) = call(
+            &app,
+            post_req("/api/v1/book_profile", json!({"id": book_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{profile}");
+        assert_eq!(profile["kind"], "business");
+        assert_eq!(profile["location_count"], 0);
+        assert_eq!(profile["show_contacts"], true);
+        assert_eq!(profile["show_locations"], false);
+
+        // A second location derives multi-location on.
+        for name in ["HQ", "Depot"] {
+            let (status, created) = call(
+                &app,
+                post_req(
+                    "/api/v1/location_create",
+                    json!({"book_id": book_id, "name": name}),
+                    None,
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{created}");
+        }
+        let (_, profile) = call(
+            &app,
+            post_req("/api/v1/book_profile", json!({"id": book_id}), None),
+        )
+        .await;
+        assert_eq!(profile["location_count"], 2);
+        assert_eq!(profile["show_locations"], true);
+
+        // Pin the override off despite two locations.
+        let (status, updated) = call(
+            &app,
+            post_req(
+                "/api/v1/book_set_multi_location_override",
+                json!({"book_id": book_id, "multi_location_override": false}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{updated}");
+        assert_eq!(updated["multi_location_override"], false);
+        let (_, profile) = call(
+            &app,
+            post_req("/api/v1/book_profile", json!({"id": book_id}), None),
+        )
+        .await;
+        assert_eq!(profile["show_locations"], false);
+
+        // Omitting the field clears the override back to derived.
+        call(
+            &app,
+            post_req(
+                "/api/v1/book_set_multi_location_override",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        let (_, profile) = call(
+            &app,
+            post_req("/api/v1/book_profile", json!({"id": book_id}), None),
+        )
+        .await;
+        assert_eq!(profile["show_locations"], true);
+
+        // Downgrade to personal hides business groups; nothing is deleted.
+        let (status, downgraded) = call(
+            &app,
+            post_req(
+                "/api/v1/book_set_kind",
+                json!({"book_id": book_id, "kind": "personal"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{downgraded}");
+        assert_eq!(downgraded["kind"], "personal");
+        let (_, profile) = call(
+            &app,
+            post_req("/api/v1/book_profile", json!({"id": book_id}), None),
+        )
+        .await;
+        assert_eq!(profile["show_contacts"], false);
+        assert_eq!(profile["show_locations"], false);
+        assert_eq!(profile["location_count"], 2, "the rows are still there");
+
+        let (_, locations) = call(
+            &app,
+            post_req("/api/v1/location_list", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert_eq!(locations.as_array().unwrap().len(), 2);
+    }
+
+    /// `location_create`/`_get`/`_list`/`_update`/`_delete` over HTTP (Phase
+    /// 6.1) — full CRUD parity, not just the create/list `book_profile`
+    /// exercises above.
+    #[tokio::test]
+    async fn location_crud_round_trip_over_http() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Biz", "kind": "business", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let (status, created) = call(
+            &app,
+            post_req(
+                "/api/v1/location_create",
+                json!({"book_id": book_id, "name": "Depot", "kind": "warehouse", "code": "DEP-1"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{created}");
+        let id = created["id"].as_str().unwrap().to_string();
+        assert_eq!(created["kind"], "warehouse");
+
+        let (status, fetched) = call(
+            &app,
+            post_req("/api/v1/location_get", json!({"id": id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(fetched["name"], "Depot");
+
+        let (status, updated) = call(
+            &app,
+            post_req(
+                "/api/v1/location_update",
+                json!({"id": id, "is_archived": true}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{updated}");
+        assert_eq!(updated["is_archived"], true);
+
+        let (status, listed) = call(
+            &app,
+            post_req("/api/v1/location_list", json!({"book_id": book_id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+
+        let (status, _) = call(
+            &app,
+            post_req("/api/v1/location_delete", json!({"id": id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, missing) = call(
+            &app,
+            post_req("/api/v1/location_get", json!({"id": id}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
     }
 
     /// The pack **source** surface over HTTP: add a source, read it, install

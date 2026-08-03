@@ -24,6 +24,17 @@
  * and currency picked here become an actual book, seeded with the chart of
  * accounts and tax rate table that profile prescribes.
  *
+ * The `locations` step (Phase 6.0, ROADMAP.md "Phase 6" — Book profiles)
+ * only does something for a business book: it lets a business optionally
+ * add its first branches right here, through the real `location_create`
+ * command, rather than a separate trip to Settings later. A personal book
+ * sees the same step slot with a one-line explanation instead of a form —
+ * the step machine stays uniform (no skip-logic to keep in sync with
+ * `BOOK_KINDS`), and nothing is created for a book that has no location
+ * axis to begin with. Two locations already existing is what derives the
+ * multi-location flag on by itself (decision #3); nothing here sets the
+ * override directly.
+ *
  * WHAT IT DOES *NOT* DO, and says so on screen (contract: honest caveats are
  * a feature, never quietly upgraded):
  *   - It does not set up a mailbox. The mailbox step records nothing, and says
@@ -41,6 +52,7 @@ import type { RegionInfo } from "./api/types";
 export const FIRST_RUN_STEPS = [
   "welcome",
   "region",
+  "locations",
   "data",
   "mailbox",
   "done",

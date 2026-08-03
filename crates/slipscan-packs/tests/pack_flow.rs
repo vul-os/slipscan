@@ -34,6 +34,7 @@ fn make_book(conn: &Connection) -> String {
         locale: "en".into(),
         timezone: "UTC".into(),
         financial_lock_date: None,
+        multi_location_override: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -410,6 +411,7 @@ fn intl_starter_installs_and_classifies_global_merchants() {
         locale: "de".into(),
         timezone: "UTC".into(),
         financial_lock_date: None,
+        multi_location_override: None,
         created_at: now.clone(),
         updated_at: now,
     };

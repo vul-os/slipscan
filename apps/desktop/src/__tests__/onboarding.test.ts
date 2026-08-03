@@ -294,7 +294,9 @@ describe("first-run controller", () => {
     firstRun.currency = "ZAR";
     expect(firstRun.issue).toBeNull();
     firstRun.advance();
-    expect(firstRun.step).toBe("data");
+    // Phase 6.0 added a "locations" step (business books only) between
+    // region and data.
+    expect(firstRun.step).toBe("locations");
     firstRun.retreat();
     expect(firstRun.step).toBe("region");
   });

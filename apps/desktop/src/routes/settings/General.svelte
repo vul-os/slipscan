@@ -14,7 +14,13 @@
   import { bookEpoch } from "../../lib/books.svelte";
   import { currencyForRegion, currencyOptions } from "../../lib/onboarding.svelte";
   import { theme, type ThemeMode } from "../../lib/theme.svelte";
-  import type { Book, BookKind, RegionInfo, Settings } from "../../lib/api/types";
+  import type {
+    Book,
+    BookKind,
+    BookProfile,
+    RegionInfo,
+    Settings,
+  } from "../../lib/api/types";
   import Badge from "../../lib/components/Badge.svelte";
   import Icon from "../../lib/components/Icon.svelte";
 
@@ -116,6 +122,66 @@
       createError = String(err);
     } finally {
       creating = false;
+    }
+  }
+
+  // -- book profile (Phase 6.0 — ROADMAP.md "Phase 6", Book profiles) ------
+  // Which capability groups this book shows right now, and the two things
+  // Settings can change about it later, in either direction: `kind` itself,
+  // and the multi-location override. Downgrading only ever hides groups
+  // here — nothing in `location_count` or the underlying rows changes as a
+  // side effect of either control.
+
+  let profile = $state<BookProfile | null>(null);
+  let profileError = $state<string | null>(null);
+  let profileBusy = $state(false);
+
+  $effect(() => {
+    const id = book?.id;
+    profile = null;
+    profileError = null;
+    if (!id) return;
+    void api
+      .bookProfile({ book_id: id })
+      .then((p) => (profile = p))
+      .catch((err) => (profileError = String(err)));
+  });
+
+  async function changeKind(kind: BookKind) {
+    if (!book || profileBusy || profile?.kind === kind) return;
+    profileBusy = true;
+    profileError = null;
+    try {
+      profile = await api.bookSetKind({ book_id: book.id, kind });
+    } catch (err) {
+      profileError = String(err);
+    } finally {
+      profileBusy = false;
+    }
+  }
+
+  type MultiLocationMode = "auto" | "on" | "off";
+  const multiLocationMode = $derived<MultiLocationMode>(
+    profile?.multi_location_override === true
+      ? "on"
+      : profile?.multi_location_override === false
+        ? "off"
+        : "auto",
+  );
+
+  async function setMultiLocationMode(mode: MultiLocationMode) {
+    if (!book || profileBusy) return;
+    profileBusy = true;
+    profileError = null;
+    try {
+      profile = await api.bookSetMultiLocationOverride({
+        book_id: book.id,
+        multi_location_override: mode === "auto" ? null : mode === "on",
+      });
+    } catch (err) {
+      profileError = String(err);
+    } finally {
+      profileBusy = false;
     }
   }
 </script>
@@ -333,7 +399,28 @@
         <dd class="font-medium">{book.name}</dd>
         <dt class="text-t3">Kind</dt>
         <dd>
-          <Badge tone="neutral" dot={false} label={book.kind} />
+          <div
+            class="inline-flex items-center gap-1 rounded-lg border border-line p-0.5"
+            role="radiogroup"
+            aria-label="Book kind"
+          >
+            {#each bookKinds as k (k.id)}
+              {@const active = (profile?.kind ?? book.kind) === k.id}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={active}
+                disabled={profileBusy}
+                class="rounded-md px-2.5 py-1 text-[11.5px] font-medium transition-colors
+                  {active
+                  ? 'bg-ink-900 text-ink-50 dark:bg-ink-100 dark:text-ink-900'
+                  : 'text-t2 hover:bg-sunken'}"
+                onclick={() => changeKind(k.id)}
+              >
+                {k.label}
+              </button>
+            {/each}
+          </div>
         </dd>
         <dt class="text-t3">Region</dt>
         <dd>
@@ -350,7 +437,99 @@
       <p class="mt-3 text-[11px] text-t3">
         Regions are data, not code: the region profile picked at book
         creation drives the chart of accounts, tax rates and report labels.
+        Changing kind here is the other direction of the same choice made
+        at creation, in both directions, any time (ROADMAP.md "Phase 6" —
+        Book profiles): downgrading only hides the groups below, and never
+        deletes a location, a contact, or a catalogue row.
       </p>
+
+      {#if profileError}
+        <p
+          class="mt-3 flex items-start gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+          role="alert"
+        >
+          <Icon name="alert-circle" size={13} class="mt-px shrink-0" />
+          {profileError}
+        </p>
+      {/if}
+
+      {#if profile}
+        <div class="mt-4 rounded-lg border border-line bg-sunken p-3">
+          <h3 class="text-[12px] font-semibold">This book shows</h3>
+          <ul class="mt-2 flex flex-wrap gap-1.5">
+            <li><Badge tone="accent" dot={false} label="Accounts" /></li>
+            <li><Badge tone="accent" dot={false} label="Transactions" /></li>
+            <li><Badge tone="accent" dot={false} label="Budgets" /></li>
+            <li><Badge tone="accent" dot={false} label="Members" /></li>
+            {#if profile.show_contacts}
+              <li><Badge tone="accent" dot={false} label="Contacts" /></li>
+            {/if}
+            {#if profile.show_catalogue}
+              <li><Badge tone="accent" dot={false} label="Catalogue" /></li>
+            {/if}
+            {#if profile.show_purchasing}
+              <li><Badge tone="accent" dot={false} label="Purchasing" /></li>
+            {/if}
+            {#if profile.show_sales}
+              <li><Badge tone="accent" dot={false} label="Sales" /></li>
+            {/if}
+            {#if profile.show_locations}
+              <li><Badge tone="accent" dot={false} label="Locations" /></li>
+            {/if}
+          </ul>
+          <p class="mt-2 text-[11px] text-t3">
+            A personal book stops here. A business book adds contacts,
+            catalogue, purchasing and sales; the location axis needs
+            business kind <em>and</em> more than one location (or the
+            override below). None of these have a screen of their own yet
+            (Phase 6.9) — this list tracks what the model will show once
+            they do, not a set of screens you can open today.
+          </p>
+
+          {#if profile.kind === "business"}
+            <div class="mt-3 border-t border-line pt-3">
+              <h4 class="text-[11.5px] font-semibold">Multi-location</h4>
+              <p class="mt-1 text-[11px] text-t3">
+                {profile.location_count === 0
+                  ? "No locations yet."
+                  : profile.location_count === 1
+                    ? "One location."
+                    : `${profile.location_count} locations.`}
+                Derived: {profile.multi_location ? "on" : "off"}.
+              </p>
+              <div
+                class="mt-2 inline-flex items-center gap-1 rounded-lg border border-line p-0.5"
+                role="radiogroup"
+                aria-label="Multi-location override"
+              >
+                {#each [{ id: "auto", label: "Auto (derive)" }, { id: "on", label: "On" }, { id: "off", label: "Off" }] as m (m.id)}
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={multiLocationMode === m.id}
+                    disabled={profileBusy}
+                    class="rounded-md px-2.5 py-1 text-[11.5px] font-medium transition-colors
+                      {multiLocationMode === m.id
+                      ? 'bg-ink-900 text-ink-50 dark:bg-ink-100 dark:text-ink-900'
+                      : 'text-t2 hover:bg-panel'}"
+                    onclick={() =>
+                      setMultiLocationMode(m.id as "auto" | "on" | "off")}
+                  >
+                    {m.label}
+                  </button>
+                {/each}
+              </div>
+              <p class="mt-1.5 text-[11px] text-t3">
+                Auto turns the axis on the moment a second location exists —
+                the common case needs no toggle. Pin “On” for a business
+                setting up its first branch that wants the axis before a
+                second location exists; pin “Off” to hide it despite two or
+                more. Nothing here deletes a location either way.
+              </p>
+            </div>
+          {/if}
+        </div>
+      {/if}
     {:else if !showForm}
       <p class="text-[12.5px] text-t2">
         This database holds no book yet. SlipScan does not invent one — the

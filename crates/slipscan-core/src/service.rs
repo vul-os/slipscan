@@ -363,6 +363,11 @@ impl CoreService {
             locale: "en".to_string(),
             timezone: "UTC".to_string(),
             financial_lock_date: None,
+            // Left to derive (see `crate::profile::resolve`) until Settings
+            // pins it explicitly — a book created before it has a second
+            // location has nothing to derive from yet, which is exactly the
+            // "not multi-location" answer this gives.
+            multi_location_override: None,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -390,6 +395,80 @@ impl CoreService {
             entity: "book",
             id: id.to_string(),
         })
+    }
+
+    /// Resolve which capability groups this book should show right now
+    /// (Phase 6.0 — see `crate::profile`). The one function every surface
+    /// (CLI, HTTP, desktop) should call instead of re-deriving `kind ==
+    /// business` or a locations count itself.
+    pub fn book_profile(&self, book_id: &str) -> CoreResult<crate::profile::BookProfile> {
+        let book = self.book_get(book_id)?;
+        let location_count = repo::location::count(self.conn(), book_id)?;
+        Ok(crate::profile::resolve(
+            book.kind,
+            location_count,
+            book.multi_location_override,
+        ))
+    }
+
+    /// Change a book's kind later, in either direction (Phase 6 decision #1:
+    /// the tier is a display concern, never a schema fork). Flipping
+    /// business → personal hides the Contacts/Catalogue/Purchasing/Sales
+    /// groups from `book_profile` on the next read; it does not touch a
+    /// single row in `locations`, `contacts`, `product_categories`,
+    /// `products` or `product_variants` — flipping back to business
+    /// immediately shows whatever was already there.
+    pub fn book_set_kind(&self, book_id: &str, kind: BookKind) -> CoreResult<Book> {
+        let before = self.book_get(book_id)?;
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::book::set_kind(&tx, book_id, kind, &now)?;
+        let mut after = before.clone();
+        after.kind = kind;
+        after.updated_at = now;
+        self.emit_audit(
+            &tx,
+            Some(book_id),
+            "book",
+            Some(book_id),
+            "set_kind",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Pin (`Some`) or clear back to derived (`None`) the multi-location
+    /// override (Phase 6 decision #3). Pinning `Some(true)` is how a
+    /// business setting up its first branch gets the location axis before a
+    /// second `locations` row exists; pinning `Some(false)` hides the axis
+    /// even with two or more rows present, without deleting any of them —
+    /// clearing the override later goes straight back to whatever the row
+    /// count says.
+    pub fn book_set_multi_location_override(
+        &self,
+        book_id: &str,
+        multi_location_override: Option<bool>,
+    ) -> CoreResult<Book> {
+        let before = self.book_get(book_id)?;
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::book::set_multi_location_override(&tx, book_id, multi_location_override, &now)?;
+        let mut after = before.clone();
+        after.multi_location_override = multi_location_override;
+        after.updated_at = now;
+        self.emit_audit(
+            &tx,
+            Some(book_id),
+            "book",
+            Some(book_id),
+            "set_multi_location_override",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
     }
 
     // -----------------------------------------------------------------------
@@ -8902,6 +8981,248 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, CoreError::Sqlite(_)), "{err:?}");
+    }
+
+    // -------------------------------------------------------------------
+    // Book profiles (ROADMAP.md "Phase 6" — 6.0 Book profiles). The
+    // pure-function cases (kind × location count × override → capability
+    // groups) live in `crate::profile::tests`; these exercise the parts a
+    // pure function cannot: that `book_profile` actually counts this
+    // book's own `locations` rows, that the setters persist and audit, and
+    // — the one explicitly required by that ROADMAP entry — that
+    // downgrading a business book to personal hides its screens without
+    // touching a single row.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn book_profile_wires_the_real_location_count_through_resolve() {
+        let svc = svc();
+        let book = make_business(&svc);
+
+        // Freshly created: no locations, no override.
+        let profile = svc.book_profile(&book.id).unwrap();
+        assert_eq!(profile.location_count, 0);
+        assert!(!profile.multi_location);
+        assert!(profile.show_contacts && profile.show_catalogue);
+        assert!(!profile.show_locations);
+
+        svc.location_create(NewLocation {
+            book_id: book.id.clone(),
+            name: "HQ".into(),
+            kind: None,
+            code: None,
+            address: None,
+        })
+        .unwrap();
+        let profile = svc.book_profile(&book.id).unwrap();
+        assert_eq!(profile.location_count, 1);
+        assert!(
+            !profile.multi_location,
+            "one location is not multi-location"
+        );
+
+        svc.location_create(NewLocation {
+            book_id: book.id.clone(),
+            name: "Depot".into(),
+            kind: None,
+            code: None,
+            address: None,
+        })
+        .unwrap();
+        let profile = svc.book_profile(&book.id).unwrap();
+        assert_eq!(profile.location_count, 2);
+        assert!(profile.multi_location, "a second location derives it on");
+        assert!(profile.show_locations);
+    }
+
+    #[test]
+    fn a_personal_book_never_shows_business_groups_via_book_profile() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let profile = svc.book_profile(&book.id).unwrap();
+        assert!(profile.show_accounts && profile.show_transactions);
+        assert!(profile.show_budgets && profile.show_members);
+        assert!(!profile.show_contacts && !profile.show_catalogue);
+        assert!(!profile.show_purchasing && !profile.show_sales);
+        assert!(!profile.show_locations);
+    }
+
+    #[test]
+    fn book_set_kind_flips_in_both_directions_and_is_audited() {
+        let svc = svc();
+        let book = make_book(&svc);
+        assert_eq!(book.kind, BookKind::Personal);
+        assert!(!svc.book_profile(&book.id).unwrap().show_contacts);
+
+        let business = svc.book_set_kind(&book.id, BookKind::Business).unwrap();
+        assert_eq!(business.kind, BookKind::Business);
+        assert!(svc.book_profile(&book.id).unwrap().show_contacts);
+
+        let personal = svc.book_set_kind(&book.id, BookKind::Personal).unwrap();
+        assert_eq!(personal.kind, BookKind::Personal);
+        assert!(!svc.book_profile(&book.id).unwrap().show_contacts);
+
+        let entries = svc.audit_list(Some(&book.id), 100).unwrap();
+        let kind_changes = entries
+            .iter()
+            .filter(|e| e.entity_type == "book" && e.action == "set_kind")
+            .count();
+        assert_eq!(kind_changes, 2, "both direction changes are audited");
+    }
+
+    #[test]
+    fn book_set_multi_location_override_pins_and_clears_back_to_derived() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.location_create(NewLocation {
+            book_id: book.id.clone(),
+            name: "HQ".into(),
+            kind: None,
+            code: None,
+            address: None,
+        })
+        .unwrap();
+        assert!(!svc.book_profile(&book.id).unwrap().multi_location);
+
+        // Pin on early, before a second location exists — the documented
+        // escape hatch (decision #3).
+        let updated = svc
+            .book_set_multi_location_override(&book.id, Some(true))
+            .unwrap();
+        assert_eq!(updated.multi_location_override, Some(true));
+        let profile = svc.book_profile(&book.id).unwrap();
+        assert!(profile.multi_location && profile.show_locations);
+
+        // Pin off despite a genuinely multi-location book.
+        svc.location_create(NewLocation {
+            book_id: book.id.clone(),
+            name: "Depot".into(),
+            kind: None,
+            code: None,
+            address: None,
+        })
+        .unwrap();
+        svc.book_set_multi_location_override(&book.id, Some(false))
+            .unwrap();
+        assert!(!svc.book_profile(&book.id).unwrap().multi_location);
+
+        // Clear back to derived: two locations now, so it goes back on.
+        let cleared = svc
+            .book_set_multi_location_override(&book.id, None)
+            .unwrap();
+        assert_eq!(cleared.multi_location_override, None);
+        assert!(svc.book_profile(&book.id).unwrap().multi_location);
+    }
+
+    /// The requirement ROADMAP.md states outright: "Downgrading hides
+    /// screens; it never deletes rows." A business book with a location, a
+    /// contact, a product category, a product and a variant loses none of
+    /// them when flipped to personal — `book_profile` stops recommending
+    /// their screens, and every row is still there, unmodified, the moment
+    /// it flips back.
+    #[test]
+    fn downgrading_a_business_book_to_personal_hides_screens_but_never_deletes_rows() {
+        let svc = svc();
+        let book = make_business(&svc);
+
+        svc.location_create(NewLocation {
+            book_id: book.id.clone(),
+            name: "HQ".into(),
+            kind: None,
+            code: None,
+            address: None,
+        })
+        .unwrap();
+        svc.location_create(NewLocation {
+            book_id: book.id.clone(),
+            name: "Depot".into(),
+            kind: None,
+            code: None,
+            address: None,
+        })
+        .unwrap();
+        let contact = svc
+            .contact_add(NewContact {
+                book_id: book.id.clone(),
+                role: ContactRole::Both,
+                name: "Acme".into(),
+                company_name: None,
+                email: None,
+                phone: None,
+                billing_address: None,
+                shipping_address: None,
+                tax_number: None,
+                payment_terms_days: None,
+                credit_limit_minor: None,
+                notes: None,
+            })
+            .unwrap();
+        let category = svc
+            .product_category_create(NewProductCategory {
+                book_id: book.id.clone(),
+                name: "Widgets".into(),
+            })
+            .unwrap();
+        let product = svc
+            .product_create(NewProduct {
+                book_id: book.id.clone(),
+                product_category_id: Some(category.id.clone()),
+                name: "Widget".into(),
+                description: None,
+            })
+            .unwrap();
+        let variant = svc
+            .product_variant_add(NewProductVariant {
+                product_id: product.id.clone(),
+                sku: "WID-1".into(),
+                name: "Widget — Red".into(),
+                price_minor: Some(1999),
+                cost_price_minor: Some(900),
+                currency: book.currency.clone(),
+                reorder_point: None,
+                attributes: None,
+            })
+            .unwrap();
+
+        // Before the downgrade: everything visible.
+        let before = svc.book_profile(&book.id).unwrap();
+        assert!(before.show_contacts && before.show_catalogue);
+        assert!(before.show_purchasing && before.show_sales);
+        assert!(before.show_locations);
+
+        let downgraded = svc.book_set_kind(&book.id, BookKind::Personal).unwrap();
+        assert_eq!(downgraded.kind, BookKind::Personal);
+
+        // After: the resolver hides every business group — including
+        // locations, even though the row count alone would still derive
+        // multi-location true — because `show_locations` requires
+        // `BookKind::Business` too (a personal book has no location axis
+        // to show, regardless of how many location rows a prior business
+        // life left behind).
+        let after = svc.book_profile(&book.id).unwrap();
+        assert!(!after.show_contacts && !after.show_catalogue);
+        assert!(!after.show_purchasing && !after.show_sales);
+        assert!(!after.show_locations);
+        assert_eq!(after.location_count, 2, "the rows are still there");
+
+        // Every row survives, byte-for-byte, reachable exactly as before.
+        assert_eq!(svc.location_list(&book.id).unwrap().len(), 2);
+        assert_eq!(svc.contact_get(&contact.id).unwrap(), contact);
+        assert_eq!(
+            svc.product_category_list(&book.id).unwrap(),
+            vec![category.clone()]
+        );
+        assert_eq!(svc.product_get(&product.id).unwrap(), product);
+        assert_eq!(svc.product_variant_get(&variant.id).unwrap(), variant);
+
+        // And flipping back to business immediately restores every screen
+        // recommendation, with the same rows still behind it — nothing was
+        // re-created, nothing was re-derived from scratch.
+        svc.book_set_kind(&book.id, BookKind::Business).unwrap();
+        let restored = svc.book_profile(&book.id).unwrap();
+        assert!(restored.show_contacts && restored.show_catalogue);
+        assert!(restored.show_locations);
+        assert_eq!(svc.contact_list(&book.id).unwrap(), vec![contact]);
     }
 
     // -------------------------------------------------------------------

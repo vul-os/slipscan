@@ -19,9 +19,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use slipscan_core::datadir::{self, DataDirResolver, MoveStep};
 use slipscan_core::device::pairing::{KeynameCheck, DEFAULT_INVITE_TTL_SECONDS};
 use slipscan_core::domain::{
-    Account, Book, BookKind, DocumentSource, Member, MemberPatch, NewBook, NewMember,
-    NewPayEndpoint, NewPayWatch, PayDeliveryState, PayEndpointWithSecret, SplitShare,
-    TransactionFilter, TransactionSource,
+    Account, Book, BookKind, DocumentSource, LocationKind, LocationPatch, Member, MemberPatch,
+    NewBook, NewLocation, NewMember, NewPayEndpoint, NewPayWatch, PayDeliveryState,
+    PayEndpointWithSecret, SplitShare, TransactionFilter, TransactionSource,
 };
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
@@ -114,6 +114,33 @@ impl From<CliBookKind> for BookKind {
             CliBookKind::Business => BookKind::Business,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliLocationKind {
+    Branch,
+    Warehouse,
+    Site,
+}
+
+impl From<CliLocationKind> for LocationKind {
+    fn from(kind: CliLocationKind) -> Self {
+        match kind {
+            CliLocationKind::Branch => LocationKind::Branch,
+            CliLocationKind::Warehouse => LocationKind::Warehouse,
+            CliLocationKind::Site => LocationKind::Site,
+        }
+    }
+}
+
+/// `book set-multi-location` modes — the tri-state override on `books`
+/// (Phase 6 decision #3): derive it, or pin it either way.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum MultiLocationMode {
+    /// Derive from the `locations` row count (the default for every book).
+    Auto,
+    On,
+    Off,
 }
 
 /// Which mailbox connector `mail-sync` drives. `imap` is the default so
@@ -292,6 +319,19 @@ enum Command {
         #[command(subcommand)]
         action: AccountAction,
     },
+    /// The selected book's profile: kind, and the multi-location override
+    /// (ROADMAP.md "Phase 6" — Book profiles). Create additional books with
+    /// `slipscan init --name <name> --kind business` against an existing
+    /// database.
+    Book {
+        #[command(subcommand)]
+        action: BookAction,
+    },
+    /// Locations (branches/warehouses/sites) within a book (Phase 6.1).
+    Location {
+        #[command(subcommand)]
+        action: LocationAction,
+    },
     /// Household members: local data describing whose money it is, never a
     /// login (see ARCHITECTURE.md "Household members & per-person
     /// attribution").
@@ -421,6 +461,84 @@ enum AccountAction {
         /// Bank/institution label.
         #[arg(long)]
         institution: Option<String>,
+    },
+}
+
+/// Book profile: the personal/business/multi-location disclosure rules
+/// (ROADMAP.md "Phase 6" — Book profiles). Every field this resolves is a
+/// display fact; core accepts contacts/catalogue/location writes on a
+/// personal book regardless of what a UI currently shows.
+#[derive(Debug, Subcommand)]
+enum BookAction {
+    /// Show the selected book's resolved profile: kind, location count,
+    /// the multi-location flag, and which capability groups are visible.
+    Profile,
+    /// Change the book's kind later, in either direction. Downgrading only
+    /// hides screens — it deletes nothing in `locations`, `contacts`,
+    /// `product_categories`, `products` or `product_variants`.
+    SetKind {
+        #[arg(value_enum)]
+        kind: CliBookKind,
+    },
+    /// Pin or clear the multi-location override. `auto` (the default for
+    /// every book) derives the flag from the `locations` row count; `on`/
+    /// `off` pin it regardless of how many locations exist.
+    SetMultiLocation {
+        #[arg(value_enum)]
+        mode: MultiLocationMode,
+    },
+}
+
+/// Locations: branches, sites and warehouses within a book (Phase 6.1).
+/// Additive and optional — a book with none behaves exactly as it always
+/// has; adding a second is what the multi-location flag derives from.
+#[derive(Debug, Subcommand)]
+enum LocationAction {
+    /// Add a location to the selected book.
+    Add {
+        /// Location display name, e.g. "Johannesburg".
+        name: String,
+        /// branch (storefront/office), warehouse (bulk storage) or site
+        /// (anything else).
+        #[arg(long, value_enum, default_value = "branch")]
+        kind: CliLocationKind,
+        /// Optional short code, e.g. "JHB-01"; unique within the book when
+        /// set.
+        #[arg(long)]
+        code: Option<String>,
+        #[arg(long)]
+        address: Option<String>,
+    },
+    /// List locations in the book.
+    List,
+    /// Update a location's name/kind/code/address/archived state.
+    Update {
+        /// Location id.
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, value_enum)]
+        kind: Option<CliLocationKind>,
+        #[arg(long, conflicts_with = "clear_code")]
+        code: Option<String>,
+        /// Clear the code (as opposed to leaving it unchanged).
+        #[arg(long)]
+        clear_code: bool,
+        #[arg(long, conflicts_with = "clear_address")]
+        address: Option<String>,
+        /// Clear the address (as opposed to leaving it unchanged).
+        #[arg(long)]
+        clear_address: bool,
+        #[arg(long, conflicts_with = "unarchive")]
+        archive: bool,
+        #[arg(long)]
+        unarchive: bool,
+    },
+    /// Remove a location outright. No reassignment guard yet — nothing in
+    /// core references a location (see migration `0009_locations`).
+    Remove {
+        /// Location id.
+        id: String,
     },
 }
 
@@ -1602,6 +1720,166 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             "Created account {} ({}) — {} {}",
                             account.name, account.id, account.kind, account.currency
                         );
+                    })
+                }
+            }
+        }
+
+        Command::Book { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                BookAction::Profile => {
+                    let profile = svc.book_profile(&book.id)?;
+                    emit(cli.json, &profile, || {
+                        println!("Book {} ({}) — kind {}", book.name, book.id, profile.kind);
+                        println!(
+                            "  locations: {} ({})",
+                            profile.location_count,
+                            match profile.multi_location_override {
+                                Some(true) => "multi-location pinned on",
+                                Some(false) => "multi-location pinned off",
+                                None if profile.multi_location => "multi-location — derived",
+                                None => "single-location — derived",
+                            }
+                        );
+                        let mut groups = vec!["accounts", "transactions", "budgets", "members"];
+                        if profile.show_contacts {
+                            groups.push("contacts");
+                        }
+                        if profile.show_catalogue {
+                            groups.push("catalogue");
+                        }
+                        if profile.show_purchasing {
+                            groups.push("purchasing");
+                        }
+                        if profile.show_sales {
+                            groups.push("sales");
+                        }
+                        if profile.show_locations {
+                            groups.push("locations");
+                        }
+                        println!("  shows: {}", groups.join(", "));
+                    })
+                }
+                BookAction::SetKind { kind } => {
+                    let updated = svc.book_set_kind(&book.id, (*kind).into())?;
+                    emit(cli.json, &updated, || {
+                        println!("Book {} is now kind {}", updated.name, updated.kind);
+                    })
+                }
+                BookAction::SetMultiLocation { mode } => {
+                    let over = match mode {
+                        MultiLocationMode::Auto => None,
+                        MultiLocationMode::On => Some(true),
+                        MultiLocationMode::Off => Some(false),
+                    };
+                    let updated = svc.book_set_multi_location_override(&book.id, over)?;
+                    emit(cli.json, &updated, || {
+                        println!(
+                            "Book {} multi-location override: {}",
+                            updated.name,
+                            match updated.multi_location_override {
+                                Some(true) => "on",
+                                Some(false) => "off",
+                                None => "auto (derived)",
+                            }
+                        );
+                    })
+                }
+            }
+        }
+
+        Command::Location { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                LocationAction::Add {
+                    name,
+                    kind,
+                    code,
+                    address,
+                } => {
+                    let location = svc.location_create(NewLocation {
+                        book_id: book.id.clone(),
+                        name: name.clone(),
+                        kind: Some((*kind).into()),
+                        code: code.clone(),
+                        address: address.clone(),
+                    })?;
+                    emit(cli.json, &location, || {
+                        println!(
+                            "Created location {} ({}) — {}",
+                            location.name, location.id, location.kind
+                        );
+                    })
+                }
+                LocationAction::List => {
+                    let locations = svc.location_list(&book.id)?;
+                    emit(cli.json, &locations, || {
+                        if locations.is_empty() {
+                            println!(
+                                "No locations yet. Add one with `slipscan location add <name>`."
+                            );
+                        }
+                        for l in &locations {
+                            println!(
+                                "{}\t{}\t{}\t{}{}",
+                                l.id,
+                                l.name,
+                                l.kind,
+                                l.code.as_deref().unwrap_or("-"),
+                                if l.is_archived { "\t(archived)" } else { "" }
+                            );
+                        }
+                    })
+                }
+                LocationAction::Update {
+                    id,
+                    name,
+                    kind,
+                    code,
+                    clear_code,
+                    address,
+                    clear_address,
+                    archive,
+                    unarchive,
+                } => {
+                    let code = if *clear_code {
+                        Some(None)
+                    } else {
+                        code.clone().map(Some)
+                    };
+                    let address = if *clear_address {
+                        Some(None)
+                    } else {
+                        address.clone().map(Some)
+                    };
+                    let is_archived = if *archive {
+                        Some(true)
+                    } else if *unarchive {
+                        Some(false)
+                    } else {
+                        None
+                    };
+                    let location = svc.location_update(
+                        id,
+                        LocationPatch {
+                            name: name.clone(),
+                            kind: kind.map(Into::into),
+                            code,
+                            address,
+                            is_archived,
+                        },
+                    )?;
+                    emit(cli.json, &location, || {
+                        println!("Updated location {} ({})", location.name, location.id);
+                    })
+                }
+                LocationAction::Remove { id } => {
+                    svc.location_delete(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed location {id}.");
                     })
                 }
             }
@@ -4208,6 +4486,95 @@ mod tests {
         assert_eq!(std.rate_bps, 750);
         // Out-of-range rejected.
         assert!(run_cli(&["tax", "set-rate", "STD", "10001"]).is_err());
+    }
+
+    /// `book profile` / `book set-kind` / `book set-multi-location` and
+    /// `location add`/`list`/`update`/`remove` end to end (ROADMAP.md
+    /// "Phase 6" — 6.0 Book profiles) — the CLI half of the same-name/
+    /// same-payload parity `docs/API.md` tracks against the HTTP routes.
+    #[test]
+    fn book_profile_and_location_commands_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("t.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let run_cli = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_cli(&["init", "--name", "Biz", "--kind", "business"]).unwrap();
+
+        let svc = CoreService::open(&db).unwrap();
+        let book = svc.book_list().unwrap().remove(0);
+        drop(svc);
+
+        // Fresh business book: no locations yet, so the axis is not shown.
+        run_cli(&["book", "profile"]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        let profile = svc.book_profile(&book.id).unwrap();
+        assert!(profile.show_contacts && !profile.show_locations);
+        drop(svc);
+
+        run_cli(&["location", "add", "HQ"]).unwrap();
+        run_cli(&[
+            "location",
+            "add",
+            "Depot",
+            "--kind",
+            "warehouse",
+            "--code",
+            "DEP-1",
+        ])
+        .unwrap();
+        run_cli(&["location", "list"]).unwrap();
+
+        let svc = CoreService::open(&db).unwrap();
+        let locations = svc.location_list(&book.id).unwrap();
+        assert_eq!(locations.len(), 2);
+        let depot = locations.iter().find(|l| l.name == "Depot").unwrap();
+        assert_eq!(depot.kind, LocationKind::Warehouse);
+        assert_eq!(depot.code.as_deref(), Some("DEP-1"));
+        let depot_id = depot.id.clone();
+        let profile = svc.book_profile(&book.id).unwrap();
+        assert!(
+            profile.multi_location && profile.show_locations,
+            "a second location derives multi-location on"
+        );
+        drop(svc);
+
+        // Pin the override off despite two locations, then back to auto.
+        run_cli(&["book", "set-multi-location", "off"]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        assert!(!svc.book_profile(&book.id).unwrap().multi_location);
+        drop(svc);
+        run_cli(&["book", "set-multi-location", "auto"]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        assert!(svc.book_profile(&book.id).unwrap().multi_location);
+        drop(svc);
+
+        // Archive, then remove, the depot location.
+        run_cli(&["location", "update", &depot_id, "--archive"]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        assert!(svc.location_get(&depot_id).unwrap().is_archived);
+        drop(svc);
+        run_cli(&["location", "remove", &depot_id]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        assert!(svc.location_get(&depot_id).is_err());
+        drop(svc);
+
+        // Downgrade to personal hides business groups; it deletes nothing —
+        // the surviving HQ location is still there.
+        run_cli(&["book", "set-kind", "personal"]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        let profile = svc.book_profile(&book.id).unwrap();
+        assert!(!profile.show_contacts && !profile.show_catalogue);
+        assert_eq!(svc.location_list(&book.id).unwrap().len(), 1);
+
+        // And back to business restores them.
+        drop(svc);
+        run_cli(&["book", "set-kind", "business"]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        assert!(svc.book_profile(&book.id).unwrap().show_contacts);
     }
 
     #[test]

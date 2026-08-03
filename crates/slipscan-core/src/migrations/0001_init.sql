@@ -41,19 +41,34 @@
 -- `DEFAULT 'ZAR'` on `currency` above is vestigial in the same sense —
 -- `book_create` always binds an explicit, profile-resolved currency, so no
 -- row is ever created relying on that default.
+--
+-- `multi_location_override` is Phase 6.0's one piece of persisted state
+-- (ROADMAP.md "Phase 6" decision #3): personal vs. business vs. business
+-- multi-location is otherwise pure display logic computed by
+-- `crate::profile::resolve` from `kind` plus a `COUNT(*)` over `locations`
+-- (migration 0009) — never a stored flag that could drift out of step with
+-- how many locations actually exist. NULL (the default, and what every book
+-- created before this axis existed implicitly has) means "derive it";
+-- 0/1 pins the flag either way. The one case derivation gets wrong is a
+-- business setting up its first branch that wants the location UI before a
+-- second `locations` row exists — this column is that override and nothing
+-- else, which is why it lives beside `kind` rather than in `settings`
+-- (`settings` is a single global key/value table, not per-book, so it
+-- cannot hold a per-book override at all).
 -- -----------------------------------------------------------------------------
 
 CREATE TABLE books (
-    id                  TEXT PRIMARY KEY,
-    kind                TEXT NOT NULL CHECK (kind IN ('personal', 'business')),
-    name                TEXT NOT NULL,
-    currency            TEXT NOT NULL DEFAULT 'ZAR' CHECK (length(currency) = 3),
-    country             TEXT CHECK (country IS NULL OR length(country) = 2),
-    locale              TEXT NOT NULL DEFAULT 'en',
-    timezone            TEXT NOT NULL DEFAULT 'UTC',
-    financial_lock_date TEXT,
-    created_at          TEXT NOT NULL,
-    updated_at          TEXT NOT NULL
+    id                       TEXT PRIMARY KEY,
+    kind                     TEXT NOT NULL CHECK (kind IN ('personal', 'business')),
+    name                     TEXT NOT NULL,
+    currency                 TEXT NOT NULL DEFAULT 'ZAR' CHECK (length(currency) = 3),
+    country                  TEXT CHECK (country IS NULL OR length(country) = 2),
+    locale                   TEXT NOT NULL DEFAULT 'en',
+    timezone                 TEXT NOT NULL DEFAULT 'UTC',
+    financial_lock_date      TEXT,
+    multi_location_override  INTEGER CHECK (multi_location_override IN (0, 1)),
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL
 , region TEXT NOT NULL DEFAULT 'generic');
 
 -- Sync capture (docs/NODES.md phase 2 — see migration 0008's header for why
