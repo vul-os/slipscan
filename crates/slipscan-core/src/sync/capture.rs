@@ -376,7 +376,7 @@ mod tests {
         }
     }
 
-/// Migration `0013_purchasing`'s three tables, exercised directly against
+    /// Migration `0013_purchasing`'s three tables, exercised directly against
     /// their triggers rather than eyeballed — the same treatment migrations
     /// 0011 and 0012 already got above. `purchase_orders`/
     /// `purchase_order_items` capture all three verbs (editable LWW rows);
@@ -434,7 +434,10 @@ mod tests {
             )
             .unwrap();
         db.conn()
-            .execute("UPDATE purchase_orders SET status = 'ordered' WHERE id = 'po-1'", [])
+            .execute(
+                "UPDATE purchase_orders SET status = 'ordered' WHERE id = 'po-1'",
+                [],
+            )
             .unwrap();
 
         // -- purchase_order_items: insert, update, delete all captured ------
@@ -655,7 +658,10 @@ mod tests {
             .find(|c| c.table == "locations" && c.row_id == "loc-1")
             .expect("the delete was captured");
         assert_eq!(delete_row.ns, book);
-        assert!(delete_row.deleted, "a delete must be flagged as a tombstone");
+        assert!(
+            delete_row.deleted,
+            "a delete must be flagged as a tombstone"
+        );
     }
 
     /// Migration 0011's three catalogue tables, exercised directly against
@@ -796,7 +802,10 @@ mod tests {
             )
             .unwrap();
         db.conn()
-            .execute("UPDATE sales_orders SET status = 'confirmed' WHERE id = 'so-1'", [])
+            .execute(
+                "UPDATE sales_orders SET status = 'confirmed' WHERE id = 'so-1'",
+                [],
+            )
             .unwrap();
         db.conn()
             .execute("DELETE FROM sales_orders WHERE id = 'so-1'", [])
@@ -978,10 +987,7 @@ mod tests {
 
         db.conn().execute("DELETE FROM sync_outbox", []).unwrap();
         db.conn()
-            .execute(
-                "UPDATE contacts SET role = 'both' WHERE id = 'c-1'",
-                [],
-            )
+            .execute("UPDATE contacts SET role = 'both' WHERE id = 'c-1'", [])
             .unwrap();
         let captured = drain_list(db.conn()).unwrap();
         let updated = captured

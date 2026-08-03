@@ -112,9 +112,8 @@ pub fn po_get(conn: &Connection, id: &str) -> CoreResult<Option<PurchaseOrder>> 
 
 /// Every PO in the book, most recently ordered first.
 pub fn po_list(conn: &Connection, book_id: &str) -> CoreResult<Vec<PurchaseOrder>> {
-    let mut stmt = conn.prepare(
-        "SELECT * FROM purchase_orders WHERE book_id = ?1 ORDER BY order_date DESC, id",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT * FROM purchase_orders WHERE book_id = ?1 ORDER BY order_date DESC, id")?;
     let rows = stmt
         .query_map(params![book_id], map_po)?
         .collect::<Result<Vec<_>, _>>()?;

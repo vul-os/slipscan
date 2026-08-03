@@ -1529,9 +1529,7 @@ fn resolve_variant(
     svc.product_variant_list_for_book(book_id)?
         .into_iter()
         .find(|v| v.id == selector || v.sku == selector)
-        .ok_or_else(|| {
-            anyhow!("no product variant with id or SKU {selector:?} in this book")
-        })
+        .ok_or_else(|| anyhow!("no product variant with id or SKU {selector:?} in this book"))
 }
 
 /// `--from`/`--to` are required for the household attribution reports
@@ -2227,10 +2225,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 series.currency
                             );
                             if !p.unconverted.is_empty() {
-                                print!(
-                                    "\t(excludes {}: no cached rate)",
-                                    p.unconverted.join(", ")
-                                );
+                                print!("\t(excludes {}: no cached rate)", p.unconverted.join(", "));
                             }
                             println!();
                         }
@@ -2800,10 +2795,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 SalesOrderAction::Confirm { id } => {
                     let order = svc.sales_order_confirm(id)?;
                     emit(cli.json, &order, || {
-                        println!(
-                            "Confirmed sales order #{} — stock deducted.",
-                            order.number
-                        );
+                        println!("Confirmed sales order #{} — stock deducted.", order.number);
                     })
                 }
                 SalesOrderAction::Cancel { id } => {
@@ -2869,7 +2861,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     emit(cli.json, &invoice, || {
                         println!(
                             "{}-{}\t{}\tissued {}\tdue {}",
-                            invoice.series, invoice.number, invoice.id, invoice.issue_date, invoice.due_date
+                            invoice.series,
+                            invoice.number,
+                            invoice.id,
+                            invoice.issue_date,
+                            invoice.due_date
                         );
                     })
                 }
@@ -2877,9 +2873,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     let invoices = svc.invoice_list(&book.id)?;
                     emit(cli.json, &invoices, || {
                         if invoices.is_empty() {
-                            println!(
-                                "No invoices yet. Issue one with `slipscan invoice issue`."
-                            );
+                            println!("No invoices yet. Issue one with `slipscan invoice issue`.");
                         }
                         for i in &invoices {
                             println!("{}-{}\t{}\tdue {}", i.series, i.number, i.id, i.due_date);
@@ -7526,9 +7520,8 @@ mod tests {
                 action: NetworthAction::Capture { date: None }
             }
         ));
-        let cli =
-            Cli::try_parse_from(["slipscan", "networth", "capture", "--date", "2026-01-01"])
-                .unwrap();
+        let cli = Cli::try_parse_from(["slipscan", "networth", "capture", "--date", "2026-01-01"])
+            .unwrap();
         match cli.command {
             Command::Networth {
                 action: NetworthAction::Capture { date },
@@ -7563,8 +7556,10 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         // `series` requires both bounds.
-        assert!(Cli::try_parse_from(["slipscan", "networth", "series", "--from", "2026-01-01"])
-            .is_err());
+        assert!(
+            Cli::try_parse_from(["slipscan", "networth", "series", "--from", "2026-01-01"])
+                .is_err()
+        );
     }
 
     #[test]
@@ -7603,7 +7598,15 @@ mod tests {
         // an explicit capture adds a third point after both transactions.
         run_cli(&["networth", "backfill"]).unwrap();
         run_cli(&["networth", "capture", "--date", "2026-01-25"]).unwrap();
-        run_cli(&["networth", "series", "--from", "2026-01-01", "--to", "2026-01-31"]).unwrap();
+        run_cli(&[
+            "networth",
+            "series",
+            "--from",
+            "2026-01-01",
+            "--to",
+            "2026-01-31",
+        ])
+        .unwrap();
 
         let svc = CoreService::open(&db).unwrap();
         let book = svc.book_list().unwrap().remove(0);

@@ -1928,10 +1928,7 @@ mod tests {
             DocumentKind::BankStatement
         );
         assert_eq!(LocationKind::Warehouse.as_str(), "warehouse");
-        assert_eq!(
-            "site".parse::<LocationKind>().unwrap(),
-            LocationKind::Site
-        );
+        assert_eq!("site".parse::<LocationKind>().unwrap(), LocationKind::Site);
         assert!("bogus".parse::<LocationKind>().is_err());
     }
 

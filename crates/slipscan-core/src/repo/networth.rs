@@ -89,9 +89,8 @@ pub fn get_for_account_date(
 /// ever fills gaps — it never duplicates a date already covered, captured or
 /// backfilled.
 pub fn dates_for_account(conn: &Connection, account_id: &str) -> CoreResult<HashSet<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT as_of_date FROM networth_snapshots WHERE account_id = ?1",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT as_of_date FROM networth_snapshots WHERE account_id = ?1")?;
     let dates = stmt
         .query_map(params![account_id], |row| row.get::<_, String>(0))?
         .collect::<Result<HashSet<_>, _>>()?;

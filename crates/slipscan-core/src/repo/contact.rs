@@ -73,8 +73,7 @@ pub fn get(conn: &Connection, id: &str) -> CoreResult<Option<Contact>> {
 
 /// Every contact in the book, either role, alphabetical by name.
 pub fn list(conn: &Connection, book_id: &str) -> CoreResult<Vec<Contact>> {
-    let mut stmt =
-        conn.prepare("SELECT * FROM contacts WHERE book_id = ?1 ORDER BY name, id")?;
+    let mut stmt = conn.prepare("SELECT * FROM contacts WHERE book_id = ?1 ORDER BY name, id")?;
     let rows = stmt
         .query_map(params![book_id], map_contact)?
         .collect::<Result<Vec<_>, _>>()?;

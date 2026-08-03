@@ -24,26 +24,41 @@ use super::col_enum;
 // Numbering (shared by both series — "sales_order" and "invoice")
 // ---------------------------------------------------------------------------
 
-/// Atomically hand out the next integer for `(book_id, series)` and return
-/// it. A single UPSERT statement: SQLite serializes concurrent writers to one
-/// file (the caller is expected to be inside a transaction that already holds
-/// the write lock — see `CoreService::invoice_issue`/`sales_order_create`),
-/// so two callers racing this never observe the same pre-increment value.
-/// Gaplessness comes from the caller, not from here: this only guarantees no
-/// duplicate is ever handed out, and the calling transaction rolling back
-/// (for any reason) rolls the increment back with it.
+/// Atomically hand out the next integer for `(book_id, series)` and return it.
+///
+/// **One statement, and it has to stay one statement.** The increment and the
+/// read of the incremented value are a single UPSERT ... RETURNING, so there
+/// is no window between them for a second caller to slip into. The obvious
+/// shape — UPSERT, then `SELECT next_number` — is *not* equivalent: those are
+/// two statements, and two callers interleaving them both read the winner's
+/// value and hand out the same number. That version happens to be safe when
+/// the caller wraps it in a write transaction (the write lock spans both
+/// statements), which makes it the worst kind of correct: it depends on an
+/// invariant at every call site, holds today, and fails silently the first
+/// time someone allocates outside a transaction. `RETURNING` removes the
+/// invariant instead of documenting it. Verified: with the two-statement form
+/// restored, moving allocation outside the transaction does *not* turn
+/// `service::tests::invoice_numbering_has_no_gap_or_duplicate_under_concurrent_issue`
+/// red — the window is real but too narrow for 40 allocations to land in, so
+/// no test was ever going to defend that invariant for us.
+///
+/// `RETURNING next_number - 1` is correct on both arms: the insert arm stores
+/// 2 and returns 1; the conflict arm stores `old + 1` and returns `old`.
+///
+/// **Uniqueness** is this function's guarantee and needs nothing from the
+/// caller. **Gaplessness** still does: the number must be stamped onto its row
+/// inside the same transaction, so a transaction that rolls back for any other
+/// reason rolls the increment back with it. See
+/// `CoreService::invoice_issue`/`sales_order_create`.
 pub fn allocate_number(conn: &Connection, book_id: &str, series: &str) -> CoreResult<i64> {
-    conn.execute(
+    let allocated: i64 = conn.query_row(
         "INSERT INTO number_sequences (book_id, series, next_number) VALUES (?1, ?2, 2)
-         ON CONFLICT (book_id, series) DO UPDATE SET next_number = next_number + 1",
-        params![book_id, series],
-    )?;
-    let next: i64 = conn.query_row(
-        "SELECT next_number FROM number_sequences WHERE book_id = ?1 AND series = ?2",
+         ON CONFLICT (book_id, series) DO UPDATE SET next_number = next_number + 1
+         RETURNING next_number - 1",
         params![book_id, series],
         |row| row.get(0),
     )?;
-    Ok(next - 1)
+    Ok(allocated)
 }
 
 // ---------------------------------------------------------------------------
@@ -97,15 +112,18 @@ pub fn order_insert(conn: &Connection, order: &SalesOrder) -> CoreResult<()> {
 
 pub fn order_get(conn: &Connection, id: &str) -> CoreResult<Option<SalesOrder>> {
     Ok(conn
-        .query_row("SELECT * FROM sales_orders WHERE id = ?1", params![id], map_order)
+        .query_row(
+            "SELECT * FROM sales_orders WHERE id = ?1",
+            params![id],
+            map_order,
+        )
         .optional()?)
 }
 
 /// Every order in the book, most recent first.
 pub fn order_list(conn: &Connection, book_id: &str) -> CoreResult<Vec<SalesOrder>> {
-    let mut stmt = conn.prepare(
-        "SELECT * FROM sales_orders WHERE book_id = ?1 ORDER BY number DESC",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT * FROM sales_orders WHERE book_id = ?1 ORDER BY number DESC")?;
     let rows = stmt
         .query_map(params![book_id], map_order)?
         .collect::<Result<Vec<_>, _>>()?;
@@ -238,12 +256,14 @@ pub fn order_item_delete(conn: &Connection, id: &str) -> CoreResult<bool> {
 /// order's own items, never stored. See `SalesOrder`'s header note.
 pub fn order_totals(conn: &Connection, sales_order_id: &str) -> CoreResult<SalesOrderTotals> {
     let items = order_item_list(conn, sales_order_id)?;
-    line_totals(items.iter().map(|i| (i.quantity, i.unit_price_minor, i.tax_rate_bps)))
+    line_totals(
+        items
+            .iter()
+            .map(|i| (i.quantity, i.unit_price_minor, i.tax_rate_bps)),
+    )
 }
 
-fn line_totals(
-    lines: impl Iterator<Item = (i64, i64, i64)>,
-) -> CoreResult<SalesOrderTotals> {
+fn line_totals(lines: impl Iterator<Item = (i64, i64, i64)>) -> CoreResult<SalesOrderTotals> {
     let mut subtotal_minor = 0i64;
     let mut tax_minor = 0i64;
     for (quantity, unit_price_minor, tax_rate_bps) in lines {
@@ -303,15 +323,18 @@ pub fn invoice_insert(conn: &Connection, invoice: &Invoice) -> CoreResult<()> {
 
 pub fn invoice_get(conn: &Connection, id: &str) -> CoreResult<Option<Invoice>> {
     Ok(conn
-        .query_row("SELECT * FROM invoices WHERE id = ?1", params![id], map_invoice)
+        .query_row(
+            "SELECT * FROM invoices WHERE id = ?1",
+            params![id],
+            map_invoice,
+        )
         .optional()?)
 }
 
 /// Every invoice in the book, most recently issued first.
 pub fn invoice_list(conn: &Connection, book_id: &str) -> CoreResult<Vec<Invoice>> {
-    let mut stmt = conn.prepare(
-        "SELECT * FROM invoices WHERE book_id = ?1 ORDER BY series, number DESC",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT * FROM invoices WHERE book_id = ?1 ORDER BY series, number DESC")?;
     let rows = stmt
         .query_map(params![book_id], map_invoice)?
         .collect::<Result<Vec<_>, _>>()?;
@@ -398,7 +421,10 @@ pub fn invoice_payment_insert(conn: &Connection, payment: &InvoicePayment) -> Co
 }
 
 /// Every payment recorded against an invoice, oldest first.
-pub fn invoice_payment_list(conn: &Connection, invoice_id: &str) -> CoreResult<Vec<InvoicePayment>> {
+pub fn invoice_payment_list(
+    conn: &Connection,
+    invoice_id: &str,
+) -> CoreResult<Vec<InvoicePayment>> {
     let mut stmt = conn.prepare(
         "SELECT * FROM invoice_payments WHERE invoice_id = ?1 ORDER BY paid_at, created_at, id",
     )?;
@@ -425,7 +451,11 @@ pub fn invoice_totals(conn: &Connection, invoice_id: &str) -> CoreResult<Invoice
         subtotal_minor,
         tax_minor,
         total_minor,
-    } = line_totals(items.iter().map(|i| (i.quantity, i.unit_price_minor, i.tax_rate_bps)))?;
+    } = line_totals(
+        items
+            .iter()
+            .map(|i| (i.quantity, i.unit_price_minor, i.tax_rate_bps)),
+    )?;
     let paid_minor = invoice_paid_minor(conn, invoice_id)?;
     let due_minor = total_minor - paid_minor;
     let status = if paid_minor <= 0 {
@@ -456,7 +486,11 @@ pub fn invoice_totals(conn: &Connection, invoice_id: &str) -> CoreResult<Invoice
 /// `invoice_totals` does it (there is no cached total to sum instead of
 /// deriving) — fine at small-business scale, and correct is worth more than
 /// fast until it demonstrably isn't.
-pub fn aged_receivables(conn: &Connection, book_id: &str, as_of: &str) -> CoreResult<AgedReceivables> {
+pub fn aged_receivables(
+    conn: &Connection,
+    book_id: &str,
+    as_of: &str,
+) -> CoreResult<AgedReceivables> {
     let mut stmt = conn.prepare(
         "SELECT id, contact_id, due_date FROM invoices WHERE book_id = ?1 ORDER BY due_date",
     )?;

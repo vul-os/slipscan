@@ -275,8 +275,7 @@ impl CoreService {
     /// does not cover.
     pub fn open(path: impl AsRef<std::path::Path>) -> CoreResult<Self> {
         let db = Db::open(path)?;
-        db.conn()
-            .busy_timeout(std::time::Duration::from_secs(5))?;
+        db.conn().busy_timeout(std::time::Duration::from_secs(5))?;
         Ok(Self::new(db, Box::new(KeyringSecretStore::default())))
     }
 
@@ -2600,7 +2599,10 @@ impl CoreService {
     /// patch. Mirrors `document_transition`'s own shape (migration 0001).
     fn po_status_transition_allowed(from: PurchaseOrderStatus, to: PurchaseOrderStatus) -> bool {
         use PurchaseOrderStatus::*;
-        matches!((from, to), (Draft, Ordered) | (Draft, Cancelled) | (Ordered, Cancelled))
+        matches!(
+            (from, to),
+            (Draft, Ordered) | (Draft, Cancelled) | (Ordered, Cancelled)
+        )
     }
 
     pub fn po_set_status(&self, id: &str, to: PurchaseOrderStatus) -> CoreResult<PurchaseOrder> {
@@ -2953,9 +2955,7 @@ impl CoreService {
             return Ok(PoReceiptStatus::Unreceived);
         }
         let all_complete = rows.iter().all(|r| r.status == PoReceiptStatus::Complete);
-        let all_unreceived = rows
-            .iter()
-            .all(|r| r.status == PoReceiptStatus::Unreceived);
+        let all_unreceived = rows.iter().all(|r| r.status == PoReceiptStatus::Unreceived);
         Ok(if all_complete {
             PoReceiptStatus::Complete
         } else if all_unreceived {
@@ -3245,12 +3245,11 @@ impl CoreService {
         id: &str,
         patch: SalesOrderItemPatch,
     ) -> CoreResult<SalesOrderItem> {
-        let before = repo::sales::order_item_get(self.conn(), id)?.ok_or_else(|| {
-            CoreError::NotFound {
+        let before =
+            repo::sales::order_item_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
                 entity: "sales_order_item",
                 id: id.to_string(),
-            }
-        })?;
+            })?;
         let order = self.sales_order_get(&before.sales_order_id)?;
         if order.status != SalesOrderStatus::Draft {
             return Err(CoreError::Validation(
@@ -3310,12 +3309,11 @@ impl CoreService {
 
     /// Remove a line from a draft order. Only reachable while `draft`.
     pub fn sales_order_item_remove(&self, id: &str) -> CoreResult<()> {
-        let before = repo::sales::order_item_get(self.conn(), id)?.ok_or_else(|| {
-            CoreError::NotFound {
+        let before =
+            repo::sales::order_item_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
                 entity: "sales_order_item",
                 id: id.to_string(),
-            }
-        })?;
+            })?;
         let order = self.sales_order_get(&before.sales_order_id)?;
         if order.status != SalesOrderStatus::Draft {
             return Err(CoreError::Validation(
@@ -3543,100 +3541,121 @@ impl CoreService {
         }
 
         type Line = (Option<String>, String, i64, i64, i64);
-        let (contact_id, currency, sales_order_id, lines): (String, String, Option<String>, Vec<Line>) =
-            if let Some(order_id) = &new.sales_order_id {
-                let order = self.sales_order_get(order_id)?;
-                if order.book_id != book.id {
-                    return Err(CoreError::Validation(
-                        "invoice sales order belongs to a different book".into(),
-                    ));
-                }
-                if !matches!(order.status, SalesOrderStatus::Confirmed | SalesOrderStatus::Paid) {
-                    return Err(CoreError::Validation(
-                        "cannot issue an invoice from a sales order that is not confirmed or paid"
-                            .into(),
-                    ));
-                }
-                let items = self.sales_order_items_list(order_id)?;
-                if items.is_empty() {
-                    return Err(CoreError::Validation(
-                        "cannot issue an invoice with no line items".into(),
-                    ));
-                }
-                let lines = items
-                    .into_iter()
-                    .map(|i| {
-                        (
-                            i.variant_id,
-                            i.description,
-                            i.quantity,
-                            i.unit_price_minor,
-                            i.tax_rate_bps,
-                        )
-                    })
-                    .collect();
-                (order.contact_id.clone(), order.currency.clone(), Some(order.id.clone()), lines)
-            } else {
-                let contact_id = new.contact_id.clone().ok_or_else(|| {
-                    CoreError::Validation("a standalone invoice needs a contact_id".into())
-                })?;
-                let contact = self.contact_get(&contact_id)?;
-                if contact.book_id != book.id {
-                    return Err(CoreError::Validation(
-                        "invoice contact belongs to a different book".into(),
-                    ));
-                }
-                let currency = match &new.currency {
-                    Some(c) => normalize_currency_code(c)?,
-                    None => book.currency.clone(),
-                };
-                if new.items.is_empty() {
-                    return Err(CoreError::Validation(
-                        "a standalone invoice needs at least one line item".into(),
-                    ));
-                }
-                let mut lines = Vec::with_capacity(new.items.len());
-                for item in &new.items {
-                    let (variant_id, description, unit_price_minor) = self
-                        .resolve_sales_order_line(
-                            &book.id,
-                            item.variant_id.as_deref(),
-                            Some(&item.description),
-                            Some(item.unit_price_minor),
-                        )?;
-                    if item.quantity <= 0 {
-                        return Err(CoreError::Validation(
-                            "invoice line quantity must be positive".into(),
-                        ));
-                    }
-                    if unit_price_minor < 0 {
-                        return Err(CoreError::Validation(
-                            "invoice line unit price must not be negative".into(),
-                        ));
-                    }
-                    let tax_rate_bps = item.tax_rate_bps.unwrap_or(0);
-                    if !(0..=10_000).contains(&tax_rate_bps) {
-                        return Err(CoreError::Validation(
-                            "invoice line tax rate must be between 0 and 10000 basis points"
-                                .into(),
-                        ));
-                    }
-                    lines.push((variant_id, description, item.quantity, unit_price_minor, tax_rate_bps));
-                }
-                (contact.id, currency, None, lines)
+        let (contact_id, currency, sales_order_id, lines): (
+            String,
+            String,
+            Option<String>,
+            Vec<Line>,
+        ) = if let Some(order_id) = &new.sales_order_id {
+            let order = self.sales_order_get(order_id)?;
+            if order.book_id != book.id {
+                return Err(CoreError::Validation(
+                    "invoice sales order belongs to a different book".into(),
+                ));
+            }
+            if !matches!(
+                order.status,
+                SalesOrderStatus::Confirmed | SalesOrderStatus::Paid
+            ) {
+                return Err(CoreError::Validation(
+                    "cannot issue an invoice from a sales order that is not confirmed or paid"
+                        .into(),
+                ));
+            }
+            let items = self.sales_order_items_list(order_id)?;
+            if items.is_empty() {
+                return Err(CoreError::Validation(
+                    "cannot issue an invoice with no line items".into(),
+                ));
+            }
+            let lines = items
+                .into_iter()
+                .map(|i| {
+                    (
+                        i.variant_id,
+                        i.description,
+                        i.quantity,
+                        i.unit_price_minor,
+                        i.tax_rate_bps,
+                    )
+                })
+                .collect();
+            (
+                order.contact_id.clone(),
+                order.currency.clone(),
+                Some(order.id.clone()),
+                lines,
+            )
+        } else {
+            let contact_id = new.contact_id.clone().ok_or_else(|| {
+                CoreError::Validation("a standalone invoice needs a contact_id".into())
+            })?;
+            let contact = self.contact_get(&contact_id)?;
+            if contact.book_id != book.id {
+                return Err(CoreError::Validation(
+                    "invoice contact belongs to a different book".into(),
+                ));
+            }
+            let currency = match &new.currency {
+                Some(c) => normalize_currency_code(c)?,
+                None => book.currency.clone(),
             };
+            if new.items.is_empty() {
+                return Err(CoreError::Validation(
+                    "a standalone invoice needs at least one line item".into(),
+                ));
+            }
+            let mut lines = Vec::with_capacity(new.items.len());
+            for item in &new.items {
+                let (variant_id, description, unit_price_minor) = self.resolve_sales_order_line(
+                    &book.id,
+                    item.variant_id.as_deref(),
+                    Some(&item.description),
+                    Some(item.unit_price_minor),
+                )?;
+                if item.quantity <= 0 {
+                    return Err(CoreError::Validation(
+                        "invoice line quantity must be positive".into(),
+                    ));
+                }
+                if unit_price_minor < 0 {
+                    return Err(CoreError::Validation(
+                        "invoice line unit price must not be negative".into(),
+                    ));
+                }
+                let tax_rate_bps = item.tax_rate_bps.unwrap_or(0);
+                if !(0..=10_000).contains(&tax_rate_bps) {
+                    return Err(CoreError::Validation(
+                        "invoice line tax rate must be between 0 and 10000 basis points".into(),
+                    ));
+                }
+                lines.push((
+                    variant_id,
+                    description,
+                    item.quantity,
+                    unit_price_minor,
+                    tax_rate_bps,
+                ));
+            }
+            (contact.id, currency, None, lines)
+        };
 
         let now = now_iso();
         // Deferred is enough here (rusqlite's `unchecked_transaction` is the
-        // only variant `&self` can start — `transaction_with_behavior`
-        // needs `&mut Connection`, which a shared service does not have):
+        // only variant `&self` can start — `transaction_with_behavior` needs
+        // `&mut Connection`, which a shared service does not have):
         // `allocate_number`'s UPSERT is the very first statement this
         // transaction executes, so it acquires SQLite's write lock right
-        // there regardless of the transaction's declared mode. A second
-        // issuer racing this one blocks on that same lock — see
-        // `CoreService::open`'s busy timeout — and reads the post-increment
-        // value once this transaction commits, never the same pre-increment
-        // one.
+        // there regardless of the transaction's declared mode, and a second
+        // issuer blocks on that lock (see `CoreService::open`'s busy timeout).
+        //
+        // What the transaction is actually for here is **gaplessness**, not
+        // uniqueness: `allocate_number` is a single UPSERT ... RETURNING and
+        // hands out a distinct number to every caller on its own. Keeping it
+        // inside this transaction is what makes a number that gets allocated
+        // and then not used — because the insert below fails a constraint, or
+        // anything else rolls this back — return to the sequence instead of
+        // being burned.
         let tx = self.conn().unchecked_transaction()?;
         let number = repo::sales::allocate_number(&tx, &book.id, &series)?;
         let invoice = Invoice {
@@ -8185,7 +8204,9 @@ mod tests {
         ));
 
         // draft -> ordered -> cancelled: allowed.
-        let ordered = svc.po_set_status(&po.id, PurchaseOrderStatus::Ordered).unwrap();
+        let ordered = svc
+            .po_set_status(&po.id, PurchaseOrderStatus::Ordered)
+            .unwrap();
         assert_eq!(ordered.status, PurchaseOrderStatus::Ordered);
         // Never straight back to draft once ordered.
         assert!(matches!(
@@ -8634,26 +8655,29 @@ mod tests {
         let book = make_book(&svc);
         let contact = make_contact(&svc, &book, "Acme Wholesale");
 
-        assert!(matches!(
-            svc.invoice_issue(NewInvoice {
-                book_id: book.id.clone(),
-                contact_id: None,
-                sales_order_id: None,
-                series: None,
-                issue_date: None,
-                due_date: "2026-12-31".into(),
-                currency: Some("ZAR".into()),
-                notes: None,
-                items: vec![NewInvoiceItemInput {
-                    variant_id: None,
-                    description: "Retainer".into(),
-                    quantity: 1,
-                    unit_price_minor: 100_000,
-                    tax_rate_bps: None,
-                }],
-            }),
-            Err(CoreError::Validation(_)),
-        ), "a standalone invoice needs a contact_id");
+        assert!(
+            matches!(
+                svc.invoice_issue(NewInvoice {
+                    book_id: book.id.clone(),
+                    contact_id: None,
+                    sales_order_id: None,
+                    series: None,
+                    issue_date: None,
+                    due_date: "2026-12-31".into(),
+                    currency: Some("ZAR".into()),
+                    notes: None,
+                    items: vec![NewInvoiceItemInput {
+                        variant_id: None,
+                        description: "Retainer".into(),
+                        quantity: 1,
+                        unit_price_minor: 100_000,
+                        tax_rate_bps: None,
+                    }],
+                }),
+                Err(CoreError::Validation(_)),
+            ),
+            "a standalone invoice needs a contact_id"
+        );
 
         let invoice = svc
             .invoice_issue(NewInvoice {
@@ -12975,7 +12999,9 @@ mod tests {
 
         let mut stmt = svc
             .conn_for_test()
-            .prepare("SELECT ns, deleted FROM sync_outbox WHERE table_name = 'contacts' AND row_id = ?1")
+            .prepare(
+                "SELECT ns, deleted FROM sync_outbox WHERE table_name = 'contacts' AND row_id = ?1",
+            )
             .unwrap();
         let rows: Vec<(String, i64)> = stmt
             .query_map(rusqlite::params![contact.id], |row| {
@@ -13105,7 +13131,10 @@ mod tests {
         // Re-running is a no-op: every date is already covered.
         let account_id = account.id.clone();
         let second_run = svc.networth_backfill(&book.id).unwrap();
-        assert!(second_run.is_empty(), "a full re-run must create nothing new");
+        assert!(
+            second_run.is_empty(),
+            "a full re-run must create nothing new"
+        );
         let mut stmt = svc
             .conn_for_test()
             .prepare("SELECT COUNT(*) FROM networth_snapshots WHERE account_id = ?1")
@@ -13160,7 +13189,11 @@ mod tests {
             .networth_series(&book.id, "2026-01-01", "2026-02-28")
             .unwrap();
         assert_eq!(series.currency, "ZAR");
-        assert_eq!(series.points.len(), 3, "one point per distinct snapshot date");
+        assert_eq!(
+            series.points.len(),
+            3,
+            "one point per distinct snapshot date"
+        );
 
         let point = |date: &str| series.points.iter().find(|p| p.as_of_date == date).unwrap();
         assert_eq!(point("2026-01-10").total_minor, 150_000);
@@ -13230,7 +13263,10 @@ mod tests {
             .unwrap();
         assert_eq!(series.points.len(), 1);
         let point = &series.points[0];
-        assert_eq!(point.total_minor, 0, "the unconvertible balance is excluded, not guessed at");
+        assert_eq!(
+            point.total_minor, 0,
+            "the unconvertible balance is excluded, not guessed at"
+        );
         assert_eq!(point.unconverted, vec!["USD".to_string()]);
         assert!(series.conversions.is_empty(), "no rate was ever cached");
     }

@@ -712,9 +712,7 @@ async fn networth_capture(
     State(s): State<AppState>,
     Json(req): Json<NetworthCaptureReq>,
 ) -> ApiResult<Vec<NetWorthSnapshot>> {
-    let as_of_date = req
-        .as_of_date
-        .unwrap_or_else(slipscan_core::util::today);
+    let as_of_date = req.as_of_date.unwrap_or_else(slipscan_core::util::today);
     Ok(Json(
         s.service()?.networth_capture(&req.book_id, &as_of_date)?,
     ))
@@ -918,7 +916,10 @@ async fn sales_order_create(
     Ok(Json(s.service()?.sales_order_create(req)?))
 }
 
-async fn sales_order_get(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<SalesOrder> {
+async fn sales_order_get(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<SalesOrder> {
     Ok(Json(s.service()?.sales_order_get(&req.id)?))
 }
 
@@ -936,7 +937,10 @@ async fn sales_order_update(
     Ok(Json(s.service()?.sales_order_update(&req.id, req.patch)?))
 }
 
-async fn sales_order_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
+async fn sales_order_delete(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<OkResp> {
     s.service()?.sales_order_delete(&req.id)?;
     Ok(Json(OK))
 }
@@ -952,14 +956,18 @@ async fn sales_order_items_list(
     State(s): State<AppState>,
     Json(req): Json<SalesOrderIdReq>,
 ) -> ApiResult<Vec<SalesOrderItem>> {
-    Ok(Json(s.service()?.sales_order_items_list(&req.sales_order_id)?))
+    Ok(Json(
+        s.service()?.sales_order_items_list(&req.sales_order_id)?,
+    ))
 }
 
 async fn sales_order_item_update(
     State(s): State<AppState>,
     Json(req): Json<SalesOrderItemUpdateReq>,
 ) -> ApiResult<SalesOrderItem> {
-    Ok(Json(s.service()?.sales_order_item_update(&req.id, req.patch)?))
+    Ok(Json(
+        s.service()?.sales_order_item_update(&req.id, req.patch)?,
+    ))
 }
 
 async fn sales_order_item_remove(
@@ -1048,10 +1056,10 @@ async fn report_aged_receivables(
     State(s): State<AppState>,
     Json(req): Json<AgedReceivablesReq>,
 ) -> ApiResult<AgedReceivables> {
-    Ok(Json(
-        s.service()?
-            .report_aged_receivables(&req.book_id, req.as_of.as_deref())?,
-    ))
+    Ok(Json(s.service()?.report_aged_receivables(
+        &req.book_id,
+        req.as_of.as_deref(),
+    )?))
 }
 
 async fn transaction_create(
@@ -1993,10 +2001,7 @@ pub fn app(state: AppState) -> Router {
         .route("/po_receipts_for_item", post(po_receipts_for_item))
         .route("/po_receipts_for_po", post(po_receipts_for_po))
         .route("/po_item_received_qty", post(po_item_received_qty))
-        .route(
-            "/po_item_receiving_status",
-            post(po_item_receiving_status),
-        )
+        .route("/po_item_receiving_status", post(po_item_receiving_status))
         .route("/po_items_with_receiving", post(po_items_with_receiving))
         .route("/po_receiving_status", post(po_receiving_status))
         .route("/sales_order_create", post(sales_order_create))
@@ -4072,7 +4077,11 @@ mod tests {
         // Backfill reconstructs both transaction dates from the ledger.
         let (status, created) = call(
             &app,
-            post_req("/api/v1/networth_backfill", json!({"book_id": book_id}), None),
+            post_req(
+                "/api/v1/networth_backfill",
+                json!({"book_id": book_id}),
+                None,
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{created}");
