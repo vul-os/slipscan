@@ -46,12 +46,14 @@ Share the smarts, not the data.
   - [x] Merge algebra: `slipscan-sync` maps SlipScan's replicated state onto the
         shared DMTAP Sync engine (`substrate/SYNC.md` ③) rather than a private
         CRDT — editable rows as §4.4 LWW registers, the posted ledger as a §4.3
-        add-only set. Same compiled core Diwan and FlowStock use; as a native
-        Rust product SlipScan takes it as a plain crate dependency.
+        add-only set. The same compiled core Diwan runs; as a native Rust
+        product SlipScan takes it as a plain crate dependency. FlowStock ran it
+        too, behind a build tag, until it was retired into this repo — see
+        Phase 6.
   - [x] Per-device identity and pairing (phase 1 of the node model — spec:
         [docs/NODES.md](docs/NODES.md)). An ed25519 keypair per device whose
         **public half is the device id**, private half held in the existing
-        vault; migration `0600_devices`; peer keys pinned trust-on-first-use,
+        vault; migration `0007_devices`; peer keys pinned trust-on-first-use,
         where a key change is a refusal and never a silent re-pin, and a
         revoked peer is a tombstone that cannot let itself back in; 9-word
         key-names so two people can compare a fingerprint out loud.
@@ -65,7 +67,7 @@ Share the smarts, not the data.
         password, username or login.
   - [x] Oplog: every write to a replicated table is recorded as one
         individually signed operation (phase 2 of the node model — migration
-        `0700_oplog`, `crates/slipscan-core/src/sync/`). Capture is a **SQLite
+        `0008_oplog`, `crates/slipscan-core/src/sync/`). Capture is a **SQLite
         trigger** per replicated table rather than a call from the repo layer,
         so a cascading delete, a migration or a future importer is recorded
         too — and the trigger set is asserted equal to the mapping registry in
@@ -202,9 +204,16 @@ These were settled rather than escalated, and are recorded here so the reasoning
 
 ### Stages
 
-- [ ] **6.0 Book profiles.** The `kind`-driven disclosure rules, the derived multi-location flag and
+- [x] **6.0 Book profiles.** The `kind`-driven disclosure rules, the derived multi-location flag and
       its override, a setup flow at book creation, and Settings that can change the answer later in
-      both directions
+      both directions *(shipped: `profile.rs` resolves visible capability groups from kind +
+      location count + override, where multi-location is `override.unwrap_or(count > 1)` so the
+      common case has no toggle to drift. `book profile` / `set-kind` / `set-multi-location` and
+      the location CRUD ship on CLI, HTTP and desktop IPC together, with a first-run locations step
+      and a Settings panel. The load-bearing test is that downgrading business to personal hides
+      every group while leaving every location, contact and product row readable and unchanged.
+      Not built: the flags only reach the Settings panel and first-run step so far, because the
+      screens they would gate are 6.9)*
 - [x] **6.1 Locations.** A `locations` table per book, shaped like `members` — additive, nullable,
       a book with zero locations behaves exactly as today *(shipped: branch/warehouse/site kinds,
       CRUD through the service layer, and the first table created after the oplog existed so it
@@ -224,9 +233,14 @@ These were settled rather than escalated, and are recorded here so the reasoning
       table — a `products.category_id = categories.id` join would type-check while being silently
       wrong. Money follows the existing INTEGER-minor-units + ISO-4217 convention rather than a
       second representation)*
-- [ ] **6.3b Stock ledger.** The **append-only stock-movement ledger** — on-hand is always
-      `SUM(qty_delta)` over immutable movements, never a stored counter. This is what makes two
-      locations that traded while disconnected converge by union instead of clobbering each other
+- [x] **6.3b Stock ledger.** The **append-only stock-movement ledger** — on-hand is always
+      `SUM(qty_delta)` over immutable movements, never a stored counter *(shipped: immutability is
+      enforced by `RAISE(ABORT)` triggers rather than convention, and `repo/stock.rs` has no update
+      or delete function at all. Registered in `LEDGER_TABLES`, so two locations that both traded
+      offline converge by union instead of one overwriting the other. Transfers write two movements
+      summing to zero; on-hand is proven order-independent. Not built: no surface reaches stock,
+      `ref_kind` has no constrained vocabulary until purchasing and sales define one, and
+      `created_by` is free text until roles land)*
 - [ ] **6.4 Purchasing.** Purchase orders and goods receipts, receipts insert-only so partial
       deliveries recorded at two locations merge by union *(PARITY "Bills / accounts payable")*
 - [ ] **6.5 Sales orders → invoicing.** Draft → confirm (deducts stock) → paid, cancel reverses
