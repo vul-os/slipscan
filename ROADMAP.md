@@ -228,13 +228,19 @@ These were settled rather than escalated, and are recorded here so the reasoning
       no surface exposes contacts, and nothing references them yet — PARITY's "Contacts" row does
       not move until a document does)*
 - [x] **6.3a Catalogue.** Product categories, products, and variants carrying SKU, price, cost
-      price, reorder point and attributes *(shipped. Named `product_categories` with a
+      price, reorder point and attributes *(shipped in core, and **reachable from almost nowhere**:
+      1 of 16 catalogue operations is on a surface (`product_variant_list_for_book`, via the CLI's
+      generic `list`). No surface can create a product or a variant, which is what makes 6.4 and 6.5
+      unusable end to end — see `npm run reachable:check`. Named `product_categories` with a
       `product_category_id` FK, deliberately distinct from the existing transaction `categories`
       table — a `products.category_id = categories.id` join would type-check while being silently
       wrong. Money follows the existing INTEGER-minor-units + ISO-4217 convention rather than a
       second representation)*
 - [x] **6.3b Stock ledger.** The **append-only stock-movement ledger** — on-hand is always
-      `SUM(qty_delta)` over immutable movements, never a stored counter *(shipped: immutability is
+      `SUM(qty_delta)` over immutable movements, never a stored counter *(shipped in core, and
+      **reachable from nothing at all**: 0 of 9 stock operations are on the CLI, the HTTP API or the
+      desktop, so on-hand cannot be read and a movement cannot be recorded by anyone. Tracked by
+      `npm run reachable:check`. Otherwise: immutability is
       enforced by `RAISE(ABORT)` triggers rather than convention, and `repo/stock.rs` has no update
       or delete function at all. Registered in `LEDGER_TABLES`, so two locations that both traded
       offline converge by union instead of one overwriting the other. Transfers write two movements

@@ -149,6 +149,15 @@ jobs:
       - name: No source file is accidentally binary
         run: npm run source:check
         working-directory: .
+      # Phases 6.2/6.3a/6.3b shipped contacts, the catalogue and the stock
+      # ledger complete at every layer and then wired almost none of it to a
+      # surface — 0 of 9 stock operations are reachable — while purchasing and
+      # sales wired all ~38 of theirs onto those unusable foundations. Every
+      # layer was individually finished, so nothing caught it. A ratchet: the
+      # count may shrink, never grow.
+      - name: No new core capability is left unreachable
+        run: npm run reachable:check
+        working-directory: .
       - name: Install
         run: npm ci
       - name: Check
