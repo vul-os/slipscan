@@ -30,8 +30,8 @@
 //! ## Editable rows → §4.4 LWW register ([`Kind::LwwSet`])
 //!
 //! Books, accounts, categories, transactions, transaction splits, merchant
-//! mappings, budgets, members, the chart of accounts, its entity map and the
-//! VAT-rate table — the full list is [`LWW_TABLES`].
+//! mappings, budgets, members, locations, the chart of accounts, its entity
+//! map and the VAT-rate table — the full list is [`LWW_TABLES`].
 //!
 //! ```text
 //! target  "<table>/<row-id>"      field "row"
@@ -265,6 +265,7 @@ pub const LWW_TABLES: &[&str] = &[
     "merchant_mappings",
     "budgets",
     "members",
+    "locations",
     "chart_of_accounts",
     "coa_map",
     "vat_rates",

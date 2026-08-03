@@ -141,6 +141,17 @@ str_enum!(
     }
 );
 
+str_enum!(
+    /// The sense in which FlowStock used the word "location": a storefront or
+    /// office, bulk storage, or anything else. Data a person sets, not a
+    /// behavioural switch — nothing in core branches on it yet.
+    LocationKind {
+        Branch => "branch",
+        Warehouse => "warehouse",
+        Site => "site",
+    }
+);
+
 // ---------------------------------------------------------------------------
 // Book
 // ---------------------------------------------------------------------------
@@ -952,6 +963,59 @@ pub struct MemberSettleRow {
 }
 
 // ---------------------------------------------------------------------------
+// Locations (Phase 6.1 — the FlowStock fold, foundation)
+// ---------------------------------------------------------------------------
+
+/// A physical place a book's activity happens at — a branch, a warehouse, a
+/// site. Additive and optional, the same way [`Member`] is: a book with zero
+/// locations behaves exactly as it did before this axis existed. Nothing
+/// references a location yet (see migration `0800_locations`) — later
+/// inventory (Phase 6.2+) will.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Location {
+    pub id: String,
+    pub book_id: String,
+    pub name: String,
+    pub kind: LocationKind,
+    /// Optional short code for reports and labels (e.g. "JHB-01"). Unique
+    /// within the book when set; `None` is never compared against another
+    /// `None`.
+    pub code: Option<String>,
+    pub address: Option<String>,
+    pub is_archived: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewLocation {
+    pub book_id: String,
+    pub name: String,
+    /// Defaults to [`LocationKind::Branch`] when omitted.
+    #[serde(default)]
+    pub kind: Option<LocationKind>,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub address: Option<String>,
+}
+
+/// Selective update; `None` fields are left untouched. `code: Some(None)` and
+/// `address: Some(None)` explicitly clear those fields (as opposed to `None`,
+/// which leaves them as-is) — the same double-option convention
+/// [`MemberPatch::default_account_id`] uses.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LocationPatch {
+    pub name: Option<String>,
+    pub kind: Option<LocationKind>,
+    #[serde(default)]
+    pub code: Option<Option<String>>,
+    #[serde(default)]
+    pub address: Option<Option<String>>,
+    pub is_archived: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------
 
@@ -980,6 +1044,12 @@ mod tests {
             "bank_statement".parse::<DocumentKind>().unwrap(),
             DocumentKind::BankStatement
         );
+        assert_eq!(LocationKind::Warehouse.as_str(), "warehouse");
+        assert_eq!(
+            "site".parse::<LocationKind>().unwrap(),
+            LocationKind::Site
+        );
+        assert!("bogus".parse::<LocationKind>().is_err());
     }
 
     #[test]
