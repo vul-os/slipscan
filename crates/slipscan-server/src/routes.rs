@@ -4976,6 +4976,71 @@ mod tests {
         assert!(!rendered.contains(&secret), "secret leaked to deliveries");
     }
 
+    /// A route registered against the wrong handler is silent: it compiles,
+    /// answers, and returns someone else's data. This file registers 184
+    /// routes, 44 of them added in one session by copy-paste, which is exactly
+    /// how that mistake gets made.
+    ///
+    /// The convention here is that a route's path IS its handler's name, so
+    /// the check is just that — with the four deliberate exceptions named,
+    /// because an exception that has to be listed is one someone has to
+    /// justify.
+    #[test]
+    fn every_route_is_wired_to_its_own_handler() {
+        // Aliases and deliberate refusals, each documented where it is
+        // registered: `report_vat` is a deprecated second spelling of
+        // `report_tax`, and the three pairing routes exist only to refuse and
+        // name the local command, because pairing needs a human at the device.
+        const INTENDED: &[(&str, &str)] = &[
+            ("/report_vat", "report_tax"),
+            ("/device_pair_invite", "device_pair_refused"),
+            ("/device_pair_accept", "device_pair_refused"),
+            ("/device_pair_confirm", "device_pair_refused"),
+        ];
+
+        let src = include_str!("routes.rs");
+        let mut checked = 0;
+        let mut rest = src;
+        while let Some(i) = rest.find(".route(") {
+            rest = &rest[i + ".route(".len()..];
+            let Some(q) = rest.find('"') else { break };
+            let after = &rest[q + 1..];
+            let Some(close) = after.find('"') else { break };
+            let path = &after[..close];
+            if !path.starts_with('/') {
+                continue;
+            }
+            // `, post(handler))` / `, get(handler))`, possibly wrapped.
+            let tail = &after[close + 1..];
+            let Some(open) = tail.find('(') else { continue };
+            let Some(end) = tail[open + 1..].find(')') else {
+                continue;
+            };
+            let handler = tail[open + 1..open + 1 + end].trim();
+            if !handler
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            checked += 1;
+            if INTENDED.contains(&(path, handler)) {
+                continue;
+            }
+            assert_eq!(
+                path.trim_start_matches('/'),
+                handler,
+                "route {path} is served by `{handler}` — either a copy-paste slip, or a \
+                 deliberate alias that belongs in INTENDED with a reason"
+            );
+        }
+        assert!(
+            checked >= 150,
+            "only parsed {checked} route/handler pairs; fix the parser rather than trusting \
+             a sweep that checked almost nothing"
+        );
+    }
+
     /// **Every** route under `/api/v1` refuses an unauthenticated caller —
     /// enumerated from this file's own source rather than hand-listed.
     ///
