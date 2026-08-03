@@ -126,6 +126,123 @@ export interface LocationUpdateRequest {
 }
 
 // ---------------------------------------------------------------------------
+// purchasing — purchase orders, their line items, and goods receipts
+// (Phase 6.4, the flowstock fold). No screen calls these yet (ROADMAP.md
+// 6.9, "Desktop screens") — the IPC layer is wired ahead of the UI, the same
+// order `book_profile`/the location CRUD landed in before their screens
+// existed. `po_receive` writes a stock movement in the same transaction as
+// the receipt, so on-hand and purchasing can never disagree about how much
+// arrived; receiving progress (none/partial/complete) is always derived,
+// never stored.
+// ---------------------------------------------------------------------------
+
+export type PurchaseOrderStatus = "draft" | "ordered" | "cancelled";
+export type PoReceiptStatus = "none" | "partial" | "complete";
+
+export interface PurchaseOrder {
+  id: string;
+  book_id: string;
+  supplier_id: string;
+  location_id: string;
+  po_number: string;
+  order_date: string;
+  expected_delivery: string | null;
+  status: PurchaseOrderStatus;
+  subtotal_minor: number;
+  tax_minor: number;
+  total_minor: number;
+  currency: string;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewPurchaseOrder {
+  book_id: string;
+  supplier_id: string;
+  location_id: string;
+  po_number: string;
+  order_date: string;
+  expected_delivery?: string;
+  currency: string;
+  /** Defaults to 0 when omitted. */
+  tax_minor?: number;
+  notes?: string;
+}
+
+/** Mirrors src-tauri's `PoUpdateRequest`. Deliberately carries no `status` —
+ * status moves only through `poSetStatus`'s guarded transitions. */
+export interface PoUpdateRequest {
+  id: string;
+  supplier_id?: string;
+  location_id?: string;
+  po_number?: string;
+  order_date?: string;
+  expected_delivery?: string;
+  clear_expected_delivery?: boolean;
+  tax_minor?: number;
+  notes?: string;
+  clear_notes?: boolean;
+}
+
+export interface PurchaseOrderItem {
+  id: string;
+  purchase_order_id: string;
+  book_id: string;
+  variant_id: string;
+  qty_ordered: number;
+  unit_price_minor: number;
+  total_minor: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewPurchaseOrderItem {
+  purchase_order_id: string;
+  variant_id: string;
+  qty_ordered: number;
+  /** Defaults to 0 when omitted. */
+  unit_price_minor?: number;
+}
+
+export interface PoItemUpdateRequest {
+  id: string;
+  qty_ordered?: number;
+  unit_price_minor?: number;
+}
+
+/** One immutable fact: this many units of a line arrived at this location.
+ * Insert-only — there is no update/delete request shape, the same as
+ * `StockMovement`. */
+export interface PoReceipt {
+  id: string;
+  book_id: string;
+  purchase_order_item_id: string;
+  location_id: string;
+  /** Signed: negative corrects an earlier over-receipt. Never zero. */
+  qty: number;
+  note: string | null;
+  received_by: string | null;
+  created_at: string;
+}
+
+export interface NewPoReceipt {
+  purchase_order_item_id: string;
+  location_id: string;
+  qty: number;
+  note?: string;
+  received_by?: string;
+}
+
+/** A line paired with its derived receiving progress — what a purchasing
+ * screen would actually render. */
+export interface PurchaseOrderItemReceiving {
+  item: PurchaseOrderItem;
+  received_qty: number;
+  status: PoReceiptStatus;
+}
+
+// ---------------------------------------------------------------------------
 // data folder (movable) — contract: "Data location & backup". One folder
 // holds everything durable; backup is the user's own cloud syncing it.
 // ---------------------------------------------------------------------------

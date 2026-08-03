@@ -178,6 +178,34 @@ str_enum!(
     }
 );
 
+str_enum!(
+    /// A purchase order's hand-maintained workflow state (migration
+    /// `0013_purchasing`). Not the none/partial/complete receiving progress
+    /// — see [`PoReceiptStatus`] — this answers "has a human sent it to the
+    /// supplier, or cancelled it", which nothing in `po_receipts` can derive.
+    /// `CoreService::po_set_status` is the only writer.
+    PurchaseOrderStatus {
+        Draft => "draft",
+        Ordered => "ordered",
+        Cancelled => "cancelled",
+    }
+);
+
+str_enum!(
+    /// A purchase-order line's (or a whole PO's) receiving progress, always
+    /// derived from `SUM(qty)` over `po_receipts` compared with
+    /// `qty_ordered` — never stored (ROADMAP.md Phase 6 decision #4,
+    /// extended from stock to purchasing by migration `0013_purchasing`).
+    /// `Unreceived` serializes as `"none"` to match the none/partial/complete
+    /// wording ROADMAP.md uses; the Rust identifier avoids shadowing
+    /// `Option::None` at every call site.
+    PoReceiptStatus {
+        Unreceived => "none",
+        Partial => "partial",
+        Complete => "complete",
+    }
+);
+
 // ---------------------------------------------------------------------------
 // Book
 // ---------------------------------------------------------------------------
@@ -1316,6 +1344,155 @@ pub struct TransferResult {
 pub struct LowStockVariant {
     pub variant: ProductVariant,
     pub on_hand: i64,
+}
+
+// ---------------------------------------------------------------------------
+// Purchasing (migration 0013, ROADMAP.md Phase 6.4 — purchase orders and
+// goods receipts, re-derived from the retired FlowStock product).
+// ---------------------------------------------------------------------------
+
+/// A purchase order header: who it is going to, where it is expected, and
+/// the running money totals. Editable — last-writer-wins, the same as
+/// [`Contact`] or [`Location`]. `subtotal_minor`/`total_minor` are kept in
+/// step by the service layer whenever a line changes (see
+/// `CoreService::po_item_add`); there is nowhere else they could come from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurchaseOrder {
+    pub id: String,
+    pub book_id: String,
+    /// A `contacts` row — see migration `0013_purchasing`'s header for why
+    /// this is `RESTRICT` rather than `SET NULL`.
+    pub supplier_id: String,
+    /// Where this order is expected. Not necessarily where every receipt
+    /// against it actually lands — see [`PoReceipt::location_id`].
+    pub location_id: String,
+    pub po_number: String,
+    pub order_date: String,
+    pub expected_delivery: Option<String>,
+    pub status: PurchaseOrderStatus,
+    pub subtotal_minor: i64,
+    pub tax_minor: i64,
+    pub total_minor: i64,
+    pub currency: String,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// What it takes to open a PO. Starts at `subtotal_minor = total_minor = 0`
+/// with zero lines — `po_item_add` is what grows both.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewPurchaseOrder {
+    pub book_id: String,
+    pub supplier_id: String,
+    pub location_id: String,
+    pub po_number: String,
+    pub order_date: String,
+    #[serde(default)]
+    pub expected_delivery: Option<String>,
+    pub currency: String,
+    #[serde(default)]
+    pub tax_minor: Option<i64>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// Selective update; `None` fields are left untouched. Deliberately carries
+/// no `status` field — status moves only through `CoreService::
+/// po_set_status`'s guarded transitions, never through a general patch.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PurchaseOrderPatch {
+    pub supplier_id: Option<String>,
+    pub location_id: Option<String>,
+    pub po_number: Option<String>,
+    pub order_date: Option<String>,
+    #[serde(default)]
+    pub expected_delivery: Option<Option<String>>,
+    pub tax_minor: Option<i64>,
+    #[serde(default)]
+    pub notes: Option<Option<String>>,
+}
+
+/// One line on a purchase order: this many of this variant, at this unit
+/// price. `total_minor = qty_ordered * unit_price_minor`, kept in step by the
+/// service layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurchaseOrderItem {
+    pub id: String,
+    pub purchase_order_id: String,
+    pub book_id: String,
+    pub variant_id: String,
+    pub qty_ordered: i64,
+    pub unit_price_minor: i64,
+    pub total_minor: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewPurchaseOrderItem {
+    pub purchase_order_id: String,
+    pub variant_id: String,
+    pub qty_ordered: i64,
+    #[serde(default)]
+    pub unit_price_minor: Option<i64>,
+}
+
+/// Selective update; `None` fields are left untouched.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PurchaseOrderItemPatch {
+    pub qty_ordered: Option<i64>,
+    pub unit_price_minor: Option<i64>,
+}
+
+/// One immutable fact: this many units of a PO line arrived at this
+/// location. On-hand-style figures are never read off this struct directly —
+/// a line's received quantity is always `SUM(qty)` over a set of these,
+/// computed in `repo::purchasing` at query time. There is no
+/// `PoReceiptPatch` and no update/delete function anywhere behind this type:
+/// see migration `0013_purchasing`'s header for why a correction is always a
+/// second, compensating row rather than an edit to this one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoReceipt {
+    pub id: String,
+    pub book_id: String,
+    pub purchase_order_item_id: String,
+    /// Where this particular receipt happened — independent of the parent
+    /// PO's own `location_id`, so two sites can both receive against one
+    /// line and converge by union rather than needing to agree first.
+    pub location_id: String,
+    /// Signed, like [`StockMovement::qty_delta`]. Positive = arrived,
+    /// negative = a correction to an earlier over-receipt. Never zero.
+    pub qty: i64,
+    pub note: Option<String>,
+    /// Free text, no FK — SlipScan has no user/staff identity yet (see
+    /// [`StockMovement::created_by`]).
+    pub received_by: Option<String>,
+    pub created_at: String,
+}
+
+/// What it takes to record one receipt. `book_id` is deliberately absent —
+/// derived from the line item, the same way [`NewStockMovement`] derives its
+/// book from the variant, so it can never disagree with the item's own book.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewPoReceipt {
+    pub purchase_order_item_id: String,
+    pub location_id: String,
+    pub qty: i64,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub received_by: Option<String>,
+}
+
+/// A PO line together with its derived receiving progress — the pairing a
+/// purchasing screen actually wants to render, so it does not have to call
+/// back for the sum itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PurchaseOrderItemReceiving {
+    pub item: PurchaseOrderItem,
+    pub received_qty: i64,
+    pub status: PoReceiptStatus,
 }
 
 // ---------------------------------------------------------------------------

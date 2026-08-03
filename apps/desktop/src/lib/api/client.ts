@@ -45,6 +45,9 @@ import type {
   NewBook,
   NewLocation,
   NewMember,
+  NewPoReceipt,
+  NewPurchaseOrder,
+  NewPurchaseOrderItem,
   InstalledPackInfo,
   NewPayEndpoint,
   NewPayWatch,
@@ -62,6 +65,13 @@ import type {
   PayEndpointWithSecret,
   PayMatch,
   PayWatch,
+  PoItemUpdateRequest,
+  PoReceipt,
+  PoReceiptStatus,
+  PoUpdateRequest,
+  PurchaseOrder,
+  PurchaseOrderItem,
+  PurchaseOrderItemReceiving,
   ReconConfirmRequest,
   ReconSuggestion,
   RegionInfo,
@@ -157,6 +167,92 @@ export const api = {
 
   locationDelete: (q: { location_id: string }): Promise<null> =>
     call("location_delete", { query: q }, () => mockApi.location_delete(q)),
+
+  // -- purchasing: purchase orders, their line items, and goods receipts
+  // (Phase 6.4, the flowstock fold). No screen calls these yet (ROADMAP.md
+  // 6.9) — wired ahead of the UI the same way `bookProfile`/the location
+  // CRUD above were. `poReceive` writes a stock movement in the same
+  // transaction as the receipt, so on-hand and purchasing can never
+  // disagree about how much arrived. --
+
+  poCreate: (q: NewPurchaseOrder): Promise<PurchaseOrder> =>
+    call("po_create", { query: q }, () => mockApi.po_create(q)),
+
+  poGet: (q: { po_id: string }): Promise<PurchaseOrder> =>
+    call("po_get", { query: q }, () => mockApi.po_get(q)),
+
+  poList: (q: { book_id: string }): Promise<PurchaseOrder[]> =>
+    call("po_list", { query: q }, () => mockApi.po_list(q)),
+
+  poUpdate: (q: PoUpdateRequest): Promise<PurchaseOrder> =>
+    call("po_update", { query: q }, () => mockApi.po_update(q)),
+
+  /** `draft -> ordered -> cancelled`, never reversible. */
+  poSetStatus: (q: {
+    po_id: string;
+    status: PurchaseOrder["status"];
+  }): Promise<PurchaseOrder> =>
+    call("po_set_status", { query: q }, () => mockApi.po_set_status(q)),
+
+  poDelete: (q: { po_id: string }): Promise<null> =>
+    call("po_delete", { query: q }, () => mockApi.po_delete(q)),
+
+  poItemAdd: (q: NewPurchaseOrderItem): Promise<PurchaseOrderItem> =>
+    call("po_item_add", { query: q }, () => mockApi.po_item_add(q)),
+
+  poItemGet: (q: { item_id: string }): Promise<PurchaseOrderItem> =>
+    call("po_item_get", { query: q }, () => mockApi.po_item_get(q)),
+
+  poItemList: (q: { purchase_order_id: string }): Promise<PurchaseOrderItem[]> =>
+    call("po_item_list", { query: q }, () => mockApi.po_item_list(q)),
+
+  poItemUpdate: (q: PoItemUpdateRequest): Promise<PurchaseOrderItem> =>
+    call("po_item_update", { query: q }, () => mockApi.po_item_update(q)),
+
+  poItemDelete: (q: { item_id: string }): Promise<null> =>
+    call("po_item_delete", { query: q }, () => mockApi.po_item_delete(q)),
+
+  /** Record one goods receipt against a line. Writes a stock movement in
+   * the same transaction — the keystone this phase exists to prove. */
+  poReceive: (q: NewPoReceipt): Promise<PoReceipt> =>
+    call("po_receive", { query: q }, () => mockApi.po_receive(q)),
+
+  poReceiptsForItem: (q: { item_id: string }): Promise<PoReceipt[]> =>
+    call("po_receipts_for_item", { query: q }, () =>
+      mockApi.po_receipts_for_item(q),
+    ),
+
+  poReceiptsForPo: (q: { purchase_order_id: string }): Promise<PoReceipt[]> =>
+    call("po_receipts_for_po", { query: q }, () =>
+      mockApi.po_receipts_for_po(q),
+    ),
+
+  /** `SUM(qty)` over a line's own receipts — never a stored counter. */
+  poItemReceivedQty: (q: { item_id: string }): Promise<number> =>
+    call("po_item_received_qty", { query: q }, () =>
+      mockApi.po_item_received_qty(q),
+    ),
+
+  poItemReceivingStatus: (q: { item_id: string }): Promise<PoReceiptStatus> =>
+    call("po_item_receiving_status", { query: q }, () =>
+      mockApi.po_item_receiving_status(q),
+    ),
+
+  /** A PO's lines paired with each one's derived received quantity and
+   * status — what a purchasing screen would actually render. */
+  poItemsWithReceiving: (q: {
+    purchase_order_id: string;
+  }): Promise<PurchaseOrderItemReceiving[]> =>
+    call("po_items_with_receiving", { query: q }, () =>
+      mockApi.po_items_with_receiving(q),
+    ),
+
+  poReceivingStatus: (q: {
+    purchase_order_id: string;
+  }): Promise<PoReceiptStatus> =>
+    call("po_receiving_status", { query: q }, () =>
+      mockApi.po_receiving_status(q),
+    ),
 
   // -- data folder: one movable folder holds everything durable. Backup is
   // the user's own cloud syncing that folder; SlipScan ships no backup

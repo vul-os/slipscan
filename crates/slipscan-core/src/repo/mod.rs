@@ -16,6 +16,7 @@ pub mod ledger;
 pub mod location;
 pub mod member;
 pub mod pay;
+pub mod purchasing;
 pub mod recon;
 pub mod report;
 pub mod settings;

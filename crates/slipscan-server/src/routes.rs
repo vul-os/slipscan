@@ -250,6 +250,36 @@ struct LocationUpdateReq {
     patch: LocationPatch,
 }
 
+// -- Purchasing (Phase 6.4) request shapes -----------------------------------
+
+#[derive(Debug, Deserialize)]
+struct PoUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: PurchaseOrderPatch,
+}
+
+#[derive(Debug, Deserialize)]
+struct PoSetStatusReq {
+    id: String,
+    status: PurchaseOrderStatus,
+}
+
+#[derive(Debug, Deserialize)]
+struct PoItemUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: PurchaseOrderItemPatch,
+}
+
+/// Shared by every route scoped to a whole purchase order rather than one of
+/// its lines (`po_item_list`, `po_receipts_for_po`, `po_items_with_receiving`,
+/// `po_receiving_status`).
+#[derive(Debug, Deserialize)]
+struct PurchaseOrderIdReq {
+    purchase_order_id: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct TransactionListReq {
     book_id: String,
@@ -653,6 +683,139 @@ async fn location_update(
 async fn location_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
     s.service()?.location_delete(&req.id)?;
     Ok(Json(OK))
+}
+
+// -- Purchasing: purchase orders, their lines, and goods receipts (Phase 6.4
+// — the flowstock fold). `po_receive` is the keystone: it writes a stock
+// movement in the same transaction as the receipt (see `CoreService::
+// po_receive`'s doc comment), so on-hand and purchasing can never disagree
+// about how much arrived.
+
+async fn po_create(
+    State(s): State<AppState>,
+    Json(req): Json<NewPurchaseOrder>,
+) -> ApiResult<PurchaseOrder> {
+    Ok(Json(s.service()?.po_create(req)?))
+}
+
+async fn po_get(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<PurchaseOrder> {
+    Ok(Json(s.service()?.po_get(&req.id)?))
+}
+
+async fn po_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<PurchaseOrder>> {
+    Ok(Json(s.service()?.po_list(&req.book_id)?))
+}
+
+async fn po_update(
+    State(s): State<AppState>,
+    Json(req): Json<PoUpdateReq>,
+) -> ApiResult<PurchaseOrder> {
+    Ok(Json(s.service()?.po_update(&req.id, req.patch)?))
+}
+
+/// `draft -> ordered -> cancelled`, in either terminal direction from
+/// `draft`, never reversible — see `CoreService::po_set_status`.
+async fn po_set_status(
+    State(s): State<AppState>,
+    Json(req): Json<PoSetStatusReq>,
+) -> ApiResult<PurchaseOrder> {
+    Ok(Json(s.service()?.po_set_status(&req.id, req.status)?))
+}
+
+async fn po_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
+    s.service()?.po_delete(&req.id)?;
+    Ok(Json(OK))
+}
+
+async fn po_item_add(
+    State(s): State<AppState>,
+    Json(req): Json<NewPurchaseOrderItem>,
+) -> ApiResult<PurchaseOrderItem> {
+    Ok(Json(s.service()?.po_item_add(req)?))
+}
+
+async fn po_item_get(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<PurchaseOrderItem> {
+    Ok(Json(s.service()?.po_item_get(&req.id)?))
+}
+
+async fn po_item_list(
+    State(s): State<AppState>,
+    Json(req): Json<PurchaseOrderIdReq>,
+) -> ApiResult<Vec<PurchaseOrderItem>> {
+    Ok(Json(s.service()?.po_item_list(&req.purchase_order_id)?))
+}
+
+async fn po_item_update(
+    State(s): State<AppState>,
+    Json(req): Json<PoItemUpdateReq>,
+) -> ApiResult<PurchaseOrderItem> {
+    Ok(Json(s.service()?.po_item_update(&req.id, req.patch)?))
+}
+
+async fn po_item_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
+    s.service()?.po_item_delete(&req.id)?;
+    Ok(Json(OK))
+}
+
+/// Record one goods receipt against a line. Writes a stock movement in the
+/// same transaction — see the module note above.
+async fn po_receive(
+    State(s): State<AppState>,
+    Json(req): Json<NewPoReceipt>,
+) -> ApiResult<PoReceipt> {
+    Ok(Json(s.service()?.po_receive(req)?))
+}
+
+async fn po_receipts_for_item(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<Vec<PoReceipt>> {
+    Ok(Json(s.service()?.po_receipts_for_item(&req.id)?))
+}
+
+async fn po_receipts_for_po(
+    State(s): State<AppState>,
+    Json(req): Json<PurchaseOrderIdReq>,
+) -> ApiResult<Vec<PoReceipt>> {
+    Ok(Json(
+        s.service()?.po_receipts_for_po(&req.purchase_order_id)?,
+    ))
+}
+
+async fn po_item_received_qty(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<i64> {
+    Ok(Json(s.service()?.po_item_received_qty(&req.id)?))
+}
+
+async fn po_item_receiving_status(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<PoReceiptStatus> {
+    Ok(Json(s.service()?.po_item_receiving_status(&req.id)?))
+}
+
+async fn po_items_with_receiving(
+    State(s): State<AppState>,
+    Json(req): Json<PurchaseOrderIdReq>,
+) -> ApiResult<Vec<PurchaseOrderItemReceiving>> {
+    Ok(Json(
+        s.service()?
+            .po_items_with_receiving(&req.purchase_order_id)?,
+    ))
+}
+
+async fn po_receiving_status(
+    State(s): State<AppState>,
+    Json(req): Json<PurchaseOrderIdReq>,
+) -> ApiResult<PoReceiptStatus> {
+    Ok(Json(
+        s.service()?.po_receiving_status(&req.purchase_order_id)?,
+    ))
 }
 
 async fn transaction_create(
@@ -1576,6 +1739,27 @@ pub fn app(state: AppState) -> Router {
         .route("/location_list", post(location_list))
         .route("/location_update", post(location_update))
         .route("/location_delete", post(location_delete))
+        .route("/po_create", post(po_create))
+        .route("/po_get", post(po_get))
+        .route("/po_list", post(po_list))
+        .route("/po_update", post(po_update))
+        .route("/po_set_status", post(po_set_status))
+        .route("/po_delete", post(po_delete))
+        .route("/po_item_add", post(po_item_add))
+        .route("/po_item_get", post(po_item_get))
+        .route("/po_item_list", post(po_item_list))
+        .route("/po_item_update", post(po_item_update))
+        .route("/po_item_delete", post(po_item_delete))
+        .route("/po_receive", post(po_receive))
+        .route("/po_receipts_for_item", post(po_receipts_for_item))
+        .route("/po_receipts_for_po", post(po_receipts_for_po))
+        .route("/po_item_received_qty", post(po_item_received_qty))
+        .route(
+            "/po_item_receiving_status",
+            post(po_item_receiving_status),
+        )
+        .route("/po_items_with_receiving", post(po_items_with_receiving))
+        .route("/po_receiving_status", post(po_receiving_status))
         .route("/transaction_create", post(transaction_create))
         .route("/transaction_get", post(transaction_get))
         .route("/transaction_list", post(transaction_list))
@@ -1988,6 +2172,176 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{missing}");
+    }
+
+    /// Purchase orders, lines, and receipts over HTTP (Phase 6.4), ending in
+    /// the keystone check: a receipt moves `stock_on_hand` by exactly the
+    /// received quantity. Contacts and the catalogue have no HTTP route of
+    /// their own yet (ROADMAP.md 6.2/6.3a — "not built: no surface exposes
+    /// contacts/catalogue"), a pre-existing gap this phase does not close;
+    /// the supplier, location and variant this test needs are seeded
+    /// straight through `CoreService` on the same connection the app's
+    /// `AppState` wraps, and only the purchasing operations themselves run
+    /// over HTTP.
+    #[tokio::test]
+    async fn purchase_order_lifecycle_and_receive_over_http() {
+        let service = svc();
+        let book = service
+            .book_create(slipscan_core::domain::NewBook {
+                name: "Biz".into(),
+                kind: slipscan_core::domain::BookKind::Business,
+                currency: None,
+                country: Some("ZA".into()),
+                region: None,
+            })
+            .unwrap();
+        let supplier = service
+            .contact_add(slipscan_core::domain::NewContact {
+                book_id: book.id.clone(),
+                role: slipscan_core::domain::ContactRole::Supplier,
+                name: "Acme Wholesale".into(),
+                company_name: None,
+                email: None,
+                phone: None,
+                billing_address: None,
+                shipping_address: None,
+                tax_number: None,
+                payment_terms_days: None,
+                credit_limit_minor: None,
+                notes: None,
+            })
+            .unwrap();
+        let location = service
+            .location_create(NewLocation {
+                book_id: book.id.clone(),
+                name: "Warehouse".into(),
+                kind: None,
+                code: None,
+                address: None,
+            })
+            .unwrap();
+        let product = service
+            .product_create(slipscan_core::domain::NewProduct {
+                book_id: book.id.clone(),
+                product_category_id: None,
+                name: "Cola".into(),
+                description: None,
+            })
+            .unwrap();
+        let variant = service
+            .product_variant_add(slipscan_core::domain::NewProductVariant {
+                product_id: product.id,
+                sku: "COLA-330".into(),
+                name: "330ml can".into(),
+                price_minor: Some(1500),
+                cost_price_minor: Some(900),
+                currency: "ZAR".into(),
+                reorder_point: Some(5),
+                attributes: None,
+            })
+            .unwrap();
+
+        // Kept alongside the router (AppState is Clone, sharing the same
+        // Arc<Mutex<CoreService>>) so the test can read `stock_on_hand`
+        // straight off the same connection the router serves — stock has no
+        // HTTP route of its own yet (Phase 6.3b), and this is the keystone
+        // check purchasing exists to prove.
+        let state = AppState::new(service, None);
+        let app = app(state.clone());
+
+        let (status, po) = call(
+            &app,
+            post_req(
+                "/api/v1/po_create",
+                json!({
+                    "book_id": book.id, "supplier_id": supplier.id, "location_id": location.id,
+                    "po_number": "PO-1", "order_date": "2026-07-01", "currency": "ZAR",
+                }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{po}");
+        let po_id = po["id"].as_str().unwrap().to_string();
+        assert_eq!(po["status"], "draft");
+
+        let (status, item) = call(
+            &app,
+            post_req(
+                "/api/v1/po_item_add",
+                json!({
+                    "purchase_order_id": po_id, "variant_id": variant.id,
+                    "qty_ordered": 20, "unit_price_minor": 500,
+                }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{item}");
+        let item_id = item["id"].as_str().unwrap().to_string();
+        assert_eq!(item["total_minor"], 10_000);
+
+        let (_, reloaded_po) =
+            call(&app, post_req("/api/v1/po_get", json!({"id": po_id}), None)).await;
+        assert_eq!(reloaded_po["subtotal_minor"], 10_000);
+
+        let (status, ordered) = call(
+            &app,
+            post_req(
+                "/api/v1/po_set_status",
+                json!({"id": po_id, "status": "ordered"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{ordered}");
+        assert_eq!(ordered["status"], "ordered");
+
+        // The keystone: receiving over HTTP writes a stock movement, so
+        // on-hand moves by exactly the received quantity.
+        let (status, receipt) = call(
+            &app,
+            post_req(
+                "/api/v1/po_receive",
+                json!({
+                    "purchase_order_item_id": item_id, "location_id": location.id, "qty": 12,
+                }),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{receipt}");
+
+        let on_hand = state
+            .service()
+            .unwrap()
+            .stock_on_hand(&variant.id, &location.id)
+            .unwrap();
+        assert_eq!(on_hand, 12);
+
+        let (status, status_row) = call(
+            &app,
+            post_req(
+                "/api/v1/po_item_receiving_status",
+                json!({"id": item_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(status_row, "partial");
+
+        let (status, po_status_row) = call(
+            &app,
+            post_req(
+                "/api/v1/po_receiving_status",
+                json!({"purchase_order_id": po_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(po_status_row, "partial");
     }
 
     /// The pack **source** surface over HTTP: add a source, read it, install

@@ -19,9 +19,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 use slipscan_core::datadir::{self, DataDirResolver, MoveStep};
 use slipscan_core::device::pairing::{KeynameCheck, DEFAULT_INVITE_TTL_SECONDS};
 use slipscan_core::domain::{
-    Account, Book, BookKind, DocumentSource, LocationKind, LocationPatch, Member, MemberPatch,
-    NewBook, NewLocation, NewMember, NewPayEndpoint, NewPayWatch, PayDeliveryState,
-    PayEndpointWithSecret, SplitShare, TransactionFilter, TransactionSource,
+    Account, Book, BookKind, Contact, DocumentSource, Location, LocationKind, LocationPatch,
+    Member, MemberPatch, NewBook, NewLocation, NewMember, NewPayEndpoint, NewPayWatch,
+    NewPoReceipt, NewPurchaseOrder, NewPurchaseOrderItem, PayDeliveryState, PayEndpointWithSecret,
+    ProductVariant, PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus, SplitShare,
+    TransactionFilter, TransactionSource,
 };
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
@@ -129,6 +131,23 @@ impl From<CliLocationKind> for LocationKind {
             CliLocationKind::Branch => LocationKind::Branch,
             CliLocationKind::Warehouse => LocationKind::Warehouse,
             CliLocationKind::Site => LocationKind::Site,
+        }
+    }
+}
+
+/// `po set-status` target — `draft` is never a target: the guarded state
+/// machine (`CoreService::po_set_status`) never allows moving back to it.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliPoStatus {
+    Ordered,
+    Cancelled,
+}
+
+impl From<CliPoStatus> for PurchaseOrderStatus {
+    fn from(status: CliPoStatus) -> Self {
+        match status {
+            CliPoStatus::Ordered => PurchaseOrderStatus::Ordered,
+            CliPoStatus::Cancelled => PurchaseOrderStatus::Cancelled,
         }
     }
 }
@@ -331,6 +350,14 @@ enum Command {
     Location {
         #[command(subcommand)]
         action: LocationAction,
+    },
+    /// Purchase orders and goods receipts (Phase 6.4 — the flowstock fold).
+    /// A goods receipt writes a stock movement in the same transaction, so
+    /// `slipscan list` on-hand and a PO's receiving progress can never
+    /// disagree about how much arrived.
+    Po {
+        #[command(subcommand)]
+        action: PoAction,
     },
     /// Household members: local data describing whose money it is, never a
     /// login (see ARCHITECTURE.md "Household members & per-person
@@ -539,6 +566,138 @@ enum LocationAction {
     Remove {
         /// Location id.
         id: String,
+    },
+}
+
+/// Purchase orders, their line items and goods receipts (Phase 6.4).
+/// Suppliers, locations and variants are all accepted as an id OR an exact
+/// name/SKU, the same convenience `--account`/`--book` already give.
+#[derive(Debug, Subcommand)]
+enum PoAction {
+    /// Open a purchase order.
+    Add {
+        /// Supplier: a contact id or exact name (role supplier or both).
+        #[arg(long)]
+        supplier: String,
+        /// Expected/receiving location: a location id or exact name.
+        #[arg(long)]
+        location: String,
+        /// Human PO number, unique within the book.
+        #[arg(long)]
+        po_number: String,
+        /// YYYY-MM-DD.
+        #[arg(long)]
+        order_date: String,
+        /// YYYY-MM-DD.
+        #[arg(long)]
+        expected_delivery: Option<String>,
+        /// Defaults to the book's own currency.
+        #[arg(long)]
+        currency: Option<String>,
+        /// Minor units; defaults to 0.
+        #[arg(long)]
+        tax_minor: Option<i64>,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// List purchase orders in the book, most recently ordered first.
+    List,
+    /// Show one purchase order, its lines and each line's derived receiving
+    /// progress (none / partial / complete).
+    Get {
+        /// Purchase order id.
+        id: String,
+    },
+    /// Update a purchase order's header fields. Status is not one of them —
+    /// see `set-status`.
+    Update {
+        /// Purchase order id.
+        id: String,
+        #[arg(long)]
+        supplier: Option<String>,
+        #[arg(long)]
+        location: Option<String>,
+        #[arg(long)]
+        po_number: Option<String>,
+        #[arg(long)]
+        order_date: Option<String>,
+        #[arg(long, conflicts_with = "clear_expected_delivery")]
+        expected_delivery: Option<String>,
+        #[arg(long)]
+        clear_expected_delivery: bool,
+        #[arg(long)]
+        tax_minor: Option<i64>,
+        #[arg(long, conflicts_with = "clear_notes")]
+        notes: Option<String>,
+        #[arg(long)]
+        clear_notes: bool,
+    },
+    /// Move a purchase order along its guarded workflow: `ordered` (sent to
+    /// the supplier) or `cancelled` (from either `draft` or `ordered`,
+    /// never reversible).
+    SetStatus {
+        id: String,
+        #[arg(value_enum)]
+        status: CliPoStatus,
+    },
+    /// Delete a purchase order outright. Refused once any of its lines has
+    /// a receipt against it (an ordinary database error today, not a
+    /// friendly message — nobody has hit it as a caller yet).
+    Delete { id: String },
+    /// Add a line to a purchase order.
+    ItemAdd {
+        /// Purchase order id.
+        po_id: String,
+        /// Product variant: a variant id or exact SKU.
+        variant: String,
+        qty: i64,
+        /// Minor units; defaults to 0.
+        #[arg(long)]
+        unit_price: Option<i64>,
+    },
+    /// List a purchase order's lines with each one's derived receiving
+    /// progress.
+    ItemList {
+        /// Purchase order id.
+        po_id: String,
+    },
+    /// Update a line's quantity and/or unit price. Refused if the new
+    /// quantity would fall below what has already been received against it.
+    ItemUpdate {
+        /// Line item id.
+        id: String,
+        #[arg(long)]
+        qty: Option<i64>,
+        #[arg(long)]
+        unit_price: Option<i64>,
+    },
+    /// Delete a line outright. Refused once it has a receipt against it.
+    ItemDelete { id: String },
+    /// Record a goods receipt against a line — writes a stock movement in
+    /// the same transaction (`kind = receipt`), so on-hand moves by exactly
+    /// the received quantity. A negative quantity records a compensating
+    /// correction (a recount finding fewer than previously recorded), never
+    /// an edit to an earlier receipt.
+    Receive {
+        /// Line item id.
+        item_id: String,
+        /// Where this receipt actually happened: a location id or exact
+        /// name. Not necessarily the PO's own location — two sites can
+        /// both receive against the same line.
+        #[arg(long)]
+        location: String,
+        /// Signed; negative corrects an earlier over-receipt.
+        qty: i64,
+        #[arg(long)]
+        note: Option<String>,
+        /// Free text — SlipScan has no staff identity yet.
+        #[arg(long)]
+        received_by: Option<String>,
+    },
+    /// List every receipt recorded against one line, oldest first.
+    Receipts {
+        /// Line item id.
+        item_id: String,
     },
 }
 
@@ -1089,6 +1248,46 @@ fn resolve_member(svc: &CoreService, book_id: &str, selector: &str) -> anyhow::R
                 "no member with id or label {selector:?} in this book; \
                  see `slipscan member list` or add one with `slipscan member add`"
             )
+        })
+}
+
+/// Resolve a contact within `book_id` by id or exact name (Phase 6.2/6.4).
+fn resolve_contact(svc: &CoreService, book_id: &str, selector: &str) -> anyhow::Result<Contact> {
+    svc.contact_list(book_id)?
+        .into_iter()
+        .find(|c| c.id == selector || c.name == selector)
+        .ok_or_else(|| {
+            anyhow!(
+                "no contact with id or name {selector:?} in this book; \
+                 see `slipscan po add --help` or create one at the service layer"
+            )
+        })
+}
+
+/// Resolve a location within `book_id` by id or exact name.
+fn resolve_location(svc: &CoreService, book_id: &str, selector: &str) -> anyhow::Result<Location> {
+    svc.location_list(book_id)?
+        .into_iter()
+        .find(|l| l.id == selector || l.name == selector)
+        .ok_or_else(|| {
+            anyhow!(
+                "no location with id or name {selector:?} in this book; \
+                 see `slipscan location list` or add one with `slipscan location add`"
+            )
+        })
+}
+
+/// Resolve a product variant within `book_id` by id or exact SKU.
+fn resolve_variant(
+    svc: &CoreService,
+    book_id: &str,
+    selector: &str,
+) -> anyhow::Result<ProductVariant> {
+    svc.product_variant_list_for_book(book_id)?
+        .into_iter()
+        .find(|v| v.id == selector || v.sku == selector)
+        .ok_or_else(|| {
+            anyhow!("no product variant with id or SKU {selector:?} in this book")
         })
 }
 
@@ -1880,6 +2079,247 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     svc.location_delete(id)?;
                     emit(cli.json, &serde_json::json!({ "removed": id }), || {
                         println!("Removed location {id}.");
+                    })
+                }
+            }
+        }
+
+        Command::Po { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                PoAction::Add {
+                    supplier,
+                    location,
+                    po_number,
+                    order_date,
+                    expected_delivery,
+                    currency,
+                    tax_minor,
+                    notes,
+                } => {
+                    let supplier = resolve_contact(&svc, &book.id, supplier)?;
+                    let location = resolve_location(&svc, &book.id, location)?;
+                    let po = svc.po_create(NewPurchaseOrder {
+                        book_id: book.id.clone(),
+                        supplier_id: supplier.id,
+                        location_id: location.id,
+                        po_number: po_number.clone(),
+                        order_date: order_date.clone(),
+                        expected_delivery: expected_delivery.clone(),
+                        currency: currency.clone().unwrap_or_else(|| book.currency.clone()),
+                        tax_minor: *tax_minor,
+                        notes: notes.clone(),
+                    })?;
+                    emit(cli.json, &po, || {
+                        println!(
+                            "Created purchase order {} ({}) — {} {}",
+                            po.po_number, po.id, po.status, po.currency
+                        );
+                    })
+                }
+                PoAction::List => {
+                    let orders = svc.po_list(&book.id)?;
+                    emit(cli.json, &orders, || {
+                        if orders.is_empty() {
+                            println!("No purchase orders yet. Add one with `slipscan po add`.");
+                        }
+                        for po in &orders {
+                            println!(
+                                "{}\t{}\t{}\t{} {}",
+                                po.id, po.po_number, po.status, po.total_minor, po.currency
+                            );
+                        }
+                    })
+                }
+                PoAction::Get { id } => {
+                    let po = svc.po_get(id)?;
+                    let items = svc.po_items_with_receiving(id)?;
+                    let receiving = svc.po_receiving_status(id)?;
+                    #[derive(serde::Serialize)]
+                    struct PoDetail<'a> {
+                        #[serde(flatten)]
+                        po: &'a slipscan_core::domain::PurchaseOrder,
+                        receiving_status: slipscan_core::domain::PoReceiptStatus,
+                        items: &'a [slipscan_core::domain::PurchaseOrderItemReceiving],
+                    }
+                    emit(
+                        cli.json,
+                        &PoDetail {
+                            po: &po,
+                            receiving_status: receiving,
+                            items: &items,
+                        },
+                        || {
+                            println!(
+                                "{} ({}) — {}, receiving: {}",
+                                po.po_number, po.id, po.status, receiving
+                            );
+                            println!(
+                                "  subtotal {} tax {} total {} {}",
+                                po.subtotal_minor, po.tax_minor, po.total_minor, po.currency
+                            );
+                            for row in &items {
+                                println!(
+                                    "  {}\tqty {}\treceived {}\t{}",
+                                    row.item.id, row.item.qty_ordered, row.received_qty, row.status
+                                );
+                            }
+                        },
+                    )
+                }
+                PoAction::Update {
+                    id,
+                    supplier,
+                    location,
+                    po_number,
+                    order_date,
+                    expected_delivery,
+                    clear_expected_delivery,
+                    tax_minor,
+                    notes,
+                    clear_notes,
+                } => {
+                    let supplier_id = supplier
+                        .as_deref()
+                        .map(|s| resolve_contact(&svc, &book.id, s))
+                        .transpose()?
+                        .map(|c| c.id);
+                    let location_id = location
+                        .as_deref()
+                        .map(|l| resolve_location(&svc, &book.id, l))
+                        .transpose()?
+                        .map(|l| l.id);
+                    let expected_delivery = if *clear_expected_delivery {
+                        Some(None)
+                    } else {
+                        expected_delivery.clone().map(Some)
+                    };
+                    let notes = if *clear_notes {
+                        Some(None)
+                    } else {
+                        notes.clone().map(Some)
+                    };
+                    let po = svc.po_update(
+                        id,
+                        PurchaseOrderPatch {
+                            supplier_id,
+                            location_id,
+                            po_number: po_number.clone(),
+                            order_date: order_date.clone(),
+                            expected_delivery,
+                            tax_minor: *tax_minor,
+                            notes,
+                        },
+                    )?;
+                    emit(cli.json, &po, || {
+                        println!("Updated purchase order {} ({})", po.po_number, po.id);
+                    })
+                }
+                PoAction::SetStatus { id, status } => {
+                    let po = svc.po_set_status(id, (*status).into())?;
+                    emit(cli.json, &po, || {
+                        println!("Purchase order {} is now {}", po.po_number, po.status);
+                    })
+                }
+                PoAction::Delete { id } => {
+                    svc.po_delete(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed purchase order {id}.");
+                    })
+                }
+                PoAction::ItemAdd {
+                    po_id,
+                    variant,
+                    qty,
+                    unit_price,
+                } => {
+                    let variant = resolve_variant(&svc, &book.id, variant)?;
+                    let item = svc.po_item_add(NewPurchaseOrderItem {
+                        purchase_order_id: po_id.clone(),
+                        variant_id: variant.id,
+                        qty_ordered: *qty,
+                        unit_price_minor: *unit_price,
+                    })?;
+                    emit(cli.json, &item, || {
+                        println!(
+                            "Added line {} — qty {} @ {} = {}",
+                            item.id, item.qty_ordered, item.unit_price_minor, item.total_minor
+                        );
+                    })
+                }
+                PoAction::ItemList { po_id } => {
+                    let rows = svc.po_items_with_receiving(po_id)?;
+                    emit(cli.json, &rows, || {
+                        for row in &rows {
+                            println!(
+                                "{}\tqty {}\tunit {}\ttotal {}\treceived {}\t{}",
+                                row.item.id,
+                                row.item.qty_ordered,
+                                row.item.unit_price_minor,
+                                row.item.total_minor,
+                                row.received_qty,
+                                row.status
+                            );
+                        }
+                    })
+                }
+                PoAction::ItemUpdate {
+                    id,
+                    qty,
+                    unit_price,
+                } => {
+                    let item = svc.po_item_update(
+                        id,
+                        PurchaseOrderItemPatch {
+                            qty_ordered: *qty,
+                            unit_price_minor: *unit_price,
+                        },
+                    )?;
+                    emit(cli.json, &item, || {
+                        println!("Updated line {} — total {}", item.id, item.total_minor);
+                    })
+                }
+                PoAction::ItemDelete { id } => {
+                    svc.po_item_delete(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed line {id}.");
+                    })
+                }
+                PoAction::Receive {
+                    item_id,
+                    location,
+                    qty,
+                    note,
+                    received_by,
+                } => {
+                    let location = resolve_location(&svc, &book.id, location)?;
+                    let receipt = svc.po_receive(NewPoReceipt {
+                        purchase_order_item_id: item_id.clone(),
+                        location_id: location.id,
+                        qty: *qty,
+                        note: note.clone(),
+                        received_by: received_by.clone(),
+                    })?;
+                    emit(cli.json, &receipt, || {
+                        println!(
+                            "Recorded receipt {} — {} units against line {}",
+                            receipt.id, receipt.qty, receipt.purchase_order_item_id
+                        );
+                    })
+                }
+                PoAction::Receipts { item_id } => {
+                    let receipts = svc.po_receipts_for_item(item_id)?;
+                    emit(cli.json, &receipts, || {
+                        for r in &receipts {
+                            println!(
+                                "{}\t{}\t{}\t{}",
+                                r.id,
+                                r.qty,
+                                r.location_id,
+                                r.note.as_deref().unwrap_or("-")
+                            );
+                        }
                     })
                 }
             }

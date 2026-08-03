@@ -235,6 +235,193 @@ pub async fn location_delete(
         .map_err(err)
 }
 
+// ---------------------------------------------------------------------------
+// purchasing — purchase orders, their line items, and goods receipts
+// (Phase 6.4, the flowstock fold). No screen calls these yet — that is
+// ROADMAP.md 6.9, "Desktop screens" — the same posture `book_profile` and
+// the location CRUD above had before first-run setup and Settings needed
+// them. `po_receive` is the keystone: it writes a stock movement in the same
+// transaction as the receipt (`CoreService::po_receive`'s own doc comment),
+// so on-hand and purchasing can never disagree about how much arrived.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn po_create(
+    state: State<'_, AppState>,
+    query: core::NewPurchaseOrder,
+) -> Result<core::PurchaseOrder, String> {
+    state.service()?.po_create(query).map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_get(
+    state: State<'_, AppState>,
+    query: PoIdQuery,
+) -> Result<core::PurchaseOrder, String> {
+    state.service()?.po_get(&query.po_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::PurchaseOrder>, String> {
+    state.service()?.po_list(&query.book_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_update(
+    state: State<'_, AppState>,
+    query: PoUpdateRequest,
+) -> Result<core::PurchaseOrder, String> {
+    let id = query.id.clone();
+    state
+        .service()?
+        .po_update(&id, query.into_patch())
+        .map_err(err)
+}
+
+/// `draft -> ordered -> cancelled`, in either terminal direction from
+/// `draft`, never reversible — see `CoreService::po_set_status`.
+#[tauri::command]
+pub async fn po_set_status(
+    state: State<'_, AppState>,
+    query: PoSetStatusRequest,
+) -> Result<core::PurchaseOrder, String> {
+    state
+        .service()?
+        .po_set_status(&query.po_id, query.status)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_delete(state: State<'_, AppState>, query: PoIdQuery) -> Result<(), String> {
+    state.service()?.po_delete(&query.po_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_item_add(
+    state: State<'_, AppState>,
+    query: core::NewPurchaseOrderItem,
+) -> Result<core::PurchaseOrderItem, String> {
+    state.service()?.po_item_add(query).map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_item_get(
+    state: State<'_, AppState>,
+    query: PoItemIdQuery,
+) -> Result<core::PurchaseOrderItem, String> {
+    state.service()?.po_item_get(&query.item_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_item_list(
+    state: State<'_, AppState>,
+    query: PurchaseOrderIdQuery,
+) -> Result<Vec<core::PurchaseOrderItem>, String> {
+    state
+        .service()?
+        .po_item_list(&query.purchase_order_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_item_update(
+    state: State<'_, AppState>,
+    query: PoItemUpdateRequest,
+) -> Result<core::PurchaseOrderItem, String> {
+    let id = query.id.clone();
+    state
+        .service()?
+        .po_item_update(&id, query.into_patch())
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_item_delete(
+    state: State<'_, AppState>,
+    query: PoItemIdQuery,
+) -> Result<(), String> {
+    state.service()?.po_item_delete(&query.item_id).map_err(err)
+}
+
+/// Record one goods receipt against a line. Writes a stock movement in the
+/// same transaction — see the module note above.
+#[tauri::command]
+pub async fn po_receive(
+    state: State<'_, AppState>,
+    query: core::NewPoReceipt,
+) -> Result<core::PoReceipt, String> {
+    state.service()?.po_receive(query).map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_receipts_for_item(
+    state: State<'_, AppState>,
+    query: PoItemIdQuery,
+) -> Result<Vec<core::PoReceipt>, String> {
+    state
+        .service()?
+        .po_receipts_for_item(&query.item_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_receipts_for_po(
+    state: State<'_, AppState>,
+    query: PurchaseOrderIdQuery,
+) -> Result<Vec<core::PoReceipt>, String> {
+    state
+        .service()?
+        .po_receipts_for_po(&query.purchase_order_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_item_received_qty(
+    state: State<'_, AppState>,
+    query: PoItemIdQuery,
+) -> Result<i64, String> {
+    state
+        .service()?
+        .po_item_received_qty(&query.item_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_item_receiving_status(
+    state: State<'_, AppState>,
+    query: PoItemIdQuery,
+) -> Result<core::PoReceiptStatus, String> {
+    state
+        .service()?
+        .po_item_receiving_status(&query.item_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_items_with_receiving(
+    state: State<'_, AppState>,
+    query: PurchaseOrderIdQuery,
+) -> Result<Vec<core::PurchaseOrderItemReceiving>, String> {
+    state
+        .service()?
+        .po_items_with_receiving(&query.purchase_order_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn po_receiving_status(
+    state: State<'_, AppState>,
+    query: PurchaseOrderIdQuery,
+) -> Result<core::PoReceiptStatus, String> {
+    state
+        .service()?
+        .po_receiving_status(&query.purchase_order_id)
+        .map_err(err)
+}
+
 #[tauri::command]
 pub async fn account_list(
     state: State<'_, AppState>,

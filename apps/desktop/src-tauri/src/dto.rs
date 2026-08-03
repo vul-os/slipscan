@@ -278,6 +278,104 @@ impl LocationUpdateRequest {
     }
 }
 
+// ---------------------------------------------------------------------------
+// purchasing — purchase orders, their line items, and goods receipts
+// (Phase 6.4, the flowstock fold). No screen calls these yet (that is
+// ROADMAP.md 6.9, "Desktop screens") — wired now so the IPC layer, like the
+// CLI and HTTP surfaces, does not wait on a UI to exist first. Core's domain
+// types serialize straight across IPC for create/add/receive, the same
+// `NewLocation`/`core::Location` treatment above; only `_update` needs its
+// own clear-flag request shape.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoUpdateRequest {
+    pub id: String,
+    #[serde(default)]
+    pub supplier_id: Option<String>,
+    #[serde(default)]
+    pub location_id: Option<String>,
+    #[serde(default)]
+    pub po_number: Option<String>,
+    #[serde(default)]
+    pub order_date: Option<String>,
+    #[serde(default)]
+    pub expected_delivery: Option<String>,
+    /// Same clear-flag convention as `LocationUpdateRequest::clear_code`.
+    #[serde(default)]
+    pub clear_expected_delivery: bool,
+    #[serde(default)]
+    pub tax_minor: Option<i64>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub clear_notes: bool,
+}
+
+impl PoUpdateRequest {
+    pub fn into_patch(self) -> core::PurchaseOrderPatch {
+        core::PurchaseOrderPatch {
+            supplier_id: self.supplier_id,
+            location_id: self.location_id,
+            po_number: self.po_number,
+            order_date: self.order_date,
+            expected_delivery: if self.clear_expected_delivery {
+                Some(None)
+            } else {
+                self.expected_delivery.map(Some)
+            },
+            tax_minor: self.tax_minor,
+            notes: if self.clear_notes {
+                Some(None)
+            } else {
+                self.notes.map(Some)
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoIdQuery {
+    pub po_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoSetStatusRequest {
+    pub po_id: String,
+    pub status: core::PurchaseOrderStatus,
+}
+
+/// Scopes a read to a whole purchase order rather than one of its lines
+/// (`po_item_list`, `po_receipts_for_po`, `po_items_with_receiving`,
+/// `po_receiving_status`) — same field name HTTP's `PurchaseOrderIdReq` uses.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PurchaseOrderIdQuery {
+    pub purchase_order_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoItemIdQuery {
+    pub item_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoItemUpdateRequest {
+    pub id: String,
+    #[serde(default)]
+    pub qty_ordered: Option<i64>,
+    #[serde(default)]
+    pub unit_price_minor: Option<i64>,
+}
+
+impl PoItemUpdateRequest {
+    pub fn into_patch(self) -> core::PurchaseOrderItemPatch {
+        core::PurchaseOrderItemPatch {
+            qty_ordered: self.qty_ordered,
+            unit_price_minor: self.unit_price_minor,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct TransactionIdQuery {
     pub transaction_id: String,

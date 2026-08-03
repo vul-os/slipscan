@@ -57,6 +57,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         include_str!("migrations/0011_catalogue.sql"),
     ),
     (12, "0012_stock", include_str!("migrations/0012_stock.sql")),
+    (
+        13,
+        "0013_purchasing",
+        include_str!("migrations/0013_purchasing.sql"),
+    ),
 ];
 
 /// A configured, migrated SQLite database handle.
@@ -153,13 +158,13 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
         );
     }
 
@@ -196,6 +201,9 @@ mod tests {
             "pay_endpoints",
             "pay_matches",
             "pay_watch_codes",
+            "po_receipts",
+            "purchase_order_items",
+            "purchase_orders",
             "recon_matches",
             "schema_migrations",
             "settings",

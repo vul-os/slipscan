@@ -43,6 +43,9 @@ import type {
   NewBook,
   NewLocation,
   NewMember,
+  NewPoReceipt,
+  NewPurchaseOrder,
+  NewPurchaseOrderItem,
   NewPayEndpoint,
   NewPayWatch,
   PackDocumentRequest,
@@ -61,6 +64,13 @@ import type {
   PayEndpointWithSecret,
   PayMatch,
   PayWatch,
+  PoItemUpdateRequest,
+  PoReceipt,
+  PoReceiptStatus,
+  PoUpdateRequest,
+  PurchaseOrder,
+  PurchaseOrderItem,
+  PurchaseOrderItemReceiving,
   ReconConfirmRequest,
   ReconSuggestion,
   RegionInfo,
@@ -119,6 +129,57 @@ const multiLocationOverrides = new Map<string, boolean | null>();
  * a book with none behaves exactly as it always has, the same as core.
  */
 const locations: Location[] = [];
+
+/**
+ * Purchasing (Phase 6.4): purchase orders, their line items, and goods
+ * receipts. Empty by default, the same as `locations` — nothing pre-seeds
+ * these since no screen calls them yet (ROADMAP.md 6.9). `poReceipts` is
+ * append-only, mirroring core's own insert-only `po_receipts` table: nothing
+ * here ever mutates or removes a row out of it.
+ */
+const purchaseOrders: PurchaseOrder[] = [];
+const purchaseOrderItems: PurchaseOrderItem[] = [];
+const poReceipts: PoReceipt[] = [];
+
+/** `SUM(qty)` over a line's own receipts — mirrors
+ * `repo::purchasing::received_qty_for_item`, never a stored counter. */
+function receivedQtyForItem(itemId: string): number {
+  return poReceipts
+    .filter((r) => r.purchase_order_item_id === itemId)
+    .reduce((sum, r) => sum + r.qty, 0);
+}
+
+/** Mirrors `CoreService::receipt_status_from`: `"none"` at zero or less,
+ * `"complete"` at or beyond `qty_ordered`, `"partial"` in between. */
+function receiptStatusFrom(received: number, ordered: number): PoReceiptStatus {
+  if (received <= 0) return "none";
+  if (received >= ordered) return "complete";
+  return "partial";
+}
+
+function requirePo(poId: string): PurchaseOrder {
+  const po = purchaseOrders.find((p) => p.id === poId);
+  if (!po) throw new Error(`purchase order not found: ${poId}`);
+  return po;
+}
+
+function requirePoItem(itemId: string): PurchaseOrderItem {
+  const item = purchaseOrderItems.find((i) => i.id === itemId);
+  if (!item) throw new Error(`purchase order line not found: ${itemId}`);
+  return item;
+}
+
+/** Recompute and persist a PO's `subtotal_minor`/`total_minor` from its
+ * current lines — mirrors `CoreService::recalc_po_totals_in_tx`. */
+function recalcPoTotals(poId: string): void {
+  const po = requirePo(poId);
+  const subtotal = purchaseOrderItems
+    .filter((i) => i.purchase_order_id === poId)
+    .reduce((sum, i) => sum + i.total_minor, 0);
+  po.subtotal_minor = subtotal;
+  po.total_minor = subtotal + po.tax_minor;
+  po.updated_at = new Date().toISOString();
+}
 
 function resolveProfile(b: Book): BookProfile {
   const locationCount = locations.filter((l) => l.book_id === b.id).length;
@@ -1938,6 +1999,260 @@ export const mockApi = {
     if (i === -1) throw new Error(`location not found: ${q.location_id}`);
     locations.splice(i, 1);
     return null;
+  },
+
+  // -- purchasing: purchase orders, their line items, and goods receipts
+  // (Phase 6.4). Suppliers and product variants have no mock dataset of
+  // their own yet (Contacts/Catalogue are Phase 6.2/6.3a, not wired to the
+  // desktop at all) — `supplier_id`/`variant_id` are accepted and stored
+  // verbatim here, the same trust boundary core itself only closes with a
+  // real `contact_get`/`product_variant_get` lookup. --
+
+  po_create: async (q: NewPurchaseOrder): Promise<PurchaseOrder> => {
+    const poNumber = q.po_number.trim();
+    if (!poNumber) throw new Error("purchase order number must not be empty");
+    if (
+      purchaseOrders.some(
+        (p) => p.book_id === q.book_id && p.po_number === poNumber,
+      )
+    )
+      throw new Error(`a purchase order numbered "${poNumber}" already exists in this book`);
+    const now = new Date().toISOString();
+    const taxMinor = q.tax_minor ?? 0;
+    const created: PurchaseOrder = {
+      id: id("po00"),
+      book_id: q.book_id,
+      supplier_id: q.supplier_id,
+      location_id: q.location_id,
+      po_number: poNumber,
+      order_date: q.order_date,
+      expected_delivery: q.expected_delivery ?? null,
+      status: "draft",
+      subtotal_minor: 0,
+      tax_minor: taxMinor,
+      total_minor: taxMinor,
+      currency: q.currency,
+      notes: q.notes?.trim() || null,
+      created_at: now,
+      updated_at: now,
+    };
+    purchaseOrders.push(created);
+    return clone(created);
+  },
+
+  po_get: async (q: { po_id: string }): Promise<PurchaseOrder> =>
+    clone(requirePo(q.po_id)),
+
+  po_list: async (q: { book_id: string }): Promise<PurchaseOrder[]> =>
+    clone(
+      purchaseOrders
+        .filter((p) => p.book_id === q.book_id)
+        .sort((a, b) => b.order_date.localeCompare(a.order_date)),
+    ),
+
+  po_update: async (q: PoUpdateRequest): Promise<PurchaseOrder> => {
+    const po = requirePo(q.id);
+    if (q.supplier_id !== undefined) po.supplier_id = q.supplier_id;
+    if (q.location_id !== undefined) po.location_id = q.location_id;
+    if (q.po_number !== undefined) {
+      const poNumber = q.po_number.trim();
+      if (!poNumber) throw new Error("purchase order number must not be empty");
+      po.po_number = poNumber;
+    }
+    if (q.order_date !== undefined) po.order_date = q.order_date;
+    if (q.clear_expected_delivery) po.expected_delivery = null;
+    else if (q.expected_delivery !== undefined)
+      po.expected_delivery = q.expected_delivery;
+    if (q.tax_minor !== undefined) {
+      po.tax_minor = q.tax_minor;
+      po.total_minor = po.subtotal_minor + q.tax_minor;
+    }
+    if (q.clear_notes) po.notes = null;
+    else if (q.notes !== undefined) po.notes = q.notes.trim() || null;
+    po.updated_at = new Date().toISOString();
+    return clone(po);
+  },
+
+  /** `draft -> ordered -> cancelled`, never reversible — mirrors
+   * `CoreService::po_status_transition_allowed`. */
+  po_set_status: async (q: {
+    po_id: string;
+    status: PurchaseOrder["status"];
+  }): Promise<PurchaseOrder> => {
+    const po = requirePo(q.po_id);
+    const allowed =
+      (po.status === "draft" && (q.status === "ordered" || q.status === "cancelled")) ||
+      (po.status === "ordered" && q.status === "cancelled");
+    if (!allowed)
+      throw new Error(`invalid status transition: ${po.status} -> ${q.status}`);
+    po.status = q.status;
+    po.updated_at = new Date().toISOString();
+    return clone(po);
+  },
+
+  po_delete: async (q: { po_id: string }): Promise<null> => {
+    const po = requirePo(q.po_id);
+    const lineIds = purchaseOrderItems
+      .filter((i) => i.purchase_order_id === po.id)
+      .map((i) => i.id);
+    if (poReceipts.some((r) => lineIds.includes(r.purchase_order_item_id)))
+      throw new Error(
+        "cannot delete a purchase order with a receipt against one of its lines",
+      );
+    for (const lineId of lineIds) {
+      const i = purchaseOrderItems.findIndex((x) => x.id === lineId);
+      if (i !== -1) purchaseOrderItems.splice(i, 1);
+    }
+    const i = purchaseOrders.findIndex((x) => x.id === po.id);
+    purchaseOrders.splice(i, 1);
+    return null;
+  },
+
+  po_item_add: async (q: NewPurchaseOrderItem): Promise<PurchaseOrderItem> => {
+    const po = requirePo(q.purchase_order_id);
+    if (q.qty_ordered <= 0)
+      throw new Error("purchase order line quantity must be positive");
+    const unitPriceMinor = q.unit_price_minor ?? 0;
+    const now = new Date().toISOString();
+    const created: PurchaseOrderItem = {
+      id: id("poi0"),
+      purchase_order_id: po.id,
+      book_id: po.book_id,
+      variant_id: q.variant_id,
+      qty_ordered: q.qty_ordered,
+      unit_price_minor: unitPriceMinor,
+      total_minor: q.qty_ordered * unitPriceMinor,
+      created_at: now,
+      updated_at: now,
+    };
+    purchaseOrderItems.push(created);
+    recalcPoTotals(po.id);
+    return clone(created);
+  },
+
+  po_item_get: async (q: { item_id: string }): Promise<PurchaseOrderItem> =>
+    clone(requirePoItem(q.item_id)),
+
+  po_item_list: async (q: {
+    purchase_order_id: string;
+  }): Promise<PurchaseOrderItem[]> =>
+    clone(
+      purchaseOrderItems.filter((i) => i.purchase_order_id === q.purchase_order_id),
+    ),
+
+  po_item_update: async (
+    q: PoItemUpdateRequest,
+  ): Promise<PurchaseOrderItem> => {
+    const item = requirePoItem(q.id);
+    if (q.qty_ordered !== undefined) {
+      if (q.qty_ordered <= 0)
+        throw new Error("purchase order line quantity must be positive");
+      const received = receivedQtyForItem(item.id);
+      if (q.qty_ordered < received)
+        throw new Error(
+          `cannot reduce ordered quantity to ${q.qty_ordered}; ${received} has already been received against this line`,
+        );
+      item.qty_ordered = q.qty_ordered;
+    }
+    if (q.unit_price_minor !== undefined) {
+      if (q.unit_price_minor < 0)
+        throw new Error("purchase order line unit price must not be negative");
+      item.unit_price_minor = q.unit_price_minor;
+    }
+    item.total_minor = item.qty_ordered * item.unit_price_minor;
+    item.updated_at = new Date().toISOString();
+    recalcPoTotals(item.purchase_order_id);
+    return clone(item);
+  },
+
+  po_item_delete: async (q: { item_id: string }): Promise<null> => {
+    const item = requirePoItem(q.item_id);
+    if (poReceipts.some((r) => r.purchase_order_item_id === item.id))
+      throw new Error("cannot delete a line with a receipt against it");
+    const i = purchaseOrderItems.findIndex((x) => x.id === item.id);
+    purchaseOrderItems.splice(i, 1);
+    recalcPoTotals(item.purchase_order_id);
+    return null;
+  },
+
+  /** Record one goods receipt against a line. There is no mock stock ledger
+   * to write into (Phase 6.3b has no desktop surface of its own either) —
+   * this records the receipt fact only, the half of the keystone invariant
+   * this mock dataset can actually represent. */
+  po_receive: async (q: NewPoReceipt): Promise<PoReceipt> => {
+    const item = requirePoItem(q.purchase_order_item_id);
+    const po = requirePo(item.purchase_order_id);
+    if (po.status === "cancelled")
+      throw new Error("cannot receive against a cancelled purchase order");
+    if (q.qty === 0)
+      throw new Error("goods receipt quantity must not be zero");
+    const created: PoReceipt = {
+      id: id("prc0"),
+      book_id: item.book_id,
+      purchase_order_item_id: item.id,
+      location_id: q.location_id,
+      qty: q.qty,
+      note: q.note?.trim() || null,
+      received_by: q.received_by?.trim() || null,
+      created_at: new Date().toISOString(),
+    };
+    poReceipts.push(created);
+    return clone(created);
+  },
+
+  po_receipts_for_item: async (q: { item_id: string }): Promise<PoReceipt[]> =>
+    clone(poReceipts.filter((r) => r.purchase_order_item_id === q.item_id)),
+
+  po_receipts_for_po: async (q: {
+    purchase_order_id: string;
+  }): Promise<PoReceipt[]> => {
+    const lineIds = new Set(
+      purchaseOrderItems
+        .filter((i) => i.purchase_order_id === q.purchase_order_id)
+        .map((i) => i.id),
+    );
+    return clone(poReceipts.filter((r) => lineIds.has(r.purchase_order_item_id)));
+  },
+
+  po_item_received_qty: async (q: { item_id: string }): Promise<number> =>
+    receivedQtyForItem(q.item_id),
+
+  po_item_receiving_status: async (q: {
+    item_id: string;
+  }): Promise<PoReceiptStatus> => {
+    const item = requirePoItem(q.item_id);
+    return receiptStatusFrom(receivedQtyForItem(item.id), item.qty_ordered);
+  },
+
+  po_items_with_receiving: async (q: {
+    purchase_order_id: string;
+  }): Promise<PurchaseOrderItemReceiving[]> =>
+    clone(
+      purchaseOrderItems
+        .filter((i) => i.purchase_order_id === q.purchase_order_id)
+        .map((item) => {
+          const received_qty = receivedQtyForItem(item.id);
+          return {
+            item,
+            received_qty,
+            status: receiptStatusFrom(received_qty, item.qty_ordered),
+          };
+        }),
+    ),
+
+  po_receiving_status: async (q: {
+    purchase_order_id: string;
+  }): Promise<PoReceiptStatus> => {
+    const rows = purchaseOrderItems.filter(
+      (i) => i.purchase_order_id === q.purchase_order_id,
+    );
+    if (rows.length === 0) return "none";
+    const statuses = rows.map((item) =>
+      receiptStatusFrom(receivedQtyForItem(item.id), item.qty_ordered),
+    );
+    if (statuses.every((s) => s === "complete")) return "complete";
+    if (statuses.every((s) => s === "none")) return "none";
+    return "partial";
   },
 
   data_status: async (): Promise<DataStatus> =>
