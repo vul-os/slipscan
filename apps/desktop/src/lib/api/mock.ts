@@ -40,6 +40,10 @@ import type {
   MemberCategoryRow,
   MemberPatch,
   MemberSettleRow,
+  NetWorthAccountBalance,
+  NetWorthPoint,
+  NetWorthSeries,
+  NetWorthSnapshot,
   NewBook,
   NewLocation,
   NewMember,
@@ -238,6 +242,42 @@ const accounts: Account[] = [
     created_at: "2026-01-04T08:16:30Z",
   },
 ];
+
+// ---------------------------------------------------------------------------
+// net worth — a few months of plausible history, in the same order as
+// `accounts`, so the Dashboard chart has something to draw in mock mode.
+// Real history comes from `networth_backfill` reconstructing the actual
+// transaction ledger; this is fabricated for the mock fallback only, and
+// its last row matches `accounts`' own current balances so the chart's most
+// recent point agrees with the stat tiles above it.
+// ---------------------------------------------------------------------------
+
+const networthHistory: { date: string; totals: number[] }[] = [
+  { date: "2026-02-28", totals: [1_180_000, 4_120_000, -410_000, 35_000] },
+  { date: "2026-03-31", totals: [1_340_000, 4_220_000, -520_000, 38_000] },
+  { date: "2026-04-30", totals: [1_510_000, 4_310_000, -610_000, 39_500] },
+  { date: "2026-05-31", totals: [1_620_000, 4_400_000, -655_000, 40_000] },
+  { date: "2026-06-30", totals: [1_705_000, 4_470_000, -700_000, 41_000] },
+  { date: "2026-07-31", totals: [1_780_000, 4_510_000, -725_000, 41_500] },
+  { date: "2026-08-03", totals: [1_824_540, 4_550_000, -732_118, 42_000] },
+];
+
+function networthPoints(): NetWorthPoint[] {
+  return networthHistory.map(({ date, totals }) => {
+    const by_account: NetWorthAccountBalance[] = accounts.map((a, i) => ({
+      account_id: a.id,
+      currency: a.currency,
+      balance_minor: totals[i],
+    }));
+    return {
+      as_of_date: date,
+      by_account,
+      currency: book.currency,
+      total_minor: totals.reduce((sum, v) => sum + v, 0),
+      unconverted: [],
+    };
+  });
+}
 
 const cat = (name: string, kind: Category["kind"], icon: string): Category => ({
   id: id("cat0"),
@@ -1972,6 +2012,47 @@ export const mockApi = {
 
   account_list: async (_q: { book_id: string }): Promise<Account[]> =>
     clone(accounts),
+
+  networth_capture: async (q: {
+    book_id: string;
+    as_of_date?: string;
+  }): Promise<NetWorthSnapshot[]> => {
+    const latest = networthHistory[networthHistory.length - 1];
+    const asOf = q.as_of_date ?? latest.date;
+    const now = new Date().toISOString();
+    return clone(
+      accounts.map((a, i) => ({
+        id: id("nws"),
+        book_id: q.book_id,
+        account_id: a.id,
+        as_of_date: asOf,
+        balance_minor: latest.totals[i],
+        currency: a.currency,
+        source: "captured" as const,
+        created_at: now,
+      })),
+    );
+  },
+
+  // Mock history is already "backfilled" — nothing new to create.
+  networth_backfill: async (_q: { book_id: string }): Promise<NetWorthSnapshot[]> =>
+    clone([]),
+
+  networth_series: async (q: {
+    book_id: string;
+    from: string;
+    to: string;
+  }): Promise<NetWorthSeries> => {
+    const points = networthPoints().filter(
+      (p) => p.as_of_date >= q.from && p.as_of_date <= q.to,
+    );
+    return clone({
+      book_id: q.book_id,
+      currency: book.currency,
+      points,
+      conversions: [],
+    });
+  },
 
   transaction_list: async (q: TransactionListQuery): Promise<Transaction[]> => {
     let rows = transactions.slice();

@@ -108,6 +108,29 @@ pub fn account_dto(account: &core::Account, txn_sum_minor: i64) -> AccountDto {
 }
 
 // ---------------------------------------------------------------------------
+// net worth — periodic balance snapshots (PARITY.md "Net worth over time").
+// Core's `NetWorthSnapshot`/`NetWorthSeries` already serialize display-ready
+// (money in minor units + currency, no floats), so these are plain queries,
+// not DTOs with their own mapping function.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NetWorthCaptureQuery {
+    pub book_id: String,
+    /// `YYYY-MM-DD`; omitted means today (UTC) — the same default the CLI's
+    /// `--date` flag falls back to.
+    #[serde(default)]
+    pub as_of_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NetWorthSeriesQuery {
+    pub book_id: String,
+    pub from: String,
+    pub to: String,
+}
+
+// ---------------------------------------------------------------------------
 // transaction
 // ---------------------------------------------------------------------------
 

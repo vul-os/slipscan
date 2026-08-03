@@ -103,6 +103,14 @@ CREATE INDEX members_book_idx ON members (book_id);
 -- index members_default_account_idx
 CREATE INDEX members_default_account_idx ON members (default_account_id);
 
+-- index networth_snapshots_account_date_idx
+CREATE INDEX networth_snapshots_account_date_idx
+    ON networth_snapshots (account_id, as_of_date);
+
+-- index networth_snapshots_book_date_idx
+CREATE INDEX networth_snapshots_book_date_idx
+    ON networth_snapshots (book_id, as_of_date);
+
 -- index pay_deliveries_due_idx
 CREATE INDEX pay_deliveries_due_idx ON pay_deliveries (state, next_attempt_at);
 
@@ -219,6 +227,9 @@ CREATE UNIQUE INDEX recon_matches_tx_active_unique
 ;
 
 -- index sqlite_autoindex_merchant_mappings_2
+;
+
+-- index sqlite_autoindex_networth_snapshots_1
 ;
 
 -- index sqlite_autoindex_pay_deliveries_1
@@ -656,6 +667,18 @@ CREATE TABLE merchant_mappings (
     UNIQUE (book_id, merchant_normalized)
 );
 
+-- table networth_snapshots
+CREATE TABLE networth_snapshots (
+    id            TEXT PRIMARY KEY,
+    book_id       TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    account_id    TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
+    as_of_date    TEXT NOT NULL,
+    balance_minor INTEGER NOT NULL,
+    currency      TEXT NOT NULL CHECK (length(currency) = 3),
+    source        TEXT NOT NULL CHECK (source IN ('captured', 'backfilled')),
+    created_at    TEXT NOT NULL
+);
+
 -- table pay_deliveries
 CREATE TABLE pay_deliveries (
     id              TEXT PRIMARY KEY,
@@ -963,6 +986,20 @@ BEGIN
     SELECT RAISE(ABORT, 'posted journals are immutable; post a reversal instead');
 END;
 
+-- trigger networth_snapshots_no_delete
+CREATE TRIGGER networth_snapshots_no_delete
+BEFORE DELETE ON networth_snapshots
+BEGIN
+    SELECT RAISE(ABORT, 'net-worth snapshots are immutable; record a new snapshot instead');
+END;
+
+-- trigger networth_snapshots_no_update
+CREATE TRIGGER networth_snapshots_no_update
+BEFORE UPDATE ON networth_snapshots
+BEGIN
+    SELECT RAISE(ABORT, 'net-worth snapshots are immutable; record a new snapshot instead');
+END;
+
 -- trigger stock_movements_no_delete
 CREATE TRIGGER stock_movements_no_delete
 BEFORE DELETE ON stock_movements
@@ -1231,6 +1268,14 @@ WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
 BEGIN
     INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
     VALUES ('merchant_mappings', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_networth_snapshots_ins
+CREATE TRIGGER sync_capture_networth_snapshots_ins AFTER INSERT ON networth_snapshots
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('networth_snapshots', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 END;
 
 -- trigger sync_capture_product_categories_del

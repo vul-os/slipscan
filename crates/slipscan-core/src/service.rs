@@ -568,6 +568,260 @@ impl CoreService {
     }
 
     // -----------------------------------------------------------------------
+    // Net worth — periodic balance snapshots (PARITY.md gap #4, "Net worth
+    // over time"). See migration `0015_networth`'s header for the schema
+    // reasoning; this is the service half: what gets snapshotted, how
+    // backfill reconstructs history, and how a series converts to the book's
+    // currency.
+    // -----------------------------------------------------------------------
+
+    /// Record `as_of_date`'s balance for every account in the book, one
+    /// snapshot each, in the account's own currency. Call this periodically
+    /// (a scheduled `slipscan networth capture`, a desktop on-launch hook,
+    /// …) and `networth_series` has a real point for that date forever
+    /// after — nothing recomputes the past from a later capture.
+    ///
+    /// Idempotent per `(account, date)`: an account that already has *any*
+    /// snapshot — captured or backfilled — for `as_of_date` keeps that row
+    /// rather than gaining a duplicate, so calling this every time the
+    /// desktop opens does not grow the table without bound. Calling it twice
+    /// for the same date is therefore not how a correction is made; a
+    /// balance that turns out to have been wrong is fixed by fixing the
+    /// transaction that caused it and letting a **new** date's capture (or a
+    /// re-run of `networth_backfill`, which shares the same idempotency)
+    /// pick up the corrected total — this function never rewrites a fact
+    /// already on record, matching the immutability the schema itself
+    /// enforces.
+    pub fn networth_capture(
+        &self,
+        book_id: &str,
+        as_of_date: &str,
+    ) -> CoreResult<Vec<NetWorthSnapshot>> {
+        self.book_get(book_id)?;
+        parse_date(as_of_date)?;
+        let accounts = repo::account::list(self.conn(), book_id)?;
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        let mut snapshots = Vec::with_capacity(accounts.len());
+        for account in &accounts {
+            if let Some(existing) =
+                repo::networth::get_for_account_date(&tx, &account.id, as_of_date)?
+            {
+                snapshots.push(existing);
+                continue;
+            }
+            let balance_minor = repo::networth::balance_as_of(
+                &tx,
+                &account.id,
+                &account.currency,
+                account.opening_balance_minor,
+                as_of_date,
+            )?;
+            let snapshot = NetWorthSnapshot {
+                id: new_id(),
+                book_id: book_id.to_string(),
+                account_id: account.id.clone(),
+                as_of_date: as_of_date.to_string(),
+                balance_minor,
+                currency: account.currency.clone(),
+                source: NetWorthSnapshotSource::Captured,
+                created_at: now.clone(),
+            };
+            repo::networth::insert(&tx, &snapshot)?;
+            snapshots.push(snapshot);
+        }
+        self.emit_audit(
+            &tx,
+            Some(book_id),
+            "networth_snapshot",
+            None,
+            "capture",
+            None,
+            Some(serde_json::to_string(&serde_json::json!({
+                "as_of_date": as_of_date,
+                "accounts": accounts.len(),
+            }))?),
+        )?;
+        tx.commit()?;
+        Ok(snapshots)
+    }
+
+    /// Reconstruct historical balance snapshots for every account in
+    /// `book_id` from the transaction ledger already recorded — the reason a
+    /// fresh install's net-worth chart is not a single point starting today.
+    ///
+    /// For each account, this walks **backward** from the account's current
+    /// total (`opening_balance_minor` plus every one of its own-currency,
+    /// non-rejected transactions to date): starting at that total and
+    /// subtracting each date's own movements in reverse chronological order
+    /// reconstructs the balance the account held as of the end of every
+    /// earlier day that saw activity. A forward sum from the opening balance
+    /// would land on the identical number for the identical reason
+    /// double-entry books always reconcile either direction — this walks it
+    /// backward because that is the shape the feature needs: a book that has
+    /// been used for years should not need years of stored history replayed
+    /// forward to answer "what was net worth in March", only the ledger it
+    /// already has. A day with no transaction produces no row: a balance
+    /// that has not changed needs no new fact, and `networth_series` already
+    /// carries the last known value forward across the gap.
+    ///
+    /// Idempotent per `(account, date)`, the same as `networth_capture`: a
+    /// date this account already has *any* snapshot for — from a previous
+    /// run of this function, or a real `networth_capture` that landed on it
+    /// — is left untouched. Running this again after importing more history
+    /// only ever fills the dates that are still gaps, and a reconstructed
+    /// guess never displaces a captured fact.
+    pub fn networth_backfill(&self, book_id: &str) -> CoreResult<Vec<NetWorthSnapshot>> {
+        self.book_get(book_id)?;
+        let accounts = repo::account::list(self.conn(), book_id)?;
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        let mut created = Vec::new();
+        for account in &accounts {
+            let existing_dates = repo::networth::dates_for_account(&tx, &account.id)?;
+            let deltas =
+                repo::networth::own_currency_deltas_by_date(&tx, &account.id, &account.currency)?;
+            // `running` starts at the account's current total (opening
+            // balance plus every delta) and is walked backward below.
+            let mut running =
+                account.opening_balance_minor + deltas.iter().map(|(_, delta)| delta).sum::<i64>();
+            for (date, day_total) in deltas.into_iter().rev() {
+                // `running` is the balance as of the END of `date`, i.e.
+                // including this day's own movements — exactly what a
+                // snapshot dated `date` means.
+                if !existing_dates.contains(&date) {
+                    let snapshot = NetWorthSnapshot {
+                        id: new_id(),
+                        book_id: book_id.to_string(),
+                        account_id: account.id.clone(),
+                        as_of_date: date,
+                        balance_minor: running,
+                        currency: account.currency.clone(),
+                        source: NetWorthSnapshotSource::Backfilled,
+                        created_at: now.clone(),
+                    };
+                    repo::networth::insert(&tx, &snapshot)?;
+                    created.push(snapshot);
+                }
+                running -= day_total;
+            }
+        }
+        if !created.is_empty() {
+            self.emit_audit(
+                &tx,
+                Some(book_id),
+                "networth_snapshot",
+                None,
+                "backfill",
+                None,
+                Some(serde_json::to_string(&serde_json::json!({
+                    "created": created.len(),
+                }))?),
+            )?;
+        }
+        tx.commit()?;
+        Ok(created)
+    }
+
+    /// A book's net-worth series over `[from_date, to_date]`: every point the
+    /// book has a snapshot on in range (see `repo::networth::series` for
+    /// exactly which dates qualify), each carrying every account's balance
+    /// in its own currency plus the total converted to the book's currency.
+    ///
+    /// **Multi-currency, honestly.** Every foreign currency appearing
+    /// anywhere in the series is resolved to **one** cached exchange rate,
+    /// read once via the same `fx_rates` cache `fx_convert` reads from —
+    /// never per point, and never through `fx_convert` itself (which would
+    /// both re-read the cache on every account on every point *and* write an
+    /// audit-log entry for each, turning a read into a write storm). That
+    /// cache is **latest-only** (`crate::fx` docs — SlipScan stores no
+    /// historical exchange rates), so this is a real, stated limitation
+    /// rather than a papered-over one: a 2024 balance in a foreign currency
+    /// converts at **today's** cached rate, not 2024's. `conversions` on the
+    /// returned series names exactly which rate (and its own `as_of`/
+    /// staleness) was used for each currency, so that is never hidden. A
+    /// currency with **no** cached rate at all is not guessed at either — it
+    /// is left out of every point's `total_minor` and named in that point's
+    /// `unconverted`, because a wrong number is worse than a missing one.
+    pub fn networth_series(
+        &self,
+        book_id: &str,
+        from_date: &str,
+        to_date: &str,
+    ) -> CoreResult<NetWorthSeries> {
+        let book = self.book_get(book_id)?;
+        parse_date(from_date)?;
+        parse_date(to_date)?;
+        let rows = repo::networth::series(self.conn(), book_id, from_date, to_date)?;
+
+        // Resolve every foreign currency's cached rate exactly once.
+        let now = time::OffsetDateTime::now_utc();
+        let mut rates: std::collections::HashMap<String, Option<fx::FxCachedRate>> =
+            std::collections::HashMap::new();
+        for row in &rows {
+            if row.currency != book.currency && !rates.contains_key(&row.currency) {
+                let cached = fx::cache::get(self.conn(), &row.currency, &book.currency)?
+                    .map(|r| fx::cached_rate_from_row(r, now))
+                    .transpose()?;
+                rates.insert(row.currency.clone(), cached);
+            }
+        }
+
+        let mut points: Vec<NetWorthPoint> = Vec::new();
+        for row in rows {
+            if points.last().map(|p: &NetWorthPoint| p.as_of_date.as_str())
+                != Some(row.point_date.as_str())
+            {
+                points.push(NetWorthPoint {
+                    as_of_date: row.point_date.clone(),
+                    by_account: Vec::new(),
+                    currency: book.currency.clone(),
+                    total_minor: 0,
+                    unconverted: Vec::new(),
+                });
+            }
+            points
+                .last_mut()
+                .expect("just pushed if absent")
+                .by_account
+                .push(NetWorthAccountBalance {
+                    account_id: row.account_id,
+                    currency: row.currency,
+                    balance_minor: row.balance_minor,
+                });
+        }
+
+        for point in &mut points {
+            let mut total: i64 = 0;
+            let mut unconverted: Vec<String> = Vec::new();
+            for bal in &point.by_account {
+                if bal.currency == book.currency {
+                    total += bal.balance_minor;
+                    continue;
+                }
+                match rates.get(&bal.currency).and_then(Option::as_ref) {
+                    Some(rate) => total += fx::convert_minor(bal.balance_minor, rate.rate)?,
+                    None => {
+                        if !unconverted.contains(&bal.currency) {
+                            unconverted.push(bal.currency.clone());
+                        }
+                    }
+                }
+            }
+            point.total_minor = total;
+            point.unconverted = unconverted;
+        }
+
+        let conversions = rates.into_values().flatten().collect();
+        Ok(NetWorthSeries {
+            book_id: book_id.to_string(),
+            currency: book.currency,
+            points,
+            conversions,
+        })
+    }
+
+    // -----------------------------------------------------------------------
     // Transactions
     // -----------------------------------------------------------------------
 
@@ -10163,5 +10417,331 @@ mod tests {
             .collect::<Result<_, _>>()
             .unwrap();
         assert_eq!(rows, vec![(book.id.clone(), 0)]);
+    }
+
+    // -- net worth ------------------------------------------------------
+
+    /// A known ledger, worked out by hand, and checked against every layer:
+    /// the plain "current balance" read, a single `networth_capture`, and
+    /// the full `networth_backfill` reconstruction.
+    ///
+    /// Cheque account: opens at 100 000 minor units. Three transactions:
+    /// +50 000 on 2026-01-10, -20 000 on 2026-01-20, +10 000 on 2026-02-01.
+    /// Running balance by hand:
+    ///   before 2026-01-10:  100 000              (the opening balance)
+    ///   end of 2026-01-10:  150 000  (100 000 + 50 000)
+    ///   end of 2026-01-20:  130 000  (150 000 - 20 000)
+    ///   end of 2026-02-01:  140 000  (130 000 + 10 000)  == current total
+    fn known_ledger(svc: &CoreService) -> (Book, Account) {
+        let book = make_book(svc);
+        let account = svc
+            .account_create(NewAccount {
+                book_id: book.id.clone(),
+                name: "Cheque".into(),
+                kind: AccountKind::Bank,
+                currency: "ZAR".into(),
+                institution: None,
+                account_number_masked: None,
+                opening_balance_minor: Some(100_000),
+            })
+            .unwrap();
+        for (date, amount) in [
+            ("2026-01-10", 50_000),
+            ("2026-01-20", -20_000),
+            ("2026-02-01", 10_000),
+        ] {
+            svc.transaction_create(NewTransaction {
+                book_id: book.id.clone(),
+                account_id: account.id.clone(),
+                source: TransactionSource::Manual,
+                provider_txn_id: None,
+                posted_date: date.into(),
+                amount_minor: amount,
+                currency: "ZAR".into(),
+                merchant: None,
+                description: Some("ledger entry".into()),
+                notes: None,
+                category_id: None,
+                document_id: None,
+                dedupe_occurrence: 0,
+            })
+            .unwrap();
+        }
+        (book, account)
+    }
+
+    #[test]
+    fn networth_capture_matches_the_known_ledger_by_hand() {
+        let svc = svc();
+        let (book, account) = known_ledger(&svc);
+
+        // Mid-ledger date: only the first two transactions have posted.
+        let snapshots = svc.networth_capture(&book.id, "2026-01-20").unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].account_id, account.id);
+        assert_eq!(snapshots[0].balance_minor, 130_000);
+        assert_eq!(snapshots[0].currency, "ZAR");
+        assert_eq!(snapshots[0].source, NetWorthSnapshotSource::Captured);
+
+        // Before any transaction: just the opening balance.
+        let early = svc.networth_capture(&book.id, "2026-01-01").unwrap();
+        assert_eq!(early[0].balance_minor, 100_000);
+
+        // Today (after every transaction): the current total.
+        let current = svc.networth_capture(&book.id, "2026-02-01").unwrap();
+        assert_eq!(current[0].balance_minor, 140_000);
+    }
+
+    #[test]
+    fn networth_capture_is_idempotent_per_account_and_date() {
+        let svc = svc();
+        let (book, _account) = known_ledger(&svc);
+        let first = svc.networth_capture(&book.id, "2026-01-20").unwrap();
+        let second = svc.networth_capture(&book.id, "2026-01-20").unwrap();
+        assert_eq!(first, second, "the second call must reuse the same row");
+
+        let mut stmt = svc
+            .conn_for_test()
+            .prepare(
+                "SELECT COUNT(*) FROM networth_snapshots WHERE account_id = ?1 AND as_of_date = ?2",
+            )
+            .unwrap();
+        let count: i64 = stmt
+            .query_row(rusqlite::params![first[0].account_id, "2026-01-20"], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1, "capturing the same date twice must not duplicate");
+    }
+
+    #[test]
+    fn networth_backfill_reconstructs_every_transaction_date_from_todays_total() {
+        let svc = svc();
+        let (book, account) = known_ledger(&svc);
+
+        let created = svc.networth_backfill(&book.id).unwrap();
+        // One snapshot per distinct transaction date; the account has three.
+        assert_eq!(created.len(), 3);
+        assert!(created
+            .iter()
+            .all(|s| s.source == NetWorthSnapshotSource::Backfilled));
+
+        let by_date: std::collections::HashMap<&str, i64> = created
+            .iter()
+            .map(|s| (s.as_of_date.as_str(), s.balance_minor))
+            .collect();
+        assert_eq!(by_date["2026-01-10"], 150_000);
+        assert_eq!(by_date["2026-01-20"], 130_000);
+        assert_eq!(by_date["2026-02-01"], 140_000);
+
+        // Re-running is a no-op: every date is already covered.
+        let account_id = account.id.clone();
+        let second_run = svc.networth_backfill(&book.id).unwrap();
+        assert!(second_run.is_empty(), "a full re-run must create nothing new");
+        let mut stmt = svc
+            .conn_for_test()
+            .prepare("SELECT COUNT(*) FROM networth_snapshots WHERE account_id = ?1")
+            .unwrap();
+        let count: i64 = stmt
+            .query_row(rusqlite::params![account_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 3, "re-running backfill must not duplicate rows");
+    }
+
+    #[test]
+    fn networth_backfill_leaves_a_prior_capture_untouched() {
+        // A real captured balance at a date must never be displaced by a
+        // reconstructed one, even if backfill runs afterward.
+        let svc = svc();
+        let (book, _account) = known_ledger(&svc);
+        svc.networth_capture(&book.id, "2026-01-20").unwrap();
+
+        // Backfill would derive the identical 130_000 for this date from the
+        // same ledger, so the number alone cannot prove anything was
+        // skipped. What proves it is that the row count for this date stays
+        // at 1 and its source stays `captured` — a second, backfilled row
+        // for a date already covered would show up as a second row here even
+        // though it happened to agree on the amount.
+        svc.networth_backfill(&book.id).unwrap();
+        let mut stmt = svc
+            .conn_for_test()
+            .prepare(
+                "SELECT source, COUNT(*) FROM networth_snapshots WHERE as_of_date = '2026-01-20' \
+                 GROUP BY source",
+            )
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![("captured".to_string(), 1)],
+            "the captured row must be the only one, and backfill must not add a second for a date it already has"
+        );
+    }
+
+    #[test]
+    fn networth_series_carries_the_last_known_balance_forward() {
+        let svc = svc();
+        let (book, account) = known_ledger(&svc);
+        svc.networth_backfill(&book.id).unwrap();
+
+        let series = svc
+            .networth_series(&book.id, "2026-01-01", "2026-02-28")
+            .unwrap();
+        assert_eq!(series.currency, "ZAR");
+        assert_eq!(series.points.len(), 3, "one point per distinct snapshot date");
+
+        let point = |date: &str| series.points.iter().find(|p| p.as_of_date == date).unwrap();
+        assert_eq!(point("2026-01-10").total_minor, 150_000);
+        assert_eq!(point("2026-01-20").total_minor, 130_000);
+        assert_eq!(point("2026-02-01").total_minor, 140_000);
+        for p in &series.points {
+            assert!(p.unconverted.is_empty());
+            assert_eq!(p.by_account.len(), 1);
+            assert_eq!(p.by_account[0].account_id, account.id);
+        }
+    }
+
+    #[test]
+    fn networth_series_sums_a_second_account_only_within_its_own_currency() {
+        let svc = svc();
+        let (book, _cheque) = known_ledger(&svc);
+        let _savings = svc
+            .account_create(NewAccount {
+                book_id: book.id.clone(),
+                name: "Savings".into(),
+                kind: AccountKind::Bank,
+                currency: "ZAR".into(),
+                institution: None,
+                account_number_masked: None,
+                opening_balance_minor: Some(5_000),
+            })
+            .unwrap();
+        svc.networth_backfill(&book.id).unwrap();
+        // Savings has no transactions, so backfill created nothing for it —
+        // capture it explicitly for the same date as one of Cheque's points.
+        svc.networth_capture(&book.id, "2026-01-20").unwrap();
+
+        let series = svc
+            .networth_series(&book.id, "2026-01-01", "2026-02-28")
+            .unwrap();
+        let jan20 = series
+            .points
+            .iter()
+            .find(|p| p.as_of_date == "2026-01-20")
+            .unwrap();
+        assert_eq!(jan20.by_account.len(), 2);
+        // Cheque (130 000, from the backfill) + Savings (5 000, untouched).
+        assert_eq!(jan20.total_minor, 135_000);
+    }
+
+    #[test]
+    fn networth_series_excludes_an_unconvertible_currency_instead_of_mis_summing() {
+        // A USD account with no cached USD/ZAR rate must never be silently
+        // folded into a ZAR total — that would be a wrong number, worse than
+        // a missing one.
+        let svc = svc();
+        let book = make_book(&svc); // ZAR book
+        svc.account_create(NewAccount {
+            book_id: book.id.clone(),
+            name: "US brokerage".into(),
+            kind: AccountKind::Asset,
+            currency: "USD".into(),
+            institution: None,
+            account_number_masked: None,
+            opening_balance_minor: Some(1_000_00),
+        })
+        .unwrap();
+        svc.networth_capture(&book.id, "2026-03-01").unwrap();
+
+        let series = svc
+            .networth_series(&book.id, "2026-03-01", "2026-03-01")
+            .unwrap();
+        assert_eq!(series.points.len(), 1);
+        let point = &series.points[0];
+        assert_eq!(point.total_minor, 0, "the unconvertible balance is excluded, not guessed at");
+        assert_eq!(point.unconverted, vec!["USD".to_string()]);
+        assert!(series.conversions.is_empty(), "no rate was ever cached");
+    }
+
+    #[test]
+    fn networth_series_converts_using_the_cached_rate_and_reports_its_provenance() {
+        let svc = svc();
+        let book = make_book(&svc); // ZAR book
+        svc.account_create(NewAccount {
+            book_id: book.id.clone(),
+            name: "US brokerage".into(),
+            kind: AccountKind::Asset,
+            currency: "USD".into(),
+            institution: None,
+            account_number_masked: None,
+            opening_balance_minor: Some(10_000), // $100.00
+        })
+        .unwrap();
+        // Seed the cache directly (no network transport needed for this test).
+        crate::fx::cache::upsert(
+            svc.conn_for_test(),
+            &crate::fx::cache::FxRateRow {
+                from_currency: "USD".into(),
+                to_currency: "ZAR".into(),
+                rate: "18.0".into(),
+                as_of: "2026-03-01T00:00:00Z".into(),
+                grade: "A".into(),
+                fetched_at: "2026-03-01T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+        svc.networth_capture(&book.id, "2026-03-01").unwrap();
+
+        let series = svc
+            .networth_series(&book.id, "2026-03-01", "2026-03-01")
+            .unwrap();
+        let point = &series.points[0];
+        assert_eq!(point.total_minor, 180_000); // $100.00 * 18.0 = R1800.00
+        assert!(point.unconverted.is_empty());
+        assert_eq!(series.conversions.len(), 1);
+        assert_eq!(series.conversions[0].from_currency, "USD");
+        assert_eq!(series.conversions[0].rate.to_string(), "18.0");
+    }
+
+    #[test]
+    fn networth_series_has_no_point_outside_recorded_dates() {
+        let svc = svc();
+        let (book, _account) = known_ledger(&svc);
+        svc.networth_backfill(&book.id).unwrap();
+        // Nothing was ever snapshotted in April; the series must not invent
+        // a point there.
+        let series = svc
+            .networth_series(&book.id, "2026-04-01", "2026-04-30")
+            .unwrap();
+        assert!(series.points.is_empty());
+    }
+
+    #[test]
+    fn networth_capture_and_backfill_reach_the_sync_outbox_as_ledger_facts() {
+        let svc = svc();
+        let (book, account) = known_ledger(&svc);
+        svc.networth_capture(&book.id, "2026-02-01").unwrap();
+
+        let mut stmt = svc
+            .conn_for_test()
+            .prepare(
+                "SELECT ns, deleted FROM sync_outbox \
+                 WHERE table_name = 'networth_snapshots' AND row_id IN \
+                 (SELECT id FROM networth_snapshots WHERE account_id = ?1)",
+            )
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map(rusqlite::params![account.id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], (book.id.clone(), 0));
     }
 }

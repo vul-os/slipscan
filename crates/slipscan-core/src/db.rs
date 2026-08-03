@@ -57,6 +57,15 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         include_str!("migrations/0011_catalogue.sql"),
     ),
     (12, "0012_stock", include_str!("migrations/0012_stock.sql")),
+    // Numbered 0015 rather than 0013 as assigned (net worth is PARITY.md gap
+    // #4); 13 and 14 are left free rather than renumbering this file down,
+    // so this list carries a deliberate gap instead of a collision if those
+    // numbers are claimed later.
+    (
+        15,
+        "0015_networth",
+        include_str!("migrations/0015_networth.sql"),
+    ),
 ];
 
 /// A configured, migrated SQLite database handle.
@@ -153,13 +162,13 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15]
         );
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15]
         );
     }
 
@@ -192,6 +201,7 @@ mod tests {
             "journals",
             "members",
             "merchant_mappings",
+            "networth_snapshots",
             "pay_deliveries",
             "pay_endpoints",
             "pay_matches",

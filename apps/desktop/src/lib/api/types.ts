@@ -210,6 +210,62 @@ export interface Account {
 }
 
 // ---------------------------------------------------------------------------
+// net worth — periodic per-account balance snapshots (PARITY.md "Net worth
+// over time"). Money stays integer minor units + a currency code throughout,
+// same as everywhere else in this file.
+// ---------------------------------------------------------------------------
+
+export type NetWorthSnapshotSource = "captured" | "backfilled";
+
+/** One `(account, date)` balance fact, in the account's own currency. */
+export interface NetWorthSnapshot {
+  id: string;
+  book_id: string;
+  account_id: string;
+  /** `YYYY-MM-DD`. The balance is as of the end of this day. */
+  as_of_date: string;
+  balance_minor: number;
+  currency: string;
+  source: NetWorthSnapshotSource;
+  created_at: string;
+}
+
+/** One account's balance inside a {@link NetWorthPoint} — its own currency,
+ * never converted. */
+export interface NetWorthAccountBalance {
+  account_id: string;
+  currency: string;
+  balance_minor: number;
+}
+
+/** One point in a net-worth series: every account's most recent known
+ * balance at or before this date, plus the total converted to the book's
+ * currency. `unconverted` names any currency present in `by_account` that
+ * had no resolvable exchange rate and so is excluded from `total_minor` —
+ * a caller shows that plainly rather than treating the total as complete. */
+export interface NetWorthPoint {
+  as_of_date: string;
+  by_account: NetWorthAccountBalance[];
+  /** The book's currency — what `total_minor` is denominated in. */
+  currency: string;
+  total_minor: number;
+  unconverted: string[];
+}
+
+/** A net-worth series for one book: every point in range, plus the exchange
+ * rate provenance behind every conversion any point performed. The FX cache
+ * is latest-only (no historical rates), so every point's conversion uses
+ * TODAY's cached rate for a currency, never the rate that applied on that
+ * point's own date — `conversions` names exactly which rate, so this is
+ * never hidden. */
+export interface NetWorthSeries {
+  book_id: string;
+  currency: string;
+  points: NetWorthPoint[];
+  conversions: FxCachedRate[];
+}
+
+// ---------------------------------------------------------------------------
 // transaction
 // ---------------------------------------------------------------------------
 

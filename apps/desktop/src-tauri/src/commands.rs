@@ -265,6 +265,49 @@ pub async fn account_list(
 }
 
 // ---------------------------------------------------------------------------
+// Net worth — periodic balance snapshots (PARITY.md "Net worth over time").
+// Capture and backfill are both idempotent per `(account, date)` in core, so
+// the Dashboard calls both on every load without growing the table without
+// bound — see `slipscan_core::service::CoreService::networth_capture`.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn networth_capture(
+    state: State<'_, AppState>,
+    query: NetWorthCaptureQuery,
+) -> Result<Vec<core::NetWorthSnapshot>, String> {
+    let as_of_date = query
+        .as_of_date
+        .unwrap_or_else(slipscan_core::util::today);
+    state
+        .service()?
+        .networth_capture(&query.book_id, &as_of_date)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn networth_backfill(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::NetWorthSnapshot>, String> {
+    state
+        .service()?
+        .networth_backfill(&query.book_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn networth_series(
+    state: State<'_, AppState>,
+    query: NetWorthSeriesQuery,
+) -> Result<core::NetWorthSeries, String> {
+    state
+        .service()?
+        .networth_series(&query.book_id, &query.from, &query.to)
+        .map_err(err)
+}
+
+// ---------------------------------------------------------------------------
 // data folder — movable, per the "Data location & backup" contract. Backup is
 // the user's own cloud pointed at this folder; SlipScan ships no backup
 // service.
