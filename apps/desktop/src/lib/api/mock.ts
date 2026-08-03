@@ -63,6 +63,9 @@ import type {
   NewPayEndpoint,
   NewPayWatch,
   NewPoReceipt,
+  NewProduct,
+  NewProductCategory,
+  NewProductVariant,
   NewPurchaseOrder,
   NewPurchaseOrderItem,
   NewSalesOrder,
@@ -87,6 +90,11 @@ import type {
   PoReceipt,
   PoReceiptStatus,
   PoUpdateRequest,
+  Product,
+  ProductCategory,
+  ProductUpdateRequest,
+  ProductVariant,
+  ProductVariantUpdateRequest,
   PurchaseOrder,
   PurchaseOrderItem,
   PurchaseOrderItemReceiving,
@@ -161,6 +169,11 @@ const locations: Location[] = [];
  * append-only, mirroring core's own insert-only `po_receipts` table: nothing
  * here ever mutates or removes a row out of it.
  */
+/** Catalogue (Phase 6.3a). Empty by default, like contacts and purchasing. */
+const productCategories: ProductCategory[] = [];
+const products: Product[] = [];
+const productVariants: ProductVariant[] = [];
+
 /** Contacts (Phase 6.2). Empty by default, like locations and purchasing —
  * no screen calls these yet (ROADMAP.md 6.9). */
 const contacts: Contact[] = [];
@@ -190,6 +203,24 @@ function nextNumber(bookId: string, series: string): number {
   const next = numberSequences.get(key) ?? 1;
   numberSequences.set(key, next + 1);
   return next;
+}
+
+function requireProductCategory(id: string): ProductCategory {
+  const c = productCategories.find((x) => x.id === id);
+  if (!c) throw new Error(`no product category with id ${id}`);
+  return c;
+}
+
+function requireProduct(id: string): Product {
+  const p = products.find((x) => x.id === id);
+  if (!p) throw new Error(`no product with id ${id}`);
+  return p;
+}
+
+function requireVariant(id: string): ProductVariant {
+  const v = productVariants.find((x) => x.id === id);
+  if (!v) throw new Error(`no product variant with id ${id}`);
+  return v;
 }
 
 function requireContact(contactId: string): Contact {
@@ -2177,6 +2208,174 @@ export const mockApi = {
     const i = locations.findIndex((x) => x.id === q.location_id);
     if (i === -1) throw new Error(`location not found: ${q.location_id}`);
     locations.splice(i, 1);
+    return null;
+  },
+
+  // -- catalogue: categories, products, variants (Phase 6.3a). --
+
+  product_category_create: async (
+    q: NewProductCategory,
+  ): Promise<ProductCategory> => {
+    const name = q.name.trim();
+    if (!name) throw new Error("category name must not be empty");
+    const now = new Date().toISOString();
+    const created: ProductCategory = {
+      id: id("pcat"),
+      book_id: q.book_id,
+      name,
+      created_at: now,
+      updated_at: now,
+    };
+    productCategories.push(created);
+    return clone(created);
+  },
+
+  product_category_get: async (q: { id: string }): Promise<ProductCategory> =>
+    clone(requireProductCategory(q.id)),
+
+  product_category_list: async (q: {
+    book_id: string;
+  }): Promise<ProductCategory[]> =>
+    clone(productCategories.filter((c) => c.book_id === q.book_id)),
+
+  product_category_rename: async (q: {
+    id: string;
+    name: string;
+  }): Promise<ProductCategory> => {
+    const c = requireProductCategory(q.id);
+    const name = q.name.trim();
+    if (!name) throw new Error("category name must not be empty");
+    c.name = name;
+    c.updated_at = new Date().toISOString();
+    return clone(c);
+  },
+
+  product_category_delete: async (q: { id: string }): Promise<null> => {
+    const c = requireProductCategory(q.id);
+    productCategories.splice(productCategories.indexOf(c), 1);
+    // Core sets the FK to NULL rather than orphaning the product.
+    for (const p of products) {
+      if (p.product_category_id === c.id) p.product_category_id = null;
+    }
+    return null;
+  },
+
+  product_create: async (q: NewProduct): Promise<Product> => {
+    const name = q.name.trim();
+    if (!name) throw new Error("product name must not be empty");
+    const now = new Date().toISOString();
+    const created: Product = {
+      id: id("prod"),
+      book_id: q.book_id,
+      product_category_id: q.product_category_id ?? null,
+      name,
+      description: q.description?.trim() || null,
+      created_at: now,
+      updated_at: now,
+    };
+    products.push(created);
+    return clone(created);
+  },
+
+  product_get: async (q: { id: string }): Promise<Product> =>
+    clone(requireProduct(q.id)),
+
+  product_list: async (q: { book_id: string }): Promise<Product[]> =>
+    clone(products.filter((p) => p.book_id === q.book_id)),
+
+  product_update: async (q: ProductUpdateRequest): Promise<Product> => {
+    const p = requireProduct(q.id);
+    if (q.name !== undefined) {
+      const name = q.name.trim();
+      if (!name) throw new Error("product name must not be empty");
+      p.name = name;
+    }
+    if (q.description !== undefined) p.description = q.description?.trim() || null;
+    if (q.product_category_id !== undefined)
+      p.product_category_id = q.product_category_id ?? null;
+    p.updated_at = new Date().toISOString();
+    return clone(p);
+  },
+
+  product_delete: async (q: { id: string }): Promise<null> => {
+    const p = requireProduct(q.id);
+    if (productVariants.some((v) => v.product_id === p.id))
+      throw new Error("this product still has variants and cannot be deleted");
+    products.splice(products.indexOf(p), 1);
+    return null;
+  },
+
+  product_variant_add: async (
+    q: NewProductVariant,
+  ): Promise<ProductVariant> => {
+    const product = requireProduct(q.product_id);
+    const sku = q.sku.trim();
+    if (!sku) throw new Error("variant SKU must not be empty");
+    if (
+      productVariants.some(
+        (v) => v.book_id === product.book_id && v.sku === sku,
+      )
+    )
+      throw new Error(`a variant with SKU "${sku}" already exists in this book`);
+    const now = new Date().toISOString();
+    const created: ProductVariant = {
+      id: id("pvar"),
+      product_id: product.id,
+      book_id: product.book_id,
+      sku,
+      name: q.name.trim(),
+      price_minor: q.price_minor ?? 0,
+      cost_price_minor: q.cost_price_minor ?? 0,
+      currency: q.currency,
+      reorder_point: q.reorder_point ?? 0,
+      attributes: q.attributes ?? null,
+      created_at: now,
+      updated_at: now,
+    };
+    productVariants.push(created);
+    return clone(created);
+  },
+
+  product_variant_get: async (q: { id: string }): Promise<ProductVariant> =>
+    clone(requireVariant(q.id)),
+
+  product_variant_list: async (q: {
+    product_id: string;
+  }): Promise<ProductVariant[]> =>
+    clone(productVariants.filter((v) => v.product_id === q.product_id)),
+
+  product_variant_list_for_book: async (q: {
+    book_id: string;
+  }): Promise<ProductVariant[]> =>
+    clone(productVariants.filter((v) => v.book_id === q.book_id)),
+
+  product_variant_update: async (
+    q: ProductVariantUpdateRequest,
+  ): Promise<ProductVariant> => {
+    const v = requireVariant(q.id);
+    if (q.sku !== undefined) {
+      const sku = q.sku.trim();
+      if (!sku) throw new Error("variant SKU must not be empty");
+      if (
+        productVariants.some(
+          (o) => o.id !== v.id && o.book_id === v.book_id && o.sku === sku,
+        )
+      )
+        throw new Error(`a variant with SKU "${sku}" already exists in this book`);
+      v.sku = sku;
+    }
+    if (q.name !== undefined) v.name = q.name.trim();
+    if (q.price_minor !== undefined) v.price_minor = q.price_minor;
+    if (q.cost_price_minor !== undefined) v.cost_price_minor = q.cost_price_minor;
+    if (q.reorder_point !== undefined) v.reorder_point = q.reorder_point;
+    if (q.attributes !== undefined) v.attributes = q.attributes ?? null;
+    v.updated_at = new Date().toISOString();
+    return clone(v);
+  },
+
+  product_variant_delete: async (q: { id: string }): Promise<null> => {
+    const v = requireVariant(q.id);
+    productVariants.splice(productVariants.indexOf(v), 1);
     return null;
   },
 

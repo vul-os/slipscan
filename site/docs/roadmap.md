@@ -232,10 +232,12 @@ These were settled rather than escalated, and are recorded here so the reasoning
       class of gap. Still missing: no merge/dedupe, no statement, and the tax number, addresses and
       credit limit are stored but unconsumed)*
 - [x] **6.3a Catalogue.** Product categories, products, and variants carrying SKU, price, cost
-      price, reorder point and attributes *(shipped in core, and **reachable from almost nowhere**:
-      1 of 16 catalogue operations is on a surface (`product_variant_list_for_book`, via the CLI's
-      generic `list`). No surface can create a product or a variant, which is what makes 6.4 and 6.5
-      unusable end to end — see `npm run reachable:check`. Named `product_categories` with a
+      price, reorder point and attributes *(shipped, and reachable on all four surfaces as of
+      2026-08-03 — `slipscan catalogue …`, HTTP, desktop IPC and a `client.ts` wrapper. For three
+      phases only 1 of its 16 operations was routed anywhere, so nothing could create the
+      `variant_id` a 6.4 or 6.5 order line requires; closing that is what made Phase 6 exercisable
+      end to end (category -> product -> variant -> order line -> confirm -> stock movement).
+      `npm run reachable:check` now fails CI on that class of gap. Named `product_categories` with a
       `product_category_id` FK, deliberately distinct from the existing transaction `categories`
       table — a `products.category_id = categories.id` join would type-check while being silently
       wrong. Money follows the existing INTEGER-minor-units + ISO-4217 convention rather than a

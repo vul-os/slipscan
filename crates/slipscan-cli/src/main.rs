@@ -22,10 +22,11 @@ use slipscan_core::domain::{
     Account, Book, BookKind, Contact, ContactPatch, ContactRole, DocumentSource, Location,
     LocationKind, LocationPatch, Member, MemberPatch, NewBook, NewContact, NewInvoice,
     NewInvoiceItemInput, NewInvoicePayment, NewLocation, NewMember, NewPayEndpoint, NewPayWatch,
-    NewPoReceipt, NewPurchaseOrder, NewPurchaseOrderItem, NewSalesOrder, NewSalesOrderItem,
-    PayDeliveryState, PayEndpointWithSecret, ProductVariant, PurchaseOrderItemPatch,
-    PurchaseOrderPatch, PurchaseOrderStatus, SalesOrderItemPatch, SalesOrderPatch, SplitShare,
-    TransactionFilter, TransactionSource,
+    NewPoReceipt, NewProduct, NewProductCategory, NewProductVariant, NewPurchaseOrder,
+    NewPurchaseOrderItem, NewSalesOrder, NewSalesOrderItem, PayDeliveryState,
+    PayEndpointWithSecret, ProductPatch, ProductVariant, ProductVariantPatch,
+    PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus, SalesOrderItemPatch,
+    SalesOrderPatch, SplitShare, TransactionFilter, TransactionSource,
 };
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
@@ -370,6 +371,12 @@ enum Command {
         #[command(subcommand)]
         action: ContactAction,
     },
+
+    /// Product catalogue — categories, products and their variants (Phase 6.3a).
+    Catalogue {
+        #[command(subcommand)]
+        action: CatalogueAction,
+    },
     /// Purchase orders and goods receipts (Phase 6.4 — the flowstock fold).
     /// A goods receipt writes a stock movement in the same transaction, so
     /// `slipscan list` on-hand and a PO's receiving progress can never
@@ -698,6 +705,117 @@ enum ContactAction {
     /// sales order, invoice or purchase order against it.
     Remove {
         /// Contact id.
+        id: String,
+    },
+}
+
+/// A **variant** is the sellable and stockable unit: stock movements and every
+/// order line reference a variant, never a product. A product is the grouping
+/// ("T-shirt"); a variant is "T-shirt / blue / L" with its own SKU and price.
+#[derive(Debug, Subcommand)]
+enum CatalogueAction {
+    /// Add a product category.
+    CategoryAdd {
+        /// Category name.
+        name: String,
+    },
+    /// List product categories.
+    CategoryList,
+    /// Rename a product category.
+    CategoryRename {
+        /// Category id.
+        id: String,
+        /// New name.
+        name: String,
+    },
+    /// Remove a product category. Products in it keep existing, uncategorised.
+    CategoryRemove {
+        /// Category id.
+        id: String,
+    },
+    /// Add a product (the grouping; add variants to it to sell or stock it).
+    ProductAdd {
+        /// Product name.
+        name: String,
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// List products in the book.
+    ProductList,
+    /// Show one product.
+    ProductShow {
+        /// Product id.
+        id: String,
+    },
+    /// Rename a product or change its description/category.
+    ProductUpdate {
+        /// Product id.
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, conflicts_with = "clear_description")]
+        description: Option<String>,
+        /// Clear the description, as opposed to leaving it unchanged.
+        #[arg(long)]
+        clear_description: bool,
+    },
+    /// Remove a product. Refused while it still has variants.
+    ProductRemove {
+        /// Product id.
+        id: String,
+    },
+    /// Add a variant to a product — the row an order line or stock movement
+    /// actually references.
+    VariantAdd {
+        /// Product id this variant belongs to.
+        product_id: String,
+        /// SKU, unique within the book.
+        sku: String,
+        /// Variant name, e.g. "Blue / L".
+        name: String,
+        /// Selling price in minor units.
+        #[arg(long)]
+        price: Option<i64>,
+        /// Cost price in minor units.
+        #[arg(long)]
+        cost: Option<i64>,
+        /// ISO-4217 currency, e.g. ZAR.
+        #[arg(long)]
+        currency: String,
+        /// On-hand at or below this counts as low stock.
+        #[arg(long)]
+        reorder_point: Option<i64>,
+    },
+    /// List variants — of one product with `--product`, else the whole book.
+    VariantList {
+        #[arg(long)]
+        product: Option<String>,
+    },
+    /// Show one variant.
+    VariantShow {
+        /// Variant id.
+        id: String,
+    },
+    /// Update a variant's SKU, name, prices or reorder point.
+    VariantUpdate {
+        /// Variant id.
+        id: String,
+        #[arg(long)]
+        sku: Option<String>,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        price: Option<i64>,
+        #[arg(long)]
+        cost: Option<i64>,
+        #[arg(long)]
+        reorder_point: Option<i64>,
+    },
+    /// Remove a variant.
+    VariantRemove {
+        /// Variant id.
         id: String,
     },
 }
@@ -2400,6 +2518,178 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 None => "auto (derived)",
                             }
                         );
+                    })
+                }
+            }
+        }
+
+        Command::Catalogue { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                CatalogueAction::CategoryAdd { name } => {
+                    let cat = svc.product_category_create(NewProductCategory {
+                        book_id: book.id.clone(),
+                        name: name.clone(),
+                    })?;
+                    emit(cli.json, &cat, || {
+                        println!("Created category {} ({})", cat.name, cat.id);
+                    })
+                }
+                CatalogueAction::CategoryList => {
+                    let rows = svc.product_category_list(&book.id)?;
+                    emit(cli.json, &rows, || {
+                        if rows.is_empty() {
+                            println!("No categories yet.");
+                        }
+                        for c in &rows {
+                            println!("{}\t{}", c.id, c.name);
+                        }
+                    })
+                }
+                CatalogueAction::CategoryRename { id, name } => {
+                    let cat = svc.product_category_rename(id, name.clone())?;
+                    emit(cli.json, &cat, || {
+                        println!("Renamed category to {} ({})", cat.name, cat.id);
+                    })
+                }
+                CatalogueAction::CategoryRemove { id } => {
+                    svc.product_category_delete(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed category {id}");
+                    })
+                }
+                CatalogueAction::ProductAdd {
+                    name,
+                    category,
+                    description,
+                } => {
+                    let product = svc.product_create(NewProduct {
+                        book_id: book.id.clone(),
+                        product_category_id: category.clone(),
+                        name: name.clone(),
+                        description: description.clone(),
+                    })?;
+                    emit(cli.json, &product, || {
+                        println!("Created product {} ({})", product.name, product.id);
+                    })
+                }
+                CatalogueAction::ProductList => {
+                    let rows = svc.product_list(&book.id)?;
+                    emit(cli.json, &rows, || {
+                        if rows.is_empty() {
+                            println!(
+                                "No products yet. Add one with `slipscan catalogue product-add <name>`."
+                            );
+                        }
+                        for p in &rows {
+                            println!("{}\t{}", p.id, p.name);
+                        }
+                    })
+                }
+                CatalogueAction::ProductShow { id } => {
+                    let product = svc.product_get(id)?;
+                    emit(cli.json, &product, || {
+                        println!("{}\t{}", product.id, product.name);
+                    })
+                }
+                CatalogueAction::ProductUpdate {
+                    id,
+                    name,
+                    description,
+                    clear_description,
+                } => {
+                    let patch = ProductPatch {
+                        name: name.clone(),
+                        description: if *clear_description {
+                            Some(None)
+                        } else {
+                            description.clone().map(Some)
+                        },
+                        ..Default::default()
+                    };
+                    let product = svc.product_update(id, patch)?;
+                    emit(cli.json, &product, || {
+                        println!("Updated product {} ({})", product.name, product.id);
+                    })
+                }
+                CatalogueAction::ProductRemove { id } => {
+                    svc.product_delete(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed product {id}");
+                    })
+                }
+                CatalogueAction::VariantAdd {
+                    product_id,
+                    sku,
+                    name,
+                    price,
+                    cost,
+                    currency,
+                    reorder_point,
+                } => {
+                    let variant = svc.product_variant_add(NewProductVariant {
+                        product_id: product_id.clone(),
+                        sku: sku.clone(),
+                        name: name.clone(),
+                        price_minor: *price,
+                        cost_price_minor: *cost,
+                        currency: currency.clone(),
+                        reorder_point: *reorder_point,
+                        attributes: None,
+                    })?;
+                    emit(cli.json, &variant, || {
+                        println!(
+                            "Created variant {} ({}) — SKU {}",
+                            variant.name, variant.id, variant.sku
+                        );
+                    })
+                }
+                CatalogueAction::VariantList { product } => {
+                    let rows = match product {
+                        Some(pid) => svc.product_variant_list(pid)?,
+                        None => svc.product_variant_list_for_book(&book.id)?,
+                    };
+                    emit(cli.json, &rows, || {
+                        if rows.is_empty() {
+                            println!("No variants yet.");
+                        }
+                        for v in &rows {
+                            println!("{}\t{}\t{}\t{}", v.id, v.sku, v.name, v.price_minor);
+                        }
+                    })
+                }
+                CatalogueAction::VariantShow { id } => {
+                    let variant = svc.product_variant_get(id)?;
+                    emit(cli.json, &variant, || {
+                        println!("{}\t{}\t{}", variant.id, variant.sku, variant.name);
+                    })
+                }
+                CatalogueAction::VariantUpdate {
+                    id,
+                    sku,
+                    name,
+                    price,
+                    cost,
+                    reorder_point,
+                } => {
+                    let patch = ProductVariantPatch {
+                        sku: sku.clone(),
+                        name: name.clone(),
+                        price_minor: *price,
+                        cost_price_minor: *cost,
+                        reorder_point: *reorder_point,
+                        ..Default::default()
+                    };
+                    let variant = svc.product_variant_update(id, patch)?;
+                    emit(cli.json, &variant, || {
+                        println!("Updated variant {} ({})", variant.name, variant.id);
+                    })
+                }
+                CatalogueAction::VariantRemove { id } => {
+                    svc.product_variant_delete(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed variant {id}");
                     })
                 }
             }

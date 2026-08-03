@@ -236,6 +236,203 @@ pub async fn location_delete(
 }
 
 // ---------------------------------------------------------------------------
+// catalogue — product categories, products, and their variants (Phase 6.3a,
+// the flowstock fold). Wired late, like contacts: only
+// `product_variant_list_for_book` was on any surface, so an order line could
+// name a `variant_id` nothing could create. The variant is the sellable and
+// stockable unit — stock movements and order lines reference it, never the
+// product.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct CatalogueIdQuery {
+    pub id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ProductCategoryRenameQuery {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ProductUpdateQuery {
+    pub id: String,
+    #[serde(flatten)]
+    pub patch: core::ProductPatch,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ProductIdQuery {
+    pub product_id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ProductVariantUpdateQuery {
+    pub id: String,
+    #[serde(flatten)]
+    pub patch: core::ProductVariantPatch,
+}
+
+#[tauri::command]
+pub async fn product_category_create(
+    state: State<'_, AppState>,
+    query: core::NewProductCategory,
+) -> Result<core::ProductCategory, String> {
+    state.service()?.product_category_create(query).map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_category_get(
+    state: State<'_, AppState>,
+    query: CatalogueIdQuery,
+) -> Result<core::ProductCategory, String> {
+    state
+        .service()?
+        .product_category_get(&query.id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_category_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::ProductCategory>, String> {
+    state
+        .service()?
+        .product_category_list(&query.book_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_category_rename(
+    state: State<'_, AppState>,
+    query: ProductCategoryRenameQuery,
+) -> Result<core::ProductCategory, String> {
+    state
+        .service()?
+        .product_category_rename(&query.id, query.name)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_category_delete(
+    state: State<'_, AppState>,
+    query: CatalogueIdQuery,
+) -> Result<(), String> {
+    state
+        .service()?
+        .product_category_delete(&query.id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_create(
+    state: State<'_, AppState>,
+    query: core::NewProduct,
+) -> Result<core::Product, String> {
+    state.service()?.product_create(query).map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_get(
+    state: State<'_, AppState>,
+    query: CatalogueIdQuery,
+) -> Result<core::Product, String> {
+    state.service()?.product_get(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::Product>, String> {
+    state.service()?.product_list(&query.book_id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_update(
+    state: State<'_, AppState>,
+    query: ProductUpdateQuery,
+) -> Result<core::Product, String> {
+    state
+        .service()?
+        .product_update(&query.id, query.patch)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_delete(
+    state: State<'_, AppState>,
+    query: CatalogueIdQuery,
+) -> Result<(), String> {
+    state.service()?.product_delete(&query.id).map_err(err)
+}
+
+/// The sellable/stockable unit — the row that has to exist before a stock
+/// movement or an order line can reference anything.
+#[tauri::command]
+pub async fn product_variant_add(
+    state: State<'_, AppState>,
+    query: core::NewProductVariant,
+) -> Result<core::ProductVariant, String> {
+    state.service()?.product_variant_add(query).map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_variant_get(
+    state: State<'_, AppState>,
+    query: CatalogueIdQuery,
+) -> Result<core::ProductVariant, String> {
+    state.service()?.product_variant_get(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_variant_list(
+    state: State<'_, AppState>,
+    query: ProductIdQuery,
+) -> Result<Vec<core::ProductVariant>, String> {
+    state
+        .service()?
+        .product_variant_list(&query.product_id)
+        .map_err(err)
+}
+
+/// Every variant in the book, across all products — what a picker needs.
+#[tauri::command]
+pub async fn product_variant_list_for_book(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::ProductVariant>, String> {
+    state
+        .service()?
+        .product_variant_list_for_book(&query.book_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_variant_update(
+    state: State<'_, AppState>,
+    query: ProductVariantUpdateQuery,
+) -> Result<core::ProductVariant, String> {
+    state
+        .service()?
+        .product_variant_update(&query.id, query.patch)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn product_variant_delete(
+    state: State<'_, AppState>,
+    query: CatalogueIdQuery,
+) -> Result<(), String> {
+    state
+        .service()?
+        .product_variant_delete(&query.id)
+        .map_err(err)
+}
+
+// ---------------------------------------------------------------------------
 // contacts — customers and suppliers in one table (Phase 6.2, the flowstock
 // fold). Wired late: the model shipped with 6.2 but only `contact_list` was
 // on any surface, so purchasing and sales could name a `contact_id` that

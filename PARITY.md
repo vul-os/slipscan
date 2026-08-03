@@ -25,15 +25,18 @@ re-scores this document without a human doing it.
 paid/unpaid state — where this document's first scoring said, accurately, "there is no invoicing at
 all". Contacts, purchasing and aged receivables all have finished models behind them.
 
-**Much of it is still not reachable, and that is the honest headline.** Phase 6 built its
-foundations in core and then wired almost none of them to a surface: of sixteen catalogue operations
-exactly one is reachable, and of nine stock operations **none at all**. Contacts were in the same
-state until 2026-08-03 and are now on all four surfaces, which is what makes a standalone invoice
-exercisable end to end at all. A *stock-tracked* line still is not: it needs a `variant_id`, and no
-surface can create a product variant. So purchasing and sales — every one of whose ~38 operations is
-on the CLI, the HTTP API and the desktop — sit on foundations a user can only half reach. The schema
-work is real; the product surface over it is half finished, and `npm run reachable:check` keeps the
-count honest (36 of 167 core operations reachable from nothing, down from 42).
+**Reachability was the real gap, and most of it is now closed.** Phase 6 built its foundations in
+core and wired almost none of them to a surface: contacts were 1-of-7 reachable and the catalogue
+1-of-16, so nothing could create the `contact_id` an invoice requires or the `variant_id` a
+stock-tracked line requires — while purchasing and sales had every one of their ~38 operations on
+all three surfaces, sitting on foundations a user could not put a row into. Both were closed on
+2026-08-03, and the whole chain now runs end to end: category, product, variant, contact, location,
+order, catalogue line priced from the variant, confirm, stock movement written.
+
+**Stock itself is the remaining hole**: none of its nine operations is on any surface, so on-hand
+cannot be read and a movement cannot be recorded directly — it only moves as a side effect of
+confirming an order or receiving a PO. `npm run reachable:check` keeps the count honest: 21 of 167
+core operations reachable from nothing, down from 42.
 
 The rest is still missing outright: quotes, credit notes, fixed assets, payroll and tracking
 categories do not exist in any form, and the *payable* half of bills is unbuilt, so aged payables

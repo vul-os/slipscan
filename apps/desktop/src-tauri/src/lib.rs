@@ -82,6 +82,25 @@ pub fn run() {
             // Purchasing (Phase 6.4). No screen calls these yet (ROADMAP.md
             // 6.9) — wired now so the IPC layer is not the surface left
             // waiting on a UI, the same posture the CLI and HTTP routes take.
+            // Catalogue (Phase 6.3a). Wired late for the same reason as
+            // contacts below — an order line could name a variant_id that
+            // nothing on any surface could create.
+            commands::product_category_create,
+            commands::product_category_get,
+            commands::product_category_list,
+            commands::product_category_rename,
+            commands::product_category_delete,
+            commands::product_create,
+            commands::product_get,
+            commands::product_list,
+            commands::product_update,
+            commands::product_delete,
+            commands::product_variant_add,
+            commands::product_variant_get,
+            commands::product_variant_list,
+            commands::product_variant_list_for_book,
+            commands::product_variant_update,
+            commands::product_variant_delete,
             // Contacts (Phase 6.2). Wired late — the model shipped with 6.2
             // but nothing on any surface could create one, which is what made
             // purchasing and sales unusable end to end.

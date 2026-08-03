@@ -257,6 +257,31 @@ struct ContactUpdateReq {
     patch: ContactPatch,
 }
 
+#[derive(Debug, Deserialize)]
+struct ProductCategoryRenameReq {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProductUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: ProductPatch,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProductIdReq {
+    product_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProductVariantUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: ProductVariantPatch,
+}
+
 // -- Purchasing (Phase 6.4) request shapes -----------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -774,6 +799,133 @@ async fn location_update(
 
 async fn location_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
     s.service()?.location_delete(&req.id)?;
+    Ok(Json(OK))
+}
+
+// -- Catalogue: product categories, products, and their variants (Phase 6.3a
+// — the flowstock fold). Routed late, for the same reason contacts were: the
+// model shipped with 6.3a and only `product_variant_list_for_book` was on any
+// surface, so a purchase-order or sales-order line could name a `variant_id`
+// that nothing could create. A variant is the sellable/stockable unit —
+// `stock_movements` and every order line reference the variant, never the
+// product.
+
+async fn product_category_create(
+    State(s): State<AppState>,
+    Json(req): Json<NewProductCategory>,
+) -> ApiResult<ProductCategory> {
+    Ok(Json(s.service()?.product_category_create(req)?))
+}
+
+async fn product_category_get(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<ProductCategory> {
+    Ok(Json(s.service()?.product_category_get(&req.id)?))
+}
+
+async fn product_category_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<ProductCategory>> {
+    Ok(Json(s.service()?.product_category_list(&req.book_id)?))
+}
+
+async fn product_category_rename(
+    State(s): State<AppState>,
+    Json(req): Json<ProductCategoryRenameReq>,
+) -> ApiResult<ProductCategory> {
+    Ok(Json(
+        s.service()?.product_category_rename(&req.id, req.name)?,
+    ))
+}
+
+async fn product_category_delete(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<OkResp> {
+    s.service()?.product_category_delete(&req.id)?;
+    Ok(Json(OK))
+}
+
+async fn product_create(
+    State(s): State<AppState>,
+    Json(req): Json<NewProduct>,
+) -> ApiResult<Product> {
+    Ok(Json(s.service()?.product_create(req)?))
+}
+
+async fn product_get(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<Product> {
+    Ok(Json(s.service()?.product_get(&req.id)?))
+}
+
+async fn product_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<Product>> {
+    Ok(Json(s.service()?.product_list(&req.book_id)?))
+}
+
+async fn product_update(
+    State(s): State<AppState>,
+    Json(req): Json<ProductUpdateReq>,
+) -> ApiResult<Product> {
+    Ok(Json(s.service()?.product_update(&req.id, req.patch)?))
+}
+
+async fn product_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
+    s.service()?.product_delete(&req.id)?;
+    Ok(Json(OK))
+}
+
+/// The sellable/stockable unit. Stock movements and order lines reference a
+/// variant, never a product, so this is the row that has to exist before
+/// either can.
+async fn product_variant_add(
+    State(s): State<AppState>,
+    Json(req): Json<NewProductVariant>,
+) -> ApiResult<ProductVariant> {
+    Ok(Json(s.service()?.product_variant_add(req)?))
+}
+
+async fn product_variant_get(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<ProductVariant> {
+    Ok(Json(s.service()?.product_variant_get(&req.id)?))
+}
+
+async fn product_variant_list(
+    State(s): State<AppState>,
+    Json(req): Json<ProductIdReq>,
+) -> ApiResult<Vec<ProductVariant>> {
+    Ok(Json(s.service()?.product_variant_list(&req.product_id)?))
+}
+
+/// Every variant in the book, across all products — what a picker needs.
+async fn product_variant_list_for_book(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<ProductVariant>> {
+    Ok(Json(
+        s.service()?.product_variant_list_for_book(&req.book_id)?,
+    ))
+}
+
+async fn product_variant_update(
+    State(s): State<AppState>,
+    Json(req): Json<ProductVariantUpdateReq>,
+) -> ApiResult<ProductVariant> {
+    Ok(Json(
+        s.service()?.product_variant_update(&req.id, req.patch)?,
+    ))
+}
+
+async fn product_variant_delete(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<OkResp> {
+    s.service()?.product_variant_delete(&req.id)?;
     Ok(Json(OK))
 }
 
@@ -2051,6 +2203,25 @@ pub fn app(state: AppState) -> Router {
         .route("/contact_list_suppliers", post(contact_list_suppliers))
         .route("/contact_update", post(contact_update))
         .route("/contact_remove", post(contact_remove))
+        .route("/product_category_create", post(product_category_create))
+        .route("/product_category_get", post(product_category_get))
+        .route("/product_category_list", post(product_category_list))
+        .route("/product_category_rename", post(product_category_rename))
+        .route("/product_category_delete", post(product_category_delete))
+        .route("/product_create", post(product_create))
+        .route("/product_get", post(product_get))
+        .route("/product_list", post(product_list))
+        .route("/product_update", post(product_update))
+        .route("/product_delete", post(product_delete))
+        .route("/product_variant_add", post(product_variant_add))
+        .route("/product_variant_get", post(product_variant_get))
+        .route("/product_variant_list", post(product_variant_list))
+        .route(
+            "/product_variant_list_for_book",
+            post(product_variant_list_for_book),
+        )
+        .route("/product_variant_update", post(product_variant_update))
+        .route("/product_variant_delete", post(product_variant_delete))
         .route("/po_create", post(po_create))
         .route("/po_get", post(po_get))
         .route("/po_list", post(po_list))
@@ -2211,6 +2382,154 @@ pub fn app(state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The catalogue was in the same state contacts were: shipped in core with
+    /// Phase 6.3a, routed nowhere, so an order line could name a `variant_id`
+    /// nothing could create. This drives the chain that was impossible —
+    /// category, product, variant, then a stock-tracked order line priced from
+    /// the variant — over a real router.
+    #[tokio::test]
+    async fn a_variant_can_be_created_and_then_priced_onto_an_order_line() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Biz", "kind": "business", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let (status, cat) = call(
+            &app,
+            post_req(
+                "/api/v1/product_category_create",
+                json!({"book_id": book_id, "name": "Apparel"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "product_category_create: {cat}");
+
+        let (status, product) = call(
+            &app,
+            post_req(
+                "/api/v1/product_create",
+                json!({"book_id": book_id, "name": "T-shirt",
+                       "product_category_id": cat["id"].as_str().unwrap()}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "product_create: {product}");
+        let product_id = product["id"].as_str().unwrap().to_string();
+
+        let (status, variant) = call(
+            &app,
+            post_req(
+                "/api/v1/product_variant_add",
+                json!({"product_id": product_id, "sku": "TS-BLU-L", "name": "Blue / L",
+                       "price_minor": 25_000, "cost_price_minor": 12_000,
+                       "currency": "ZAR", "reorder_point": 5}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "product_variant_add: {variant}");
+        let variant_id = variant["id"].as_str().unwrap().to_string();
+
+        // A SKU is unique within the book — the second add must be refused.
+        let (status, dup) = call(
+            &app,
+            post_req(
+                "/api/v1/product_variant_add",
+                json!({"product_id": product_id, "sku": "TS-BLU-L", "name": "Clash",
+                       "currency": "ZAR"}),
+                None,
+            ),
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "a duplicate SKU must be refused, got {dup}"
+        );
+
+        // Listed both by product and across the book.
+        let (_, by_product) = call(
+            &app,
+            post_req(
+                "/api/v1/product_variant_list",
+                json!({"product_id": product_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(by_product.as_array().unwrap().len(), 1);
+        let (_, by_book) = call(
+            &app,
+            post_req(
+                "/api/v1/product_variant_list_for_book",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(by_book.as_array().unwrap().len(), 1);
+
+        // The payoff: a stock-tracked order line, priced from the variant.
+        let (_, contact) = call(
+            &app,
+            post_req(
+                "/api/v1/contact_add",
+                json!({"book_id": book_id, "role": "customer", "name": "Buyer"}),
+                None,
+            ),
+        )
+        .await;
+        let (_, location) = call(
+            &app,
+            post_req(
+                "/api/v1/location_create",
+                json!({"book_id": book_id, "name": "Main"}),
+                None,
+            ),
+        )
+        .await;
+        let (status, order) = call(
+            &app,
+            post_req(
+                "/api/v1/sales_order_create",
+                json!({"book_id": book_id, "contact_id": contact["id"].as_str().unwrap(),
+                       "location_id": location["id"].as_str().unwrap()}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "sales_order_create: {order}");
+
+        let (status, line) = call(
+            &app,
+            post_req(
+                "/api/v1/sales_order_item_add",
+                json!({"sales_order_id": order["id"].as_str().unwrap(),
+                       "variant_id": variant_id, "quantity": 2}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "sales_order_item_add: {line}");
+        assert_eq!(
+            line["unit_price_minor"], 25_000,
+            "a catalogue line must default its price from the variant"
+        );
+        assert_eq!(
+            line["description"], "Blue / L",
+            "a catalogue line must default its description from the variant"
+        );
+    }
+
     /// The contacts surface existed in core from Phase 6.2 and was routed
     /// nowhere until this test's change — so an invoice or a purchase order
     /// could name a `contact_id` that no surface could produce. Drives the

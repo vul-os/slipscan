@@ -61,6 +61,9 @@ import type {
   NewPayEndpoint,
   NewPayWatch,
   NewPoReceipt,
+  NewProduct,
+  NewProductCategory,
+  NewProductVariant,
   NewPurchaseOrder,
   NewPurchaseOrderItem,
   NewSalesOrder,
@@ -83,6 +86,11 @@ import type {
   PoReceipt,
   PoReceiptStatus,
   PoUpdateRequest,
+  Product,
+  ProductCategory,
+  ProductUpdateRequest,
+  ProductVariant,
+  ProductVariantUpdateRequest,
   PurchaseOrder,
   PurchaseOrderItem,
   PurchaseOrderItemReceiving,
@@ -186,6 +194,89 @@ export const api = {
 
   locationDelete: (q: { location_id: string }): Promise<null> =>
     call("location_delete", { query: q }, () => mockApi.location_delete(q)),
+
+  // -- catalogue: product categories, products, and their variants (Phase
+  // 6.3a). The variant is the unit stock movements and order lines reference;
+  // wired late, so until now a line could name one nothing could create. --
+
+  productCategoryCreate: (q: NewProductCategory): Promise<ProductCategory> =>
+    call("product_category_create", { query: q }, () =>
+      mockApi.product_category_create(q),
+    ),
+
+  productCategoryGet: (q: { id: string }): Promise<ProductCategory> =>
+    call("product_category_get", { query: q }, () =>
+      mockApi.product_category_get(q),
+    ),
+
+  productCategoryList: (q: { book_id: string }): Promise<ProductCategory[]> =>
+    call("product_category_list", { query: q }, () =>
+      mockApi.product_category_list(q),
+    ),
+
+  productCategoryRename: (q: {
+    id: string;
+    name: string;
+  }): Promise<ProductCategory> =>
+    call("product_category_rename", { query: q }, () =>
+      mockApi.product_category_rename(q),
+    ),
+
+  productCategoryDelete: (q: { id: string }): Promise<null> =>
+    call("product_category_delete", { query: q }, () =>
+      mockApi.product_category_delete(q),
+    ),
+
+  productCreate: (q: NewProduct): Promise<Product> =>
+    call("product_create", { query: q }, () => mockApi.product_create(q)),
+
+  productGet: (q: { id: string }): Promise<Product> =>
+    call("product_get", { query: q }, () => mockApi.product_get(q)),
+
+  productList: (q: { book_id: string }): Promise<Product[]> =>
+    call("product_list", { query: q }, () => mockApi.product_list(q)),
+
+  productUpdate: (q: ProductUpdateRequest): Promise<Product> =>
+    call("product_update", { query: q }, () => mockApi.product_update(q)),
+
+  productDelete: (q: { id: string }): Promise<null> =>
+    call("product_delete", { query: q }, () => mockApi.product_delete(q)),
+
+  /** The sellable/stockable unit — what an order line actually references. */
+  productVariantAdd: (q: NewProductVariant): Promise<ProductVariant> =>
+    call("product_variant_add", { query: q }, () =>
+      mockApi.product_variant_add(q),
+    ),
+
+  productVariantGet: (q: { id: string }): Promise<ProductVariant> =>
+    call("product_variant_get", { query: q }, () =>
+      mockApi.product_variant_get(q),
+    ),
+
+  productVariantList: (q: { product_id: string }): Promise<ProductVariant[]> =>
+    call("product_variant_list", { query: q }, () =>
+      mockApi.product_variant_list(q),
+    ),
+
+  /** Every variant in the book — what a picker needs. */
+  productVariantListForBook: (q: {
+    book_id: string;
+  }): Promise<ProductVariant[]> =>
+    call("product_variant_list_for_book", { query: q }, () =>
+      mockApi.product_variant_list_for_book(q),
+    ),
+
+  productVariantUpdate: (
+    q: ProductVariantUpdateRequest,
+  ): Promise<ProductVariant> =>
+    call("product_variant_update", { query: q }, () =>
+      mockApi.product_variant_update(q),
+    ),
+
+  productVariantDelete: (q: { id: string }): Promise<null> =>
+    call("product_variant_delete", { query: q }, () =>
+      mockApi.product_variant_delete(q),
+    ),
 
   // -- contacts: customers and suppliers in one table (Phase 6.2). Wired
   // late — the model shipped with 6.2 but nothing could create a contact, so

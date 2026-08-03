@@ -124,6 +124,100 @@ export interface LocationUpdateRequest {
 }
 
 // ---------------------------------------------------------------------------
+// catalogue — product categories, products, and their variants (Phase 6.3a,
+// the flowstock fold).
+//
+// **The variant is the unit that matters.** Stock movements and every order
+// line reference a `variant_id`, never a `product_id` — a product is the
+// grouping ("T-shirt"), a variant is the thing you actually sell and count
+// ("T-shirt / blue / L", its own SKU, price and reorder point). Wired to this
+// client late, for the same reason contacts were: until then an order line
+// could name a variant nothing could create.
+//
+// `product_categories` is deliberately its own table, distinct from the
+// transaction `categories` used for classification — a join between them
+// would type-check while being silently wrong.
+// ---------------------------------------------------------------------------
+
+export interface ProductCategory {
+  id: string;
+  book_id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewProductCategory {
+  book_id: string;
+  name: string;
+}
+
+export interface Product {
+  id: string;
+  book_id: string;
+  product_category_id: string | null;
+  name: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewProduct {
+  book_id: string;
+  product_category_id?: string;
+  name: string;
+  description?: string;
+}
+
+/** Omit a key to leave it alone, send `null` to clear it. */
+export interface ProductUpdateRequest {
+  id: string;
+  name?: string;
+  description?: string | null;
+  product_category_id?: string | null;
+}
+
+export interface ProductVariant {
+  id: string;
+  product_id: string;
+  book_id: string;
+  /** Unique within the book. */
+  sku: string;
+  name: string;
+  price_minor: number;
+  cost_price_minor: number;
+  currency: string;
+  /** On-hand at or below this is "low" — see `stock_low_variants`. */
+  reorder_point: number;
+  /** Free-form JSON blob, stored verbatim. */
+  attributes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewProductVariant {
+  product_id: string;
+  sku: string;
+  name: string;
+  /** Defaults to 0 when omitted. */
+  price_minor?: number;
+  cost_price_minor?: number;
+  currency: string;
+  reorder_point?: number;
+  attributes?: string;
+}
+
+export interface ProductVariantUpdateRequest {
+  id: string;
+  sku?: string;
+  name?: string;
+  price_minor?: number;
+  cost_price_minor?: number;
+  reorder_point?: number;
+  attributes?: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // contacts — customers and suppliers in ONE table (Phase 6.2, the flowstock
 // fold), deliberately not split into two, because a real trading party is
 // often both. Referenced by sales orders, invoices and purchase orders with
