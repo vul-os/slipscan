@@ -241,21 +241,50 @@ kbd{
 .reveal.in{opacity:1;transform:none}
 
 /* ── hero ──────────────────────────────────────────────────────────────── */
-#overview{padding-top:clamp(30px,4vw,52px)}
-.hero-head{max-width:760px}
+#overview{padding-top:clamp(26px,3.4vw,44px)}
+.hero-head{max-width:820px;margin-inline:auto;text-align:center}
+
+/* ── brand showcase ──────────────────────────────────────────────────────
+   The mark presented at size rather than shrunk into the corner of a nav.
+   Deliberately built from structure — a plinth, a hairline and the neutral
+   overlay shadow — and NOT from a lime halo: the design contract at the top
+   of this file says the lime is pen ink and never glow, and a glowing logo
+   is the fastest way to break that promise. The only motion is one specular
+   sheen crossing the face on load, white and low-alpha, echoing the scan
+   stroke the mark itself draws. It runs once and never loops. */
+.brandwrap{display:grid;place-items:center;gap:13px;margin-bottom:20px}
+.brandmark{
+  position:relative;width:clamp(84px,9.5vw,108px);aspect-ratio:1;
+  border-radius:clamp(19px,2.2vw,24px);overflow:hidden;
+  border:1px solid var(--line-2);box-shadow:var(--shadow-overlay);
+  background:var(--panel);
+}
+.brandmark img{width:100%;height:100%;display:block}
+.brandmark::after{
+  content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(102deg,transparent 40%,rgba(255,255,255,.28) 50%,transparent 60%);
+  transform:translateX(-140%);
+  animation:sheen 1.5s var(--decel) .35s 1 both;
+}
+@keyframes sheen{to{transform:translateX(140%)}}
+.brandword{height:clamp(26px,3vw,34px);width:auto;display:block}
+/* Same specificity as the rule above, so source order decides — see the note
+   on .window-bar .right further down. */
+@media(prefers-reduced-motion:reduce){.brandmark::after{animation:none;opacity:0}}
+
 .pill{
   display:inline-flex;align-items:center;gap:9px;padding:5px 12px;border-radius:999px;
   border:1px solid var(--accent-edge);background:var(--accent-wash);
   font-family:var(--mono);font-size:12px;letter-spacing:.04em;color:var(--accent-text);
 }
 .pill i{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
-h1{font-size:clamp(38px,6.4vw,68px);letter-spacing:-.04em;line-height:1.02;margin:20px 0 0;font-weight:700}
+h1{font-size:clamp(38px,6.4vw,68px);letter-spacing:-.04em;line-height:1.02;margin:18px 0 0;font-weight:700}
 h1 .slash{color:var(--accent-text)}
-.hero-sub{font-size:clamp(17px,2vw,20.5px);color:var(--t2);margin-top:20px;max-width:65ch}
+.hero-sub{font-size:clamp(16.5px,1.85vw,19.5px);color:var(--t2);margin-top:17px;max-width:60ch;margin-inline:auto}
 .hero-sub strong{color:var(--t1);font-weight:600}
-.cta-row{display:flex;flex-wrap:wrap;gap:11px;margin-top:28px}
+.cta-row{display:flex;flex-wrap:wrap;gap:11px;margin-top:24px;justify-content:center}
 .trust{
-  display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:22px;
+  display:flex;flex-wrap:wrap;gap:8px 20px;margin-top:18px;justify-content:center;
   font-family:var(--mono);font-size:12px;color:var(--t3);
 }
 .trust span{display:inline-flex;align-items:center;gap:7px}
@@ -279,7 +308,7 @@ h1 .slash{color:var(--accent-text)}
 @media(max-width:560px){.window-bar .right{display:none}}
 .window img{width:100%;height:auto;display:block}
 
-.hero-stage{position:relative;margin-top:38px}
+.hero-stage{position:relative;margin-top:32px}
 .shot-holder{position:relative;background:var(--sunken)}
 .shot-holder::before{content:"";display:block;padding-top:62.5%}
 .shot-holder img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:top center}
@@ -573,6 +602,18 @@ h1 .slash{color:var(--accent-text)}
   .foot-bar{font-size:12.5px}
 }
 
+/* Now that the hero is centred, the pill is the one run that still would not
+   fit a 390px line — and it wrapped with its dot stranded at the far left of a
+   centred block. The type size is NOT the lever: the rule directly above is a
+   deliberate legibility floor, and shrinking this back under it to win a few
+   pixels would trade an accessibility decision for a layout convenience. Buy
+   the space from the padding and the gap instead, which cost nothing to read.
+   Must sit AFTER that block — a media query adds no specificity, so source
+   order decides, which is the same trap .window-bar .right documents below. */
+@media(max-width:430px){
+  .pill{padding-inline:8px;gap:6px}
+}
+
   /* ── Vulos suite chrome — identical on every product landing ───────────────
      Two elements, and only two: a logo-only home button in the top bar, and
      one line in the footer. Deliberately free of repo variables so the block
@@ -630,6 +671,13 @@ h1 .slash{color:var(--accent-text)}
          different" now, four screens down. ══════════════════════════════ -->
     <section class="pane" id="overview">
       <div class="hero-head">
+        <!-- The mark, shown at size. It is the same brand/logo.svg the desktop
+             icon set is generated from, inlined as a file rather than redrawn,
+             so the landing can never disagree with the app. -->
+        <div class="brandwrap">
+          <div class="brandmark"><img src="./assets/brand/logo.svg" alt="" width="108" height="108" fetchpriority="high"></div>
+          <img class="brandword" data-wordmark src="./assets/brand/logo-wordmark-dark.svg" alt="slip/scan" width="206" height="64">
+        </div>
         <span class="pill"><i></i>no server · no account · no subscription</span>
         <h1>Your money, on<br>your own machine<span class="slash">.</span></h1>
         <p class="hero-sub">

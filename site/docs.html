@@ -114,7 +114,14 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
 .navlinks{display:flex;align-items:center;gap:18px}
 .navlinks a{color:var(--t2);font-size:14px;font-weight:500;transition:color var(--quick) var(--ease)}
 .navlinks a:hover{color:var(--t1)}
-@media(max-width:720px){.navlinks,.bookchip{display:none}}
+/* The bar's fixed items (wordmark, chip, four links, theme, Download, and the
+   Vulos mark) need ~777px, so hiding them only at 720px left a broken band from
+   721px to ~790px where the last item overhung the viewport — `site:check`
+   caught it at exactly 768, the iPad portrait width. The chip is decoration and
+   goes first, which buys ~250px and keeps the four nav links alive across the
+   whole tablet range; the links only go at 720 as before. */
+@media(max-width:820px){.bookchip{display:none}}
+@media(max-width:720px){.navlinks{display:none}}
 .iconbtn{
   display:grid;place-items:center;width:32px;height:32px;border-radius:9px;
   border:1px solid transparent;color:var(--t2);flex:none;
