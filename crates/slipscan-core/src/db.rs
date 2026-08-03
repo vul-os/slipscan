@@ -62,6 +62,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0013_purchasing",
         include_str!("migrations/0013_purchasing.sql"),
     ),
+    // 13 is a deliberate gap, not a skipped number: it is Phase 6.4
+    // (purchasing)'s reserved file name, and it has not landed yet. Versions
+    // only need to be monotonic here, not contiguous — see migration
+    // 0014_sales's header for the full reasoning.
+    (14, "0014_sales", include_str!("migrations/0014_sales.sql")),
 ];
 
 /// A configured, migrated SQLite database handle.
@@ -158,13 +163,13 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         );
     }
 
@@ -193,10 +198,14 @@ mod tests {
             "document_extractions",
             "documents",
             "fx_rates",
+            "invoice_items",
+            "invoice_payments",
+            "invoices",
             "journal_lines",
             "journals",
             "members",
             "merchant_mappings",
+            "number_sequences",
             "pay_deliveries",
             "pay_endpoints",
             "pay_matches",
@@ -205,6 +214,8 @@ mod tests {
             "purchase_order_items",
             "purchase_orders",
             "recon_matches",
+            "sales_order_items",
+            "sales_orders",
             "schema_migrations",
             "settings",
             "stock_movements",

@@ -422,6 +422,258 @@ pub async fn po_receiving_status(
         .map_err(err)
 }
 
+// ---------------------------------------------------------------------------
+// Sales orders & invoicing (Phase 6.5 — ROADMAP.md "Inventory & trade",
+// PARITY.md's single largest Xero-axis gap). See migration `0014_sales`'s
+// header for why `sales_order*` is a full CRUD+status-machine surface while
+// `invoice*` only ever creates and reads.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn sales_order_create(
+    state: State<'_, AppState>,
+    query: core::NewSalesOrder,
+) -> Result<core::SalesOrder, String> {
+    state.service()?.sales_order_create(query).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct SalesOrderIdQuery {
+    pub id: String,
+}
+
+#[tauri::command]
+pub async fn sales_order_get(
+    state: State<'_, AppState>,
+    query: SalesOrderIdQuery,
+) -> Result<core::SalesOrder, String> {
+    state.service()?.sales_order_get(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn sales_order_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::SalesOrder>, String> {
+    state
+        .service()?
+        .sales_order_list(&query.book_id)
+        .map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct SalesOrderUpdateQuery {
+    pub id: String,
+    #[serde(flatten)]
+    pub patch: core::SalesOrderPatch,
+}
+
+#[tauri::command]
+pub async fn sales_order_update(
+    state: State<'_, AppState>,
+    query: SalesOrderUpdateQuery,
+) -> Result<core::SalesOrder, String> {
+    state
+        .service()?
+        .sales_order_update(&query.id, query.patch)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn sales_order_delete(
+    state: State<'_, AppState>,
+    query: SalesOrderIdQuery,
+) -> Result<(), String> {
+    state.service()?.sales_order_delete(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn sales_order_item_add(
+    state: State<'_, AppState>,
+    query: core::NewSalesOrderItem,
+) -> Result<core::SalesOrderItem, String> {
+    state.service()?.sales_order_item_add(query).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct SalesOrderIdRefQuery {
+    pub sales_order_id: String,
+}
+
+#[tauri::command]
+pub async fn sales_order_items_list(
+    state: State<'_, AppState>,
+    query: SalesOrderIdRefQuery,
+) -> Result<Vec<core::SalesOrderItem>, String> {
+    state
+        .service()?
+        .sales_order_items_list(&query.sales_order_id)
+        .map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct SalesOrderItemUpdateQuery {
+    pub id: String,
+    #[serde(flatten)]
+    pub patch: core::SalesOrderItemPatch,
+}
+
+#[tauri::command]
+pub async fn sales_order_item_update(
+    state: State<'_, AppState>,
+    query: SalesOrderItemUpdateQuery,
+) -> Result<core::SalesOrderItem, String> {
+    state
+        .service()?
+        .sales_order_item_update(&query.id, query.patch)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn sales_order_item_remove(
+    state: State<'_, AppState>,
+    query: SalesOrderIdQuery,
+) -> Result<(), String> {
+    state
+        .service()?
+        .sales_order_item_remove(&query.id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn sales_order_confirm(
+    state: State<'_, AppState>,
+    query: SalesOrderIdQuery,
+) -> Result<core::SalesOrder, String> {
+    state
+        .service()?
+        .sales_order_confirm(&query.id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn sales_order_cancel(
+    state: State<'_, AppState>,
+    query: SalesOrderIdQuery,
+) -> Result<core::SalesOrder, String> {
+    state.service()?.sales_order_cancel(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn sales_order_mark_paid(
+    state: State<'_, AppState>,
+    query: SalesOrderIdQuery,
+) -> Result<core::SalesOrder, String> {
+    state
+        .service()?
+        .sales_order_mark_paid(&query.id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn sales_order_totals(
+    state: State<'_, AppState>,
+    query: SalesOrderIdQuery,
+) -> Result<core::SalesOrderTotals, String> {
+    state
+        .service()?
+        .sales_order_totals(&query.id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn invoice_issue(
+    state: State<'_, AppState>,
+    query: core::NewInvoice,
+) -> Result<core::Invoice, String> {
+    state.service()?.invoice_issue(query).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct InvoiceIdQuery {
+    pub id: String,
+}
+
+#[tauri::command]
+pub async fn invoice_get(
+    state: State<'_, AppState>,
+    query: InvoiceIdQuery,
+) -> Result<core::Invoice, String> {
+    state.service()?.invoice_get(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn invoice_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::Invoice>, String> {
+    state.service()?.invoice_list(&query.book_id).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct InvoiceIdRefQuery {
+    pub invoice_id: String,
+}
+
+#[tauri::command]
+pub async fn invoice_items_list(
+    state: State<'_, AppState>,
+    query: InvoiceIdRefQuery,
+) -> Result<Vec<core::InvoiceItem>, String> {
+    state
+        .service()?
+        .invoice_items_list(&query.invoice_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn invoice_totals(
+    state: State<'_, AppState>,
+    query: InvoiceIdQuery,
+) -> Result<core::InvoiceTotals, String> {
+    state.service()?.invoice_totals(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn invoice_payment_record(
+    state: State<'_, AppState>,
+    query: core::NewInvoicePayment,
+) -> Result<core::InvoicePayment, String> {
+    state
+        .service()?
+        .invoice_payment_record(query)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn invoice_payments_list(
+    state: State<'_, AppState>,
+    query: InvoiceIdRefQuery,
+) -> Result<Vec<core::InvoicePayment>, String> {
+    state
+        .service()?
+        .invoice_payments_list(&query.invoice_id)
+        .map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct AgedReceivablesQuery {
+    pub book_id: String,
+    #[serde(default)]
+    pub as_of: Option<String>,
+}
+
+#[tauri::command]
+pub async fn report_aged_receivables(
+    state: State<'_, AppState>,
+    query: AgedReceivablesQuery,
+) -> Result<core::AgedReceivables, String> {
+    state
+        .service()?
+        .report_aged_receivables(&query.book_id, query.as_of.as_deref())
+        .map_err(err)
+}
+
 #[tauri::command]
 pub async fn account_list(
     state: State<'_, AppState>,

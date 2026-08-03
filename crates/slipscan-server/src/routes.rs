@@ -280,6 +280,39 @@ struct PurchaseOrderIdReq {
     purchase_order_id: String,
 }
 
+// -- Sales orders & invoicing (Phase 6.5) ------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct SalesOrderUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: SalesOrderPatch,
+}
+
+#[derive(Debug, Deserialize)]
+struct SalesOrderIdReq {
+    sales_order_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SalesOrderItemUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: SalesOrderItemPatch,
+}
+
+#[derive(Debug, Deserialize)]
+struct InvoiceIdReq {
+    invoice_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgedReceivablesReq {
+    book_id: String,
+    #[serde(default)]
+    as_of: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct TransactionListReq {
     book_id: String,
@@ -815,6 +848,155 @@ async fn po_receiving_status(
 ) -> ApiResult<PoReceiptStatus> {
     Ok(Json(
         s.service()?.po_receiving_status(&req.purchase_order_id)?,
+    ))
+}
+
+// -- Sales orders & invoicing (Phase 6.5 — ROADMAP.md "Inventory & trade",
+// PARITY.md's single largest Xero-axis gap). See migration `0014_sales`'s
+// header for why `sales_order*` is a full CRUD+status-machine surface while
+// `invoice*` only ever creates and reads — an issued invoice has no update
+// route because `repo::sales` has no update function to call.
+
+async fn sales_order_create(
+    State(s): State<AppState>,
+    Json(req): Json<NewSalesOrder>,
+) -> ApiResult<SalesOrder> {
+    Ok(Json(s.service()?.sales_order_create(req)?))
+}
+
+async fn sales_order_get(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<SalesOrder> {
+    Ok(Json(s.service()?.sales_order_get(&req.id)?))
+}
+
+async fn sales_order_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<SalesOrder>> {
+    Ok(Json(s.service()?.sales_order_list(&req.book_id)?))
+}
+
+async fn sales_order_update(
+    State(s): State<AppState>,
+    Json(req): Json<SalesOrderUpdateReq>,
+) -> ApiResult<SalesOrder> {
+    Ok(Json(s.service()?.sales_order_update(&req.id, req.patch)?))
+}
+
+async fn sales_order_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
+    s.service()?.sales_order_delete(&req.id)?;
+    Ok(Json(OK))
+}
+
+async fn sales_order_item_add(
+    State(s): State<AppState>,
+    Json(req): Json<NewSalesOrderItem>,
+) -> ApiResult<SalesOrderItem> {
+    Ok(Json(s.service()?.sales_order_item_add(req)?))
+}
+
+async fn sales_order_items_list(
+    State(s): State<AppState>,
+    Json(req): Json<SalesOrderIdReq>,
+) -> ApiResult<Vec<SalesOrderItem>> {
+    Ok(Json(s.service()?.sales_order_items_list(&req.sales_order_id)?))
+}
+
+async fn sales_order_item_update(
+    State(s): State<AppState>,
+    Json(req): Json<SalesOrderItemUpdateReq>,
+) -> ApiResult<SalesOrderItem> {
+    Ok(Json(s.service()?.sales_order_item_update(&req.id, req.patch)?))
+}
+
+async fn sales_order_item_remove(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<OkResp> {
+    s.service()?.sales_order_item_remove(&req.id)?;
+    Ok(Json(OK))
+}
+
+async fn sales_order_confirm(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<SalesOrder> {
+    Ok(Json(s.service()?.sales_order_confirm(&req.id)?))
+}
+
+async fn sales_order_cancel(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<SalesOrder> {
+    Ok(Json(s.service()?.sales_order_cancel(&req.id)?))
+}
+
+async fn sales_order_mark_paid(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<SalesOrder> {
+    Ok(Json(s.service()?.sales_order_mark_paid(&req.id)?))
+}
+
+async fn sales_order_totals(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<SalesOrderTotals> {
+    Ok(Json(s.service()?.sales_order_totals(&req.id)?))
+}
+
+async fn invoice_issue(
+    State(s): State<AppState>,
+    Json(req): Json<NewInvoice>,
+) -> ApiResult<Invoice> {
+    Ok(Json(s.service()?.invoice_issue(req)?))
+}
+
+async fn invoice_get(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<Invoice> {
+    Ok(Json(s.service()?.invoice_get(&req.id)?))
+}
+
+async fn invoice_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<Invoice>> {
+    Ok(Json(s.service()?.invoice_list(&req.book_id)?))
+}
+
+async fn invoice_items_list(
+    State(s): State<AppState>,
+    Json(req): Json<InvoiceIdReq>,
+) -> ApiResult<Vec<InvoiceItem>> {
+    Ok(Json(s.service()?.invoice_items_list(&req.invoice_id)?))
+}
+
+async fn invoice_totals(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<InvoiceTotals> {
+    Ok(Json(s.service()?.invoice_totals(&req.id)?))
+}
+
+async fn invoice_payment_record(
+    State(s): State<AppState>,
+    Json(req): Json<NewInvoicePayment>,
+) -> ApiResult<InvoicePayment> {
+    Ok(Json(s.service()?.invoice_payment_record(req)?))
+}
+
+async fn invoice_payments_list(
+    State(s): State<AppState>,
+    Json(req): Json<InvoiceIdReq>,
+) -> ApiResult<Vec<InvoicePayment>> {
+    Ok(Json(s.service()?.invoice_payments_list(&req.invoice_id)?))
+}
+
+async fn report_aged_receivables(
+    State(s): State<AppState>,
+    Json(req): Json<AgedReceivablesReq>,
+) -> ApiResult<AgedReceivables> {
+    Ok(Json(
+        s.service()?
+            .report_aged_receivables(&req.book_id, req.as_of.as_deref())?,
     ))
 }
 
@@ -1760,6 +1942,27 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/po_items_with_receiving", post(po_items_with_receiving))
         .route("/po_receiving_status", post(po_receiving_status))
+        .route("/sales_order_create", post(sales_order_create))
+        .route("/sales_order_get", post(sales_order_get))
+        .route("/sales_order_list", post(sales_order_list))
+        .route("/sales_order_update", post(sales_order_update))
+        .route("/sales_order_delete", post(sales_order_delete))
+        .route("/sales_order_item_add", post(sales_order_item_add))
+        .route("/sales_order_items_list", post(sales_order_items_list))
+        .route("/sales_order_item_update", post(sales_order_item_update))
+        .route("/sales_order_item_remove", post(sales_order_item_remove))
+        .route("/sales_order_confirm", post(sales_order_confirm))
+        .route("/sales_order_cancel", post(sales_order_cancel))
+        .route("/sales_order_mark_paid", post(sales_order_mark_paid))
+        .route("/sales_order_totals", post(sales_order_totals))
+        .route("/invoice_issue", post(invoice_issue))
+        .route("/invoice_get", post(invoice_get))
+        .route("/invoice_list", post(invoice_list))
+        .route("/invoice_items_list", post(invoice_items_list))
+        .route("/invoice_totals", post(invoice_totals))
+        .route("/invoice_payment_record", post(invoice_payment_record))
+        .route("/invoice_payments_list", post(invoice_payments_list))
+        .route("/report_aged_receivables", post(report_aged_receivables))
         .route("/transaction_create", post(transaction_create))
         .route("/transaction_get", post(transaction_get))
         .route("/transaction_list", post(transaction_list))

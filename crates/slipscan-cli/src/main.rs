@@ -2,7 +2,7 @@
 //!
 //! Subcommands: `init`, `import`, `watch`, `extract`, `mail-sync`, `recon`,
 //! `report`, `fx`, `pack`, `vault`, `serve`, `list`, `member`, `attribute`,
-//! `split`.
+//! `split`, `location`, `sales-order`, `invoice`.
 //! Every command has human-readable output by default and `--json` for
 //! machines. Binaries may use anyhow.
 //!
@@ -20,10 +20,11 @@ use slipscan_core::datadir::{self, DataDirResolver, MoveStep};
 use slipscan_core::device::pairing::{KeynameCheck, DEFAULT_INVITE_TTL_SECONDS};
 use slipscan_core::domain::{
     Account, Book, BookKind, Contact, DocumentSource, Location, LocationKind, LocationPatch,
-    Member, MemberPatch, NewBook, NewLocation, NewMember, NewPayEndpoint, NewPayWatch,
-    NewPoReceipt, NewPurchaseOrder, NewPurchaseOrderItem, PayDeliveryState, PayEndpointWithSecret,
-    ProductVariant, PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus, SplitShare,
-    TransactionFilter, TransactionSource,
+    Member, MemberPatch, NewBook, NewInvoice, NewInvoiceItemInput, NewInvoicePayment, NewLocation,
+    NewMember, NewPayEndpoint, NewPayWatch, NewPoReceipt, NewPurchaseOrder, NewPurchaseOrderItem,
+    NewSalesOrder, NewSalesOrderItem, PayDeliveryState, PayEndpointWithSecret, ProductVariant,
+    PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus, SalesOrderItemPatch,
+    SalesOrderPatch, SplitShare, TransactionFilter, TransactionSource,
 };
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
@@ -210,6 +211,10 @@ enum ReportKind {
     /// Net position per member over a period — "who owes whom" (household
     /// attribution). Needs `--from`/`--to`.
     SettleUp,
+    /// Aged receivables (Phase 6.5): every outstanding invoice, by customer,
+    /// bucketed by how overdue it is. `--to` sets "as of" (defaults to
+    /// today); `--from` is ignored.
+    AgedReceivables,
 }
 
 #[derive(Debug, Subcommand)]
@@ -358,6 +363,19 @@ enum Command {
     Po {
         #[command(subcommand)]
         action: PoAction,
+    },
+    /// Sales orders (Phase 6.5): draft -> confirm (deducts stock) -> paid,
+    /// or cancel (reverses stock if confirmed). See `slipscan invoice` to
+    /// raise an invoice from a confirmed order.
+    SalesOrder {
+        #[command(subcommand)]
+        action: SalesOrderAction,
+    },
+    /// Invoices (Phase 6.5): numbered, dated, permanent once issued.
+    /// PARITY.md's single largest Xero-axis gap.
+    Invoice {
+        #[command(subcommand)]
+        action: InvoiceAction,
     },
     /// Household members: local data describing whose money it is, never a
     /// login (see ARCHITECTURE.md "Household members & per-person
@@ -699,6 +717,192 @@ enum PoAction {
         /// Line item id.
         item_id: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum SalesOrderAction {
+    /// Create a draft order for a customer.
+    Create {
+        /// Contact id (must be a customer or "both").
+        #[arg(long)]
+        contact: String,
+        /// Location id — required before `confirm` if the order ends up
+        /// with any stock-tracked line, optional otherwise.
+        #[arg(long)]
+        location: Option<String>,
+        /// YYYY-MM-DD; defaults to today.
+        #[arg(long)]
+        order_date: Option<String>,
+        #[arg(long)]
+        currency: Option<String>,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Show one order (header only; see `item-list` for lines).
+    Get { id: String },
+    /// List every order in the book, most recently numbered first.
+    List,
+    /// Edit a draft order's location/date/notes. Only reachable while draft.
+    Update {
+        id: String,
+        #[arg(long, conflicts_with = "clear_location")]
+        location: Option<String>,
+        /// Clear the location (as opposed to leaving it unchanged).
+        #[arg(long)]
+        clear_location: bool,
+        #[arg(long)]
+        order_date: Option<String>,
+        #[arg(long, conflicts_with = "clear_notes")]
+        notes: Option<String>,
+        /// Clear the notes (as opposed to leaving them unchanged).
+        #[arg(long)]
+        clear_notes: bool,
+    },
+    /// Remove a draft order outright. Cancel a confirmed one instead.
+    Delete { id: String },
+    /// Add a catalogue line (`--variant`) or a free-text/service line
+    /// (`--description` + `--price`) to a draft order.
+    ItemAdd {
+        /// Order id.
+        #[arg(long)]
+        order: String,
+        #[arg(long)]
+        variant: Option<String>,
+        /// Required for a free-text line; defaults from the variant's own
+        /// name for a catalogue line.
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        quantity: i64,
+        /// Minor units. Required for a free-text line; defaults from the
+        /// variant's own price for a catalogue line.
+        #[arg(long)]
+        price_minor: Option<i64>,
+        /// Basis points (1500 = 15.00%). Defaults to 0.
+        #[arg(long)]
+        tax_rate_bps: Option<i64>,
+    },
+    /// List an order's lines.
+    ItemList {
+        /// Order id.
+        order: String,
+    },
+    /// Edit a line's description/quantity/price/tax rate. Only reachable
+    /// while the order is still draft.
+    ItemUpdate {
+        id: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        quantity: Option<i64>,
+        #[arg(long)]
+        price_minor: Option<i64>,
+        #[arg(long)]
+        tax_rate_bps: Option<i64>,
+    },
+    /// Remove a line from a draft order.
+    ItemRemove { id: String },
+    /// draft -> confirmed: deducts stock for every stock-tracked line.
+    Confirm { id: String },
+    /// draft|confirmed -> cancelled: reverses stock if it was confirmed.
+    Cancel { id: String },
+    /// confirmed -> paid (a cash-sale convenience with no invoice).
+    Pay { id: String },
+    /// Subtotal/tax/total, derived from the order's own lines.
+    Totals { id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum InvoiceAction {
+    /// Issue an invoice from a confirmed/paid order (`--order`) or
+    /// standalone (`--contact` + at least one `--item description:qty:price`
+    /// triple, colon-separated). An issued invoice is permanent — there is
+    /// no edit or draft phase; see migration `0014_sales`.
+    Issue {
+        /// Sales order id to raise this invoice from. Its own contact and
+        /// currency win over anything else on this command.
+        #[arg(long)]
+        order: Option<String>,
+        /// Contact id — required for a standalone invoice (ignored with
+        /// --order).
+        #[arg(long)]
+        contact: Option<String>,
+        /// Numbering series; defaults to "invoice".
+        #[arg(long)]
+        series: Option<String>,
+        /// YYYY-MM-DD; defaults to today.
+        #[arg(long)]
+        issue_date: Option<String>,
+        #[arg(long)]
+        due_date: String,
+        /// Required for a standalone invoice (ignored with --order).
+        #[arg(long)]
+        currency: Option<String>,
+        #[arg(long)]
+        notes: Option<String>,
+        /// One standalone line as `description:quantity:unit_price_minor`,
+        /// repeatable. Ignored (and unnecessary) with --order, which copies
+        /// the order's own lines.
+        #[arg(long = "item", value_parser = parse_invoice_item)]
+        items: Vec<NewInvoiceItemInput>,
+    },
+    /// Show one invoice's header.
+    Get { id: String },
+    /// List every invoice in the book, most recently numbered first.
+    List,
+    /// List an invoice's lines.
+    ItemList {
+        /// Invoice id.
+        invoice: String,
+    },
+    /// Subtotal/tax/total/paid/due and derived paid/unpaid/partly-paid
+    /// status.
+    Totals { id: String },
+    /// Record a payment against an invoice.
+    Pay {
+        /// Invoice id.
+        #[arg(long)]
+        invoice: String,
+        /// Minor units.
+        #[arg(long)]
+        amount_minor: i64,
+        /// YYYY-MM-DD; defaults to today.
+        #[arg(long)]
+        paid_at: Option<String>,
+        #[arg(long)]
+        method: Option<String>,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// List every payment recorded against an invoice.
+    Payments {
+        /// Invoice id.
+        invoice: String,
+    },
+}
+
+/// Parses one `--item description:quantity:unit_price_minor` argument for
+/// `invoice issue`. Colons inside the description are not supported — this
+/// is a CLI convenience for a standalone invoice's occasional free-text
+/// line, not a general-purpose serialization format.
+fn parse_invoice_item(raw: &str) -> Result<NewInvoiceItemInput, String> {
+    let parts: Vec<&str> = raw.splitn(3, ':').collect();
+    let [description, quantity, unit_price_minor] = parts[..] else {
+        return Err(format!(
+            "expected description:quantity:unit_price_minor, got {raw:?}"
+        ));
+    };
+    Ok(NewInvoiceItemInput {
+        variant_id: None,
+        description: description.to_string(),
+        quantity: quantity
+            .parse()
+            .map_err(|_| format!("invalid quantity in {raw:?}"))?,
+        unit_price_minor: unit_price_minor
+            .parse()
+            .map_err(|_| format!("invalid unit_price_minor in {raw:?}"))?,
+        tax_rate_bps: None,
+    })
 }
 
 #[derive(Debug, Subcommand)]
@@ -2325,6 +2529,303 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             }
         }
 
+        Command::SalesOrder { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                SalesOrderAction::Create {
+                    contact,
+                    location,
+                    order_date,
+                    currency,
+                    notes,
+                } => {
+                    let order = svc.sales_order_create(NewSalesOrder {
+                        book_id: book.id.clone(),
+                        contact_id: contact.clone(),
+                        location_id: location.clone(),
+                        order_date: order_date.clone(),
+                        currency: currency.clone(),
+                        notes: notes.clone(),
+                    })?;
+                    emit(cli.json, &order, || {
+                        println!(
+                            "Created sales order #{} ({}) — {}",
+                            order.number, order.id, order.status
+                        );
+                    })
+                }
+                SalesOrderAction::Get { id } => {
+                    let order = svc.sales_order_get(id)?;
+                    emit(cli.json, &order, || {
+                        println!(
+                            "#{}\t{}\t{}\t{}",
+                            order.number, order.id, order.status, order.order_date
+                        );
+                    })
+                }
+                SalesOrderAction::List => {
+                    let orders = svc.sales_order_list(&book.id)?;
+                    emit(cli.json, &orders, || {
+                        if orders.is_empty() {
+                            println!(
+                                "No sales orders yet. Create one with `slipscan sales-order create`."
+                            );
+                        }
+                        for o in &orders {
+                            println!("#{}\t{}\t{}\t{}", o.number, o.id, o.status, o.order_date);
+                        }
+                    })
+                }
+                SalesOrderAction::Update {
+                    id,
+                    location,
+                    clear_location,
+                    order_date,
+                    notes,
+                    clear_notes,
+                } => {
+                    let location_id = if *clear_location {
+                        Some(None)
+                    } else {
+                        location.clone().map(Some)
+                    };
+                    let notes = if *clear_notes {
+                        Some(None)
+                    } else {
+                        notes.clone().map(Some)
+                    };
+                    let order = svc.sales_order_update(
+                        id,
+                        SalesOrderPatch {
+                            location_id,
+                            order_date: order_date.clone(),
+                            notes,
+                        },
+                    )?;
+                    emit(cli.json, &order, || {
+                        println!("Updated sales order #{} ({})", order.number, order.id);
+                    })
+                }
+                SalesOrderAction::Delete { id } => {
+                    svc.sales_order_delete(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed sales order {id}.");
+                    })
+                }
+                SalesOrderAction::ItemAdd {
+                    order,
+                    variant,
+                    description,
+                    quantity,
+                    price_minor,
+                    tax_rate_bps,
+                } => {
+                    let item = svc.sales_order_item_add(NewSalesOrderItem {
+                        sales_order_id: order.clone(),
+                        variant_id: variant.clone(),
+                        description: description.clone(),
+                        quantity: *quantity,
+                        unit_price_minor: *price_minor,
+                        tax_rate_bps: *tax_rate_bps,
+                    })?;
+                    emit(cli.json, &item, || {
+                        println!(
+                            "Added line {} — {} x{} @ {}",
+                            item.id, item.description, item.quantity, item.unit_price_minor
+                        );
+                    })
+                }
+                SalesOrderAction::ItemList { order } => {
+                    let items = svc.sales_order_items_list(order)?;
+                    emit(cli.json, &items, || {
+                        for i in &items {
+                            println!(
+                                "{}\t{}\tx{}\t@{}\ttax_bps {}",
+                                i.id, i.description, i.quantity, i.unit_price_minor, i.tax_rate_bps
+                            );
+                        }
+                    })
+                }
+                SalesOrderAction::ItemUpdate {
+                    id,
+                    description,
+                    quantity,
+                    price_minor,
+                    tax_rate_bps,
+                } => {
+                    let item = svc.sales_order_item_update(
+                        id,
+                        SalesOrderItemPatch {
+                            description: description.clone(),
+                            quantity: *quantity,
+                            unit_price_minor: *price_minor,
+                            tax_rate_bps: *tax_rate_bps,
+                        },
+                    )?;
+                    emit(cli.json, &item, || {
+                        println!("Updated line {}", item.id);
+                    })
+                }
+                SalesOrderAction::ItemRemove { id } => {
+                    svc.sales_order_item_remove(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed line {id}.");
+                    })
+                }
+                SalesOrderAction::Confirm { id } => {
+                    let order = svc.sales_order_confirm(id)?;
+                    emit(cli.json, &order, || {
+                        println!(
+                            "Confirmed sales order #{} — stock deducted.",
+                            order.number
+                        );
+                    })
+                }
+                SalesOrderAction::Cancel { id } => {
+                    let order = svc.sales_order_cancel(id)?;
+                    emit(cli.json, &order, || {
+                        println!("Cancelled sales order #{}.", order.number);
+                    })
+                }
+                SalesOrderAction::Pay { id } => {
+                    let order = svc.sales_order_mark_paid(id)?;
+                    emit(cli.json, &order, || {
+                        println!("Marked sales order #{} paid.", order.number);
+                    })
+                }
+                SalesOrderAction::Totals { id } => {
+                    let totals = svc.sales_order_totals(id)?;
+                    emit(cli.json, &totals, || {
+                        println!(
+                            "subtotal {}\ttax {}\ttotal {}",
+                            fmt_minor(totals.subtotal_minor),
+                            fmt_minor(totals.tax_minor),
+                            fmt_minor(totals.total_minor)
+                        );
+                    })
+                }
+            }
+        }
+
+        Command::Invoice { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                InvoiceAction::Issue {
+                    order,
+                    contact,
+                    series,
+                    issue_date,
+                    due_date,
+                    currency,
+                    notes,
+                    items,
+                } => {
+                    let invoice = svc.invoice_issue(NewInvoice {
+                        book_id: book.id.clone(),
+                        contact_id: contact.clone(),
+                        sales_order_id: order.clone(),
+                        series: series.clone(),
+                        issue_date: issue_date.clone(),
+                        due_date: due_date.clone(),
+                        currency: currency.clone(),
+                        notes: notes.clone(),
+                        items: items.clone(),
+                    })?;
+                    emit(cli.json, &invoice, || {
+                        println!(
+                            "Issued invoice {}-{} ({}) — due {}",
+                            invoice.series, invoice.number, invoice.id, invoice.due_date
+                        );
+                    })
+                }
+                InvoiceAction::Get { id } => {
+                    let invoice = svc.invoice_get(id)?;
+                    emit(cli.json, &invoice, || {
+                        println!(
+                            "{}-{}\t{}\tissued {}\tdue {}",
+                            invoice.series, invoice.number, invoice.id, invoice.issue_date, invoice.due_date
+                        );
+                    })
+                }
+                InvoiceAction::List => {
+                    let invoices = svc.invoice_list(&book.id)?;
+                    emit(cli.json, &invoices, || {
+                        if invoices.is_empty() {
+                            println!(
+                                "No invoices yet. Issue one with `slipscan invoice issue`."
+                            );
+                        }
+                        for i in &invoices {
+                            println!("{}-{}\t{}\tdue {}", i.series, i.number, i.id, i.due_date);
+                        }
+                    })
+                }
+                InvoiceAction::ItemList { invoice } => {
+                    let items = svc.invoice_items_list(invoice)?;
+                    emit(cli.json, &items, || {
+                        for i in &items {
+                            println!(
+                                "{}\t{}\tx{}\t@{}\ttax_bps {}",
+                                i.id, i.description, i.quantity, i.unit_price_minor, i.tax_rate_bps
+                            );
+                        }
+                    })
+                }
+                InvoiceAction::Totals { id } => {
+                    let totals = svc.invoice_totals(id)?;
+                    emit(cli.json, &totals, || {
+                        println!(
+                            "subtotal {}\ttax {}\ttotal {}\tpaid {}\tdue {}\tstatus {}",
+                            fmt_minor(totals.subtotal_minor),
+                            fmt_minor(totals.tax_minor),
+                            fmt_minor(totals.total_minor),
+                            fmt_minor(totals.paid_minor),
+                            fmt_minor(totals.due_minor),
+                            totals.status
+                        );
+                    })
+                }
+                InvoiceAction::Pay {
+                    invoice,
+                    amount_minor,
+                    paid_at,
+                    method,
+                    note,
+                } => {
+                    let payment = svc.invoice_payment_record(NewInvoicePayment {
+                        invoice_id: invoice.clone(),
+                        amount_minor: *amount_minor,
+                        paid_at: paid_at.clone(),
+                        method: method.clone(),
+                        note: note.clone(),
+                    })?;
+                    emit(cli.json, &payment, || {
+                        println!(
+                            "Recorded payment {} of {} against invoice {}.",
+                            payment.id,
+                            fmt_minor(payment.amount_minor),
+                            payment.invoice_id
+                        );
+                    })
+                }
+                InvoiceAction::Payments { invoice } => {
+                    let payments = svc.invoice_payments_list(invoice)?;
+                    emit(cli.json, &payments, || {
+                        for p in &payments {
+                            println!(
+                                "{}\t{}\t{}",
+                                p.id,
+                                fmt_minor(p.amount_minor),
+                                p.method.as_deref().unwrap_or("-")
+                            );
+                        }
+                    })
+                }
+            }
+        }
+
         Command::Member { ref action } => {
             let svc = open_service(&env.db)?;
             let book = resolve_book(&svc, cli.book.as_deref())?;
@@ -2933,6 +3434,25 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 fmt_minor(r.net_minor)
                             );
                         }
+                    })
+                }
+                ReportKind::AgedReceivables => {
+                    let report = svc.report_aged_receivables(&book.id, to.as_deref())?;
+                    emit(cli.json, &report, || {
+                        println!("Aged receivables — {} (as of {})", book.name, report.as_of);
+                        for r in &report.rows {
+                            println!(
+                                "{}\tcurrent {}\t1-30 {}\t31-60 {}\t61-90 {}\t90+ {}\ttotal {}",
+                                r.contact_name,
+                                fmt_minor(r.buckets.current_minor),
+                                fmt_minor(r.buckets.overdue_1_30_minor),
+                                fmt_minor(r.buckets.overdue_31_60_minor),
+                                fmt_minor(r.buckets.overdue_61_90_minor),
+                                fmt_minor(r.buckets.overdue_90_plus_minor),
+                                fmt_minor(r.buckets.total_minor)
+                            );
+                        }
+                        println!("TOTAL\t{}", fmt_minor(report.totals.total_minor));
                     })
                 }
             }

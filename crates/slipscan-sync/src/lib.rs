@@ -266,6 +266,15 @@ pub const LEDGER_TABLES: &[&str] = &[
     "journal_lines",
     "stock_movements",
     "po_receipts",
+    // Migration 0014 (ROADMAP.md Phase 6.5): an issued invoice is created
+    // once, already numbered, and never edited — closer to a fact than an
+    // editable row, the same call `journals` makes for a posted entry. See
+    // that migration's header for why this and `sales_orders` (below, in
+    // `LWW_TABLES`) land on opposite sides of this list even though both are
+    // "sales" tables.
+    "invoices",
+    "invoice_items",
+    "invoice_payments",
 ];
 
 /// Tables whose rows are editable and merge last-writer-wins.
@@ -301,6 +310,13 @@ pub const LWW_TABLES: &[&str] = &[
     "product_variants",
     "purchase_orders",
     "purchase_order_items",
+    // Migration 0014 (ROADMAP.md Phase 6.5): a sales order is a draft a
+    // person keeps editing — add a line, fix a quantity — right up until
+    // it is confirmed, cancelled or paid. Last-writer-wins is what editing
+    // your own draft on two devices means. Its own line items follow it into
+    // this list for the same reason `product_variants` follows `products`.
+    "sales_orders",
+    "sales_order_items",
 ];
 
 /// Whether `table` is an immutable ledger, and so maps to the OR-Set.

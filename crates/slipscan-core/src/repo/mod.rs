@@ -19,6 +19,7 @@ pub mod pay;
 pub mod purchasing;
 pub mod recon;
 pub mod report;
+pub mod sales;
 pub mod settings;
 pub mod stock;
 pub mod transaction;

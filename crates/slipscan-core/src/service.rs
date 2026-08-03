@@ -85,6 +85,13 @@ fn derive_initial(label: &str) -> String {
 /// (`email`, `phone`, addresses, …) so clearing a field in the UI (typing it
 /// down to empty) reads back as "not set" rather than a stored empty string
 /// that would still show as a value.
+/// Today's date, `YYYY-MM-DD`, in UTC — the same clock `now_iso` reads,
+/// truncated to the date component `parse_date` expects. Used to default
+/// `order_date`/`issue_date`/`paid_at` when a caller omits them.
+fn today() -> String {
+    now_iso()[..10].to_string()
+}
+
 fn normalize_optional(raw: Option<String>) -> Option<String> {
     raw.and_then(|s| {
         let trimmed = s.trim();
@@ -256,11 +263,21 @@ impl CoreService {
     }
 
     /// Open a database file with the real OS-keychain secret store.
+    ///
+    /// Sets a busy timeout on this connection specifically because a real
+    /// file (unlike `Db::open_in_memory`, which nothing else can ever share)
+    /// can genuinely be opened by more than one process or thread at once —
+    /// exactly the scenario `invoice_issue`'s numbering has to survive. Without
+    /// this, a second writer racing the first for the same book's counter
+    /// would fail immediately with `SQLITE_BUSY` instead of simply waiting
+    /// its turn; with it, SQLite's own writer-serialization does the rest.
+    /// See migration `0014_sales`'s header for what this guarantee does and
+    /// does not cover.
     pub fn open(path: impl AsRef<std::path::Path>) -> CoreResult<Self> {
-        Ok(Self::new(
-            Db::open(path)?,
-            Box::new(KeyringSecretStore::default()),
-        ))
+        let db = Db::open(path)?;
+        db.conn()
+            .busy_timeout(std::time::Duration::from_secs(5))?;
+        Ok(Self::new(db, Box::new(KeyringSecretStore::default())))
     }
 
     fn conn(&self) -> &Connection {
@@ -1345,10 +1362,14 @@ impl CoreService {
         Ok(after)
     }
 
-    /// Hard delete. There is no bill/invoice table yet to reference a
-    /// contact, so there is nothing today to restrain this the way
-    /// `account_delete` is restrained by transactions — that changes the
-    /// moment either one lands.
+    /// Hard delete. As of migration `0014_sales`, a contact with any sales
+    /// order or invoice history is restrained the same way `account_delete`
+    /// is restrained by transactions — `sales_orders.contact_id` and
+    /// `invoices.contact_id` are both `ON DELETE RESTRICT`. That surfaces as
+    /// a raw SQLite foreign-key error here rather than a friendly
+    /// `CoreError`, the same trade-off migration 0012 accepted for
+    /// `stock_movements.variant_id`/`location_id`: nobody has hit it as a
+    /// caller yet.
     pub fn contact_remove(&self, id: &str) -> CoreResult<()> {
         let before = self.contact_get(id)?;
         let tx = self.conn().unchecked_transaction()?;
@@ -2688,6 +2709,810 @@ impl CoreService {
         } else {
             PoReceiptStatus::Partial
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // Sales orders (Phase 6.5 — ROADMAP.md "Inventory & trade", PARITY.md's
+    // single largest Xero-axis gap). See migration `0014_sales`'s header for
+    // the LWW/ledger split this section and the next mirror exactly.
+    // -----------------------------------------------------------------------
+
+    pub fn sales_order_create(&self, new: NewSalesOrder) -> CoreResult<SalesOrder> {
+        let book = self.book_get(&new.book_id)?;
+        let contact = self.contact_get(&new.contact_id)?;
+        if contact.book_id != book.id {
+            return Err(CoreError::Validation(
+                "sales order contact belongs to a different book".into(),
+            ));
+        }
+        let location_id = match &new.location_id {
+            Some(id) => {
+                let location = self.location_get(id)?;
+                if location.book_id != book.id {
+                    return Err(CoreError::Validation(
+                        "sales order location belongs to a different book".into(),
+                    ));
+                }
+                Some(location.id)
+            }
+            None => None,
+        };
+        let order_date = new.order_date.clone().unwrap_or_else(today);
+        parse_date(&order_date)?;
+        let currency = match &new.currency {
+            Some(c) => normalize_currency_code(c)?,
+            None => book.currency.clone(),
+        };
+
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        // Own numbering series ("sales_order") from invoices' ("invoice") —
+        // an order and the invoice raised from it are not required to share
+        // a number, the same way a Xero sales order and its invoice do not.
+        let number = repo::sales::allocate_number(&tx, &book.id, "sales_order")?;
+        let order = SalesOrder {
+            id: new_id(),
+            book_id: book.id.clone(),
+            contact_id: contact.id,
+            location_id,
+            number,
+            order_date,
+            status: SalesOrderStatus::Draft,
+            currency,
+            notes: normalize_optional(new.notes),
+            confirmed_at: None,
+            cancelled_at: None,
+            paid_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        repo::sales::order_insert(&tx, &order)?;
+        self.emit_audit(
+            &tx,
+            Some(&order.book_id),
+            "sales_order",
+            Some(&order.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&order)?),
+        )?;
+        tx.commit()?;
+        Ok(order)
+    }
+
+    pub fn sales_order_get(&self, id: &str) -> CoreResult<SalesOrder> {
+        repo::sales::order_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "sales_order",
+            id: id.to_string(),
+        })
+    }
+
+    /// Every order in the book, most recently numbered first.
+    pub fn sales_order_list(&self, book_id: &str) -> CoreResult<Vec<SalesOrder>> {
+        repo::sales::order_list(self.conn(), book_id)
+    }
+
+    /// Header edit — location, order date, notes. Only reachable while the
+    /// order is still `draft`; `status` moves through the dedicated
+    /// transition functions below, never through this patch.
+    pub fn sales_order_update(&self, id: &str, patch: SalesOrderPatch) -> CoreResult<SalesOrder> {
+        let before = self.sales_order_get(id)?;
+        if before.status != SalesOrderStatus::Draft {
+            return Err(CoreError::Validation(
+                "only a draft sales order can be edited; a confirmed one can be cancelled".into(),
+            ));
+        }
+        let mut after = before.clone();
+        if let Some(location_id) = patch.location_id {
+            after.location_id = match location_id {
+                Some(loc_id) => {
+                    let location = self.location_get(&loc_id)?;
+                    if location.book_id != before.book_id {
+                        return Err(CoreError::Validation(
+                            "sales order location belongs to a different book".into(),
+                        ));
+                    }
+                    Some(location.id)
+                }
+                None => None,
+            };
+        }
+        if let Some(order_date) = patch.order_date {
+            parse_date(&order_date)?;
+            after.order_date = order_date;
+        }
+        if let Some(notes) = patch.notes {
+            after.notes = normalize_optional(notes);
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::order_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "sales_order",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Hard delete. Only reachable while `draft` — a confirmed order has
+    /// already moved stock and a paid or cancelled one is history; all three
+    /// are cancelled or left alone, never deleted.
+    pub fn sales_order_delete(&self, id: &str) -> CoreResult<()> {
+        let before = self.sales_order_get(id)?;
+        if before.status != SalesOrderStatus::Draft {
+            return Err(CoreError::Validation(
+                "only a draft sales order can be deleted; cancel a confirmed one instead".into(),
+            ));
+        }
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::order_delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "sales_order",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// `subtotal + tax == total`, derived from the order's own items at call
+    /// time — see `SalesOrder`'s header note on why nothing here is stored.
+    pub fn sales_order_totals(&self, id: &str) -> CoreResult<SalesOrderTotals> {
+        self.sales_order_get(id)?;
+        repo::sales::order_totals(self.conn(), id)
+    }
+
+    fn resolve_sales_order_line(
+        &self,
+        order_book_id: &str,
+        variant_id: Option<&str>,
+        description: Option<&str>,
+        unit_price_minor: Option<i64>,
+    ) -> CoreResult<(Option<String>, String, i64)> {
+        match variant_id {
+            Some(vid) => {
+                let variant = self.product_variant_get(vid)?;
+                if variant.book_id != order_book_id {
+                    return Err(CoreError::Validation(
+                        "sales order line variant belongs to a different book".into(),
+                    ));
+                }
+                let description = description
+                    .map(str::trim)
+                    .filter(|d| !d.is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| variant.name.clone());
+                let unit_price_minor = unit_price_minor.unwrap_or(variant.price_minor);
+                Ok((Some(variant.id), description, unit_price_minor))
+            }
+            None => {
+                let description = description
+                    .map(str::trim)
+                    .filter(|d| !d.is_empty())
+                    .ok_or_else(|| {
+                        CoreError::Validation(
+                            "a free-text sales order line needs a description".into(),
+                        )
+                    })?
+                    .to_string();
+                let unit_price_minor = unit_price_minor.ok_or_else(|| {
+                    CoreError::Validation("a free-text sales order line needs a unit price".into())
+                })?;
+                Ok((None, description, unit_price_minor))
+            }
+        }
+    }
+
+    /// Add a line to a draft order: a catalogue line (`variant_id: Some`,
+    /// description/price default from the variant) or a free-text/service
+    /// line (`variant_id: None`, description and price required). Only
+    /// reachable while the order is `draft`.
+    pub fn sales_order_item_add(&self, new: NewSalesOrderItem) -> CoreResult<SalesOrderItem> {
+        let order = self.sales_order_get(&new.sales_order_id)?;
+        if order.status != SalesOrderStatus::Draft {
+            return Err(CoreError::Validation(
+                "cannot add a line to a non-draft sales order".into(),
+            ));
+        }
+        if new.quantity <= 0 {
+            return Err(CoreError::Validation(
+                "sales order line quantity must be positive".into(),
+            ));
+        }
+        let (variant_id, description, unit_price_minor) = self.resolve_sales_order_line(
+            &order.book_id,
+            new.variant_id.as_deref(),
+            new.description.as_deref(),
+            new.unit_price_minor,
+        )?;
+        if unit_price_minor < 0 {
+            return Err(CoreError::Validation(
+                "sales order line unit price must not be negative".into(),
+            ));
+        }
+        let tax_rate_bps = new.tax_rate_bps.unwrap_or(0);
+        if !(0..=10_000).contains(&tax_rate_bps) {
+            return Err(CoreError::Validation(
+                "sales order line tax rate must be between 0 and 10000 basis points".into(),
+            ));
+        }
+
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        let line_order = repo::sales::order_item_list(&tx, &order.id)?.len() as i64;
+        let item = SalesOrderItem {
+            id: new_id(),
+            sales_order_id: order.id.clone(),
+            book_id: order.book_id.clone(),
+            variant_id,
+            description,
+            quantity: new.quantity,
+            unit_price_minor,
+            tax_rate_bps,
+            line_order,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        repo::sales::order_item_insert(&tx, &item)?;
+        self.emit_audit(
+            &tx,
+            Some(&item.book_id),
+            "sales_order_item",
+            Some(&item.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&item)?),
+        )?;
+        tx.commit()?;
+        Ok(item)
+    }
+
+    /// Every line on an order, in the order they were added.
+    pub fn sales_order_items_list(&self, sales_order_id: &str) -> CoreResult<Vec<SalesOrderItem>> {
+        repo::sales::order_item_list(self.conn(), sales_order_id)
+    }
+
+    /// Edit a line's description/quantity/price/tax rate. `variant_id` is
+    /// never reassigned — remove the line and add a new one to change which
+    /// product it is. Only reachable while the order is `draft`.
+    pub fn sales_order_item_update(
+        &self,
+        id: &str,
+        patch: SalesOrderItemPatch,
+    ) -> CoreResult<SalesOrderItem> {
+        let before = repo::sales::order_item_get(self.conn(), id)?.ok_or_else(|| {
+            CoreError::NotFound {
+                entity: "sales_order_item",
+                id: id.to_string(),
+            }
+        })?;
+        let order = self.sales_order_get(&before.sales_order_id)?;
+        if order.status != SalesOrderStatus::Draft {
+            return Err(CoreError::Validation(
+                "cannot edit a line on a non-draft sales order".into(),
+            ));
+        }
+        let mut after = before.clone();
+        if let Some(description) = patch.description {
+            let description = description.trim().to_string();
+            if description.is_empty() {
+                return Err(CoreError::Validation(
+                    "sales order line description must not be empty".into(),
+                ));
+            }
+            after.description = description;
+        }
+        if let Some(quantity) = patch.quantity {
+            if quantity <= 0 {
+                return Err(CoreError::Validation(
+                    "sales order line quantity must be positive".into(),
+                ));
+            }
+            after.quantity = quantity;
+        }
+        if let Some(unit_price_minor) = patch.unit_price_minor {
+            if unit_price_minor < 0 {
+                return Err(CoreError::Validation(
+                    "sales order line unit price must not be negative".into(),
+                ));
+            }
+            after.unit_price_minor = unit_price_minor;
+        }
+        if let Some(tax_rate_bps) = patch.tax_rate_bps {
+            if !(0..=10_000).contains(&tax_rate_bps) {
+                return Err(CoreError::Validation(
+                    "sales order line tax rate must be between 0 and 10000 basis points".into(),
+                ));
+            }
+            after.tax_rate_bps = tax_rate_bps;
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::order_item_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "sales_order_item",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Remove a line from a draft order. Only reachable while `draft`.
+    pub fn sales_order_item_remove(&self, id: &str) -> CoreResult<()> {
+        let before = repo::sales::order_item_get(self.conn(), id)?.ok_or_else(|| {
+            CoreError::NotFound {
+                entity: "sales_order_item",
+                id: id.to_string(),
+            }
+        })?;
+        let order = self.sales_order_get(&before.sales_order_id)?;
+        if order.status != SalesOrderStatus::Draft {
+            return Err(CoreError::Validation(
+                "cannot remove a line from a non-draft sales order".into(),
+            ));
+        }
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::order_item_delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "sales_order_item",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// draft -> confirmed. Deducts stock for every stock-tracked line
+    /// (`kind = sale`, `ref_kind = "sales_order"`) — the "delivery" ROADMAP.md
+    /// promises alongside invoicing; see migration `0014_sales`'s header for
+    /// why there is no separate delivery table. Requires at least one line
+    /// item, and a location the moment any line is stock-tracked. Does not
+    /// check availability — see the migration header's note on why that
+    /// matches the stock ledger's existing permissive model.
+    ///
+    /// NOTE (Phase 6.6): this is exactly the call site that will also post a
+    /// revenue/COGS/VAT journal once double-entry posting lands. It does not
+    /// today — Phase 6.5 is inventory and documents only.
+    pub fn sales_order_confirm(&self, id: &str) -> CoreResult<SalesOrder> {
+        let before = self.sales_order_get(id)?;
+        if before.status != SalesOrderStatus::Draft {
+            return Err(CoreError::InvalidStatusTransition {
+                from: before.status.to_string(),
+                to: SalesOrderStatus::Confirmed.to_string(),
+            });
+        }
+        let items = self.sales_order_items_list(id)?;
+        if items.is_empty() {
+            return Err(CoreError::Validation(
+                "cannot confirm a sales order with no line items".into(),
+            ));
+        }
+        let stock_items: Vec<&SalesOrderItem> =
+            items.iter().filter(|i| i.variant_id.is_some()).collect();
+        if !stock_items.is_empty() && before.location_id.is_none() {
+            return Err(CoreError::Validation(
+                "cannot confirm: this order has stock-tracked line items but no location set"
+                    .into(),
+            ));
+        }
+
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        if let Some(location_id) = &before.location_id {
+            for item in &stock_items {
+                let variant_id = item.variant_id.as_deref().expect("filtered above");
+                self.insert_movement_in_tx(
+                    &tx,
+                    &before.book_id,
+                    variant_id,
+                    location_id,
+                    -item.quantity,
+                    StockMovementKind::Sale,
+                    Some("sales_order".to_string()),
+                    Some(before.id.clone()),
+                    Some(format!("sale: order #{}", before.number)),
+                    None,
+                )?;
+            }
+        }
+        let mut after = before.clone();
+        after.status = SalesOrderStatus::Confirmed;
+        after.confirmed_at = Some(now.clone());
+        after.updated_at = now;
+        repo::sales::order_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "sales_order",
+            Some(id),
+            "confirm",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// draft|confirmed -> cancelled. A cancel from `confirmed` writes one
+    /// compensating movement per stock-tracked line — `kind` stays `sale`
+    /// (this reverses a sale; it is not new stock arriving), correlated by
+    /// the same `ref_kind`/`ref_id` as the original deduction so
+    /// `stock_movements_for_ref` shows the whole story for one order,
+    /// exactly as migration 0012 already does for a transfer's two legs. A
+    /// cancel from `draft` never touched stock and moves none.
+    pub fn sales_order_cancel(&self, id: &str) -> CoreResult<SalesOrder> {
+        let before = self.sales_order_get(id)?;
+        if !matches!(
+            before.status,
+            SalesOrderStatus::Draft | SalesOrderStatus::Confirmed
+        ) {
+            return Err(CoreError::InvalidStatusTransition {
+                from: before.status.to_string(),
+                to: SalesOrderStatus::Cancelled.to_string(),
+            });
+        }
+
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        if before.status == SalesOrderStatus::Confirmed {
+            let items = repo::sales::order_item_list(&tx, id)?;
+            let stock_items: Vec<_> = items.iter().filter(|i| i.variant_id.is_some()).collect();
+            if !stock_items.is_empty() {
+                let location_id = before.location_id.clone().expect(
+                    "a confirmed order with stock lines always has a location — \
+                     sales_order_confirm requires it",
+                );
+                for item in stock_items {
+                    let variant_id = item.variant_id.as_deref().expect("filtered above");
+                    self.insert_movement_in_tx(
+                        &tx,
+                        &before.book_id,
+                        variant_id,
+                        &location_id,
+                        item.quantity,
+                        StockMovementKind::Sale,
+                        Some("sales_order".to_string()),
+                        Some(before.id.clone()),
+                        Some(format!("cancelled: reversing sales_order {}", before.id)),
+                        None,
+                    )?;
+                }
+            }
+        }
+        let mut after = before.clone();
+        after.status = SalesOrderStatus::Cancelled;
+        after.cancelled_at = Some(now.clone());
+        after.updated_at = now;
+        repo::sales::order_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "sales_order",
+            Some(id),
+            "cancel",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// confirmed -> paid. A cash-sale convenience for an order settled with
+    /// no invoice at all; an invoiced order instead tracks payment through
+    /// `invoice_payment_record` against the invoice raised from it — the two
+    /// paths do not update each other automatically today (see migration
+    /// `0014_sales`'s scope notes).
+    pub fn sales_order_mark_paid(&self, id: &str) -> CoreResult<SalesOrder> {
+        let before = self.sales_order_get(id)?;
+        if before.status != SalesOrderStatus::Confirmed {
+            return Err(CoreError::InvalidStatusTransition {
+                from: before.status.to_string(),
+                to: SalesOrderStatus::Paid.to_string(),
+            });
+        }
+        let now = now_iso();
+        let mut after = before.clone();
+        after.status = SalesOrderStatus::Paid;
+        after.paid_at = Some(now.clone());
+        after.updated_at = now;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::order_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "sales_order",
+            Some(id),
+            "mark_paid",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    // -----------------------------------------------------------------------
+    // Invoices (Phase 6.5). See migration `0014_sales`'s header for why every
+    // function here either reads or inserts — there is no update, no delete,
+    // and no draft phase: `invoice_issue` is the only way one comes into
+    // being, already numbered.
+    // -----------------------------------------------------------------------
+
+    /// Issue an invoice — either from a confirmed/paid sales order (its line
+    /// items are copied; its `contact_id`/`currency` win over anything this
+    /// call was given) or standalone (`sales_order_id: None`, `contact_id`
+    /// and `items` required). Assigns the next number for `series`
+    /// (`"invoice"` by default) atomically in the same transaction as the
+    /// insert — see `repo::sales::allocate_number` and this migration's
+    /// header for the concurrency guarantee that follows from doing it that
+    /// way, proven in this module's own tests under real concurrent access.
+    pub fn invoice_issue(&self, new: NewInvoice) -> CoreResult<Invoice> {
+        let book = self.book_get(&new.book_id)?;
+        let issue_date = new.issue_date.clone().unwrap_or_else(today);
+        parse_date(&issue_date)?;
+        parse_date(&new.due_date)?;
+        if new.due_date.as_str() < issue_date.as_str() {
+            return Err(CoreError::Validation(
+                "invoice due date must not be before its issue date".into(),
+            ));
+        }
+        let series = new
+            .series
+            .clone()
+            .unwrap_or_else(|| "invoice".to_string())
+            .trim()
+            .to_string();
+        if series.is_empty() {
+            return Err(CoreError::Validation(
+                "invoice numbering series must not be empty".into(),
+            ));
+        }
+
+        type Line = (Option<String>, String, i64, i64, i64);
+        let (contact_id, currency, sales_order_id, lines): (String, String, Option<String>, Vec<Line>) =
+            if let Some(order_id) = &new.sales_order_id {
+                let order = self.sales_order_get(order_id)?;
+                if order.book_id != book.id {
+                    return Err(CoreError::Validation(
+                        "invoice sales order belongs to a different book".into(),
+                    ));
+                }
+                if !matches!(order.status, SalesOrderStatus::Confirmed | SalesOrderStatus::Paid) {
+                    return Err(CoreError::Validation(
+                        "cannot issue an invoice from a sales order that is not confirmed or paid"
+                            .into(),
+                    ));
+                }
+                let items = self.sales_order_items_list(order_id)?;
+                if items.is_empty() {
+                    return Err(CoreError::Validation(
+                        "cannot issue an invoice with no line items".into(),
+                    ));
+                }
+                let lines = items
+                    .into_iter()
+                    .map(|i| {
+                        (
+                            i.variant_id,
+                            i.description,
+                            i.quantity,
+                            i.unit_price_minor,
+                            i.tax_rate_bps,
+                        )
+                    })
+                    .collect();
+                (order.contact_id.clone(), order.currency.clone(), Some(order.id.clone()), lines)
+            } else {
+                let contact_id = new.contact_id.clone().ok_or_else(|| {
+                    CoreError::Validation("a standalone invoice needs a contact_id".into())
+                })?;
+                let contact = self.contact_get(&contact_id)?;
+                if contact.book_id != book.id {
+                    return Err(CoreError::Validation(
+                        "invoice contact belongs to a different book".into(),
+                    ));
+                }
+                let currency = match &new.currency {
+                    Some(c) => normalize_currency_code(c)?,
+                    None => book.currency.clone(),
+                };
+                if new.items.is_empty() {
+                    return Err(CoreError::Validation(
+                        "a standalone invoice needs at least one line item".into(),
+                    ));
+                }
+                let mut lines = Vec::with_capacity(new.items.len());
+                for item in &new.items {
+                    let (variant_id, description, unit_price_minor) = self
+                        .resolve_sales_order_line(
+                            &book.id,
+                            item.variant_id.as_deref(),
+                            Some(&item.description),
+                            Some(item.unit_price_minor),
+                        )?;
+                    if item.quantity <= 0 {
+                        return Err(CoreError::Validation(
+                            "invoice line quantity must be positive".into(),
+                        ));
+                    }
+                    if unit_price_minor < 0 {
+                        return Err(CoreError::Validation(
+                            "invoice line unit price must not be negative".into(),
+                        ));
+                    }
+                    let tax_rate_bps = item.tax_rate_bps.unwrap_or(0);
+                    if !(0..=10_000).contains(&tax_rate_bps) {
+                        return Err(CoreError::Validation(
+                            "invoice line tax rate must be between 0 and 10000 basis points"
+                                .into(),
+                        ));
+                    }
+                    lines.push((variant_id, description, item.quantity, unit_price_minor, tax_rate_bps));
+                }
+                (contact.id, currency, None, lines)
+            };
+
+        let now = now_iso();
+        // Deferred is enough here (rusqlite's `unchecked_transaction` is the
+        // only variant `&self` can start — `transaction_with_behavior`
+        // needs `&mut Connection`, which a shared service does not have):
+        // `allocate_number`'s UPSERT is the very first statement this
+        // transaction executes, so it acquires SQLite's write lock right
+        // there regardless of the transaction's declared mode. A second
+        // issuer racing this one blocks on that same lock — see
+        // `CoreService::open`'s busy timeout — and reads the post-increment
+        // value once this transaction commits, never the same pre-increment
+        // one.
+        let tx = self.conn().unchecked_transaction()?;
+        let number = repo::sales::allocate_number(&tx, &book.id, &series)?;
+        let invoice = Invoice {
+            id: new_id(),
+            book_id: book.id.clone(),
+            contact_id,
+            sales_order_id,
+            series,
+            number,
+            issue_date,
+            due_date: new.due_date,
+            currency,
+            notes: normalize_optional(new.notes),
+            created_at: now.clone(),
+        };
+        repo::sales::invoice_insert(&tx, &invoice)?;
+        for (line_order, (variant_id, description, quantity, unit_price_minor, tax_rate_bps)) in
+            lines.into_iter().enumerate()
+        {
+            let item = InvoiceItem {
+                id: new_id(),
+                invoice_id: invoice.id.clone(),
+                book_id: invoice.book_id.clone(),
+                variant_id,
+                description,
+                quantity,
+                unit_price_minor,
+                tax_rate_bps,
+                line_order: line_order as i64,
+                created_at: now.clone(),
+            };
+            repo::sales::invoice_item_insert(&tx, &item)?;
+        }
+        self.emit_audit(
+            &tx,
+            Some(&invoice.book_id),
+            "invoice",
+            Some(&invoice.id),
+            "issue",
+            None,
+            Some(serde_json::to_string(&invoice)?),
+        )?;
+        tx.commit()?;
+        Ok(invoice)
+    }
+
+    pub fn invoice_get(&self, id: &str) -> CoreResult<Invoice> {
+        repo::sales::invoice_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "invoice",
+            id: id.to_string(),
+        })
+    }
+
+    /// Every invoice in the book, most recently numbered first per series.
+    pub fn invoice_list(&self, book_id: &str) -> CoreResult<Vec<Invoice>> {
+        repo::sales::invoice_list(self.conn(), book_id)
+    }
+
+    pub fn invoice_items_list(&self, invoice_id: &str) -> CoreResult<Vec<InvoiceItem>> {
+        repo::sales::invoice_item_list(self.conn(), invoice_id)
+    }
+
+    /// `subtotal + tax == total`, `paid + due == total`, `status` derived —
+    /// see `InvoiceTotals`'s header note on why none of it is stored.
+    pub fn invoice_totals(&self, id: &str) -> CoreResult<InvoiceTotals> {
+        self.invoice_get(id)?;
+        repo::sales::invoice_totals(self.conn(), id)
+    }
+
+    /// Record a payment against an invoice. Not blocked from exceeding the
+    /// balance due — a genuine overpayment happens, and `invoice_totals`
+    /// simply reports `due_minor` at or below zero rather than refusing the
+    /// fact that it happened.
+    pub fn invoice_payment_record(&self, new: NewInvoicePayment) -> CoreResult<InvoicePayment> {
+        let invoice = self.invoice_get(&new.invoice_id)?;
+        if new.amount_minor <= 0 {
+            return Err(CoreError::Validation(
+                "invoice payment amount must be positive".into(),
+            ));
+        }
+        let paid_at = new.paid_at.clone().unwrap_or_else(today);
+        parse_date(&paid_at)?;
+
+        let payment = InvoicePayment {
+            id: new_id(),
+            invoice_id: invoice.id.clone(),
+            book_id: invoice.book_id.clone(),
+            amount_minor: new.amount_minor,
+            paid_at,
+            method: normalize_optional(new.method),
+            note: normalize_optional(new.note),
+            created_at: now_iso(),
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::invoice_payment_insert(&tx, &payment)?;
+        self.emit_audit(
+            &tx,
+            Some(&payment.book_id),
+            "invoice_payment",
+            Some(&payment.id),
+            "record",
+            None,
+            Some(serde_json::to_string(&payment)?),
+        )?;
+        tx.commit()?;
+        Ok(payment)
+    }
+
+    /// Every payment recorded against an invoice, oldest first.
+    pub fn invoice_payments_list(&self, invoice_id: &str) -> CoreResult<Vec<InvoicePayment>> {
+        repo::sales::invoice_payment_list(self.conn(), invoice_id)
+    }
+
+    /// PARITY.md's #2-ranked gap, the receivables half: every outstanding
+    /// invoice, by contact, bucketed by age as of `as_of` (defaults to
+    /// today). Cheap now that invoices and contacts both exist.
+    pub fn report_aged_receivables(
+        &self,
+        book_id: &str,
+        as_of: Option<&str>,
+    ) -> CoreResult<AgedReceivables> {
+        self.book_get(book_id)?;
+        let as_of = match as_of {
+            Some(d) => {
+                parse_date(d)?;
+                d.to_string()
+            }
+            None => today(),
+        };
+        repo::sales::aged_receivables(self.conn(), book_id, &as_of)
     }
 
     // -----------------------------------------------------------------------
@@ -7202,6 +8027,705 @@ mod tests {
             svc.po_delete(&po.id).is_err(),
             "a PO with a receipt against one of its lines must not be deletable"
         );
+    }
+
+    // -- sales orders & invoicing (migration 0014, ROADMAP.md Phase 6.5) ----
+
+    fn make_contact(svc: &CoreService, book: &Book, name: &str) -> Contact {
+        svc.contact_add(NewContact {
+            book_id: book.id.clone(),
+            role: ContactRole::Customer,
+            name: name.into(),
+            company_name: None,
+            email: None,
+            phone: None,
+            billing_address: None,
+            shipping_address: None,
+            tax_number: None,
+            payment_terms_days: None,
+            credit_limit_minor: None,
+            notes: None,
+        })
+        .unwrap()
+    }
+
+    /// **The core invariant of the whole stage, proven rather than assumed.**
+    /// Confirming an order deducts stock; cancelling a confirmed one puts it
+    /// back — as a compensating movement, never by touching the original
+    /// rows, which `stock_movements_for_ref` proves directly by showing both
+    /// still exist.
+    #[test]
+    fn sales_order_confirm_deducts_stock_and_cancel_reverses_it() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let location = make_location(&svc, &book, "Main Branch");
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+
+        svc.stock_movement_record(new_movement(
+            &variant.id,
+            &location.id,
+            50,
+            StockMovementKind::Receipt,
+        ))
+        .unwrap();
+        assert_eq!(svc.stock_on_hand(&variant.id, &location.id).unwrap(), 50);
+
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: Some(location.id.clone()),
+                order_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        assert_eq!(order.status, SalesOrderStatus::Draft);
+        assert_eq!(order.currency, book.currency, "defaults from the book");
+
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: order.id.clone(),
+            variant_id: Some(variant.id.clone()),
+            description: None,
+            quantity: 8,
+            unit_price_minor: None,
+            tax_rate_bps: None,
+        })
+        .unwrap();
+
+        let confirmed = svc.sales_order_confirm(&order.id).unwrap();
+        assert_eq!(confirmed.status, SalesOrderStatus::Confirmed);
+        assert!(confirmed.confirmed_at.is_some());
+        assert_eq!(svc.stock_on_hand(&variant.id, &location.id).unwrap(), 42);
+
+        let cancelled = svc.sales_order_cancel(&order.id).unwrap();
+        assert_eq!(cancelled.status, SalesOrderStatus::Cancelled);
+        assert_eq!(
+            svc.stock_on_hand(&variant.id, &location.id).unwrap(),
+            50,
+            "cancelling a confirmed order must put every unit it took back"
+        );
+
+        let history = svc
+            .stock_movements_for_ref("sales_order", &order.id)
+            .unwrap();
+        assert_eq!(
+            history.len(),
+            2,
+            "one deduction on confirm, one compensating reversal on cancel — never an edit"
+        );
+        assert_eq!(history.iter().map(|m| m.qty_delta).sum::<i64>(), 0);
+    }
+
+    #[test]
+    fn sales_order_confirm_requires_a_location_for_stock_lines() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: None,
+                order_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: order.id.clone(),
+            variant_id: Some(variant.id.clone()),
+            description: None,
+            quantity: 1,
+            unit_price_minor: None,
+            tax_rate_bps: None,
+        })
+        .unwrap();
+
+        let err = svc.sales_order_confirm(&order.id).unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)), "{err}");
+
+        // A purely free-text order needs no location at all.
+        let service_order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: None,
+                order_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: service_order.id.clone(),
+            variant_id: None,
+            description: Some("Consulting".into()),
+            quantity: 1,
+            unit_price_minor: Some(50_000),
+            tax_rate_bps: None,
+        })
+        .unwrap();
+        let confirmed = svc.sales_order_confirm(&service_order.id).unwrap();
+        assert_eq!(confirmed.status, SalesOrderStatus::Confirmed);
+    }
+
+    #[test]
+    fn sales_order_status_transitions_are_validated() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: None,
+                order_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+
+        // Can't confirm an order with no lines.
+        assert!(matches!(
+            svc.sales_order_confirm(&order.id),
+            Err(CoreError::Validation(_))
+        ));
+        // Can't mark a draft order paid — it has to be confirmed first.
+        assert!(matches!(
+            svc.sales_order_mark_paid(&order.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: order.id.clone(),
+            variant_id: None,
+            description: Some("Consulting".into()),
+            quantity: 1,
+            unit_price_minor: Some(1000),
+            tax_rate_bps: None,
+        })
+        .unwrap();
+        svc.sales_order_confirm(&order.id).unwrap();
+
+        // Can't confirm twice.
+        assert!(matches!(
+            svc.sales_order_confirm(&order.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+
+        let paid = svc.sales_order_mark_paid(&order.id).unwrap();
+        assert_eq!(paid.status, SalesOrderStatus::Paid);
+        assert!(paid.paid_at.is_some());
+
+        // A paid order can no longer be cancelled.
+        assert!(matches!(
+            svc.sales_order_cancel(&order.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+
+        // Only a draft order can be deleted.
+        assert!(matches!(
+            svc.sales_order_delete(&order.id),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn sales_order_item_management_is_restricted_to_draft() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: None,
+                order_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+
+        // A free-text line needs both a description and a price.
+        assert!(matches!(
+            svc.sales_order_item_add(NewSalesOrderItem {
+                sales_order_id: order.id.clone(),
+                variant_id: None,
+                description: None,
+                quantity: 1,
+                unit_price_minor: None,
+                tax_rate_bps: None,
+            }),
+            Err(CoreError::Validation(_))
+        ));
+
+        let item = svc
+            .sales_order_item_add(NewSalesOrderItem {
+                sales_order_id: order.id.clone(),
+                variant_id: None,
+                description: Some("Consulting".into()),
+                quantity: 2,
+                unit_price_minor: Some(5_000),
+                tax_rate_bps: Some(1500),
+            })
+            .unwrap();
+
+        let updated = svc
+            .sales_order_item_update(
+                &item.id,
+                SalesOrderItemPatch {
+                    quantity: Some(3),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.quantity, 3);
+
+        let totals = svc.sales_order_totals(&order.id).unwrap();
+        assert_eq!(totals.subtotal_minor, 15_000);
+        assert_eq!(totals.tax_minor, 2_250); // 15% of 15 000
+        assert_eq!(totals.total_minor, 17_250);
+
+        svc.sales_order_confirm(&order.id).unwrap();
+
+        // Once confirmed, the line is frozen.
+        assert!(matches!(
+            svc.sales_order_item_update(&item.id, SalesOrderItemPatch::default()),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.sales_order_item_remove(&item.id),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn invoice_issue_from_order_copies_items_and_requires_confirmed_or_paid() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: None,
+                order_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: order.id.clone(),
+            variant_id: None,
+            description: Some("Consulting".into()),
+            quantity: 2,
+            unit_price_minor: Some(10_000),
+            tax_rate_bps: Some(1500),
+        })
+        .unwrap();
+
+        // Can't invoice a draft order.
+        assert!(matches!(
+            svc.invoice_issue(NewInvoice {
+                book_id: book.id.clone(),
+                contact_id: None,
+                sales_order_id: Some(order.id.clone()),
+                series: None,
+                issue_date: None,
+                due_date: "2026-12-31".into(),
+                currency: None,
+                notes: None,
+                items: vec![],
+            }),
+            Err(CoreError::Validation(_))
+        ));
+
+        svc.sales_order_confirm(&order.id).unwrap();
+
+        let invoice = svc
+            .invoice_issue(NewInvoice {
+                book_id: book.id.clone(),
+                contact_id: None,
+                sales_order_id: Some(order.id.clone()),
+                series: None,
+                issue_date: None,
+                due_date: "2026-12-31".into(),
+                currency: None,
+                notes: None,
+                items: vec![],
+            })
+            .unwrap();
+        assert_eq!(invoice.contact_id, contact.id, "derived from the order");
+        assert_eq!(invoice.series, "invoice");
+        assert_eq!(invoice.number, 1);
+
+        let items = svc.invoice_items_list(&invoice.id).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].description, "Consulting");
+        assert_eq!(items[0].quantity, 2);
+
+        let totals = svc.invoice_totals(&invoice.id).unwrap();
+        assert_eq!(totals.subtotal_minor, 20_000);
+        assert_eq!(totals.tax_minor, 3_000);
+        assert_eq!(totals.total_minor, 23_000);
+        assert_eq!(totals.status, InvoicePaymentStatus::Unpaid);
+    }
+
+    #[test]
+    fn invoice_issue_standalone_validates_contact_and_items() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+
+        assert!(matches!(
+            svc.invoice_issue(NewInvoice {
+                book_id: book.id.clone(),
+                contact_id: None,
+                sales_order_id: None,
+                series: None,
+                issue_date: None,
+                due_date: "2026-12-31".into(),
+                currency: Some("ZAR".into()),
+                notes: None,
+                items: vec![NewInvoiceItemInput {
+                    variant_id: None,
+                    description: "Retainer".into(),
+                    quantity: 1,
+                    unit_price_minor: 100_000,
+                    tax_rate_bps: None,
+                }],
+            }),
+            Err(CoreError::Validation(_)),
+        ), "a standalone invoice needs a contact_id");
+
+        let invoice = svc
+            .invoice_issue(NewInvoice {
+                book_id: book.id.clone(),
+                contact_id: Some(contact.id.clone()),
+                sales_order_id: None,
+                series: None,
+                issue_date: Some("2026-01-01".into()),
+                due_date: "2025-12-31".into(),
+                currency: Some("ZAR".into()),
+                notes: None,
+                items: vec![NewInvoiceItemInput {
+                    variant_id: None,
+                    description: "Retainer".into(),
+                    quantity: 1,
+                    unit_price_minor: 100_000,
+                    tax_rate_bps: None,
+                }],
+            })
+            .unwrap_err();
+        assert!(
+            matches!(invoice, CoreError::Validation(_)),
+            "due date before issue date must be refused"
+        );
+
+        let ok = svc
+            .invoice_issue(NewInvoice {
+                book_id: book.id.clone(),
+                contact_id: Some(contact.id.clone()),
+                sales_order_id: None,
+                series: None,
+                issue_date: Some("2026-01-01".into()),
+                due_date: "2026-01-31".into(),
+                currency: Some("ZAR".into()),
+                notes: None,
+                items: vec![NewInvoiceItemInput {
+                    variant_id: None,
+                    description: "Retainer".into(),
+                    quantity: 1,
+                    unit_price_minor: 100_000,
+                    tax_rate_bps: None,
+                }],
+            })
+            .unwrap();
+        assert_eq!(ok.sales_order_id, None);
+        assert_eq!(ok.number, 1);
+    }
+
+    #[test]
+    fn invoice_payment_status_moves_through_unpaid_partly_paid_paid() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+        let invoice = svc
+            .invoice_issue(NewInvoice {
+                book_id: book.id.clone(),
+                contact_id: Some(contact.id.clone()),
+                sales_order_id: None,
+                series: None,
+                issue_date: None,
+                due_date: "2026-12-31".into(),
+                currency: Some("ZAR".into()),
+                notes: None,
+                items: vec![NewInvoiceItemInput {
+                    variant_id: None,
+                    description: "Retainer".into(),
+                    quantity: 1,
+                    unit_price_minor: 10_000,
+                    tax_rate_bps: None,
+                }],
+            })
+            .unwrap();
+
+        assert_eq!(
+            svc.invoice_totals(&invoice.id).unwrap().status,
+            InvoicePaymentStatus::Unpaid
+        );
+
+        svc.invoice_payment_record(NewInvoicePayment {
+            invoice_id: invoice.id.clone(),
+            amount_minor: 4_000,
+            paid_at: None,
+            method: Some("eft".into()),
+            note: None,
+        })
+        .unwrap();
+        let partly = svc.invoice_totals(&invoice.id).unwrap();
+        assert_eq!(partly.status, InvoicePaymentStatus::PartlyPaid);
+        assert_eq!(partly.paid_minor, 4_000);
+        assert_eq!(partly.due_minor, 6_000);
+
+        svc.invoice_payment_record(NewInvoicePayment {
+            invoice_id: invoice.id.clone(),
+            amount_minor: 6_000,
+            paid_at: None,
+            method: Some("eft".into()),
+            note: None,
+        })
+        .unwrap();
+        let paid = svc.invoice_totals(&invoice.id).unwrap();
+        assert_eq!(paid.status, InvoicePaymentStatus::Paid);
+        assert_eq!(paid.due_minor, 0);
+
+        assert_eq!(svc.invoice_payments_list(&invoice.id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn invoice_numbering_is_sequential_and_scoped_per_book() {
+        let svc = svc();
+        let book_a = make_book(&svc);
+        let contact_a = make_contact(&svc, &book_a, "Book A Customer");
+        let book_b = svc
+            .book_create(NewBook {
+                name: "Side business".into(),
+                kind: BookKind::Business,
+                currency: None,
+                country: Some("ZA".into()),
+                region: None,
+            })
+            .unwrap();
+        let contact_b = make_contact(&svc, &book_b, "Book B Customer");
+
+        let issue = |book_id: &str, contact_id: &str| {
+            svc.invoice_issue(NewInvoice {
+                book_id: book_id.to_string(),
+                contact_id: Some(contact_id.to_string()),
+                sales_order_id: None,
+                series: None,
+                issue_date: None,
+                due_date: "2026-12-31".into(),
+                currency: Some("ZAR".into()),
+                notes: None,
+                items: vec![NewInvoiceItemInput {
+                    variant_id: None,
+                    description: "Line".into(),
+                    quantity: 1,
+                    unit_price_minor: 100,
+                    tax_rate_bps: None,
+                }],
+            })
+            .unwrap()
+            .number
+        };
+
+        assert_eq!(issue(&book_a.id, &contact_a.id), 1);
+        assert_eq!(issue(&book_a.id, &contact_a.id), 2);
+        // A second book's numbering starts at 1 independently — this is a
+        // *per-book* sequence, not a global one.
+        assert_eq!(issue(&book_b.id, &contact_b.id), 1);
+        assert_eq!(issue(&book_a.id, &contact_a.id), 3);
+    }
+
+    /// **The belt-and-suspenders half of the numbering guarantee, proven on
+    /// its own rather than trusted because `allocate_number` happens to
+    /// behave.** `UNIQUE (book_id, series, number)` is a second, independent
+    /// mechanism from the atomic counter — this inserts two invoices sharing
+    /// a number directly through raw SQL, bypassing `repo::sales::
+    /// allocate_number` entirely, so a bug in the allocator would not hide a
+    /// bug here too.
+    #[test]
+    fn invoice_number_uniqueness_is_enforced_at_the_database_level() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+        let conn = svc.conn_for_test();
+
+        conn.execute(
+            "INSERT INTO invoices
+                 (id, book_id, contact_id, series, number, issue_date, due_date, currency, created_at)
+             VALUES ('inv-a', ?1, ?2, 'invoice', 1, '2026-01-01', '2026-01-31', 'ZAR', 't')",
+            rusqlite::params![book.id, contact.id],
+        )
+        .unwrap();
+
+        let err = conn
+            .execute(
+                "INSERT INTO invoices
+                     (id, book_id, contact_id, series, number, issue_date, due_date, currency, created_at)
+                 VALUES ('inv-b', ?1, ?2, 'invoice', 1, '2026-01-01', '2026-01-31', 'ZAR', 't')",
+                rusqlite::params![book.id, contact.id],
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("unique"),
+            "a duplicate (book_id, series, number) must be refused by the database itself, got {err}"
+        );
+    }
+
+    /// **The concurrency guarantee this whole migration exists to deliver,
+    /// proven under real contention rather than asserted.** Several threads,
+    /// each with its own `CoreService` and its own `rusqlite::Connection` to
+    /// the *same file* (an in-memory database cannot be shared this way, so
+    /// this is the one test in this module that needs a real one), race
+    /// `invoice_issue` against the same book. If the numbering had a race —
+    /// two callers reading the counter before either writes it back — this
+    /// test would observe a duplicate number or a gap in the result set.
+    #[test]
+    fn invoice_numbering_has_no_gap_or_duplicate_under_concurrent_issue() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("race.sqlite");
+
+        let (book_id, contact_id) = {
+            let svc = CoreService::open(&db_path).unwrap();
+            let book = make_book(&svc);
+            let contact = make_contact(&svc, &book, "Race Customer");
+            (book.id, contact.id)
+        };
+
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 5;
+        let handles: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let db_path = db_path.clone();
+                let book_id = book_id.clone();
+                let contact_id = contact_id.clone();
+                std::thread::spawn(move || {
+                    let svc = CoreService::open(&db_path).expect("open a fresh connection");
+                    (0..PER_THREAD)
+                        .map(|_| {
+                            svc.invoice_issue(NewInvoice {
+                                book_id: book_id.clone(),
+                                contact_id: Some(contact_id.clone()),
+                                sales_order_id: None,
+                                series: None,
+                                issue_date: None,
+                                due_date: "2026-12-31".into(),
+                                currency: Some("ZAR".into()),
+                                notes: None,
+                                items: vec![NewInvoiceItemInput {
+                                    variant_id: None,
+                                    description: "Race line".into(),
+                                    quantity: 1,
+                                    unit_price_minor: 1_000,
+                                    tax_rate_bps: None,
+                                }],
+                            })
+                            .expect("invoice_issue under contention")
+                            .number
+                        })
+                        .collect::<Vec<i64>>()
+                })
+            })
+            .collect();
+
+        let mut numbers: Vec<i64> = handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("issuing thread panicked"))
+            .collect();
+        numbers.sort_unstable();
+
+        let expected: Vec<i64> = (1..=(THREADS * PER_THREAD) as i64).collect();
+        assert_eq!(
+            numbers, expected,
+            "concurrent invoice_issue calls must hand out exactly 1..=N — no gap, no duplicate"
+        );
+    }
+
+    #[test]
+    fn report_aged_receivables_buckets_by_age() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let current_customer = make_contact(&svc, &book, "Not Yet Due");
+        let overdue_customer = make_contact(&svc, &book, "Overdue Customer");
+
+        let issue_with_due_date = |contact_id: &str, due_date: &str| {
+            svc.invoice_issue(NewInvoice {
+                book_id: book.id.clone(),
+                contact_id: Some(contact_id.to_string()),
+                sales_order_id: None,
+                series: None,
+                issue_date: Some("2026-01-01".into()),
+                due_date: due_date.to_string(),
+                currency: Some("ZAR".into()),
+                notes: None,
+                items: vec![NewInvoiceItemInput {
+                    variant_id: None,
+                    description: "Line".into(),
+                    quantity: 1,
+                    unit_price_minor: 10_000,
+                    tax_rate_bps: None,
+                }],
+            })
+            .unwrap()
+        };
+
+        let not_yet_due = issue_with_due_date(&current_customer.id, "2026-12-31");
+        let overdue = issue_with_due_date(&overdue_customer.id, "2026-01-01");
+        // Paid in full: must not appear as outstanding at all.
+        let paid_invoice = issue_with_due_date(&overdue_customer.id, "2026-01-01");
+        svc.invoice_payment_record(NewInvoicePayment {
+            invoice_id: paid_invoice.id.clone(),
+            amount_minor: 10_000,
+            paid_at: None,
+            method: None,
+            note: None,
+        })
+        .unwrap();
+
+        // "as of" 45 days after the overdue invoice's due date: the 31-60
+        // bucket, not yet 61-90.
+        let report = svc
+            .report_aged_receivables(&book.id, Some("2026-02-15"))
+            .unwrap();
+
+        let not_yet_due_row = report
+            .rows
+            .iter()
+            .find(|r| r.contact_id == current_customer.id)
+            .unwrap();
+        assert_eq!(not_yet_due_row.buckets.current_minor, 10_000);
+        assert_eq!(not_yet_due_row.buckets.total_minor, 10_000);
+
+        let overdue_row = report
+            .rows
+            .iter()
+            .find(|r| r.contact_id == overdue_customer.id)
+            .unwrap();
+        assert_eq!(overdue_row.buckets.overdue_31_60_minor, 10_000);
+        assert_eq!(
+            overdue_row.buckets.total_minor, 10_000,
+            "the paid invoice must not double this contact's balance"
+        );
+
+        assert_eq!(report.totals.total_minor, 20_000);
+        let _ = not_yet_due.id;
+        let _ = overdue.id;
     }
 
     // -- budgets ------------------------------------------------------------

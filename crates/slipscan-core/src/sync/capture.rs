@@ -715,6 +715,177 @@ mod tests {
         }
     }
 
+    /// Migration `0014_sales`'s two LWW tables, exercised directly against
+    /// their triggers — the same treatment `catalogue_tables_capture_insert_
+    /// update_and_delete` gives migration 0011's tables. `sales_orders` and
+    /// `sales_order_items` are the editable-draft half of that migration's
+    /// two-way split; the immutable half is proven separately below.
+    #[test]
+    fn sales_tables_capture_insert_update_and_delete() {
+        let db = Db::open_in_memory().unwrap();
+        let book = seed_book(&db);
+
+        db.conn()
+            .execute(
+                "INSERT INTO contacts (id, book_id, role, name, is_active, created_at, updated_at)
+                 VALUES ('cust-1', ?1, 'customer', 'Acme', 1, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+
+        // -- sales_orders ----------------------------------------------------
+        db.conn()
+            .execute(
+                "INSERT INTO sales_orders
+                     (id, book_id, contact_id, number, order_date, currency, created_at, updated_at)
+                 VALUES ('so-1', ?1, 'cust-1', 1, '2026-01-01', 'ZAR', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute("UPDATE sales_orders SET status = 'confirmed' WHERE id = 'so-1'", [])
+            .unwrap();
+        db.conn()
+            .execute("DELETE FROM sales_orders WHERE id = 'so-1'", [])
+            .unwrap();
+
+        // -- sales_order_items -------------------------------------------------
+        // Re-insert the parent: the delete above cascaded it away.
+        db.conn()
+            .execute(
+                "INSERT INTO sales_orders
+                     (id, book_id, contact_id, number, order_date, currency, created_at, updated_at)
+                 VALUES ('so-2', ?1, 'cust-1', 2, '2026-01-01', 'ZAR', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO sales_order_items
+                     (id, sales_order_id, book_id, description, quantity, unit_price_minor,
+                      created_at, updated_at)
+                 VALUES ('soi-1', 'so-2', ?1, 'Consulting', 1, 1000, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE sales_order_items SET quantity = 2 WHERE id = 'soi-1'",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute("DELETE FROM sales_order_items WHERE id = 'soi-1'", [])
+            .unwrap();
+
+        let captured = drain_list(db.conn()).unwrap();
+        for (table, row_id) in [("sales_orders", "so-1"), ("sales_order_items", "soi-1")] {
+            let rows: Vec<&Captured> = captured
+                .iter()
+                .filter(|c| c.table == table && c.row_id == row_id)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                3,
+                "{table}/{row_id}: expected an insert, update and delete capture, got {rows:?}"
+            );
+            assert_eq!(
+                rows.iter().filter(|c| !c.deleted).count(),
+                2,
+                "{table}/{row_id}: the insert and the update should both be live captures"
+            );
+            assert_eq!(
+                rows.iter().filter(|c| c.deleted).count(),
+                1,
+                "{table}/{row_id}: the delete should be a tombstone capture"
+            );
+            assert!(
+                rows.iter().all(|c| c.ns == book),
+                "{table}/{row_id}: namespace must be the book id"
+            );
+        }
+    }
+
+    /// Migration `0014_sales`'s three immutable tables — the other half of
+    /// its split. Each captures exactly its insert (never an update or a
+    /// delete, matching `a_stock_movement_captures_its_insert_and_cannot_be_
+    /// updated_or_deleted`'s treatment of migration 0012), and the database
+    /// itself refuses the UPDATE/DELETE statements that would otherwise be
+    /// silently unreachable.
+    #[test]
+    fn invoice_tables_capture_insert_only_and_are_immutable() {
+        let db = Db::open_in_memory().unwrap();
+        let book = seed_book(&db);
+
+        db.conn()
+            .execute(
+                "INSERT INTO contacts (id, book_id, role, name, is_active, created_at, updated_at)
+                 VALUES ('cust-1', ?1, 'customer', 'Acme', 1, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn().execute("DELETE FROM sync_outbox", []).unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO invoices
+                     (id, book_id, contact_id, series, number, issue_date, due_date, currency, created_at)
+                 VALUES ('inv-1', ?1, 'cust-1', 'invoice', 1, '2026-01-01', '2026-01-31', 'ZAR', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO invoice_items
+                     (id, invoice_id, book_id, description, quantity, unit_price_minor, created_at)
+                 VALUES ('ii-1', 'inv-1', ?1, 'Consulting', 1, 1000, 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO invoice_payments
+                     (id, invoice_id, book_id, amount_minor, paid_at, created_at)
+                 VALUES ('ip-1', 'inv-1', ?1, 1000, '2026-01-15', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+
+        let captured = drain_list(db.conn()).unwrap();
+        for (table, row_id) in [
+            ("invoices", "inv-1"),
+            ("invoice_items", "ii-1"),
+            ("invoice_payments", "ip-1"),
+        ] {
+            let rows: Vec<&Captured> = captured
+                .iter()
+                .filter(|c| c.table == table && c.row_id == row_id)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "{table}/{row_id}: an immutable table must capture exactly its insert: {rows:?}"
+            );
+            assert!(!rows[0].deleted);
+            assert_eq!(rows[0].ns, book);
+        }
+
+        for sql in [
+            "UPDATE invoices SET due_date = '2026-02-01' WHERE id = 'inv-1'",
+            "DELETE FROM invoices WHERE id = 'inv-1'",
+            "UPDATE invoice_items SET quantity = 2 WHERE id = 'ii-1'",
+            "DELETE FROM invoice_items WHERE id = 'ii-1'",
+            "UPDATE invoice_payments SET amount_minor = 2000 WHERE id = 'ip-1'",
+            "DELETE FROM invoice_payments WHERE id = 'ip-1'",
+        ] {
+            let err = db.conn().execute(sql, []).unwrap_err();
+            assert!(
+                err.to_string().contains("immutable"),
+                "`{sql}` must be refused by the database itself, got {err}"
+            );
+        }
+    }
+
     /// A `books` row is its own namespace — it has no `book_id` column to take
     /// one from.
     #[test]
