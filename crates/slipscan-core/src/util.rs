@@ -308,6 +308,39 @@ pub fn transaction_dedupe_hash(
     hex
 }
 
+/// Deserializer for a *nullable, optional* patch field — `Option<Option<T>>`,
+/// where the outer layer means "was this field present at all?" and the inner
+/// means "was it set to null?".
+///
+/// **Plain `#[serde(default)]` cannot express that, and silently gets it
+/// wrong.** `Option<T>`'s own `Deserialize` maps JSON `null` to `None` without
+/// descending, so `{"notes": null}` and `{}` both produce `None` — identical,
+/// and both read as "leave the field alone". The result was that no nullable
+/// field could be cleared over JSON at all: every `Some(None)` path was
+/// reachable from Rust (which is how the CLI's `--clear-notes` works, building
+/// the value directly) and unreachable from the desktop IPC layer and the HTTP
+/// API, with no error anywhere to say so.
+///
+/// Combined with `#[serde(default)]` for the absent case, this gives the three
+/// states the patch structs' doc comments have always claimed:
+///
+/// ```text
+/// {}                  -> None          leave untouched
+/// {"notes": null}     -> Some(None)    clear it
+/// {"notes": "hello"}  -> Some(Some(…)) set it
+/// ```
+///
+/// Pair it with `skip_serializing_if = "Option::is_none"` on the same field so
+/// serializing is the exact inverse: an untouched field is omitted rather than
+/// written as `null`, which would otherwise read back as a *clear*.
+pub fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    serde::Deserialize::deserialize(deserializer).map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

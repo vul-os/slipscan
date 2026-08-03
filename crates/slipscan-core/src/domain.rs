@@ -960,7 +960,11 @@ pub struct MemberPatch {
     pub label: Option<String>,
     pub initial: Option<String>,
     pub colour: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_account_id: Option<Option<String>>,
 }
 
@@ -1069,9 +1073,17 @@ pub struct NewLocation {
 pub struct LocationPatch {
     pub name: Option<String>,
     pub kind: Option<LocationKind>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub code: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub address: Option<Option<String>>,
     pub is_archived: Option<bool>,
 }
@@ -1138,23 +1150,59 @@ pub struct NewContact {
 pub struct ContactPatch {
     pub role: Option<ContactRole>,
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub company_name: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub email: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub phone: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub billing_address: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub shipping_address: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub tax_number: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub payment_terms_days: Option<Option<i64>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub credit_limit_minor: Option<Option<i64>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub notes: Option<Option<String>>,
     pub is_active: Option<bool>,
 }
@@ -1208,9 +1256,17 @@ pub struct NewProduct {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProductPatch {
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub description: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub product_category_id: Option<Option<String>>,
 }
 
@@ -1261,7 +1317,11 @@ pub struct ProductVariantPatch {
     pub price_minor: Option<i64>,
     pub cost_price_minor: Option<i64>,
     pub reorder_point: Option<i64>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub attributes: Option<Option<String>>,
 }
 
@@ -1406,10 +1466,18 @@ pub struct PurchaseOrderPatch {
     pub location_id: Option<String>,
     pub po_number: Option<String>,
     pub order_date: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub expected_delivery: Option<Option<String>>,
     pub tax_minor: Option<i64>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub notes: Option<Option<String>>,
 }
 
@@ -1563,10 +1631,18 @@ pub struct NewSalesOrder {
 /// be able to skip.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SalesOrderPatch {
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub location_id: Option<Option<String>>,
     pub order_date: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub notes: Option<Option<String>>,
 }
 
@@ -1917,6 +1993,172 @@ pub struct AuditEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A nullable patch field must have three distinguishable states over
+    /// JSON**, because the desktop IPC layer and the HTTP API only ever speak
+    /// JSON — absent, null and set. Before `util::double_option`, `Option<T>`'s
+    /// own `Deserialize` collapsed the first two: `{"notes": null}` and `{}`
+    /// both produced `None`, so **nothing could be cleared from either surface**
+    /// and no error was raised anywhere. Only the CLI could clear a field,
+    /// because it builds `Some(None)` in Rust rather than going through serde.
+    ///
+    /// One case per patch type that has such a field, so this cannot pass by
+    /// covering only the easy one.
+    #[test]
+    fn a_nullable_patch_field_distinguishes_absent_from_null_from_set() {
+        macro_rules! three_states {
+            ($ty:ty, $field:ident, $json_value:expr, $expected:expr) => {{
+                let absent: $ty = serde_json::from_str("{}").unwrap();
+                assert_eq!(
+                    absent.$field, None,
+                    concat!(
+                        stringify!($ty),
+                        "::",
+                        stringify!($field),
+                        " absent must mean LEAVE UNTOUCHED"
+                    )
+                );
+                let cleared: $ty =
+                    serde_json::from_str(concat!("{\"", stringify!($field), "\": null}")).unwrap();
+                assert_eq!(
+                    cleared.$field,
+                    Some(None),
+                    concat!(
+                        stringify!($ty),
+                        "::",
+                        stringify!($field),
+                        " explicit null must mean CLEAR, not leave untouched"
+                    )
+                );
+                let set: $ty = serde_json::from_str(&format!(
+                    "{{\"{}\": {}}}",
+                    stringify!($field),
+                    $json_value
+                ))
+                .unwrap();
+                assert_eq!(
+                    set.$field,
+                    Some(Some($expected)),
+                    concat!(
+                        stringify!($ty),
+                        "::",
+                        stringify!($field),
+                        " must round-trip a value"
+                    )
+                );
+            }};
+        }
+
+        three_states!(
+            MemberPatch,
+            default_account_id,
+            "\"acct-1\"",
+            "acct-1".to_string()
+        );
+        three_states!(LocationPatch, code, "\"JHB\"", "JHB".to_string());
+        three_states!(ContactPatch, email, "\"a@b.c\"", "a@b.c".to_string());
+        three_states!(ContactPatch, payment_terms_days, "30", 30i64);
+        three_states!(ProductPatch, description, "\"desc\"", "desc".to_string());
+        three_states!(ProductVariantPatch, attributes, "\"{}\"", "{}".to_string());
+        three_states!(PurchaseOrderPatch, notes, "\"n\"", "n".to_string());
+        three_states!(
+            PurchaseOrderPatch,
+            expected_delivery,
+            "\"2026-01-01\"",
+            "2026-01-01".to_string()
+        );
+        three_states!(SalesOrderPatch, notes, "\"n\"", "n".to_string());
+        three_states!(
+            SalesOrderPatch,
+            location_id,
+            "\"loc-1\"",
+            "loc-1".to_string()
+        );
+    }
+
+    /// Serializing must be the exact inverse of deserializing, or a patch that
+    /// round-trips through JSON turns "leave untouched" into "clear". `None`
+    /// has to be *omitted*, not written as `null` — which is what the
+    /// `skip_serializing_if` half of the attribute is for.
+    #[test]
+    fn an_untouched_patch_field_is_omitted_rather_than_serialized_as_null() {
+        let untouched = ContactPatch::default();
+        let json = serde_json::to_string(&untouched).unwrap();
+        assert!(
+            !json.contains("\"email\""),
+            "an untouched field must not appear at all, or reading it back clears the value; got {json}"
+        );
+        let back: ContactPatch = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.email, None, "round-trip must preserve LEAVE UNTOUCHED");
+
+        let cleared = ContactPatch {
+            email: Some(None),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cleared).unwrap();
+        let back: ContactPatch = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.email,
+            Some(None),
+            "round-trip must preserve CLEAR; got {json}"
+        );
+    }
+
+    /// **Coverage assertion, not a spot check.** The behavioural test above can
+    /// only cover fields someone remembered to list; this one reads this file's
+    /// own source and fails if *any* `Option<Option<…>>` field is missing the
+    /// deserializer — which is exactly how all nineteen of them were wrong to
+    /// begin with. A new nullable patch field added without the attribute is a
+    /// silently-unclearable field, so it fails here instead.
+    #[test]
+    fn every_nullable_patch_field_uses_the_double_option_deserializer() {
+        let src = include_str!("domain.rs");
+        let mut checked = 0;
+        // Forward scan, accumulating each field's own attribute block. Walking
+        // *backwards* over a fixed window is wrong and quietly so — it reaches
+        // into the previous field's attributes, so stripping the deserializer
+        // off one field still finds the neighbour's copy and passes — and a
+        // smarter backward walk trips over the commas inside the multi-line
+        // `#[serde(...)]` block itself. Scanning forward, "everything since the
+        // last field or brace" is unambiguous.
+        let mut pending: Vec<&str> = Vec::new();
+        for line in src.lines() {
+            let t = line.trim();
+            let is_field = t.starts_with("pub ") && t.contains(':') && t.ends_with(',');
+            if !is_field {
+                if t.is_empty() || t.ends_with('{') || t == "}" {
+                    pending.clear();
+                } else {
+                    pending.push(t);
+                }
+                continue;
+            }
+            // A field. Its attribute block is exactly what accumulated.
+            if !t.contains("Option<Option<") {
+                pending.clear();
+                continue;
+            }
+            checked += 1;
+            let preceding = pending.join("\n");
+            pending.clear();
+            assert!(
+                preceding.contains("crate::util::double_option"),
+                "{t}\n  ^ nullable patch field without \
+                 `deserialize_with = \"crate::util::double_option\"`: it cannot be \
+                 cleared over JSON, and nothing else will tell you"
+            );
+            assert!(
+                preceding.contains("skip_serializing_if"),
+                "{t}\n  ^ has the deserializer but not `skip_serializing_if`, so \
+                 serializing an untouched field emits null and reads back as a clear"
+            );
+        }
+        assert_eq!(
+            checked, 19,
+            "expected 19 nullable patch fields; if this moved, the count and the \
+             fields above both need looking at rather than the number bumping"
+        );
+    }
 
     #[test]
     fn enums_round_trip_via_str() {

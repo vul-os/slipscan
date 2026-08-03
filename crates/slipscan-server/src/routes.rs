@@ -2146,6 +2146,83 @@ pub fn app(state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// **Every nullable patch field on this API was unclearable, on every
+    /// endpoint, with no error to say so.** These routes take the core patch
+    /// structs with `#[serde(flatten)]` and no clear-flag wrapper (unlike the
+    /// desktop IPC layer, whose `dto.rs` hand-rolls `clear_*` booleans for four
+    /// of them), so clearing depended entirely on serde distinguishing an
+    /// explicit `null` from an absent key — which plain `Option<Option<T>>`
+    /// does not do: both arrive as `None`, meaning "leave untouched". See
+    /// `slipscan_core::util::double_option`.
+    ///
+    /// Driven over a real router, because the bug lived in the wire decoding
+    /// rather than in the service layer underneath it.
+    #[tokio::test]
+    async fn an_explicit_null_clears_a_field_over_http_and_an_absent_key_does_not() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Biz", "kind": "business", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let (status, loc) = call(
+            &app,
+            post_req(
+                "/api/v1/location_create",
+                json!({"book_id": book_id, "name": "Main", "code": "JHB", "address": "1 Road"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "location_create: {loc}");
+        let loc_id = loc["id"].as_str().unwrap().to_string();
+        assert_eq!(loc["code"], "JHB");
+
+        // Absent key: must leave the value alone.
+        let (status, updated) = call(
+            &app,
+            post_req(
+                "/api/v1/location_update",
+                json!({"id": loc_id, "name": "Main Depot"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "location_update: {updated}");
+        assert_eq!(
+            updated["code"], "JHB",
+            "an absent key must LEAVE the field untouched"
+        );
+
+        // Explicit null: must clear it. This is the assertion that was
+        // impossible to satisfy before `util::double_option`.
+        let (status, cleared) = call(
+            &app,
+            post_req(
+                "/api/v1/location_update",
+                json!({"id": loc_id, "code": null}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "location_update: {cleared}");
+        assert_eq!(
+            cleared["code"],
+            Value::Null,
+            "an explicit null must CLEAR the field over HTTP"
+        );
+        assert_eq!(
+            cleared["address"], "1 Road",
+            "clearing one field must not disturb its neighbour"
+        );
+    }
+
     use crate::devices::DeviceHandle;
     use crate::vault::VaultHandle;
     use axum::body::Body;
