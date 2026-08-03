@@ -259,9 +259,9 @@ These were settled rather than escalated, and are recorded here so the reasoning
       (two offline devices would both mint #47 — the `UNIQUE (book_id, series, number)` index turns
       that into a loud failure, not a silent collision; 6.7's problem once a transport exists), no
       credit notes or voiding, no quotes, no partial fulfilment, no posting to `journals` (that is
-      6.6), and the 21 sales IPC commands have **no `client.ts` wrapper yet** — tracked as
-      `missing_from_client` in `docs/parity.json`, the only exception to "every registered command
-      has a wrapper")*
+      6.6), and no desktop screen calls any of it yet (6.9) — the 21 IPC commands and their
+      `client.ts` wrappers are wired ahead of it, and `npm run parity:check` now fails CI if a
+      registered command ever loses its wrapper again)*
 - [ ] **6.6 Stock posts to the ledger.** The keystone, and the one piece neither codebase had: a
       goods receipt debits inventory-asset and credits accounts-payable; a confirmed sale posts
       revenue, VAT and cost-of-goods-sold against the existing chart of accounts and `journals` /

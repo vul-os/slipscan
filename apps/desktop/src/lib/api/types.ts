@@ -243,6 +243,223 @@ export interface PurchaseOrderItemReceiving {
 }
 
 // ---------------------------------------------------------------------------
+// Sales orders & invoicing (Phase 6.5, migration 0014_sales). No screen calls
+// these yet (ROADMAP.md 6.9) — wired ahead of the UI, the same order the
+// purchasing block above and the location CRUD before it landed in.
+//
+// Two shapes on purpose, mirroring core exactly: a sales order is an editable
+// draft, while an invoice is a fact. `Invoice`, `InvoiceItem` and
+// `InvoicePayment` have no update or delete call anywhere in this file because
+// the database refuses one — issued invoices are immutable, and a correction is
+// a credit note (not built yet). There is no `status` on `Invoice` either:
+// paid/unpaid is `InvoiceTotals.status`, derived from the payments each time
+// rather than stored.
+//
+// **Clearing a nullable field differs from the purchasing block above, and the
+// difference is real rather than stylistic.** `PoUpdateRequest` carries
+// `clear_notes`-style booleans because its Tauri command takes a hand-rolled
+// `dto.rs` struct that translates them. The sales commands take core's
+// `SalesOrderPatch`/`SalesOrderItemPatch` directly, so they use the plain JSON
+// convention: omit a key to leave it alone, send `null` to clear it.
+// ---------------------------------------------------------------------------
+
+export type SalesOrderStatus = "draft" | "confirmed" | "paid" | "cancelled";
+export type InvoicePaymentStatus = "unpaid" | "partly_paid" | "paid";
+
+export interface SalesOrder {
+  id: string;
+  book_id: string;
+  contact_id: string;
+  /** Required once the order has a stock-tracked line; `null` is valid for a
+   * purely free-text/service order that never touches stock. */
+  location_id: string | null;
+  /** Assigned once at creation, per book, and never reassigned. */
+  number: number;
+  order_date: string;
+  status: SalesOrderStatus;
+  currency: string;
+  notes: string | null;
+  confirmed_at: string | null;
+  cancelled_at: string | null;
+  paid_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewSalesOrder {
+  book_id: string;
+  contact_id: string;
+  location_id?: string | null;
+  /** Defaults to today. */
+  order_date?: string;
+  /** Defaults to the book's currency. */
+  currency?: string;
+  notes?: string;
+}
+
+/** Selective update; omitted keys are left untouched, `null` clears. Carries no
+ * `status` — status moves only through confirm/cancel/mark-paid. */
+export interface SalesOrderUpdateRequest {
+  id: string;
+  location_id?: string | null;
+  order_date?: string;
+  notes?: string | null;
+}
+
+export interface SalesOrderItem {
+  id: string;
+  sales_order_id: string;
+  book_id: string;
+  /** `null` = a free-text/service line, never touched by stock. */
+  variant_id: string | null;
+  description: string;
+  quantity: number;
+  unit_price_minor: number;
+  /** Basis points, snapshotted when the line was added. */
+  tax_rate_bps: number;
+  line_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewSalesOrderItem {
+  sales_order_id: string;
+  variant_id?: string | null;
+  /** Required for a free-text line; defaults to the variant's name otherwise. */
+  description?: string;
+  quantity: number;
+  /** Required for a free-text line; defaults to the variant's price otherwise. */
+  unit_price_minor?: number;
+  tax_rate_bps?: number;
+}
+
+/** Only reachable while the order is still a draft. */
+export interface SalesOrderItemUpdateRequest {
+  id: string;
+  description?: string;
+  quantity?: number;
+  unit_price_minor?: number;
+  tax_rate_bps?: number;
+}
+
+/** Derived from the order's own items every time — deliberately not stored on
+ * the order, the same call core makes for on-hand stock. */
+export interface SalesOrderTotals {
+  subtotal_minor: number;
+  tax_minor: number;
+  total_minor: number;
+}
+
+export interface Invoice {
+  id: string;
+  book_id: string;
+  contact_id: string;
+  /** Set when the invoice was issued from an order; `null` for a standalone
+   * one (a retainer, a one-off service bill). */
+  sales_order_id: string | null;
+  /** A numbering book. `"invoice"` is the only series issued today. */
+  series: string;
+  /** Gapless per (book, series), assigned at issue and permanent. */
+  number: number;
+  issue_date: string;
+  due_date: string;
+  currency: string;
+  notes: string | null;
+  created_at: string;
+}
+
+/** Either copy the lines from a confirmed order (`sales_order_id`) or supply
+ * `items` directly. `contact_id` is required unless an order supplies it. */
+export interface NewInvoice {
+  book_id: string;
+  contact_id?: string;
+  sales_order_id?: string;
+  series?: string;
+  /** Defaults to today. */
+  issue_date?: string;
+  due_date: string;
+  currency?: string;
+  notes?: string;
+  items?: NewInvoiceItemInput[];
+}
+
+export interface NewInvoiceItemInput {
+  variant_id?: string | null;
+  description: string;
+  quantity: number;
+  unit_price_minor: number;
+  tax_rate_bps?: number;
+}
+
+export interface InvoiceItem {
+  id: string;
+  invoice_id: string;
+  book_id: string;
+  variant_id: string | null;
+  description: string;
+  quantity: number;
+  unit_price_minor: number;
+  tax_rate_bps: number;
+  line_order: number;
+  created_at: string;
+}
+
+/** Paid/unpaid lives here, not on `Invoice` — it is `SUM(payments)` against the
+ * line total, computed per call so two devices recording payments offline
+ * converge by union instead of overwriting a stored flag. */
+export interface InvoiceTotals {
+  subtotal_minor: number;
+  tax_minor: number;
+  total_minor: number;
+  paid_minor: number;
+  due_minor: number;
+  status: InvoicePaymentStatus;
+}
+
+export interface InvoicePayment {
+  id: string;
+  invoice_id: string;
+  book_id: string;
+  amount_minor: number;
+  paid_at: string;
+  /** Free text ("cash", "eft", a reference) — there is no payment-method
+   * taxonomy yet. */
+  method: string | null;
+  note: string | null;
+  created_at: string;
+}
+
+export interface NewInvoicePayment {
+  invoice_id: string;
+  amount_minor: number;
+  /** Defaults to now. */
+  paid_at?: string;
+  method?: string;
+  note?: string;
+}
+
+export interface AgedBucket {
+  current_minor: number;
+  overdue_1_30_minor: number;
+  overdue_31_60_minor: number;
+  overdue_61_90_minor: number;
+  overdue_90_plus_minor: number;
+  total_minor: number;
+}
+
+export interface AgedReceivablesRow {
+  contact_id: string;
+  contact_name: string;
+  buckets: AgedBucket;
+}
+
+export interface AgedReceivables {
+  as_of: string;
+  rows: AgedReceivablesRow[];
+  totals: AgedBucket;
+}
+
+// ---------------------------------------------------------------------------
 // data folder (movable) — contract: "Data location & backup". One folder
 // holds everything durable; backup is the user's own cloud syncing it.
 // ---------------------------------------------------------------------------

@@ -127,6 +127,14 @@ jobs:
       - name: Screenshots mirrored to site and assets are in sync
         run: npm run screenshots:check
         working-directory: .
+      # docs/parity.json enumerates the HTTP, IPC and client.ts surfaces, and
+      # API.md quotes its counts as fact. Nothing checked either against the
+      # code, so both drifted the moment anything shipped — Phase 6.5 landed 21
+      # IPC commands with no client wrapper and the counts sat three features
+      # stale. Derived from source here instead of trusted.
+      - name: API surfaces match docs/parity.json
+        run: npm run parity:check
+        working-directory: .
       - name: Install
         run: npm ci
       - name: Check

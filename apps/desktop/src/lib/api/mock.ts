@@ -5,6 +5,9 @@
  */
 import type {
   Account,
+  AgedBucket,
+  AgedReceivables,
+  AgedReceivablesRow,
   BenchmarkCohort,
   BenchmarkReport,
   Book,
@@ -29,9 +32,14 @@ import type {
   FxStatus,
   Health,
   IncomeExpenseReport,
+  InstalledPackInfo,
+  Invoice,
+  InvoiceItem,
+  InvoicePayment,
+  InvoicePaymentStatus,
+  InvoiceTotals,
   JournalEntry,
   JournalPostRequest,
-  InstalledPackInfo,
   LedgerAccount,
   Location,
   LocationUpdateRequest,
@@ -45,13 +53,17 @@ import type {
   NetWorthSeries,
   NetWorthSnapshot,
   NewBook,
+  NewInvoice,
+  NewInvoicePayment,
   NewLocation,
   NewMember,
+  NewPayEndpoint,
+  NewPayWatch,
   NewPoReceipt,
   NewPurchaseOrder,
   NewPurchaseOrderItem,
-  NewPayEndpoint,
-  NewPayWatch,
+  NewSalesOrder,
+  NewSalesOrderItem,
   PackDocumentRequest,
   PackInstallOutcome,
   PackKind,
@@ -59,10 +71,10 @@ import type {
   PackSourceInfo,
   PackSourceKind,
   PackVerification,
+  PairRedeemRequest,
   PairingAcceptance,
   PairingInvite,
   PairingInviteMeta,
-  PairRedeemRequest,
   PayDelivery,
   PayEndpoint,
   PayEndpointWithSecret,
@@ -78,6 +90,11 @@ import type {
   ReconConfirmRequest,
   ReconSuggestion,
   RegionInfo,
+  SalesOrder,
+  SalesOrderItem,
+  SalesOrderItemUpdateRequest,
+  SalesOrderTotals,
+  SalesOrderUpdateRequest,
   Settings,
   SpendingReport,
   SplitShare,
@@ -144,6 +161,116 @@ const locations: Location[] = [];
 const purchaseOrders: PurchaseOrder[] = [];
 const purchaseOrderItems: PurchaseOrderItem[] = [];
 const poReceipts: PoReceipt[] = [];
+
+/**
+ * Sales orders & invoicing (Phase 6.5). Empty by default, like purchasing —
+ * no screen calls these yet (ROADMAP.md 6.9). `invoices`, `invoiceItems` and
+ * `invoicePayments` are append-only here on purpose, mirroring core's
+ * insert-only tables: nothing in this file ever mutates or removes a row out
+ * of them, because the database would refuse to.
+ */
+const salesOrders: SalesOrder[] = [];
+const salesOrderItems: SalesOrderItem[] = [];
+const invoices: Invoice[] = [];
+const invoiceItems: InvoiceItem[] = [];
+const invoicePayments: InvoicePayment[] = [];
+
+/** Per `(book, series)` counter, mirroring core's `number_sequences`: gapless
+ * and never reused. */
+const numberSequences = new Map<string, number>();
+function nextNumber(bookId: string, series: string): number {
+  const key = `${bookId}/${series}`;
+  const next = numberSequences.get(key) ?? 1;
+  numberSequences.set(key, next + 1);
+  return next;
+}
+
+function requireOrder(orderId: string): SalesOrder {
+  const order = salesOrders.find((o) => o.id === orderId);
+  if (!order) throw new Error(`no sales order with id ${orderId}`);
+  return order;
+}
+
+function requireInvoice(invoiceId: string): Invoice {
+  const invoice = invoices.find((v) => v.id === invoiceId);
+  if (!invoice) throw new Error(`no invoice with id ${invoiceId}`);
+  return invoice;
+}
+
+/** Everything except adding lines to a draft is refused once an order has
+ * moved on — the same guard core applies. */
+function requireDraft(order: SalesOrder, verb: string): void {
+  if (order.status !== "draft")
+    throw new Error(`a ${order.status} order cannot be ${verb}`);
+}
+
+/** Derived from the lines every time, never stored — the same rule core keeps
+ * for on-hand stock and for invoice paid/unpaid. */
+function totalsOf(
+  lines: { quantity: number; unit_price_minor: number; tax_rate_bps: number }[],
+): SalesOrderTotals {
+  let subtotal_minor = 0;
+  let tax_minor = 0;
+  for (const line of lines) {
+    const net = line.quantity * line.unit_price_minor;
+    subtotal_minor += net;
+    tax_minor += Math.round((net * line.tax_rate_bps) / 10_000);
+  }
+  return { subtotal_minor, tax_minor, total_minor: subtotal_minor + tax_minor };
+}
+
+function invoiceTotalsFor(invoiceId: string): InvoiceTotals {
+  const { subtotal_minor, tax_minor, total_minor } = totalsOf(
+    invoiceItems.filter((i) => i.invoice_id === invoiceId),
+  );
+  const paid_minor = invoicePayments
+    .filter((p) => p.invoice_id === invoiceId)
+    .reduce((sum, p) => sum + p.amount_minor, 0);
+  const due_minor = total_minor - paid_minor;
+  const status: InvoicePaymentStatus =
+    paid_minor <= 0 ? "unpaid" : due_minor > 0 ? "partly_paid" : "paid";
+  return {
+    subtotal_minor,
+    tax_minor,
+    total_minor,
+    paid_minor,
+    due_minor,
+    status,
+  };
+}
+
+const emptyBucket = (): AgedBucket => ({
+  current_minor: 0,
+  overdue_1_30_minor: 0,
+  overdue_31_60_minor: 0,
+  overdue_61_90_minor: 0,
+  overdue_90_plus_minor: 0,
+  total_minor: 0,
+});
+
+/** Whole days from `due` to `asOf`; negative means not yet due. */
+function daysBetween(due: string, asOf: string): number {
+  const ms = Date.parse(`${asOf}T00:00:00Z`) - Date.parse(`${due}T00:00:00Z`);
+  return Math.floor(ms / 86_400_000);
+}
+
+function bucketFor(bucket: AgedBucket, daysOverdue: number, amount: number) {
+  if (daysOverdue <= 0) bucket.current_minor += amount;
+  else if (daysOverdue <= 30) bucket.overdue_1_30_minor += amount;
+  else if (daysOverdue <= 60) bucket.overdue_31_60_minor += amount;
+  else if (daysOverdue <= 90) bucket.overdue_61_90_minor += amount;
+  else bucket.overdue_90_plus_minor += amount;
+  bucket.total_minor += amount;
+}
+
+function addBucket(into: AgedBucket, from: AgedBucket) {
+  into.current_minor += from.current_minor;
+  into.overdue_1_30_minor += from.overdue_1_30_minor;
+  into.overdue_31_60_minor += from.overdue_31_60_minor;
+  into.overdue_61_90_minor += from.overdue_61_90_minor;
+  into.overdue_90_plus_minor += from.overdue_90_plus_minor;
+  into.total_minor += from.total_minor;
+}
 
 /** `SUM(qty)` over a line's own receipts — mirrors
  * `repo::purchasing::received_qty_for_item`, never a stored counter. */
@@ -2293,6 +2420,305 @@ export const mockApi = {
     if (statuses.every((s) => s === "complete")) return "complete";
     if (statuses.every((s) => s === "none")) return "none";
     return "partial";
+  },
+
+  // -- sales orders & invoicing (Phase 6.5). Empty by default, like
+  // purchasing above: no screen calls these yet (ROADMAP.md 6.9).
+  //
+  // What this mock does NOT simulate, deliberately, so nobody reads a green
+  // screen as proof the real thing works: confirming an order does not move
+  // stock and cancelling does not write a compensating movement (this mock has
+  // no stock ledger at all, exactly as the purchasing mock has none), and
+  // `report_aged_receivables` uses the contact id in place of a name because
+  // there is no contacts store here either. Numbering, draft-only editing,
+  // invoice immutability and the derived totals ARE modelled, because those
+  // are the behaviours a screen has to be written against. --
+
+  sales_order_create: async (q: NewSalesOrder): Promise<SalesOrder> => {
+    const now = new Date().toISOString();
+    const created: SalesOrder = {
+      id: id("so00"),
+      book_id: q.book_id,
+      contact_id: q.contact_id,
+      location_id: q.location_id ?? null,
+      number: nextNumber(q.book_id, "sales_order"),
+      order_date: q.order_date ?? now.slice(0, 10),
+      status: "draft",
+      currency: q.currency ?? book.currency,
+      notes: q.notes?.trim() || null,
+      confirmed_at: null,
+      cancelled_at: null,
+      paid_at: null,
+      created_at: now,
+      updated_at: now,
+    };
+    salesOrders.push(created);
+    return clone(created);
+  },
+
+  sales_order_get: async (q: { id: string }): Promise<SalesOrder> =>
+    clone(requireOrder(q.id)),
+
+  sales_order_list: async (q: { book_id: string }): Promise<SalesOrder[]> =>
+    clone(
+      salesOrders
+        .filter((o) => o.book_id === q.book_id)
+        .sort((a, b) => b.number - a.number),
+    ),
+
+  sales_order_update: async (
+    q: SalesOrderUpdateRequest,
+  ): Promise<SalesOrder> => {
+    const order = requireOrder(q.id);
+    // `null` clears, an absent key leaves alone — the same three states the
+    // core patch structs spell out. See types.ts.
+    if (q.location_id !== undefined) order.location_id = q.location_id;
+    if (q.order_date !== undefined) order.order_date = q.order_date;
+    if (q.notes !== undefined) order.notes = q.notes?.trim() || null;
+    order.updated_at = new Date().toISOString();
+    return clone(order);
+  },
+
+  sales_order_delete: async (q: { id: string }): Promise<null> => {
+    const order = requireOrder(q.id);
+    requireDraft(order, "deleted");
+    salesOrders.splice(salesOrders.indexOf(order), 1);
+    for (let i = salesOrderItems.length - 1; i >= 0; i -= 1) {
+      if (salesOrderItems[i].sales_order_id === order.id)
+        salesOrderItems.splice(i, 1);
+    }
+    return null;
+  },
+
+  sales_order_item_add: async (
+    q: NewSalesOrderItem,
+  ): Promise<SalesOrderItem> => {
+    const order = requireOrder(q.sales_order_id);
+    requireDraft(order, "changed");
+    if (q.quantity <= 0) throw new Error("quantity must be greater than zero");
+    const description = q.description?.trim();
+    if (!description)
+      throw new Error("a line without a variant needs a description");
+    if (q.unit_price_minor === undefined)
+      throw new Error("a line without a variant needs a unit price");
+    const now = new Date().toISOString();
+    const created: SalesOrderItem = {
+      id: id("soi0"),
+      sales_order_id: order.id,
+      book_id: order.book_id,
+      variant_id: q.variant_id ?? null,
+      description,
+      quantity: q.quantity,
+      unit_price_minor: q.unit_price_minor,
+      tax_rate_bps: q.tax_rate_bps ?? 0,
+      line_order: salesOrderItems.filter(
+        (i) => i.sales_order_id === order.id,
+      ).length,
+      created_at: now,
+      updated_at: now,
+    };
+    salesOrderItems.push(created);
+    return clone(created);
+  },
+
+  sales_order_items_list: async (q: {
+    sales_order_id: string;
+  }): Promise<SalesOrderItem[]> =>
+    clone(
+      salesOrderItems
+        .filter((i) => i.sales_order_id === q.sales_order_id)
+        .sort((a, b) => a.line_order - b.line_order),
+    ),
+
+  sales_order_item_update: async (
+    q: SalesOrderItemUpdateRequest,
+  ): Promise<SalesOrderItem> => {
+    const item = salesOrderItems.find((i) => i.id === q.id);
+    if (!item) throw new Error(`no sales order line with id ${q.id}`);
+    requireDraft(requireOrder(item.sales_order_id), "changed");
+    if (q.description !== undefined) item.description = q.description;
+    if (q.quantity !== undefined) {
+      if (q.quantity <= 0) throw new Error("quantity must be greater than zero");
+      item.quantity = q.quantity;
+    }
+    if (q.unit_price_minor !== undefined)
+      item.unit_price_minor = q.unit_price_minor;
+    if (q.tax_rate_bps !== undefined) item.tax_rate_bps = q.tax_rate_bps;
+    item.updated_at = new Date().toISOString();
+    return clone(item);
+  },
+
+  sales_order_item_remove: async (q: { id: string }): Promise<null> => {
+    const idx = salesOrderItems.findIndex((i) => i.id === q.id);
+    if (idx < 0) throw new Error(`no sales order line with id ${q.id}`);
+    requireDraft(requireOrder(salesOrderItems[idx].sales_order_id), "changed");
+    salesOrderItems.splice(idx, 1);
+    return null;
+  },
+
+  sales_order_confirm: async (q: { id: string }): Promise<SalesOrder> => {
+    const order = requireOrder(q.id);
+    requireDraft(order, "confirmed");
+    if (!salesOrderItems.some((i) => i.sales_order_id === order.id))
+      throw new Error("an order with no lines cannot be confirmed");
+    order.status = "confirmed";
+    order.confirmed_at = new Date().toISOString();
+    order.updated_at = order.confirmed_at;
+    return clone(order);
+  },
+
+  sales_order_cancel: async (q: { id: string }): Promise<SalesOrder> => {
+    const order = requireOrder(q.id);
+    if (order.status === "cancelled" || order.status === "paid")
+      throw new Error(`a ${order.status} order cannot be cancelled`);
+    order.status = "cancelled";
+    order.cancelled_at = new Date().toISOString();
+    order.updated_at = order.cancelled_at;
+    return clone(order);
+  },
+
+  sales_order_mark_paid: async (q: { id: string }): Promise<SalesOrder> => {
+    const order = requireOrder(q.id);
+    if (order.status !== "confirmed")
+      throw new Error("only a confirmed order can be marked paid");
+    order.status = "paid";
+    order.paid_at = new Date().toISOString();
+    order.updated_at = order.paid_at;
+    return clone(order);
+  },
+
+  sales_order_totals: async (q: { id: string }): Promise<SalesOrderTotals> => {
+    requireOrder(q.id);
+    return totalsOf(
+      salesOrderItems.filter((i) => i.sales_order_id === q.id),
+    );
+  },
+
+  invoice_issue: async (q: NewInvoice): Promise<Invoice> => {
+    const now = new Date().toISOString();
+    const series = q.series ?? "invoice";
+    let contactId = q.contact_id ?? null;
+    let lines = q.items ?? [];
+    if (q.sales_order_id) {
+      const order = requireOrder(q.sales_order_id);
+      contactId = contactId ?? order.contact_id;
+      if (lines.length === 0)
+        lines = salesOrderItems
+          .filter((i) => i.sales_order_id === order.id)
+          .map((i) => ({
+            variant_id: i.variant_id,
+            description: i.description,
+            quantity: i.quantity,
+            unit_price_minor: i.unit_price_minor,
+            tax_rate_bps: i.tax_rate_bps,
+          }));
+    }
+    if (!contactId)
+      throw new Error("an invoice needs a contact, or an order that has one");
+    if (lines.length === 0) throw new Error("an invoice needs at least one line");
+    const created: Invoice = {
+      id: id("inv0"),
+      book_id: q.book_id,
+      contact_id: contactId,
+      sales_order_id: q.sales_order_id ?? null,
+      series,
+      number: nextNumber(q.book_id, series),
+      issue_date: q.issue_date ?? now.slice(0, 10),
+      due_date: q.due_date,
+      currency: q.currency ?? book.currency,
+      notes: q.notes?.trim() || null,
+      created_at: now,
+    };
+    invoices.push(created);
+    lines.forEach((line, i) => {
+      invoiceItems.push({
+        id: id("ivi0"),
+        invoice_id: created.id,
+        book_id: created.book_id,
+        variant_id: line.variant_id ?? null,
+        description: line.description,
+        quantity: line.quantity,
+        unit_price_minor: line.unit_price_minor,
+        tax_rate_bps: line.tax_rate_bps ?? 0,
+        line_order: i,
+        created_at: now,
+      });
+    });
+    return clone(created);
+  },
+
+  invoice_get: async (q: { id: string }): Promise<Invoice> =>
+    clone(requireInvoice(q.id)),
+
+  invoice_list: async (q: { book_id: string }): Promise<Invoice[]> =>
+    clone(
+      invoices
+        .filter((v) => v.book_id === q.book_id)
+        .sort((a, b) => b.number - a.number),
+    ),
+
+  invoice_items_list: async (q: {
+    invoice_id: string;
+  }): Promise<InvoiceItem[]> =>
+    clone(
+      invoiceItems
+        .filter((i) => i.invoice_id === q.invoice_id)
+        .sort((a, b) => a.line_order - b.line_order),
+    ),
+
+  invoice_totals: async (q: { id: string }): Promise<InvoiceTotals> => {
+    requireInvoice(q.id);
+    return invoiceTotalsFor(q.id);
+  },
+
+  invoice_payment_record: async (
+    q: NewInvoicePayment,
+  ): Promise<InvoicePayment> => {
+    const invoice = requireInvoice(q.invoice_id);
+    if (q.amount_minor <= 0)
+      throw new Error("a payment amount must be greater than zero");
+    const now = new Date().toISOString();
+    const created: InvoicePayment = {
+      id: id("ivp0"),
+      invoice_id: invoice.id,
+      book_id: invoice.book_id,
+      amount_minor: q.amount_minor,
+      paid_at: q.paid_at ?? now,
+      method: q.method?.trim() || null,
+      note: q.note?.trim() || null,
+      created_at: now,
+    };
+    invoicePayments.push(created);
+    return clone(created);
+  },
+
+  invoice_payments_list: async (q: {
+    invoice_id: string;
+  }): Promise<InvoicePayment[]> =>
+    clone(invoicePayments.filter((p) => p.invoice_id === q.invoice_id)),
+
+  report_aged_receivables: async (q: {
+    book_id: string;
+    as_of?: string;
+  }): Promise<AgedReceivables> => {
+    const asOf = q.as_of ?? new Date().toISOString().slice(0, 10);
+    const byContact = new Map<string, AgedBucket>();
+    for (const invoice of invoices.filter((v) => v.book_id === q.book_id)) {
+      const { due_minor } = invoiceTotalsFor(invoice.id);
+      if (due_minor <= 0) continue;
+      const bucket = byContact.get(invoice.contact_id) ?? emptyBucket();
+      bucketFor(bucket, daysBetween(invoice.due_date, asOf), due_minor);
+      byContact.set(invoice.contact_id, bucket);
+    }
+    const totals = emptyBucket();
+    const rows: AgedReceivablesRow[] = [...byContact.entries()].map(
+      ([contact_id, buckets]) => {
+        addBucket(totals, buckets);
+        // No contacts store in this mock — the id stands in for the name.
+        return { contact_id, contact_name: contact_id, buckets };
+      },
+    );
+    return { as_of: asOf, rows, totals };
   },
 
   data_status: async (): Promise<DataStatus> =>

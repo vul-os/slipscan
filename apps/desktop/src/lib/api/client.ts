@@ -11,6 +11,7 @@ import { mockApi } from "./mock";
 import { apiStatus } from "./status.svelte";
 import type {
   Account,
+  AgedReceivables,
   BenchmarkReport,
   Book,
   BookKind,
@@ -32,6 +33,11 @@ import type {
   FxStatus,
   Health,
   IncomeExpenseReport,
+  InstalledPackInfo,
+  Invoice,
+  InvoiceItem,
+  InvoicePayment,
+  InvoiceTotals,
   JournalEntry,
   JournalPostRequest,
   LedgerAccount,
@@ -45,23 +51,26 @@ import type {
   NetWorthSeries,
   NetWorthSnapshot,
   NewBook,
+  NewInvoice,
+  NewInvoicePayment,
   NewLocation,
   NewMember,
+  NewPayEndpoint,
+  NewPayWatch,
   NewPoReceipt,
   NewPurchaseOrder,
   NewPurchaseOrderItem,
-  InstalledPackInfo,
-  NewPayEndpoint,
-  NewPayWatch,
+  NewSalesOrder,
+  NewSalesOrderItem,
   PackDocumentRequest,
   PackInstallOutcome,
   PackOffer,
   PackSourceInfo,
   PackVerification,
+  PairRedeemRequest,
   PairingAcceptance,
   PairingInvite,
   PairingInviteMeta,
-  PairRedeemRequest,
   PayDelivery,
   PayEndpoint,
   PayEndpointWithSecret,
@@ -77,6 +86,11 @@ import type {
   ReconConfirmRequest,
   ReconSuggestion,
   RegionInfo,
+  SalesOrder,
+  SalesOrderItem,
+  SalesOrderItemUpdateRequest,
+  SalesOrderTotals,
+  SalesOrderUpdateRequest,
   Settings,
   SpendingReport,
   SplitShare,
@@ -254,6 +268,117 @@ export const api = {
   }): Promise<PoReceiptStatus> =>
     call("po_receiving_status", { query: q }, () =>
       mockApi.po_receiving_status(q),
+    ),
+
+  // -- sales orders & invoicing (Phase 6.5, migration 0014_sales). No screen
+  // calls these yet (ROADMAP.md 6.9) — wired ahead of the UI, the same as the
+  // purchasing block above. An order is the editable draft; an invoice is a
+  // fact, which is why there is no invoiceUpdate/invoiceDelete here: the
+  // database refuses one, and a correction is a credit note (not built).
+  // Nullable fields clear by sending `null` rather than a `clear_*` flag —
+  // see the note in types.ts for why this differs from purchasing. --
+
+  salesOrderCreate: (q: NewSalesOrder): Promise<SalesOrder> =>
+    call("sales_order_create", { query: q }, () => mockApi.sales_order_create(q)),
+
+  salesOrderGet: (q: { id: string }): Promise<SalesOrder> =>
+    call("sales_order_get", { query: q }, () => mockApi.sales_order_get(q)),
+
+  salesOrderList: (q: { book_id: string }): Promise<SalesOrder[]> =>
+    call("sales_order_list", { query: q }, () => mockApi.sales_order_list(q)),
+
+  salesOrderUpdate: (q: SalesOrderUpdateRequest): Promise<SalesOrder> =>
+    call("sales_order_update", { query: q }, () => mockApi.sales_order_update(q)),
+
+  /** Only reachable while the order is still a draft — a confirmed order has
+   * moved stock, so it is cancelled rather than deleted. */
+  salesOrderDelete: (q: { id: string }): Promise<null> =>
+    call("sales_order_delete", { query: q }, () => mockApi.sales_order_delete(q)),
+
+  salesOrderItemAdd: (q: NewSalesOrderItem): Promise<SalesOrderItem> =>
+    call("sales_order_item_add", { query: q }, () =>
+      mockApi.sales_order_item_add(q),
+    ),
+
+  salesOrderItemsList: (q: {
+    sales_order_id: string;
+  }): Promise<SalesOrderItem[]> =>
+    call("sales_order_items_list", { query: q }, () =>
+      mockApi.sales_order_items_list(q),
+    ),
+
+  salesOrderItemUpdate: (
+    q: SalesOrderItemUpdateRequest,
+  ): Promise<SalesOrderItem> =>
+    call("sales_order_item_update", { query: q }, () =>
+      mockApi.sales_order_item_update(q),
+    ),
+
+  salesOrderItemRemove: (q: { id: string }): Promise<null> =>
+    call("sales_order_item_remove", { query: q }, () =>
+      mockApi.sales_order_item_remove(q),
+    ),
+
+  /** draft -> confirmed. Deducts stock for every stock-tracked line in the
+   * same transaction, so on-hand can never disagree with what was sold. */
+  salesOrderConfirm: (q: { id: string }): Promise<SalesOrder> =>
+    call("sales_order_confirm", { query: q }, () =>
+      mockApi.sales_order_confirm(q),
+    ),
+
+  /** Writes a compensating stock movement for each line it had deducted,
+   * rather than erasing anything — that ledger is immutable. */
+  salesOrderCancel: (q: { id: string }): Promise<SalesOrder> =>
+    call("sales_order_cancel", { query: q }, () => mockApi.sales_order_cancel(q)),
+
+  salesOrderMarkPaid: (q: { id: string }): Promise<SalesOrder> =>
+    call("sales_order_mark_paid", { query: q }, () =>
+      mockApi.sales_order_mark_paid(q),
+    ),
+
+  /** Derived from the order's items every time, never stored on the order. */
+  salesOrderTotals: (q: { id: string }): Promise<SalesOrderTotals> =>
+    call("sales_order_totals", { query: q }, () => mockApi.sales_order_totals(q)),
+
+  /** The only way an invoice comes into being — it is created already
+   * numbered, and never edited afterwards. */
+  invoiceIssue: (q: NewInvoice): Promise<Invoice> =>
+    call("invoice_issue", { query: q }, () => mockApi.invoice_issue(q)),
+
+  invoiceGet: (q: { id: string }): Promise<Invoice> =>
+    call("invoice_get", { query: q }, () => mockApi.invoice_get(q)),
+
+  invoiceList: (q: { book_id: string }): Promise<Invoice[]> =>
+    call("invoice_list", { query: q }, () => mockApi.invoice_list(q)),
+
+  invoiceItemsList: (q: { invoice_id: string }): Promise<InvoiceItem[]> =>
+    call("invoice_items_list", { query: q }, () =>
+      mockApi.invoice_items_list(q),
+    ),
+
+  /** Includes paid/unpaid state, which is computed here rather than stored. */
+  invoiceTotals: (q: { id: string }): Promise<InvoiceTotals> =>
+    call("invoice_totals", { query: q }, () => mockApi.invoice_totals(q)),
+
+  invoicePaymentRecord: (q: NewInvoicePayment): Promise<InvoicePayment> =>
+    call("invoice_payment_record", { query: q }, () =>
+      mockApi.invoice_payment_record(q),
+    ),
+
+  invoicePaymentsList: (q: {
+    invoice_id: string;
+  }): Promise<InvoicePayment[]> =>
+    call("invoice_payments_list", { query: q }, () =>
+      mockApi.invoice_payments_list(q),
+    ),
+
+  /** Every outstanding invoice bucketed by age, grouped by contact. */
+  reportAgedReceivables: (q: {
+    book_id: string;
+    as_of?: string;
+  }): Promise<AgedReceivables> =>
+    call("report_aged_receivables", { query: q }, () =>
+      mockApi.report_aged_receivables(q),
     ),
 
   // -- data folder: one movable folder holds everything durable. Backup is
