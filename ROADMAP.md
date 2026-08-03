@@ -156,6 +156,67 @@ Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Feature parity". Every s
 - [ ] IPC/HTTP parity: every operation under the same name and payload on both transports (current gaps listed in [docs/API.md](docs/API.md))
 - [ ] Mobile companion app (Tauri mobile)
 
+## Phase 6 — Inventory & trade (the flowstock fold)
+
+FlowStock was a separate Vulos product: offline-first, multi-branch inventory for shops and
+wholesalers, a Go binary serving a React UI. It has been retired and its 89 commits folded into this
+history (archival — no files landed; `git log 0fea5e8` reads them). This phase re-derives its domain
+in Rust here, because the argument for two products never survived contact with the code:
+
+- **The overlap was structural, not cosmetic.** Xero and QuickBooks treat stock as a *module* of the
+  book, not a neighbouring app, and for a reason — a goods receipt is an inventory event *and* a
+  journal entry. Two databases cannot both own that fact.
+- **It closes real [PARITY.md](PARITY.md) gaps rather than adding a 15th axis.** FlowStock already
+  had customers, suppliers, purchase orders, payments and sales documents — four of the fourteen
+  Xero capabilities currently scored *Not built*, arriving with the inventory instead of beside it.
+- **Most of it was never going to be ported anyway.** FlowStock's domain model was a 16-row table
+  registry; ~4.7k of its ~5.3k Go source lines were HLC, oplog, peer auth and folder replication —
+  all of which this repo already has, signed and immutable by trigger (migration 0700), which
+  FlowStock's was not.
+
+**What is deliberately not taken:** the Go backend, its unsigned oplog and HLC (superseded by
+migration 0700), its React UI, and its cloud-node deployment path. This is a re-derivation against
+the existing `books`/`members` model, not a port.
+
+**Nothing below is built yet.** Every box is unchecked and stays unchecked until the code exists;
+PARITY.md is re-scored per stage, and no row moves on the strength of a plan.
+
+- [ ] **6.1 Locations.** A `locations` table per book, shaped like `members` — additive, nullable,
+      a book with zero locations behaves exactly as today. Every stock fact carries one. Add the
+      `business` book kind so a business book is a first-class thing rather than a personal book
+      with unusual accounts
+- [ ] **6.2 Contacts.** Customers and suppliers as one contact model per book *(PARITY "Contacts",
+      currently Not built)*
+- [ ] **6.3 Catalogue & stock.** Products, variants (SKU, price, cost price, reorder point,
+      attributes), categories, and an **append-only stock-movement ledger** — on-hand is always
+      `SUM(qty_delta)` over immutable movements, never a stored counter. This is what makes two
+      locations that traded while disconnected converge by union instead of clobbering each other
+- [ ] **6.4 Purchasing.** Purchase orders and goods receipts, receipts insert-only so partial
+      deliveries recorded at two locations merge by union *(PARITY "Bills / accounts payable")*
+- [ ] **6.5 Sales orders → invoicing.** Draft → confirm (deducts stock) → paid, cancel reverses
+      stock. Carried to a real invoice entity with numbering, delivery and paid/unpaid state, this
+      is the single largest hole in PARITY — *"there is no invoicing at all"*
+- [ ] **6.6 Stock posts to the ledger.** The keystone, and the one piece neither codebase had: a
+      goods receipt debits inventory-asset and credits accounts-payable; a confirmed sale posts
+      revenue, VAT and cost-of-goods-sold against the existing chart of accounts and `journals` /
+      `journal_lines`. Until this lands, Phase 6 is an inventory app sharing a binary with an
+      accounting app — which is the thing this fold exists to avoid
+- [ ] **6.7 Sync transport.** FlowStock shipped the one thing [docs/NODES.md](docs/NODES.md) still
+      lists as missing: a working authenticated transport — three HTTP endpoints
+      (`/sync/vector`, `/sync/pull`, `/sync/ops`) plus folder/USB replication for sites with no
+      link at all. Re-derived over the *signed* oplog, so it carries a guarantee FlowStock's could
+      not: every op individually verifiable, not merely fetched from a trusted peer
+- [ ] **6.8 Roles.** Genuinely new work — neither codebase had it. The device model here is
+      trust-on-first-use pairing built for *your own devices*; branches have staff, and staff turn
+      over. Revocation cannot stay "delete the peer row" once a till operator is a real person
+- [ ] **6.9 Desktop screens.** Catalogue, stock, orders, purchasing, and per-location views, held
+      to the same design-system bar as every other screen
+
+**Open question, stated rather than assumed:** this widens the product from "personal finance with a
+ledger underneath" to "personal finance *and* small-business accounting". PARITY.md's scope grows
+with it, and the honest near-term effect is that the Xero axis gets *longer* before it gets greener.
+That is a positioning decision and it is not settled here.
+
 ## Non-goals
 
 - Hosted SaaS of any kind
