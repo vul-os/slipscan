@@ -37,9 +37,10 @@ Stock was the last of the three and is closed too: on-hand can be read, a moveme
 stock transferred between locations, on every surface. `npm run reachable:check` keeps the count
 honest — **14 of 167 core operations reachable from nothing, down from 42**, and none of the
 fourteen belongs to Phase 6. What remains is older accounting-side work, and it is not trivial: no
-surface can create or archive a chart-of-accounts entry, map an entity to one, generate a journal
-from a document or a transaction, reverse a posted journal, set the book's financial lock date, or
-list vault entries.
+surface could create or archive a chart-of-accounts entry, map an entity to one, generate a journal
+from a document or a transaction, reverse a posted journal, or set the book's financial lock date.
+All of those are now on the HTTP API, the desktop IPC layer and the CLI (`slipscan coa`, `slipscan
+journal`, `slipscan book lock-date`).
 
 **The reports are the sharpest of these, and they need a decision rather than a patch.** SlipScan
 carries *two* implementations of the same reports over the same tables (`chart_of_accounts` +

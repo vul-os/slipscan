@@ -19,14 +19,15 @@ use clap::{Parser, Subcommand, ValueEnum};
 use slipscan_core::datadir::{self, DataDirResolver, MoveStep};
 use slipscan_core::device::pairing::{KeynameCheck, DEFAULT_INVITE_TTL_SECONDS};
 use slipscan_core::domain::{
-    Account, Book, BookKind, Contact, ContactPatch, ContactRole, DocumentSource, Location,
-    LocationKind, LocationPatch, Member, MemberPatch, NewBook, NewContact, NewInvoice,
-    NewInvoiceItemInput, NewInvoicePayment, NewLocation, NewMember, NewPayEndpoint, NewPayWatch,
-    NewPoReceipt, NewProduct, NewProductCategory, NewProductVariant, NewPurchaseOrder,
-    NewPurchaseOrderItem, NewSalesOrder, NewSalesOrderItem, NewStockMovement, PayDeliveryState,
-    PayEndpointWithSecret, ProductPatch, ProductVariant, ProductVariantPatch,
-    PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus, SalesOrderItemPatch,
-    SalesOrderPatch, SplitShare, StockMovementKind, TransactionFilter, TransactionSource,
+    Account, Book, BookKind, CoaKind, CoaMapEntity, Contact, ContactPatch, ContactRole,
+    DocumentSource, Location, LocationKind, LocationPatch, Member, MemberPatch, NewBook,
+    NewCoaAccount, NewContact, NewInvoice, NewInvoiceItemInput, NewInvoicePayment, NewLocation,
+    NewMember, NewPayEndpoint, NewPayWatch, NewPoReceipt, NewProduct, NewProductCategory,
+    NewProductVariant, NewPurchaseOrder, NewPurchaseOrderItem, NewSalesOrder, NewSalesOrderItem,
+    NewStockMovement, PayDeliveryState, PayEndpointWithSecret, ProductPatch, ProductVariant,
+    ProductVariantPatch, PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus,
+    SalesOrderItemPatch, SalesOrderPatch, SplitShare, StockMovementKind, TransactionFilter,
+    TransactionSource,
 };
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
@@ -383,6 +384,18 @@ enum Command {
         #[command(subcommand)]
         action: StockAction,
     },
+
+    /// Chart of accounts — the double-entry account tree.
+    Coa {
+        #[command(subcommand)]
+        action: CoaAction,
+    },
+
+    /// Journals — generate from a transaction or document, or reverse one.
+    Journal {
+        #[command(subcommand)]
+        action: JournalAction,
+    },
     /// Purchase orders and goods receipts (Phase 6.4 — the flowstock fold).
     /// A goods receipt writes a stock movement in the same transaction, so
     /// `slipscan list` on-hand and a PO's receiving progress can never
@@ -590,6 +603,13 @@ enum BookAction {
     SetMultiLocation {
         #[arg(value_enum)]
         mode: MultiLocationMode,
+    },
+    /// Set or clear the financial lock date. Journals may not be posted on or
+    /// before it — the control that stops a closed period being reopened by
+    /// accident.
+    LockDate {
+        /// YYYY-MM-DD. Omit to clear the lock date entirely.
+        date: Option<String>,
     },
 }
 
@@ -890,6 +910,112 @@ enum StockAction {
     },
     /// Variants at or below their reorder point.
     Low,
+}
+
+/// Accounts are **archived, never deleted** — their history has to stay
+/// readable, so `archive` stops an entry accepting new lines and leaves the
+/// row in place.
+#[derive(Debug, Subcommand)]
+enum CoaAction {
+    /// Add a chart-of-accounts entry. Codes are unique within the book.
+    Add {
+        /// Account code, e.g. "4000".
+        code: String,
+        /// Account name, e.g. "Sales".
+        name: String,
+        /// asset, liability, equity, income or expense.
+        #[arg(long, value_enum)]
+        kind: CliCoaKind,
+        #[arg(long)]
+        description: Option<String>,
+        /// Defaults to the book's currency.
+        #[arg(long)]
+        currency: Option<String>,
+    },
+    /// List the chart of accounts.
+    List,
+    /// Archive an entry: it stops accepting new journal lines, history stays.
+    Archive {
+        /// Chart-of-accounts entry id.
+        id: String,
+    },
+    /// Map an account or category onto a chart entry — what makes automatic
+    /// journal generation possible.
+    Map {
+        /// account or category.
+        #[arg(long, value_enum)]
+        entity: CliCoaMapEntity,
+        /// The account or category id.
+        entity_id: String,
+        /// Chart-of-accounts entry id.
+        coa_id: String,
+    },
+}
+
+#[derive(Debug, Copy, Clone, ValueEnum)]
+enum CliCoaKind {
+    Asset,
+    Liability,
+    Equity,
+    Income,
+    Expense,
+}
+
+impl From<CliCoaKind> for CoaKind {
+    fn from(v: CliCoaKind) -> Self {
+        match v {
+            CliCoaKind::Asset => CoaKind::Asset,
+            CliCoaKind::Liability => CoaKind::Liability,
+            CliCoaKind::Equity => CoaKind::Equity,
+            CliCoaKind::Income => CoaKind::Income,
+            CliCoaKind::Expense => CoaKind::Expense,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, ValueEnum)]
+enum CliCoaMapEntity {
+    Account,
+    Category,
+}
+
+impl From<CliCoaMapEntity> for CoaMapEntity {
+    fn from(v: CliCoaMapEntity) -> Self {
+        match v {
+            CliCoaMapEntity::Account => CoaMapEntity::Account,
+            CliCoaMapEntity::Category => CoaMapEntity::Category,
+        }
+    }
+}
+
+/// A posted journal is immutable — SQLite itself refuses an update or delete —
+/// so a correction is a `reverse`, which posts a new journal with every line's
+/// sides swapped.
+#[derive(Debug, Subcommand)]
+enum JournalAction {
+    /// Generate the double-entry journal for a bank transaction.
+    FromTransaction {
+        /// Transaction id.
+        transaction_id: String,
+        /// VAT rate id for an inclusive-amount accrual split.
+        #[arg(long)]
+        vat_rate: Option<String>,
+    },
+    /// Generate the expense journal for a document from its extraction.
+    FromDocument {
+        /// Document id.
+        document_id: String,
+    },
+    /// Reverse a posted journal.
+    Reverse {
+        /// Journal id.
+        journal_id: String,
+        /// Posting date for the reversal; defaults to today.
+        #[arg(long)]
+        posted_date: Option<String>,
+        #[arg(long)]
+        narrative: Option<String>,
+    },
 }
 
 #[derive(Debug, Copy, Clone, ValueEnum)]
@@ -2611,6 +2737,126 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 None => "auto (derived)",
                             }
                         );
+                    })
+                }
+                BookAction::LockDate { date } => {
+                    let updated = svc.book_set_lock_date(&book.id, date.as_deref())?;
+                    emit(cli.json, &updated, || match &updated.financial_lock_date {
+                        Some(d) => {
+                            println!("Lock date set to {d} — journals on or before it are refused")
+                        }
+                        None => println!("Lock date cleared"),
+                    })
+                }
+            }
+        }
+
+        Command::Coa { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                CoaAction::Add {
+                    code,
+                    name,
+                    kind,
+                    description,
+                    currency,
+                } => {
+                    let account = svc.coa_create(NewCoaAccount {
+                        book_id: book.id.clone(),
+                        code: code.clone(),
+                        name: name.clone(),
+                        kind: (*kind).into(),
+                        description: description.clone(),
+                        currency: currency.clone(),
+                    })?;
+                    emit(cli.json, &account, || {
+                        println!(
+                            "Created account {} {} ({})",
+                            account.code, account.name, account.id
+                        );
+                    })
+                }
+                CoaAction::List => {
+                    let rows = svc.coa_list(&book.id)?;
+                    emit(cli.json, &rows, || {
+                        if rows.is_empty() {
+                            println!(
+                                "No chart of accounts yet. Seed one with `slipscan init --seed-coa`, or add entries with `slipscan coa add`."
+                            );
+                        }
+                        for a in &rows {
+                            println!(
+                                "{}\t{}\t{}{}",
+                                a.code,
+                                a.name,
+                                a.kind,
+                                if a.is_archived { "\t(archived)" } else { "" }
+                            );
+                        }
+                    })
+                }
+                CoaAction::Archive { id } => {
+                    let account = svc.coa_archive(id)?;
+                    emit(cli.json, &account, || {
+                        println!("Archived {} {}", account.code, account.name);
+                    })
+                }
+                CoaAction::Map {
+                    entity,
+                    entity_id,
+                    coa_id,
+                } => {
+                    let entry = svc.coa_map_set(&book.id, (*entity).into(), entity_id, coa_id)?;
+                    emit(cli.json, &entry, || {
+                        println!(
+                            "Mapped {} {} -> {}",
+                            entry.entity_type, entry.entity_id, entry.coa_id
+                        );
+                    })
+                }
+            }
+        }
+
+        Command::Journal { ref action } => {
+            let svc = open_service(&env.db)?;
+            match action {
+                JournalAction::FromTransaction {
+                    transaction_id,
+                    vat_rate,
+                } => {
+                    let posted =
+                        svc.journal_generate_for_transaction(transaction_id, vat_rate.as_deref())?;
+                    emit(cli.json, &posted, || {
+                        println!(
+                            "Posted journal {} with {} line(s)",
+                            posted.journal.id,
+                            posted.lines.len()
+                        );
+                    })
+                }
+                JournalAction::FromDocument { document_id } => {
+                    let posted = svc.journal_generate_for_document(document_id)?;
+                    emit(cli.json, &posted, || {
+                        println!(
+                            "Posted journal {} with {} line(s)",
+                            posted.journal.id,
+                            posted.lines.len()
+                        );
+                    })
+                }
+                JournalAction::Reverse {
+                    journal_id,
+                    posted_date,
+                    narrative,
+                } => {
+                    let posted = svc.journal_reverse(
+                        journal_id,
+                        posted_date.as_deref(),
+                        narrative.as_deref(),
+                    )?;
+                    emit(cli.json, &posted, || {
+                        println!("Reversed {} as journal {}", journal_id, posted.journal.id);
                     })
                 }
             }
