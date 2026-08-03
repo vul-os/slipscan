@@ -65,6 +65,31 @@ CREATE UNIQUE INDEX documents_sha256_unique
 -- index idx_device_pair_invites_expires
 CREATE INDEX idx_device_pair_invites_expires ON device_pair_invites (expires_at);
 
+-- index invoice_items_book_idx
+CREATE INDEX invoice_items_book_idx ON invoice_items (book_id);
+
+-- index invoice_items_invoice_idx
+CREATE INDEX invoice_items_invoice_idx ON invoice_items (invoice_id);
+
+-- index invoice_payments_book_idx
+CREATE INDEX invoice_payments_book_idx ON invoice_payments (book_id);
+
+-- index invoice_payments_invoice_idx
+CREATE INDEX invoice_payments_invoice_idx ON invoice_payments (invoice_id);
+
+-- index invoices_book_due_idx
+CREATE INDEX invoices_book_due_idx ON invoices (book_id, due_date);
+
+-- index invoices_book_idx
+CREATE INDEX invoices_book_idx ON invoices (book_id);
+
+-- index invoices_contact_idx
+CREATE INDEX invoices_contact_idx ON invoices (contact_id);
+
+-- index invoices_sales_order_idx
+CREATE INDEX invoices_sales_order_idx
+    ON invoices (sales_order_id) WHERE sales_order_id IS NOT NULL;
+
 -- index journal_lines_book_idx
 CREATE INDEX journal_lines_book_idx ON journal_lines (book_id);
 
@@ -140,6 +165,29 @@ CREATE INDEX recon_matches_document_idx ON recon_matches (document_id);
 CREATE UNIQUE INDEX recon_matches_tx_active_unique
     ON recon_matches (transaction_id) WHERE state <> 'rejected';
 
+-- index sales_order_items_book_idx
+CREATE INDEX sales_order_items_book_idx ON sales_order_items (book_id);
+
+-- index sales_order_items_order_idx
+CREATE INDEX sales_order_items_order_idx ON sales_order_items (sales_order_id);
+
+-- index sales_order_items_variant_idx
+CREATE INDEX sales_order_items_variant_idx
+    ON sales_order_items (variant_id) WHERE variant_id IS NOT NULL;
+
+-- index sales_orders_book_idx
+CREATE INDEX sales_orders_book_idx ON sales_orders (book_id);
+
+-- index sales_orders_book_status_idx
+CREATE INDEX sales_orders_book_status_idx ON sales_orders (book_id, status);
+
+-- index sales_orders_contact_idx
+CREATE INDEX sales_orders_contact_idx ON sales_orders (contact_id);
+
+-- index sales_orders_location_idx
+CREATE INDEX sales_orders_location_idx
+    ON sales_orders (location_id) WHERE location_id IS NOT NULL;
+
 -- index sqlite_autoindex_accounts_1
 ;
 
@@ -197,6 +245,18 @@ CREATE UNIQUE INDEX recon_matches_tx_active_unique
 -- index sqlite_autoindex_fx_rates_1
 ;
 
+-- index sqlite_autoindex_invoice_items_1
+;
+
+-- index sqlite_autoindex_invoice_payments_1
+;
+
+-- index sqlite_autoindex_invoices_1
+;
+
+-- index sqlite_autoindex_invoices_2
+;
+
 -- index sqlite_autoindex_journal_lines_1
 ;
 
@@ -219,6 +279,9 @@ CREATE UNIQUE INDEX recon_matches_tx_active_unique
 ;
 
 -- index sqlite_autoindex_merchant_mappings_2
+;
+
+-- index sqlite_autoindex_number_sequences_1
 ;
 
 -- index sqlite_autoindex_pay_deliveries_1
@@ -252,6 +315,15 @@ CREATE UNIQUE INDEX recon_matches_tx_active_unique
 ;
 
 -- index sqlite_autoindex_recon_matches_1
+;
+
+-- index sqlite_autoindex_sales_order_items_1
+;
+
+-- index sqlite_autoindex_sales_orders_1
+;
+
+-- index sqlite_autoindex_sales_orders_2
 ;
 
 -- index sqlite_autoindex_settings_1
@@ -575,6 +647,69 @@ CREATE TABLE fx_rates (
     PRIMARY KEY (from_currency, to_currency)
 );
 
+-- table invoice_items
+CREATE TABLE invoice_items (
+    id               TEXT PRIMARY KEY,
+    invoice_id       TEXT NOT NULL REFERENCES invoices (id) ON DELETE CASCADE,
+    book_id          TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    variant_id       TEXT REFERENCES product_variants (id) ON DELETE RESTRICT,
+    description      TEXT NOT NULL,
+    quantity         INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price_minor INTEGER NOT NULL CHECK (unit_price_minor >= 0),
+    tax_rate_bps     INTEGER NOT NULL DEFAULT 0
+        CHECK (tax_rate_bps >= 0 AND tax_rate_bps <= 10000),
+    line_order       INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT NOT NULL
+);
+
+-- table invoice_payments
+CREATE TABLE invoice_payments (
+    id           TEXT PRIMARY KEY,
+    invoice_id   TEXT NOT NULL REFERENCES invoices (id) ON DELETE CASCADE,
+    book_id      TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+    paid_at      TEXT NOT NULL,
+    -- Free text ("cash", "eft", "card", a reference number) — SlipScan has no
+    -- payment-method taxonomy yet, the same "store verbatim" treatment
+    -- `stock_movements.note` gets.
+    method       TEXT,
+    note         TEXT,
+    created_at   TEXT NOT NULL
+);
+
+-- table invoices
+CREATE TABLE invoices (
+    id             TEXT PRIMARY KEY,
+    book_id        TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    contact_id     TEXT NOT NULL REFERENCES contacts (id) ON DELETE RESTRICT,
+    -- Optional: `invoice_issue` accepts either a confirmed/paid sales order
+    -- to copy line items from, or a standalone set of items with no order at
+    -- all (a retainer, a one-off service bill). ON DELETE SET NULL rather
+    -- than RESTRICT: an issued invoice is a permanent fact regardless of
+    -- what becomes of the order that spawned it, and `sales_orders` has no
+    -- delete path once confirmed/paid in any case (`sales_order_delete` is
+    -- draft-only) — this is defensive, not load-bearing.
+    sales_order_id TEXT REFERENCES sales_orders (id) ON DELETE SET NULL,
+    -- A numbering book, not a document type: 'invoice' is the only series
+    -- this migration's own service functions ever write, but the column is
+    -- free text (like stock_movements.ref_kind) so a future credit-note or
+    -- per-location numbering book has somewhere to live without a schema
+    -- change.
+    series         TEXT NOT NULL DEFAULT 'invoice',
+    number         INTEGER NOT NULL,
+    issue_date     TEXT NOT NULL,
+    due_date       TEXT NOT NULL,
+    currency       TEXT NOT NULL CHECK (length(currency) = 3),
+    notes          TEXT,
+    created_at     TEXT NOT NULL,
+    -- The structural half of "no gap, no duplicate": even if
+    -- `repo::sales::allocate_number` ever had a bug, two invoices sharing a
+    -- number in the same book/series fail loudly here rather than existing
+    -- side by side. Belt and suspenders, the same pairing migration 0001
+    -- gives journal balance (a service-layer check *and* a CHECK constraint).
+    UNIQUE (book_id, series, number)
+);
+
 -- table journal_lines
 CREATE TABLE journal_lines (
     id           TEXT PRIMARY KEY,
@@ -654,6 +789,14 @@ CREATE TABLE merchant_mappings (
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL,
     UNIQUE (book_id, merchant_normalized)
+);
+
+-- table number_sequences
+CREATE TABLE number_sequences (
+    book_id     TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    series      TEXT NOT NULL,
+    next_number INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (book_id, series)
 );
 
 -- table pay_deliveries
@@ -766,6 +909,75 @@ CREATE TABLE recon_matches (
     updated_at         TEXT NOT NULL
 , merchant_score REAL NOT NULL DEFAULT 0.0
     CHECK (merchant_score >= 0.0 AND merchant_score <= 1.0));
+
+-- table sales_order_items
+CREATE TABLE sales_order_items (
+    id                TEXT PRIMARY KEY,
+    sales_order_id    TEXT NOT NULL REFERENCES sales_orders (id) ON DELETE CASCADE,
+    -- Denormalized from sales_orders.book_id, the same choice migration 0011
+    -- made for product_variants.book_id: per-book scoping and this table's
+    -- own sync `ns` both need it directly rather than through a join.
+    book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    -- NULL = a free-text/service line, never touched by stock. Set = a
+    -- catalogue line; `sales_order_confirm` deducts stock for every line that
+    -- has one. RESTRICT: a variant that has ever appeared on an order (even
+    -- a cancelled one — the line itself is never deleted) is trade history.
+    variant_id        TEXT REFERENCES product_variants (id) ON DELETE RESTRICT,
+    -- What the line says it is, captured at add-time. For a catalogue line
+    -- this defaults from the variant's own name (service layer) but is
+    -- stored here regardless, so a later rename of the variant does not
+    -- silently reword an order line that already went out — the identical
+    -- reasoning journal_lines.description already gets a free pass on.
+    description       TEXT NOT NULL,
+    quantity          INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price_minor  INTEGER NOT NULL CHECK (unit_price_minor >= 0),
+    -- Basis points, same convention as vat_rates.rate_bps — a snapshot of
+    -- whatever rate applied when the line was added, not a live FK to
+    -- vat_rates: a rate that changes next quarter must not reword a line
+    -- already sitting on someone's order.
+    tax_rate_bps      INTEGER NOT NULL DEFAULT 0
+        CHECK (tax_rate_bps >= 0 AND tax_rate_bps <= 10000),
+    line_order        INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+
+-- table sales_orders
+CREATE TABLE sales_orders (
+    id           TEXT PRIMARY KEY,
+    book_id      TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    -- A customer with any order history cannot be deleted out from under it —
+    -- see the note on `crate::service::CoreService::contact_remove`, updated
+    -- in this change to say so. Matches migration 0012's treatment of
+    -- `stock_movements.variant_id`/`location_id`.
+    contact_id   TEXT NOT NULL REFERENCES contacts (id) ON DELETE RESTRICT,
+    -- Nullable: a purely service/free-text order never touches stock and so
+    -- never needs a place. `sales_order_confirm` requires this to be set the
+    -- moment the order has even one stock-tracked line — see service.rs.
+    -- Also RESTRICT, for the identical reason as `contact_id`: a location a
+    -- sale has ever been recorded against (even one still in draft) is trade
+    -- history, one more case of migration 0009's own note that its "no
+    -- reassignment guard" claim holds only "until this migration" — meaning
+    -- whichever migration first gives a location a real reference. This one
+    -- does.
+    location_id  TEXT REFERENCES locations (id) ON DELETE RESTRICT,
+    -- Assigned once, atomically, by `repo::sales::allocate_number` at
+    -- creation — see `number_sequences` above. Never reassigned.
+    number       INTEGER NOT NULL,
+    order_date   TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'confirmed', 'paid', 'cancelled')),
+    -- The whole document's currency; see the header note on why lines do not
+    -- carry their own.
+    currency     TEXT NOT NULL CHECK (length(currency) = 3),
+    notes        TEXT,
+    confirmed_at TEXT,
+    cancelled_at TEXT,
+    paid_at      TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    UNIQUE (book_id, number)
+);
 
 -- table schema_migrations
 CREATE TABLE schema_migrations (
@@ -933,6 +1145,48 @@ CREATE TRIGGER audit_log_no_update
 BEFORE UPDATE ON audit_log
 BEGIN
     SELECT RAISE(ABORT, 'audit_log is append-only');
+END;
+
+-- trigger invoice_items_no_delete
+CREATE TRIGGER invoice_items_no_delete
+BEFORE DELETE ON invoice_items
+BEGIN
+    SELECT RAISE(ABORT, 'issued invoice lines are immutable; a correction is a credit note, not an edit');
+END;
+
+-- trigger invoice_items_no_update
+CREATE TRIGGER invoice_items_no_update
+BEFORE UPDATE ON invoice_items
+BEGIN
+    SELECT RAISE(ABORT, 'issued invoice lines are immutable; a correction is a credit note, not an edit');
+END;
+
+-- trigger invoice_payments_no_delete
+CREATE TRIGGER invoice_payments_no_delete
+BEFORE DELETE ON invoice_payments
+BEGIN
+    SELECT RAISE(ABORT, 'recorded payments are immutable; record a refund or correction as a new fact');
+END;
+
+-- trigger invoice_payments_no_update
+CREATE TRIGGER invoice_payments_no_update
+BEFORE UPDATE ON invoice_payments
+BEGIN
+    SELECT RAISE(ABORT, 'recorded payments are immutable; record a refund or correction as a new fact');
+END;
+
+-- trigger invoices_no_delete
+CREATE TRIGGER invoices_no_delete
+BEFORE DELETE ON invoices
+BEGIN
+    SELECT RAISE(ABORT, 'issued invoices are immutable; a correction is a credit note, not an edit');
+END;
+
+-- trigger invoices_no_update
+CREATE TRIGGER invoices_no_update
+BEFORE UPDATE ON invoices
+BEGIN
+    SELECT RAISE(ABORT, 'issued invoices are immutable; a correction is a credit note, not an edit');
 END;
 
 -- trigger journal_lines_no_delete
@@ -1145,6 +1399,30 @@ BEGIN
     VALUES ('contacts', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 END;
 
+-- trigger sync_capture_invoice_items_ins
+CREATE TRIGGER sync_capture_invoice_items_ins AFTER INSERT ON invoice_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('invoice_items', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_invoice_payments_ins
+CREATE TRIGGER sync_capture_invoice_payments_ins AFTER INSERT ON invoice_payments
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('invoice_payments', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_invoices_ins
+CREATE TRIGGER sync_capture_invoices_ins AFTER INSERT ON invoices
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('invoices', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
 -- trigger sync_capture_journal_lines_ins
 CREATE TRIGGER sync_capture_journal_lines_ins AFTER INSERT ON journal_lines
 WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
@@ -1303,6 +1581,54 @@ WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
 BEGIN
     INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
     VALUES ('products', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_sales_order_items_del
+CREATE TRIGGER sync_capture_sales_order_items_del AFTER DELETE ON sales_order_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('sales_order_items', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_sales_order_items_ins
+CREATE TRIGGER sync_capture_sales_order_items_ins AFTER INSERT ON sales_order_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('sales_order_items', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_sales_order_items_upd
+CREATE TRIGGER sync_capture_sales_order_items_upd AFTER UPDATE ON sales_order_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('sales_order_items', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_sales_orders_del
+CREATE TRIGGER sync_capture_sales_orders_del AFTER DELETE ON sales_orders
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('sales_orders', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_sales_orders_ins
+CREATE TRIGGER sync_capture_sales_orders_ins AFTER INSERT ON sales_orders
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('sales_orders', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_sales_orders_upd
+CREATE TRIGGER sync_capture_sales_orders_upd AFTER UPDATE ON sales_orders
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('sales_orders', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 END;
 
 -- trigger sync_capture_stock_movements_ins

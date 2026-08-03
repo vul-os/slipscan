@@ -1319,6 +1319,319 @@ pub struct LowStockVariant {
 }
 
 // ---------------------------------------------------------------------------
+// Sales orders (migration 0014, ROADMAP.md Phase 6.5 — PARITY.md's single
+// largest Xero-axis gap). See the migration header for why this table is an
+// editable §4.4 LWW register while `Invoice` below is not.
+// ---------------------------------------------------------------------------
+
+str_enum!(SalesOrderStatus {
+    Draft => "draft",
+    Confirmed => "confirmed",
+    Paid => "paid",
+    Cancelled => "cancelled",
+});
+
+/// A customer order. Draft while a person is still shaping it; `confirm`
+/// deducts stock for every stock-tracked line (migration `0012_stock`'s
+/// ledger, `kind = sale`); `cancel` writes a compensating movement for each
+/// one it had deducted rather than erasing anything, because that ledger is
+/// immutable. There is no `subtotal`/`tax`/`total` column here, on purpose —
+/// see [`SalesOrderTotals`]: a stored total is exactly the cached figure
+/// Decision 4 in ROADMAP.md's Phase 6 header already refuses for on-hand
+/// stock, for the same reason (it is trivial to forget to update after an
+/// item edit, and a derived sum cannot forget).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SalesOrder {
+    pub id: String,
+    pub book_id: String,
+    pub contact_id: String,
+    /// Set the moment the order has a stock-tracked line; `None` is valid for
+    /// a purely free-text/service order that never touches stock.
+    pub location_id: Option<String>,
+    /// Assigned once at creation by `repo::sales::allocate_number`, scoped to
+    /// series `"sales_order"`. Never reassigned.
+    pub number: i64,
+    pub order_date: String,
+    pub status: SalesOrderStatus,
+    pub currency: String,
+    pub notes: Option<String>,
+    pub confirmed_at: Option<String>,
+    pub cancelled_at: Option<String>,
+    pub paid_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewSalesOrder {
+    pub book_id: String,
+    pub contact_id: String,
+    #[serde(default)]
+    pub location_id: Option<String>,
+    /// `YYYY-MM-DD`; defaults to today when omitted.
+    #[serde(default)]
+    pub order_date: Option<String>,
+    /// Defaults to the book's own currency when omitted.
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// Selective update to a sales order's own header fields. Only reachable
+/// while the order is `draft` — see `CoreService::sales_order_update`.
+/// `status` is deliberately absent: transitions go through their own
+/// dedicated functions (`sales_order_confirm`/`_cancel`/`_mark_paid`), which
+/// carry effects (stock deduction, timestamps) a blind field patch must not
+/// be able to skip.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SalesOrderPatch {
+    #[serde(default)]
+    pub location_id: Option<Option<String>>,
+    pub order_date: Option<String>,
+    #[serde(default)]
+    pub notes: Option<Option<String>>,
+}
+
+/// A line on a sales order. `variant_id: None` is a free-text/service line —
+/// never touched by stock. `description`/`unit_price_minor` are captured at
+/// add-time rather than read live off the variant every time, so a later
+/// rename or repricing of the catalogue item does not reword or reprice an
+/// order a customer has already seen — the same treatment
+/// `journal_lines.description` gets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SalesOrderItem {
+    pub id: String,
+    pub sales_order_id: String,
+    pub book_id: String,
+    pub variant_id: Option<String>,
+    pub description: String,
+    pub quantity: i64,
+    pub unit_price_minor: i64,
+    /// Basis points, same convention as `vat_rates.rate_bps` — a snapshot,
+    /// not a live reference.
+    pub tax_rate_bps: i64,
+    pub line_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewSalesOrderItem {
+    pub sales_order_id: String,
+    #[serde(default)]
+    pub variant_id: Option<String>,
+    /// Required for a free-text line (`variant_id: None`); defaults to the
+    /// variant's own name for a catalogue line.
+    #[serde(default)]
+    pub description: Option<String>,
+    pub quantity: i64,
+    /// Required for a free-text line; defaults to the variant's own
+    /// `price_minor` for a catalogue line.
+    #[serde(default)]
+    pub unit_price_minor: Option<i64>,
+    #[serde(default)]
+    pub tax_rate_bps: Option<i64>,
+}
+
+/// Selective update; `None` fields are left untouched. Only reachable while
+/// the order is still a draft — see `CoreService::sales_order_item_update`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SalesOrderItemPatch {
+    pub description: Option<String>,
+    pub quantity: Option<i64>,
+    pub unit_price_minor: Option<i64>,
+    pub tax_rate_bps: Option<i64>,
+}
+
+/// `subtotal + tax == total`, always. Computed at query time from a sales
+/// order's own items — see the header note on [`SalesOrder`] for why this is
+/// never a stored column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SalesOrderTotals {
+    pub subtotal_minor: i64,
+    pub tax_minor: i64,
+    pub total_minor: i64,
+}
+
+// ---------------------------------------------------------------------------
+// Invoices (migration 0014, ROADMAP.md Phase 6.5). See the migration header
+// for why `Invoice`/`InvoiceItem`/`InvoicePayment` are immutable §4.3 OR-Sets
+// rather than editable rows: an invoice is only ever created already issued
+// and numbered by `CoreService::invoice_issue` — there is no draft phase, no
+// update function, and no delete function anywhere behind these three types,
+// the same absence `StockMovement` documents for itself.
+// ---------------------------------------------------------------------------
+
+str_enum!(InvoicePaymentStatus {
+    Unpaid => "unpaid",
+    PartlyPaid => "partly_paid",
+    Paid => "paid",
+});
+
+/// A real invoice: numbered, dated, and permanent from the moment it exists.
+/// There is deliberately no `status` field — paid/unpaid/partly-paid is
+/// always derived from [`InvoicePayment`] rows against [`InvoiceTotals`],
+/// never stored, for the identical reason on-hand stock is never stored (see
+/// migration `0012_stock`'s Decision 4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Invoice {
+    pub id: String,
+    pub book_id: String,
+    pub contact_id: String,
+    /// The confirmed/paid order this invoice was raised from, or `None` for
+    /// a standalone invoice (a retainer, a one-off service bill) with no
+    /// order behind it at all.
+    pub sales_order_id: Option<String>,
+    /// A numbering book. `"invoice"` is the only value this crate's own
+    /// service functions ever write; free text (like
+    /// `stock_movements.ref_kind`) so a future numbering book — a credit
+    /// note series, a per-location series — has somewhere to live without a
+    /// schema change.
+    pub series: String,
+    /// Assigned once, atomically, by `repo::sales::allocate_number` at issue
+    /// time. See the migration header for the concurrency guarantee this
+    /// carries and the one it deliberately does not (yet).
+    pub number: i64,
+    pub issue_date: String,
+    pub due_date: String,
+    pub currency: String,
+    pub notes: Option<String>,
+    pub created_at: String,
+}
+
+/// Everything `invoice_issue` needs. Exactly one of two shapes:
+///
+/// - `sales_order_id: Some(id)` — line items are copied from that order
+///   (which must belong to `book_id`, must be `confirmed` or `paid`, and
+///   whose own `contact_id`/`currency` are used, overriding whatever this
+///   struct's `contact_id`/`currency`/`items` carry).
+/// - `sales_order_id: None` — a standalone invoice; `contact_id`, `currency`
+///   and a non-empty `items` are all required.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewInvoice {
+    pub book_id: String,
+    #[serde(default)]
+    pub contact_id: Option<String>,
+    #[serde(default)]
+    pub sales_order_id: Option<String>,
+    /// Defaults to `"invoice"` when omitted.
+    #[serde(default)]
+    pub series: Option<String>,
+    /// `YYYY-MM-DD`; defaults to today when omitted.
+    #[serde(default)]
+    pub issue_date: Option<String>,
+    pub due_date: String,
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub items: Vec<NewInvoiceItemInput>,
+}
+
+/// One line of a standalone invoice (ignored — the order's own items are
+/// copied instead — when `NewInvoice::sales_order_id` is set).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewInvoiceItemInput {
+    #[serde(default)]
+    pub variant_id: Option<String>,
+    pub description: String,
+    pub quantity: i64,
+    pub unit_price_minor: i64,
+    #[serde(default)]
+    pub tax_rate_bps: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoiceItem {
+    pub id: String,
+    pub invoice_id: String,
+    pub book_id: String,
+    pub variant_id: Option<String>,
+    pub description: String,
+    pub quantity: i64,
+    pub unit_price_minor: i64,
+    pub tax_rate_bps: i64,
+    pub line_order: i64,
+    pub created_at: String,
+}
+
+/// One immutable fact: this much was paid against this invoice, on this
+/// date. There is no `InvoicePaymentPatch` and no update/delete function —
+/// a refund or a correction is a new fact, never an edit to this one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoicePayment {
+    pub id: String,
+    pub invoice_id: String,
+    pub book_id: String,
+    pub amount_minor: i64,
+    pub paid_at: String,
+    pub method: Option<String>,
+    pub note: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewInvoicePayment {
+    pub invoice_id: String,
+    pub amount_minor: i64,
+    /// `YYYY-MM-DD`; defaults to today when omitted.
+    #[serde(default)]
+    pub paid_at: Option<String>,
+    #[serde(default)]
+    pub method: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// `subtotal + tax == total`, `paid + due == total`, and `status` is exactly
+/// what those two facts say — always computed, per the type's own header
+/// note, never stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InvoiceTotals {
+    pub subtotal_minor: i64,
+    pub tax_minor: i64,
+    pub total_minor: i64,
+    pub paid_minor: i64,
+    pub due_minor: i64,
+    pub status: InvoicePaymentStatus,
+}
+
+/// One contact's outstanding balance, bucketed by how overdue each unpaid
+/// invoice is as of a given date. `current` = not yet past its due date.
+/// Money is summed in raw minor units with no currency conversion — see the
+/// migration header's note on multi-currency being out of scope here, the
+/// same limitation `report::report_spending` already carries for
+/// multi-currency books.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgedBucket {
+    pub current_minor: i64,
+    pub overdue_1_30_minor: i64,
+    pub overdue_31_60_minor: i64,
+    pub overdue_61_90_minor: i64,
+    pub overdue_90_plus_minor: i64,
+    pub total_minor: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgedReceivablesRow {
+    pub contact_id: String,
+    pub contact_name: String,
+    pub buckets: AgedBucket,
+}
+
+/// PARITY.md's #2-ranked gap ("Contacts, then bills, then aged AR/AP — a
+/// chain"), the receivables half of it. Cheap once invoices exist: every
+/// outstanding invoice, grouped by contact, bucketed by age as of `as_of`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgedReceivables {
+    pub as_of: String,
+    pub rows: Vec<AgedReceivablesRow>,
+    pub totals: AgedBucket,
+}
+
+// ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------
 

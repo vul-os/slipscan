@@ -253,7 +253,20 @@ pub fn parse_lww_target(target: &str) -> Option<(&str, &str)> {
 /// tables carries a unique `id` in its payload — see the §4.3 note in the
 /// module docs for why that is load-bearing rather than incidental.
 #[cfg(feature = "sync-dmtap")]
-pub const LEDGER_TABLES: &[&str] = &["journals", "journal_lines", "stock_movements"];
+pub const LEDGER_TABLES: &[&str] = &[
+    "journals",
+    "journal_lines",
+    "stock_movements",
+    // Migration 0014 (ROADMAP.md Phase 6.5): an issued invoice is created
+    // once, already numbered, and never edited — closer to a fact than an
+    // editable row, the same call `journals` makes for a posted entry. See
+    // that migration's header for why this and `sales_orders` (below, in
+    // `LWW_TABLES`) land on opposite sides of this list even though both are
+    // "sales" tables.
+    "invoices",
+    "invoice_items",
+    "invoice_payments",
+];
 
 /// Tables whose rows are editable and merge last-writer-wins.
 ///
@@ -286,6 +299,13 @@ pub const LWW_TABLES: &[&str] = &[
     "product_categories",
     "products",
     "product_variants",
+    // Migration 0014 (ROADMAP.md Phase 6.5): a sales order is a draft a
+    // person keeps editing — add a line, fix a quantity — right up until
+    // it is confirmed, cancelled or paid. Last-writer-wins is what editing
+    // your own draft on two devices means. Its own line items follow it into
+    // this list for the same reason `product_variants` follows `products`.
+    "sales_orders",
+    "sales_order_items",
 ];
 
 /// Whether `table` is an immutable ledger, and so maps to the OR-Set.

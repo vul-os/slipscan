@@ -18,6 +18,7 @@ pub mod member;
 pub mod pay;
 pub mod recon;
 pub mod report;
+pub mod sales;
 pub mod settings;
 pub mod stock;
 pub mod transaction;
