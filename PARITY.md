@@ -35,10 +35,13 @@ order, catalogue line priced from the variant, confirm, stock movement written.
 
 Stock was the last of the three and is closed too: on-hand can be read, a movement recorded, and
 stock transferred between locations, on every surface. `npm run reachable:check` keeps the count
-honest — **12 of 167 core operations reachable from nothing, down from 42**, and none of the twelve
-belongs to Phase 6. What remains unreachable is older accounting-side work: three chart-of-accounts
-operations, three journal-generation ones, three reports, and the lock-date, read-only and
-secret-settings toggles.
+honest — **10 of 167 core operations reachable from nothing, down from 42**, and none of the ten
+belongs to Phase 6. What remains is older accounting-side work, and it is not trivial: no surface
+can create or archive a chart-of-accounts entry, map an entity to one, generate a journal from a
+document or a transaction, reverse a posted journal, set the book's financial lock date, or run the
+income statement, monthly-spending or VAT201 reports. (`report_profit_loss` *is* routed, but it
+rebuilds a P&L from the trial balance rather than calling `report_income_statement` — so core
+carries two income-statement implementations and the surfaced one is not the documented one.)
 
 The rest is still missing outright: quotes, credit notes, fixed assets, payroll and tracking
 categories do not exist in any form, and the *payable* half of bills is unbuilt, so aged payables

@@ -80,6 +80,30 @@ const surfaces = {
     stripTests(read("apps/desktop/src-tauri/src/lib.rs")),
 };
 
+// Not every public method is meant to be a user-facing operation. Some are
+// library API that sibling crates call — `set_read_only` is how `datadir`
+// performs a safe data move, `settings_use_secret` is how `slipscan-ingest`
+// borrows a credential without copying it. Counting those as unreachable
+// capabilities puts false entries in the baseline, and a list with false
+// entries is one people learn to skim. They get their own bucket: consumed,
+// just not by a surface.
+const INTERNAL_CONSUMERS = [
+  "crates/slipscan-core/src/datadir.rs",
+  "crates/slipscan-ingest/src/vault.rs",
+  "crates/slipscan-ingest/src/import.rs",
+  "crates/slipscan-ingest/src/pay.rs",
+  "crates/slipscan-ingest/src/watch.rs",
+  "crates/slipscan-ingest/src/packs.rs",
+]
+  .map((f) => {
+    try {
+      return stripTests(read(f));
+    } catch {
+      return "";
+    }
+  })
+  .join("\n");
+
 // Match the bare identifier anywhere in a surface, not `.name(` specifically.
 // A surface reaches core in several shapes — `svc.foo(…)`, a free
 // `ops::foo(svc, …)` wrapper, a `"/foo"` route path, a `commands::foo` entry —
@@ -94,7 +118,12 @@ const table = methods.map((name) => ({
     new RegExp(`\\b${name}\\b`).test(surfaces[k]),
   ),
 }));
-const unreachable = table.filter((r) => r.on.length === 0).map((r) => r.name);
+const noSurface = table.filter((r) => r.on.length === 0).map((r) => r.name);
+// Split "no surface" into genuinely unused and internal-library-only.
+const internalOnly = noSurface.filter((n) =>
+  new RegExp(`\\b${n}\\b`).test(INTERNAL_CONSUMERS),
+);
+const unreachable = noSurface.filter((n) => !internalOnly.includes(n));
 
 // Group by the prefix before the first underscore — close enough to a domain.
 const byDomain = {};
@@ -109,7 +138,16 @@ if (process.argv.includes("--list")) {
   }
 }
 
-const current = { total: methods.length, unreachable: unreachable.length, methods: unreachable };
+const current = {
+  total: methods.length,
+  unreachable: unreachable.length,
+  methods: unreachable,
+  // Recorded too, so that widening INTERNAL_CONSUMERS shows up as drift. That
+  // list is hand-maintained, and a hand-maintained allowlist in front of a
+  // gate is the obvious way to make the gate quietly stop counting things:
+  // point it at service.rs itself and every gap becomes "internal".
+  internalOnly,
+};
 
 if (process.argv.includes("--write")) {
   writeFileSync(
@@ -141,10 +179,13 @@ if (!existsSync(join(ROOT, BASELINE))) {
 const baseline = JSON.parse(read(BASELINE));
 const added = unreachable.filter((m) => !baseline.methods.includes(m));
 const fixed = baseline.methods.filter((m) => !unreachable.includes(m));
+const baselineInternal = baseline.internalOnly ?? [];
+const newlyInternal = internalOnly.filter((m) => !baselineInternal.includes(m));
 
 console.log(
   `check-reachable: ${unreachable.length} of ${methods.length} public core methods are on no ` +
-    `surface (baseline ${baseline.unreachable}).`,
+    `surface (baseline ${baseline.unreachable}); ${internalOnly.length} more are internal library ` +
+    `API consumed by a sibling crate.`,
 );
 for (const [domain, names] of Object.entries(byDomain).sort((a, b) => b[1].length - a[1].length)) {
   console.log(`  ${domain.padEnd(12)} ${String(names.length).padStart(2)}  ${names.join(", ")}`);
@@ -153,6 +194,17 @@ for (const [domain, names] of Object.entries(byDomain).sort((a, b) => b[1].lengt
 if (fixed.length) {
   console.log(`\n  now reachable (${fixed.length}): ${fixed.join(", ")}`);
   console.log(`  re-record the baseline: node scripts/check-reachable.mjs --write`);
+}
+if (newlyInternal.length) {
+  console.error(
+    `\ncheck-reachable: ${newlyInternal.length} method(s) newly classified as internal library ` +
+      `API: ${newlyInternal.join(", ")}\n` +
+      `  That classification is what stops them being counted as gaps, so it has to be a` +
+      ` deliberate\n  change, not a side effect of widening INTERNAL_CONSUMERS. Confirm each is` +
+      ` genuinely called by\n  a sibling crate rather than by a user-facing surface, then re-record` +
+      ` with --write.`,
+  );
+  process.exit(1);
 }
 if (added.length) {
   console.error(
