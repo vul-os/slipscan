@@ -13253,7 +13253,8 @@ mod tests {
             currency: "USD".into(),
             institution: None,
             account_number_masked: None,
-            opening_balance_minor: Some(1_000_00),
+            // $1,000.00 in minor units.
+            opening_balance_minor: Some(100_000),
         })
         .unwrap();
         svc.networth_capture(&book.id, "2026-03-01").unwrap();
