@@ -178,17 +178,53 @@ in Rust here, because the argument for two products never survived contact with 
 migration 0700), its React UI, and its cloud-node deployment path. This is a re-derivation against
 the existing `books`/`members` model, not a port.
 
-**Nothing below is built yet.** Every box is unchecked and stays unchecked until the code exists;
-PARITY.md is re-scored per stage, and no row moves on the strength of a plan.
+**PARITY.md is re-scored per stage from the code, and no row moves on the strength of a plan.**
 
-- [ ] **6.1 Locations.** A `locations` table per book, shaped like `members` — additive, nullable,
-      a book with zero locations behaves exactly as today. Every stock fact carries one. Add the
-      `business` book kind so a business book is a first-class thing rather than a personal book
-      with unusual accounts
-- [ ] **6.2 Contacts.** Customers and suppliers as one contact model per book *(PARITY "Contacts",
-      currently Not built)*
-- [ ] **6.3 Catalogue & stock.** Products, variants (SKU, price, cost price, reorder point,
-      attributes), categories, and an **append-only stock-movement ledger** — on-hand is always
+### Decisions taken (not open questions)
+
+These were settled rather than escalated, and are recorded here so the reasoning survives:
+
+1. **One data model, three presentations — the tier is display, not schema.** Every Phase 6 table is
+   per-book and nullable, so personal / business / multi-location is progressive disclosure over one
+   schema. There is no "business edition", no separate database, and no migration to move between
+   tiers. Downgrading hides screens; it never destroys rows.
+2. **Personal and business are separate books, not one book wearing two hats.** `books` already
+   carries a `kind`, a currency, a country and a lock date — all of which a person and their side
+   business genuinely disagree about. Merging them would mean every one of those becoming a
+   per-section override, and a single `financial_lock_date` that is wrong for one of the two.
+   Someone with a side business already thinks in two sets of books; the app should agree.
+3. **Multi-location is derived from the `locations` count, with an explicit Settings override.**
+   Adding a second location *is* the upgrade, so the common case needs no toggle and no toggle can
+   drift out of step with reality. The override exists for the one case derivation gets wrong — a
+   business setting up its first branch wants the location UI before the second row exists.
+4. **On-hand stock is always derived, never stored.** `SUM(qty_delta)` over immutable movements. A
+   cached counter is the one thing that cannot survive two locations trading while disconnected.
+
+### Stages
+
+- [ ] **6.0 Book profiles.** The `kind`-driven disclosure rules, the derived multi-location flag and
+      its override, a setup flow at book creation, and Settings that can change the answer later in
+      both directions
+- [x] **6.1 Locations.** A `locations` table per book, shaped like `members` — additive, nullable,
+      a book with zero locations behaves exactly as today *(shipped: branch/warehouse/site kinds,
+      CRUD through the service layer, and the first table created after the oplog existed so it
+      carries its own sync-capture triggers rather than having them retrofitted. `BookKind::Business`
+      already existed and was already wired through CLI, server and desktop — verified, not
+      re-added. Not built: nothing references a location yet, so deleting one has no reassignment
+      guard, and no surface exposes locations)*
+- [x] **6.2 Contacts.** Customers and suppliers as one contact model per book *(shipped: one
+      `contacts` table with a role of customer, supplier or both — a business buys from and sells to
+      the same party, and duplicating it is how ledgers drift. Carries company name, email, phone,
+      billing/shipping address, tax number, payment terms, credit limit and active flag. Not built:
+      no surface exposes contacts, and nothing references them yet — PARITY's "Contacts" row does
+      not move until a document does)*
+- [x] **6.3a Catalogue.** Product categories, products, and variants carrying SKU, price, cost
+      price, reorder point and attributes *(shipped. Named `product_categories` with a
+      `product_category_id` FK, deliberately distinct from the existing transaction `categories`
+      table — a `products.category_id = categories.id` join would type-check while being silently
+      wrong. Money follows the existing INTEGER-minor-units + ISO-4217 convention rather than a
+      second representation)*
+- [ ] **6.3b Stock ledger.** The **append-only stock-movement ledger** — on-hand is always
       `SUM(qty_delta)` over immutable movements, never a stored counter. This is what makes two
       locations that traded while disconnected converge by union instead of clobbering each other
 - [ ] **6.4 Purchasing.** Purchase orders and goods receipts, receipts insert-only so partial
@@ -212,10 +248,12 @@ PARITY.md is re-scored per stage, and no row moves on the strength of a plan.
 - [ ] **6.9 Desktop screens.** Catalogue, stock, orders, purchasing, and per-location views, held
       to the same design-system bar as every other screen
 
-**Open question, stated rather than assumed:** this widens the product from "personal finance with a
-ledger underneath" to "personal finance *and* small-business accounting". PARITY.md's scope grows
-with it, and the honest near-term effect is that the Xero axis gets *longer* before it gets greener.
-That is a positioning decision and it is not settled here.
+**Positioning, settled:** SlipScan is now aiming at both axes in full — personal finance *and*
+small-business accounting, with inventory as a module of the book rather than a neighbouring app.
+The honest near-term effect is that the Xero axis gets *longer* before it gets greener: absorbing
+inventory adds capabilities to measure before it adds ones that are built. PARITY.md is expected to
+look worse for a while, and that is the document working correctly rather than a reason to soften
+it.
 
 ## Non-goals
 
