@@ -164,6 +164,20 @@ str_enum!(
     }
 );
 
+str_enum!(
+    /// FlowStock's five stock-movement kinds, unchanged (migration
+    /// `0012_stock`). Not a sign predictor — `Adjustment` and `Count` move
+    /// either direction, and nothing here or in the schema tries to guess
+    /// which sign a kind "should" carry.
+    StockMovementKind {
+        Receipt => "receipt",
+        Sale => "sale",
+        Adjustment => "adjustment",
+        Transfer => "transfer",
+        Count => "count",
+    }
+);
+
 // ---------------------------------------------------------------------------
 // Book
 // ---------------------------------------------------------------------------
@@ -1214,6 +1228,87 @@ pub struct ProductVariantPatch {
     pub reorder_point: Option<i64>,
     #[serde(default)]
     pub attributes: Option<Option<String>>,
+}
+
+// ---------------------------------------------------------------------------
+// Stock movements (migration 0012, ROADMAP.md Phase 6.3b — the append-only
+// stock-movement ledger).
+//
+// There is no `StockMovementPatch` and no update/delete function anywhere
+// behind this type: see migration `0012_stock`'s header for why a correction
+// is always a second, compensating row rather than an edit to this one.
+// ---------------------------------------------------------------------------
+
+/// One immutable fact: this many units of `variant_id` moved at
+/// `location_id`, in `kind`'s sense of the word. On-hand is never read off
+/// this struct directly — it is always `SUM(qty_delta)` over a set of these,
+/// computed in `repo::stock` at query time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StockMovement {
+    pub id: String,
+    pub book_id: String,
+    pub variant_id: String,
+    pub location_id: String,
+    /// Signed. Positive = arrived at this location, negative = left it.
+    /// Never zero — see the migration's `CHECK (qty_delta != 0)`.
+    pub qty_delta: i64,
+    pub kind: StockMovementKind,
+    /// What caused this movement, in whatever vocabulary the causing stage
+    /// uses. `Some("transfer")` is the only value this crate itself writes
+    /// today (see [`Service::stock_transfer`](crate::service::Service)) —
+    /// purchasing (6.4) and sales (6.5) will add their own once they exist.
+    pub ref_kind: Option<String>,
+    /// The id of whatever `ref_kind` names. For a transfer this is the pair's
+    /// shared correlation id, not either movement's own `id` — see
+    /// [`TransferResult`].
+    pub ref_id: Option<String>,
+    pub note: Option<String>,
+    /// Free text, no FK — SlipScan has no user/staff identity yet (see the
+    /// migration header). `None` = not recorded.
+    pub created_by: Option<String>,
+    pub created_at: String,
+}
+
+/// What it takes to record one movement. `book_id` is deliberately absent —
+/// it is derived from the variant, the same way [`NewProductVariant`] derives
+/// its book from the product it belongs to, so it can never disagree with the
+/// variant's own book.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewStockMovement {
+    pub variant_id: String,
+    pub location_id: String,
+    pub qty_delta: i64,
+    pub kind: StockMovementKind,
+    #[serde(default)]
+    pub ref_kind: Option<String>,
+    #[serde(default)]
+    pub ref_id: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub created_by: Option<String>,
+}
+
+/// The two movements a [`Service::stock_transfer`](crate::service::Service)
+/// call produces: one leaving `from_location_id` (negative), one arriving at
+/// `to_location_id` (positive), sharing one `ref_id` so they can be found as
+/// a pair later. Their `qty_delta`s always sum to zero — that is the whole
+/// point of recording a transfer as two ledger facts instead of moving a
+/// number from one place to another.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferResult {
+    pub out: StockMovement,
+    pub in_: StockMovement,
+}
+
+/// A variant whose total on-hand, summed across every location, has fallen to
+/// or below its own `reorder_point`. Carries the on-hand figure alongside the
+/// variant rather than making the caller re-derive it, since deriving it is
+/// the expensive half of the query this type exists to answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LowStockVariant {
+    pub variant: ProductVariant,
+    pub on_hand: i64,
 }
 
 // ---------------------------------------------------------------------------

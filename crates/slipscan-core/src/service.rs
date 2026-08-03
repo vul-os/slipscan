@@ -1862,6 +1862,217 @@ impl CoreService {
     }
 
     // -----------------------------------------------------------------------
+    // Stock movements (migration 0012, ROADMAP.md Phase 6.3b — the
+    // append-only stock-movement ledger).
+    //
+    // There is no `stock_movement_update` or `stock_movement_delete` here,
+    // and there is deliberately no way to build one that reaches the table:
+    // `repo::stock` has no update/delete function to call, and the schema's
+    // own triggers refuse the raw SQL besides. A correction is always a new
+    // row that nets against the one it corrects.
+    // -----------------------------------------------------------------------
+
+    /// Shared insert path for one movement: mints the id and timestamp,
+    /// writes the row, and audits it. Callers own the transaction and have
+    /// already validated the variant/location/book agreement — this is the
+    /// part that is identical whether one row is being written
+    /// (`stock_movement_record`) or two (`stock_transfer`).
+    #[allow(clippy::too_many_arguments)]
+    fn insert_movement_in_tx(
+        &self,
+        tx: &Connection,
+        book_id: &str,
+        variant_id: &str,
+        location_id: &str,
+        qty_delta: i64,
+        kind: StockMovementKind,
+        ref_kind: Option<String>,
+        ref_id: Option<String>,
+        note: Option<String>,
+        created_by: Option<String>,
+    ) -> CoreResult<StockMovement> {
+        let movement = StockMovement {
+            id: new_id(),
+            book_id: book_id.to_string(),
+            variant_id: variant_id.to_string(),
+            location_id: location_id.to_string(),
+            qty_delta,
+            kind,
+            ref_kind,
+            ref_id,
+            note,
+            created_by,
+            created_at: now_iso(),
+        };
+        repo::stock::insert(tx, &movement)?;
+        self.emit_audit(
+            tx,
+            Some(book_id),
+            "stock_movement",
+            Some(&movement.id),
+            "record",
+            None,
+            Some(serde_json::to_string(&movement)?),
+        )?;
+        Ok(movement)
+    }
+
+    /// Record one stock-movement fact: a receipt, a sale, an adjustment or a
+    /// count. (`Transfer` is accepted here too, for a caller that already has
+    /// both legs some other way, but `stock_transfer` below is the path that
+    /// guarantees the pair actually sums to zero — prefer it for a transfer.)
+    pub fn stock_movement_record(&self, new: NewStockMovement) -> CoreResult<StockMovement> {
+        let variant = self.product_variant_get(&new.variant_id)?;
+        let location = self.location_get(&new.location_id)?;
+        if location.book_id != variant.book_id {
+            return Err(CoreError::Validation(
+                "stock movement location and variant belong to different books".into(),
+            ));
+        }
+        if new.qty_delta == 0 {
+            return Err(CoreError::Validation(
+                "stock movement qty_delta must not be zero".into(),
+            ));
+        }
+        if new.ref_id.is_some() && new.ref_kind.is_none() {
+            return Err(CoreError::Validation(
+                "stock movement has a ref_id but no ref_kind to name what it refers to".into(),
+            ));
+        }
+        let tx = self.conn().unchecked_transaction()?;
+        let movement = self.insert_movement_in_tx(
+            &tx,
+            &variant.book_id,
+            &variant.id,
+            &location.id,
+            new.qty_delta,
+            new.kind,
+            new.ref_kind,
+            new.ref_id,
+            new.note,
+            new.created_by,
+        )?;
+        tx.commit()?;
+        Ok(movement)
+    }
+
+    /// Move stock between two locations by recording two movements — one
+    /// leaving `from_location_id`, one arriving at `to_location_id` — that
+    /// share a `ref_id` and always sum to zero. This is the invariant
+    /// ROADMAP.md 6.3b names explicitly: a transfer is never a single row
+    /// that "moves" a quantity, because a single row cannot express which
+    /// location lost it and which gained it once two devices each see only
+    /// their own half. Two rows, correlated by `ref_id`, converge under
+    /// union exactly like any other pair of ledger facts.
+    pub fn stock_transfer(
+        &self,
+        variant_id: &str,
+        from_location_id: &str,
+        to_location_id: &str,
+        qty: i64,
+        note: Option<String>,
+        created_by: Option<String>,
+    ) -> CoreResult<TransferResult> {
+        if qty <= 0 {
+            return Err(CoreError::Validation(
+                "transfer quantity must be positive".into(),
+            ));
+        }
+        if from_location_id == to_location_id {
+            return Err(CoreError::Validation(
+                "transfer source and destination locations must differ".into(),
+            ));
+        }
+        let variant = self.product_variant_get(variant_id)?;
+        let from = self.location_get(from_location_id)?;
+        let to = self.location_get(to_location_id)?;
+        if from.book_id != variant.book_id || to.book_id != variant.book_id {
+            return Err(CoreError::Validation(
+                "stock transfer location and variant belong to different books".into(),
+            ));
+        }
+
+        let ref_id = new_id();
+        let tx = self.conn().unchecked_transaction()?;
+        let out = self.insert_movement_in_tx(
+            &tx,
+            &variant.book_id,
+            &variant.id,
+            &from.id,
+            -qty,
+            StockMovementKind::Transfer,
+            Some("transfer".to_string()),
+            Some(ref_id.clone()),
+            note.clone(),
+            created_by.clone(),
+        )?;
+        let in_ = self.insert_movement_in_tx(
+            &tx,
+            &variant.book_id,
+            &variant.id,
+            &to.id,
+            qty,
+            StockMovementKind::Transfer,
+            Some("transfer".to_string()),
+            Some(ref_id),
+            note,
+            created_by,
+        )?;
+        tx.commit()?;
+        Ok(TransferResult { out, in_ })
+    }
+
+    /// A variant's full movement history, any location, oldest first.
+    pub fn stock_movements_for_variant(&self, variant_id: &str) -> CoreResult<Vec<StockMovement>> {
+        repo::stock::list_for_variant(self.conn(), variant_id)
+    }
+
+    /// A location's full movement history, any variant, oldest first — a
+    /// branch's stock ledger.
+    pub fn stock_movements_for_location(
+        &self,
+        location_id: &str,
+    ) -> CoreResult<Vec<StockMovement>> {
+        repo::stock::list_for_location(self.conn(), location_id)
+    }
+
+    /// The two legs of one transfer, or (once 6.4/6.5 exist) every movement
+    /// one receipt or sale produced.
+    pub fn stock_movements_for_ref(
+        &self,
+        ref_kind: &str,
+        ref_id: &str,
+    ) -> CoreResult<Vec<StockMovement>> {
+        repo::stock::list_for_ref(self.conn(), ref_kind, ref_id)
+    }
+
+    /// On-hand for one variant at one location: `SUM(qty_delta)` over exactly
+    /// those rows. Never a stored figure — see migration `0012_stock`.
+    pub fn stock_on_hand(&self, variant_id: &str, location_id: &str) -> CoreResult<i64> {
+        repo::stock::on_hand(self.conn(), variant_id, location_id)
+    }
+
+    /// On-hand for one variant, summed across every location.
+    pub fn stock_on_hand_total(&self, variant_id: &str) -> CoreResult<i64> {
+        repo::stock::on_hand_total(self.conn(), variant_id)
+    }
+
+    /// On-hand for one variant, broken down per location it has ever moved
+    /// at.
+    pub fn stock_on_hand_by_location(&self, variant_id: &str) -> CoreResult<Vec<(String, i64)>> {
+        repo::stock::on_hand_by_location(self.conn(), variant_id)
+    }
+
+    /// Every variant in the book whose total on-hand (summed across every
+    /// location) has fallen to or below its own `reorder_point`.
+    pub fn stock_low_variants(&self, book_id: &str) -> CoreResult<Vec<LowStockVariant>> {
+        Ok(repo::stock::low_stock(self.conn(), book_id)?
+            .into_iter()
+            .map(|(variant, on_hand)| LowStockVariant { variant, on_hand })
+            .collect())
+    }
+
+    // -----------------------------------------------------------------------
     // Budgets
     // -----------------------------------------------------------------------
 
@@ -5385,6 +5596,489 @@ mod tests {
             )
             .unwrap();
         assert_eq!(remaining, 0, "cascade delete did not reach the variant");
+    }
+
+    // -- stock movements (migration 0012, ROADMAP.md Phase 6.3b) ------------
+
+    fn make_location(svc: &CoreService, book: &Book, name: &str) -> Location {
+        svc.location_create(NewLocation {
+            book_id: book.id.clone(),
+            name: name.into(),
+            kind: None,
+            code: None,
+            address: None,
+        })
+        .unwrap()
+    }
+
+    fn make_variant(svc: &CoreService, book: &Book, sku: &str) -> ProductVariant {
+        let product = svc
+            .product_create(NewProduct {
+                book_id: book.id.clone(),
+                product_category_id: None,
+                name: "Cola".into(),
+                description: None,
+            })
+            .unwrap();
+        svc.product_variant_add(NewProductVariant {
+            product_id: product.id,
+            sku: sku.into(),
+            name: "330ml can".into(),
+            price_minor: Some(1500),
+            cost_price_minor: Some(900),
+            currency: "ZAR".into(),
+            reorder_point: Some(10),
+            attributes: None,
+        })
+        .unwrap()
+    }
+
+    fn new_movement(
+        variant_id: &str,
+        location_id: &str,
+        qty_delta: i64,
+        kind: StockMovementKind,
+    ) -> NewStockMovement {
+        NewStockMovement {
+            variant_id: variant_id.into(),
+            location_id: location_id.into(),
+            qty_delta,
+            kind,
+            ref_kind: None,
+            ref_id: None,
+            note: None,
+            created_by: None,
+        }
+    }
+
+    /// **The core invariant, proven rather than assumed.** On-hand is never a
+    /// stored figure anywhere in this crate — every read here is
+    /// `SUM(qty_delta)` computed at query time by `repo::stock`. A receipt, a
+    /// sale and an adjustment at one location sum to the hand-computed
+    /// answer, and a second location's movements are invisible to the first
+    /// location's on-hand until summed across both.
+    #[test]
+    fn on_hand_is_always_the_sum_of_movements_never_a_stored_counter() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let branch = make_location(&svc, &book, "Branch");
+        let warehouse = make_location(&svc, &book, "Warehouse");
+
+        svc.stock_movement_record(new_movement(
+            &variant.id,
+            &branch.id,
+            50,
+            StockMovementKind::Receipt,
+        ))
+        .unwrap();
+        svc.stock_movement_record(new_movement(
+            &variant.id,
+            &branch.id,
+            -12,
+            StockMovementKind::Sale,
+        ))
+        .unwrap();
+        svc.stock_movement_record(new_movement(
+            &variant.id,
+            &branch.id,
+            -3,
+            StockMovementKind::Adjustment,
+        ))
+        .unwrap();
+        // 50 - 12 - 3 = 35 at the branch; nothing at the warehouse yet.
+        assert_eq!(svc.stock_on_hand(&variant.id, &branch.id).unwrap(), 35);
+        assert_eq!(svc.stock_on_hand(&variant.id, &warehouse.id).unwrap(), 0);
+        assert_eq!(svc.stock_on_hand_total(&variant.id).unwrap(), 35);
+
+        svc.stock_movement_record(new_movement(
+            &variant.id,
+            &warehouse.id,
+            100,
+            StockMovementKind::Receipt,
+        ))
+        .unwrap();
+        // The branch is untouched by a movement recorded elsewhere...
+        assert_eq!(svc.stock_on_hand(&variant.id, &branch.id).unwrap(), 35);
+        // ...but the across-every-location total picks it up.
+        assert_eq!(svc.stock_on_hand_total(&variant.id).unwrap(), 135);
+
+        let by_location = svc.stock_on_hand_by_location(&variant.id).unwrap();
+        assert_eq!(by_location.len(), 2);
+        assert!(by_location.contains(&(branch.id.clone(), 35)));
+        assert!(by_location.contains(&(warehouse.id.clone(), 100)));
+
+        let history = svc.stock_movements_for_variant(&variant.id).unwrap();
+        assert_eq!(
+            history.len(),
+            4,
+            "every movement is retained, not collapsed"
+        );
+    }
+
+    #[test]
+    fn stock_movement_record_validates_book_scoping_and_zero_delta() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let other_book = svc
+            .book_create(NewBook {
+                name: "Other".into(),
+                kind: BookKind::Business,
+                currency: None,
+                country: None,
+                region: None,
+            })
+            .unwrap();
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let foreign_location = make_location(&svc, &other_book, "Foreign Branch");
+
+        assert!(matches!(
+            svc.stock_movement_record(new_movement(
+                &variant.id,
+                &foreign_location.id,
+                5,
+                StockMovementKind::Receipt,
+            )),
+            Err(CoreError::Validation(_))
+        ));
+
+        let branch = make_location(&svc, &book, "Branch");
+        assert!(matches!(
+            svc.stock_movement_record(new_movement(
+                &variant.id,
+                &branch.id,
+                0,
+                StockMovementKind::Adjustment,
+            )),
+            Err(CoreError::Validation(_))
+        ));
+
+        // A ref_id naming nothing (no ref_kind alongside it) is refused —
+        // half of "what caused this" is not a fact worth recording.
+        let mut orphaned_ref = new_movement(&variant.id, &branch.id, 1, StockMovementKind::Receipt);
+        orphaned_ref.ref_id = Some("po-1".into());
+        assert!(matches!(
+            svc.stock_movement_record(orphaned_ref),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn stock_movement_record_rejects_an_unknown_variant_or_location() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let branch = make_location(&svc, &book, "Branch");
+
+        assert!(matches!(
+            svc.stock_movement_record(new_movement(
+                "missing-variant",
+                &branch.id,
+                1,
+                StockMovementKind::Receipt,
+            )),
+            Err(CoreError::NotFound { .. })
+        ));
+        assert!(matches!(
+            svc.stock_movement_record(new_movement(
+                &variant.id,
+                "missing-location",
+                1,
+                StockMovementKind::Receipt,
+            )),
+            Err(CoreError::NotFound { .. })
+        ));
+    }
+
+    /// **The transfer invariant ROADMAP.md 6.3b names explicitly.** A
+    /// transfer is two movements, and they must sum to exactly zero — proven
+    /// by summing the two rows this call actually wrote, not merely by
+    /// trusting the function that wrote them.
+    #[test]
+    fn stock_transfer_writes_two_movements_that_sum_to_zero() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let branch = make_location(&svc, &book, "Branch");
+        let warehouse = make_location(&svc, &book, "Warehouse");
+
+        svc.stock_movement_record(new_movement(
+            &variant.id,
+            &warehouse.id,
+            100,
+            StockMovementKind::Receipt,
+        ))
+        .unwrap();
+
+        let result = svc
+            .stock_transfer(
+                &variant.id,
+                &warehouse.id,
+                &branch.id,
+                30,
+                Some("restocking".into()),
+                Some("alice".into()),
+            )
+            .unwrap();
+
+        assert_eq!(result.out.qty_delta, -30);
+        assert_eq!(result.in_.qty_delta, 30);
+        assert_eq!(
+            result.out.qty_delta + result.in_.qty_delta,
+            0,
+            "a transfer's two legs must sum to zero"
+        );
+        assert_eq!(result.out.location_id, warehouse.id);
+        assert_eq!(result.in_.location_id, branch.id);
+        assert_eq!(result.out.kind, StockMovementKind::Transfer);
+        assert_eq!(result.in_.kind, StockMovementKind::Transfer);
+        assert_eq!(result.out.ref_kind.as_deref(), Some("transfer"));
+        assert_eq!(result.out.ref_id, result.in_.ref_id, "one shared ref_id");
+
+        assert_eq!(svc.stock_on_hand(&variant.id, &warehouse.id).unwrap(), 70);
+        assert_eq!(svc.stock_on_hand(&variant.id, &branch.id).unwrap(), 30);
+        // The transfer changed WHERE the stock is, never how much exists.
+        assert_eq!(svc.stock_on_hand_total(&variant.id).unwrap(), 100);
+
+        let pair = svc
+            .stock_movements_for_ref("transfer", result.out.ref_id.as_deref().unwrap())
+            .unwrap();
+        assert_eq!(pair.len(), 2, "both legs are findable by their shared ref");
+    }
+
+    #[test]
+    fn stock_transfer_validates_quantity_locations_and_book_scoping() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let branch = make_location(&svc, &book, "Branch");
+        let warehouse = make_location(&svc, &book, "Warehouse");
+
+        assert!(matches!(
+            svc.stock_transfer(&variant.id, &warehouse.id, &branch.id, 0, None, None),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.stock_transfer(&variant.id, &warehouse.id, &branch.id, -5, None, None),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.stock_transfer(&variant.id, &branch.id, &branch.id, 5, None, None),
+            Err(CoreError::Validation(_)),
+        ));
+
+        let other_book = svc
+            .book_create(NewBook {
+                name: "Other".into(),
+                kind: BookKind::Business,
+                currency: None,
+                country: None,
+                region: None,
+            })
+            .unwrap();
+        let foreign_location = make_location(&svc, &other_book, "Foreign Branch");
+        assert!(matches!(
+            svc.stock_transfer(
+                &variant.id,
+                &warehouse.id,
+                &foreign_location.id,
+                5,
+                None,
+                None
+            ),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    /// **Convergence by union, proven directly.** Two locations record their
+    /// own movements for the same variant while disconnected — this device
+    /// never sees them arrive "in order", it sees whatever order a sync pull
+    /// happens to apply them in. `SUM(qty_delta)` must land on the same
+    /// answer regardless, because a ledger union has no such thing as replay
+    /// order affecting the total; that is precisely the property a cached
+    /// counter (last-write-wins) would NOT have.
+    #[test]
+    fn on_hand_converges_to_the_same_total_regardless_of_the_order_movements_are_applied_in() {
+        let forward = svc();
+        let book = make_book(&forward);
+        let variant = make_variant(&forward, &book, "COLA-330");
+        let branch = make_location(&forward, &book, "Branch");
+
+        // Six independent facts, as if two disconnected devices each
+        // recorded three of them locally before ever syncing.
+        let facts: Vec<(i64, StockMovementKind)> = vec![
+            (50, StockMovementKind::Receipt),
+            (-5, StockMovementKind::Sale),
+            (-2, StockMovementKind::Sale),
+            (20, StockMovementKind::Receipt),
+            (-8, StockMovementKind::Sale),
+            (1, StockMovementKind::Adjustment),
+        ];
+        let expected_total: i64 = facts.iter().map(|(qty, _)| qty).sum();
+
+        for (qty, kind) in &facts {
+            forward
+                .stock_movement_record(new_movement(&variant.id, &branch.id, *qty, *kind))
+                .unwrap();
+        }
+        assert_eq!(
+            forward.stock_on_hand(&variant.id, &branch.id).unwrap(),
+            expected_total
+        );
+
+        // A second, independent database applies the identical set of facts
+        // in reverse order — standing in for a peer whose sync pull happened
+        // to deliver them differently. Same rows, same book/variant/location
+        // ids so the comparison is meaningful, different apply order.
+        let reversed = svc();
+        reversed
+            .db
+            .conn()
+            .execute_batch(&format!(
+                "INSERT INTO books (id, kind, name, currency, locale, timezone, created_at, updated_at, region)
+                 VALUES ('{book_id}', 'personal', 'Household', 'ZAR', 'en', 'UTC', 't', 't', 'za');
+                 INSERT INTO products (id, book_id, name, created_at, updated_at)
+                 VALUES ('prod-1', '{book_id}', 'Cola', 't', 't');
+                 INSERT INTO product_variants (id, product_id, book_id, sku, name, price_minor,
+                     cost_price_minor, currency, reorder_point, created_at, updated_at)
+                 VALUES ('{variant_id}', 'prod-1', '{book_id}', 'COLA-330', '330ml can', 1500, 900,
+                     'ZAR', 10, 't', 't');
+                 INSERT INTO locations (id, book_id, name, kind, created_at, updated_at)
+                 VALUES ('{location_id}', '{book_id}', 'Branch', 'branch', 't', 't');",
+                book_id = book.id,
+                variant_id = variant.id,
+                location_id = branch.id,
+            ))
+            .unwrap();
+        for (qty, kind) in facts.iter().rev() {
+            reversed
+                .stock_movement_record(new_movement(&variant.id, &branch.id, *qty, *kind))
+                .unwrap();
+        }
+        assert_eq!(
+            reversed.stock_on_hand(&variant.id, &branch.id).unwrap(),
+            expected_total,
+            "the same facts applied in the opposite order must converge on the same total"
+        );
+        assert_eq!(
+            forward.stock_on_hand(&variant.id, &branch.id).unwrap(),
+            reversed.stock_on_hand(&variant.id, &branch.id).unwrap(),
+        );
+    }
+
+    #[test]
+    fn stock_movements_are_insert_only_at_the_database_level() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let branch = make_location(&svc, &book, "Branch");
+        let movement = svc
+            .stock_movement_record(new_movement(
+                &variant.id,
+                &branch.id,
+                5,
+                StockMovementKind::Receipt,
+            ))
+            .unwrap();
+
+        let err = svc
+            .conn_for_test()
+            .execute(
+                "UPDATE stock_movements SET qty_delta = 1 WHERE id = ?1",
+                rusqlite::params![movement.id],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("immutable"));
+
+        let err = svc
+            .conn_for_test()
+            .execute(
+                "DELETE FROM stock_movements WHERE id = ?1",
+                rusqlite::params![movement.id],
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("immutable"));
+
+        // Still there, unchanged — the attempted UPDATE/DELETE did nothing.
+        assert_eq!(
+            svc.stock_on_hand(&variant.id, &branch.id).unwrap(),
+            5,
+            "the rejected statements must not have partially applied"
+        );
+    }
+
+    /// A variant or location with movement history cannot be deleted out from
+    /// under its own ledger — the `ON DELETE RESTRICT` migration 0012 adds,
+    /// proven against the database rather than assumed from the SQL text.
+    #[test]
+    fn deleting_a_variant_or_location_with_movement_history_is_blocked() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let branch = make_location(&svc, &book, "Branch");
+        svc.stock_movement_record(new_movement(
+            &variant.id,
+            &branch.id,
+            5,
+            StockMovementKind::Receipt,
+        ))
+        .unwrap();
+
+        assert!(
+            svc.product_variant_delete(&variant.id).is_err(),
+            "a variant with movement history must not be deletable"
+        );
+        assert!(
+            svc.location_delete(&branch.id).is_err(),
+            "a location with movement history must not be deletable"
+        );
+    }
+
+    #[test]
+    fn stock_low_variants_lists_variants_at_or_below_their_reorder_point() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let branch = make_location(&svc, &book, "Branch");
+
+        // reorder_point defaults to 10 in `make_variant`.
+        let low = make_variant(&svc, &book, "LOW-1");
+        svc.stock_movement_record(new_movement(
+            &low.id,
+            &branch.id,
+            10,
+            StockMovementKind::Receipt,
+        ))
+        .unwrap();
+        // At the reorder point exactly — "at or below" includes this.
+
+        let plenty = make_variant(&svc, &book, "PLENTY-1");
+        svc.stock_movement_record(new_movement(
+            &plenty.id,
+            &branch.id,
+            11,
+            StockMovementKind::Receipt,
+        ))
+        .unwrap();
+
+        let never_stocked = make_variant(&svc, &book, "NEVER-1");
+        // No movements at all: on-hand is 0, at or below its reorder point
+        // of 10 — a variant nobody has ever received is a live "reorder"
+        // candidate, not an absence from the report.
+
+        let low_variants = svc.stock_low_variants(&book.id).unwrap();
+        let ids: Vec<&str> = low_variants.iter().map(|l| l.variant.id.as_str()).collect();
+        assert!(ids.contains(&low.id.as_str()));
+        assert!(ids.contains(&never_stocked.id.as_str()));
+        assert!(
+            !ids.contains(&plenty.id.as_str()),
+            "a variant well above its reorder point must not be listed"
+        );
+
+        let low_entry = low_variants
+            .iter()
+            .find(|l| l.variant.id == low.id)
+            .unwrap();
+        assert_eq!(low_entry.on_hand, 10);
     }
 
     // -- budgets ------------------------------------------------------------

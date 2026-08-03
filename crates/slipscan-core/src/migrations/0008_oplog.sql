@@ -50,6 +50,7 @@
 --   migration 0009  locations
 --   migration 0010  contacts
 --   migration 0011  product_categories, products, product_variants
+--   migration 0012  stock_movements (insert only — see that file's header)
 --
 -- Every one of those triggers is only reachable once this migration has run
 -- (they insert into `sync_outbox`, guarded by a `sync_control` read), even

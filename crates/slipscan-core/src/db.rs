@@ -56,6 +56,7 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0011_catalogue",
         include_str!("migrations/0011_catalogue.sql"),
     ),
+    (12, "0012_stock", include_str!("migrations/0012_stock.sql")),
 ];
 
 /// A configured, migrated SQLite database handle.
@@ -152,13 +153,13 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
     }
 
@@ -198,6 +199,7 @@ mod tests {
             "recon_matches",
             "schema_migrations",
             "settings",
+            "stock_movements",
             "transaction_splits",
             "transactions",
             "vat_rates",

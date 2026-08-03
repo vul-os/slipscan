@@ -66,10 +66,10 @@
 //! `field` the column name — deliberately not taken here, because it would be a
 //! behaviour change rather than a faithful mapping.
 //!
-//! ## Posted journals and their lines → §4.3 OR-Set ([`Kind::SetAdd`])
+//! ## Posted journals, their lines, and stock movements → §4.3 OR-Set ([`Kind::SetAdd`])
 //!
 //! ```text
-//! target  "journals" / "journal_lines"
+//! target  "journals" / "journal_lines" / "stock_movements"
 //! value   tstr, "v" + canonical JSON of the row including its id
 //! ```
 //!
@@ -80,6 +80,13 @@
 //! triggers on both tables that `RAISE(ABORT)`, so SQLite itself refuses. A
 //! replication path cannot mutate a posted journal even by mistake, because the
 //! statement never reaches the row.
+//!
+//! `stock_movements` (migration `0012_stock`, ROADMAP.md 6.3b) is the same
+//! shape for the same reason: on-hand is `SUM(qty_delta)` over these rows, and
+//! a correction is a new movement, never an edit to one that already posted —
+//! `stock_movements_no_update`/`_no_delete` give it the identical database-level
+//! refusal. Two locations that recorded movements while disconnected converge
+//! by union exactly like two devices that each posted journals offline.
 //!
 //! No set-remove is ever minted, so this is an OR-Set with no removes, which is
 //! a grow-only set whose merge is plain union. The mapping is therefore an
@@ -95,7 +102,10 @@
 //! reason is worth stating rather than assuming — every ledger row carries its
 //! own UUID v7 `id` inside the payload, minted once at creation. Two distinct
 //! journal lines with the same account, amount, description and order still
-//! differ in `id`, so the union keeps both. [`tests::two_ledger_rows_alike_in_
+//! differ in `id`, so the union keeps both — and now that `stock_movements`
+//! actually is the kind of row that trap was named after, the same guarantee
+//! is what makes two locations independently posting "sold 1 unit" at the same
+//! moment two rows, not one. [`tests::two_ledger_rows_alike_in_
 //! everything_but_id_both_survive_the_union`] holds that, because the property
 //! that matters is "distinct facts survive", not "the payload has an id field".
 //!
@@ -243,7 +253,7 @@ pub fn parse_lww_target(target: &str) -> Option<(&str, &str)> {
 /// tables carries a unique `id` in its payload — see the §4.3 note in the
 /// module docs for why that is load-bearing rather than incidental.
 #[cfg(feature = "sync-dmtap")]
-pub const LEDGER_TABLES: &[&str] = &["journals", "journal_lines"];
+pub const LEDGER_TABLES: &[&str] = &["journals", "journal_lines", "stock_movements"];
 
 /// Tables whose rows are editable and merge last-writer-wins.
 ///
