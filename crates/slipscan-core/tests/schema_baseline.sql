@@ -257,6 +257,9 @@ CREATE UNIQUE INDEX recon_matches_tx_active_unique
 -- index sqlite_autoindex_settings_1
 ;
 
+-- index sqlite_autoindex_stock_movements_1
+;
+
 -- index sqlite_autoindex_sync_oplog_1
 ;
 
@@ -283,6 +286,20 @@ CREATE UNIQUE INDEX recon_matches_tx_active_unique
 
 -- index sqlite_autoindex_vault_secrets_2
 ;
+
+-- index stock_movements_book_idx
+CREATE INDEX stock_movements_book_idx ON stock_movements (book_id);
+
+-- index stock_movements_location_idx
+CREATE INDEX stock_movements_location_idx ON stock_movements (location_id);
+
+-- index stock_movements_ref_idx
+CREATE INDEX stock_movements_ref_idx
+    ON stock_movements (ref_kind, ref_id) WHERE ref_id IS NOT NULL;
+
+-- index stock_movements_variant_location_idx
+CREATE INDEX stock_movements_variant_location_idx
+    ON stock_movements (variant_id, location_id);
 
 -- index sync_oplog_author_idx
 CREATE INDEX sync_oplog_author_idx ON sync_oplog (author, hlc_wall, hlc_counter);
@@ -767,6 +784,22 @@ CREATE TABLE settings (
 -- table sqlite_sequence
 CREATE TABLE sqlite_sequence(name,seq);
 
+-- table stock_movements
+CREATE TABLE stock_movements (
+    id          TEXT PRIMARY KEY,
+    book_id     TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    variant_id  TEXT NOT NULL REFERENCES product_variants (id) ON DELETE RESTRICT,
+    location_id TEXT NOT NULL REFERENCES locations (id) ON DELETE RESTRICT,
+    qty_delta   INTEGER NOT NULL CHECK (qty_delta != 0),
+    kind        TEXT NOT NULL
+        CHECK (kind IN ('receipt', 'sale', 'adjustment', 'transfer', 'count')),
+    ref_kind    TEXT,
+    ref_id      TEXT,
+    note        TEXT,
+    created_by  TEXT,
+    created_at  TEXT NOT NULL
+);
+
 -- table sync_clock
 CREATE TABLE sync_clock (
     id         INTEGER PRIMARY KEY CHECK (id = 1),
@@ -927,6 +960,20 @@ CREATE TRIGGER journals_no_update
 BEFORE UPDATE ON journals
 BEGIN
     SELECT RAISE(ABORT, 'posted journals are immutable; post a reversal instead');
+END;
+
+-- trigger stock_movements_no_delete
+CREATE TRIGGER stock_movements_no_delete
+BEFORE DELETE ON stock_movements
+BEGIN
+    SELECT RAISE(ABORT, 'stock movements are immutable; record a compensating movement instead');
+END;
+
+-- trigger stock_movements_no_update
+CREATE TRIGGER stock_movements_no_update
+BEFORE UPDATE ON stock_movements
+BEGIN
+    SELECT RAISE(ABORT, 'stock movements are immutable; record a compensating movement instead');
 END;
 
 -- trigger sync_capture_accounts_del
@@ -1255,6 +1302,14 @@ WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
 BEGIN
     INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
     VALUES ('products', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_stock_movements_ins
+CREATE TRIGGER sync_capture_stock_movements_ins AFTER INSERT ON stock_movements
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('stock_movements', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 END;
 
 -- trigger sync_capture_transaction_splits_del

@@ -303,6 +303,79 @@ mod tests {
         }
     }
 
+    /// Migration `0012_stock`'s own trigger set, exercised directly rather
+    /// than eyeballed — the same treatment the catalogue tables got in
+    /// `catalogue_tables_capture_insert_update_and_delete`, plus the
+    /// immutability half `a_posted_journal_cannot_be_updated_or_deleted_at_all`
+    /// gives `journals`: a stock movement captures its insert and refuses to
+    /// be edited or removed at all, proven against the raw table rather than
+    /// through `repo::stock` (which has no update/delete function to call in
+    /// the first place — this is what stops someone from adding one and
+    /// believing it would work).
+    #[test]
+    fn a_stock_movement_captures_its_insert_and_cannot_be_updated_or_deleted() {
+        let db = Db::open_in_memory().unwrap();
+        let book = seed_book(&db);
+
+        db.conn()
+            .execute(
+                "INSERT INTO locations (id, book_id, name, kind, created_at, updated_at)
+                 VALUES ('loc-1', ?1, 'Main Branch', 'branch', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO products (id, book_id, name, created_at, updated_at)
+                 VALUES ('p-1', ?1, 'Cola', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO product_variants
+                     (id, product_id, book_id, sku, name, price_minor, cost_price_minor,
+                      currency, reorder_point, created_at, updated_at)
+                 VALUES ('v-1', 'p-1', ?1, 'COLA-330', '330ml can', 1500, 900, 'ZAR', 24, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn().execute("DELETE FROM sync_outbox", []).unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO stock_movements
+                     (id, book_id, variant_id, location_id, qty_delta, kind, created_at)
+                 VALUES ('m-1', ?1, 'v-1', 'loc-1', 5, 'receipt', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+
+        let captured = drain_list(db.conn()).unwrap();
+        let rows: Vec<&Captured> = captured
+            .iter()
+            .filter(|c| c.table == "stock_movements" && c.row_id == "m-1")
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "a stock movement must capture exactly its insert: {rows:?}"
+        );
+        assert!(!rows[0].deleted);
+        assert_eq!(rows[0].ns, book, "the namespace is the book id");
+
+        for sql in [
+            "UPDATE stock_movements SET qty_delta = 1 WHERE id = 'm-1'",
+            "DELETE FROM stock_movements WHERE id = 'm-1'",
+        ] {
+            let err = db.conn().execute(sql, []).unwrap_err();
+            assert!(
+                err.to_string().contains("immutable"),
+                "`{sql}` must be refused by the database itself, got {err}"
+            );
+        }
+    }
+
     #[test]
     fn an_ordinary_write_lands_in_the_outbox_with_its_namespace() {
         let db = Db::open_in_memory().unwrap();

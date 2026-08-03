@@ -19,6 +19,7 @@ pub mod pay;
 pub mod recon;
 pub mod report;
 pub mod settings;
+pub mod stock;
 pub mod transaction;
 
 use rusqlite::Row;
