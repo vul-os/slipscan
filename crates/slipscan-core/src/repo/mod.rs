@@ -11,6 +11,7 @@ pub mod budget;
 pub mod category;
 pub mod document;
 pub mod ledger;
+pub mod location;
 pub mod member;
 pub mod pay;
 pub mod recon;

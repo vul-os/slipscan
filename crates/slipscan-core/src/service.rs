@@ -1071,6 +1071,140 @@ impl CoreService {
     }
 
     // -----------------------------------------------------------------------
+    // Locations (Phase 6.1 — the FlowStock fold, foundation)
+    //
+    // Branches, sites and warehouses, per book. A book may have zero
+    // locations — nothing else in core references one yet, so every existing
+    // book keeps working exactly as it does today.
+    // -----------------------------------------------------------------------
+
+    pub fn location_create(&self, new: NewLocation) -> CoreResult<Location> {
+        let book = self.book_get(&new.book_id)?;
+        let name = new.name.trim().to_string();
+        if name.is_empty() {
+            return Err(CoreError::Validation(
+                "location name must not be empty".into(),
+            ));
+        }
+        let code = match new.code.as_deref().map(str::trim) {
+            Some(explicit) if !explicit.is_empty() => Some(explicit.to_string()),
+            _ => None,
+        };
+        let address = match new.address.as_deref().map(str::trim) {
+            Some(explicit) if !explicit.is_empty() => Some(explicit.to_string()),
+            _ => None,
+        };
+
+        let now = now_iso();
+        let location = Location {
+            id: new_id(),
+            book_id: book.id,
+            name,
+            kind: new.kind.unwrap_or(LocationKind::Branch),
+            code,
+            address,
+            is_archived: false,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::location::insert(&tx, &location)?;
+        self.emit_audit(
+            &tx,
+            Some(&location.book_id),
+            "location",
+            Some(&location.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&location)?),
+        )?;
+        tx.commit()?;
+        Ok(location)
+    }
+
+    pub fn location_get(&self, id: &str) -> CoreResult<Location> {
+        repo::location::get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "location",
+            id: id.to_string(),
+        })
+    }
+
+    /// Every location in the book, empty for a book nobody has set this axis
+    /// up on yet (the common case remains fully supported).
+    pub fn location_list(&self, book_id: &str) -> CoreResult<Vec<Location>> {
+        repo::location::list(self.conn(), book_id)
+    }
+
+    pub fn location_update(&self, id: &str, patch: LocationPatch) -> CoreResult<Location> {
+        let before = self.location_get(id)?;
+        let mut after = before.clone();
+        if let Some(name) = patch.name {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err(CoreError::Validation(
+                    "location name must not be empty".into(),
+                ));
+            }
+            after.name = name;
+        }
+        if let Some(kind) = patch.kind {
+            after.kind = kind;
+        }
+        if let Some(code) = patch.code {
+            after.code = code
+                .as_deref()
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .map(str::to_string);
+        }
+        if let Some(address) = patch.address {
+            after.address = address
+                .as_deref()
+                .map(str::trim)
+                .filter(|a| !a.is_empty())
+                .map(str::to_string);
+        }
+        if let Some(is_archived) = patch.is_archived {
+            after.is_archived = is_archived;
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::location::update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "location",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Hard delete. Nothing references a location yet (see migration
+    /// `0800_locations`), so unlike `member_remove` there is no reassignment
+    /// guard to run first.
+    pub fn location_delete(&self, id: &str) -> CoreResult<()> {
+        let before = self.location_get(id)?;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::location::delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "location",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Categories
     // -----------------------------------------------------------------------
 
@@ -7693,5 +7827,170 @@ mod tests {
         // for the whole household (9200 − 5000) — it only nets to zero when
         // the household spends exactly what it takes in.
         assert_eq!(settle.iter().map(|r| r.net_minor).sum::<i64>(), 4_200);
+    }
+
+    // -------------------------------------------------------------------
+    // Locations (Phase 6.1 — the FlowStock fold, foundation)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn location_crud_and_a_zero_locations_book_still_works() {
+        let svc = svc();
+        let book = make_book(&svc);
+
+        // A book with zero locations behaves exactly as before: nothing
+        // downstream references this axis yet.
+        assert!(svc.location_list(&book.id).unwrap().is_empty());
+
+        // Create, with the kind default applied (branch) and untrimmed input
+        // cleaned up.
+        let main = svc
+            .location_create(NewLocation {
+                book_id: book.id.clone(),
+                name: "  Main Branch  ".into(),
+                kind: None,
+                code: Some("  JHB-01  ".into()),
+                address: None,
+            })
+            .unwrap();
+        assert_eq!(main.name, "Main Branch", "name is trimmed");
+        assert_eq!(main.kind, LocationKind::Branch, "defaults to branch");
+        assert_eq!(main.code.as_deref(), Some("JHB-01"), "code is trimmed");
+        assert_eq!(main.address, None);
+        assert!(!main.is_archived);
+
+        let depot = svc
+            .location_create(NewLocation {
+                book_id: book.id.clone(),
+                name: "Regional Depot".into(),
+                kind: Some(LocationKind::Warehouse),
+                code: None,
+                address: Some("1 Depot Road".into()),
+            })
+            .unwrap();
+        assert_eq!(depot.kind, LocationKind::Warehouse);
+
+        assert_eq!(svc.location_get(&main.id).unwrap(), main);
+        let listed = svc.location_list(&book.id).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed, vec![main.clone(), depot.clone()]);
+
+        // Update: rename, archive, and explicitly clear the code.
+        let updated = svc
+            .location_update(
+                &main.id,
+                LocationPatch {
+                    name: Some("Downtown Branch".into()),
+                    code: Some(None),
+                    is_archived: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.name, "Downtown Branch");
+        assert_eq!(updated.code, None, "explicitly cleared");
+        assert!(updated.is_archived);
+        // Untouched fields survive.
+        assert_eq!(updated.kind, LocationKind::Branch);
+
+        svc.location_delete(&depot.id).unwrap();
+        assert!(matches!(
+            svc.location_get(&depot.id),
+            Err(CoreError::NotFound { .. })
+        ));
+        assert_eq!(svc.location_list(&book.id).unwrap(), vec![updated]);
+    }
+
+    #[test]
+    fn location_create_validates_name_and_book_scoping() {
+        let svc = svc();
+        let book = make_book(&svc);
+
+        let err = svc
+            .location_create(NewLocation {
+                book_id: "nope".into(),
+                name: "x".into(),
+                kind: None,
+                code: None,
+                address: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, CoreError::NotFound { entity: "book", .. }));
+
+        let err = svc
+            .location_create(NewLocation {
+                book_id: book.id.clone(),
+                name: "   ".into(),
+                kind: None,
+                code: None,
+                address: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)));
+
+        let err = svc
+            .location_update(
+                &svc.location_create(NewLocation {
+                    book_id: book.id.clone(),
+                    name: "Real Branch".into(),
+                    kind: None,
+                    code: None,
+                    address: None,
+                })
+                .unwrap()
+                .id,
+                LocationPatch {
+                    name: Some("   ".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)));
+    }
+
+    /// A location code is scoped unique per book only where set — two
+    /// locations with no code at all must not collide (mirrors
+    /// `categories_root_name_unique`'s NULL handling in migration 0001).
+    #[test]
+    fn location_code_is_unique_per_book_only_when_set() {
+        let svc = svc();
+        let book = make_book(&svc);
+
+        svc.location_create(NewLocation {
+            book_id: book.id.clone(),
+            name: "A".into(),
+            kind: None,
+            code: None,
+            address: None,
+        })
+        .unwrap();
+        // A second location with no code must not collide with the first.
+        svc.location_create(NewLocation {
+            book_id: book.id.clone(),
+            name: "B".into(),
+            kind: None,
+            code: None,
+            address: None,
+        })
+        .unwrap();
+
+        svc.location_create(NewLocation {
+            book_id: book.id.clone(),
+            name: "C".into(),
+            kind: None,
+            code: Some("DUP".into()),
+            address: None,
+        })
+        .unwrap();
+        let err = svc
+            .location_create(NewLocation {
+                book_id: book.id.clone(),
+                name: "D".into(),
+                kind: None,
+                code: Some("DUP".into()),
+                address: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Sqlite(_)), "{err:?}");
     }
 }

@@ -324,6 +324,58 @@ mod tests {
         assert!(!account.deleted);
     }
 
+    /// **The trigger set migration 0800 installs for `locations`, proven
+    /// directly rather than assumed.** Insert, update and delete each land
+    /// their own outbox row — this is the concrete evidence that the new
+    /// table's triggers actually fire, not just that they parse.
+    #[test]
+    fn a_location_insert_update_and_delete_each_land_in_the_outbox() {
+        let db = Db::open_in_memory().unwrap();
+        let book = seed_book(&db);
+
+        db.conn()
+            .execute(
+                "INSERT INTO locations (id, book_id, name, kind, created_at, updated_at)
+                 VALUES ('loc-1', ?1, 'Main Branch', 'branch', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        let inserted = drain_list(db.conn()).unwrap();
+        let insert_row = inserted
+            .iter()
+            .find(|c| c.table == "locations" && c.row_id == "loc-1")
+            .expect("the insert was captured");
+        assert_eq!(insert_row.ns, book, "the namespace is the book id");
+        assert!(!insert_row.deleted);
+        db.conn().execute("DELETE FROM sync_outbox", []).unwrap();
+
+        db.conn()
+            .execute(
+                "UPDATE locations SET name = 'Downtown Branch' WHERE id = 'loc-1'",
+                [],
+            )
+            .unwrap();
+        let updated = drain_list(db.conn()).unwrap();
+        let update_row = updated
+            .iter()
+            .find(|c| c.table == "locations" && c.row_id == "loc-1")
+            .expect("the update was captured");
+        assert_eq!(update_row.ns, book);
+        assert!(!update_row.deleted);
+        db.conn().execute("DELETE FROM sync_outbox", []).unwrap();
+
+        db.conn()
+            .execute("DELETE FROM locations WHERE id = 'loc-1'", [])
+            .unwrap();
+        let deleted = drain_list(db.conn()).unwrap();
+        let delete_row = deleted
+            .iter()
+            .find(|c| c.table == "locations" && c.row_id == "loc-1")
+            .expect("the delete was captured");
+        assert_eq!(delete_row.ns, book);
+        assert!(delete_row.deleted, "a delete must be flagged as a tombstone");
+    }
+
     /// A `books` row is its own namespace — it has no `book_id` column to take
     /// one from.
     #[test]
