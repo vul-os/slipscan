@@ -104,24 +104,31 @@ const INTERNAL_CONSUMERS = [
   })
   .join("\n");
 
-// Match the bare identifier anywhere in a surface, not `.name(` specifically.
-// A surface reaches core in several shapes — `svc.foo(…)`, a free
-// `ops::foo(svc, …)` wrapper, a `"/foo"` route path, a `commands::foo` entry —
-// and a call-syntax regex sees only the first, which reported four routed
-// report endpoints and both constructors as unreachable. Asking merely whether
-// any surface *mentions* the name errs toward calling things reachable, which
-// is the safe direction: everything it still flags is referenced by nothing at
-// all, anywhere, which is unambiguous.
-const table = methods.map((name) => ({
-  name,
-  on: Object.keys(surfaces).filter((k) =>
-    new RegExp(`\\b${name}\\b`).test(surfaces[k]),
-  ),
-}));
+// A core method is reached by being CALLED on the service — `svc.foo(…)` — or,
+// for the constructors, as `CoreService::foo(…)`. Match exactly that.
+//
+// Two wrong versions preceded this one, and the second was worse than the
+// first. Matching `.foo(` alone missed the constructors. "Mentions the name
+// anywhere" fixed that and quietly broke the check: `ops.rs` defines its own
+// `pub fn report_balance_sheet(service, book_id)` that never calls core's
+// method of that name — it rebuilds the report from the trial balance — so the
+// bare name appeared in a surface and core's method was scored reachable while
+// nothing on earth called it. A same-named shadow is precisely the case a
+// name-mention test cannot see, and it hid a real defect for an hour.
+const table = methods.map((name) => {
+  const called = new RegExp(`\\.${name}\\s*\\(`);
+  const constructed = new RegExp(`CoreService::${name}\\s*\\(`);
+  return {
+    name,
+    on: Object.keys(surfaces).filter(
+      (k) => called.test(surfaces[k]) || constructed.test(surfaces[k]),
+    ),
+  };
+});
 const noSurface = table.filter((r) => r.on.length === 0).map((r) => r.name);
 // Split "no surface" into genuinely unused and internal-library-only.
 const internalOnly = noSurface.filter((n) =>
-  new RegExp(`\\b${n}\\b`).test(INTERNAL_CONSUMERS),
+  new RegExp(`\\.${n}\\s*\\(`).test(INTERNAL_CONSUMERS),
 );
 const unreachable = noSurface.filter((n) => !internalOnly.includes(n));
 

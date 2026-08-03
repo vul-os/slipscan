@@ -35,13 +35,27 @@ order, catalogue line priced from the variant, confirm, stock movement written.
 
 Stock was the last of the three and is closed too: on-hand can be read, a movement recorded, and
 stock transferred between locations, on every surface. `npm run reachable:check` keeps the count
-honest — **10 of 167 core operations reachable from nothing, down from 42**, and none of the ten
-belongs to Phase 6. What remains is older accounting-side work, and it is not trivial: no surface
-can create or archive a chart-of-accounts entry, map an entity to one, generate a journal from a
-document or a transaction, reverse a posted journal, set the book's financial lock date, or run the
-income statement, monthly-spending or VAT201 reports. (`report_profit_loss` *is* routed, but it
-rebuilds a P&L from the trial balance rather than calling `report_income_statement` — so core
-carries two income-statement implementations and the surfaced one is not the documented one.)
+honest — **14 of 167 core operations reachable from nothing, down from 42**, and none of the
+fourteen belongs to Phase 6. What remains is older accounting-side work, and it is not trivial: no
+surface can create or archive a chart-of-accounts entry, map an entity to one, generate a journal
+from a document or a transaction, reverse a posted journal, set the book's financial lock date, or
+list vault entries.
+
+**The reports are the sharpest of these, and they need a decision rather than a patch.** SlipScan
+carries *two* implementations of the same reports over the same tables (`chart_of_accounts` +
+`journal_lines` + `journals`), and the pair that ships is the weaker one:
+
+| | core (unreachable) | `slipscan-server::ops` (routed) |
+|---|---|---|
+| P&L | `report_income_statement(book, from, to)` — **date-ranged** | `report_profit_loss(book)` — **all time, no period** |
+| Balance sheet | `report_balance_sheet(book, as_of)` — **as at a date** | `report_balance_sheet(book)` — **no as-of date** |
+| Tax | `report_vat201(book, from, to)` | `report_tax(book)` / `report_vat(book)` |
+
+A profit-and-loss statement without a period and a balance sheet without an as-of date are not
+weaker versions of those reports; they are different things. The date-aware implementations exist,
+are tested, and are called by nothing. They also return *different types* — `domain::BalanceSheet`
+against `ops::BalanceSheet` — so consolidating is a breaking API change, not a cleanup, which is why
+it is recorded here rather than done.
 
 The rest is still missing outright: quotes, credit notes, fixed assets, payroll and tracking
 categories do not exist in any form, and the *payable* half of bills is unbuilt, so aged payables

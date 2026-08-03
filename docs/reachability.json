@@ -8,7 +8,7 @@
     "work; re-record with --write when you do."
   ],
   "total": 167,
-  "unreachable": 10,
+  "unreachable": 14,
   "methods": [
     "book_set_lock_date",
     "coa_archive",
@@ -17,12 +17,15 @@
     "journal_generate_for_document",
     "journal_generate_for_transaction",
     "journal_reverse",
+    "new",
+    "report_balance_sheet",
     "report_income_statement",
     "report_spending_by_month",
-    "report_vat201"
+    "report_vat201",
+    "set_read_only",
+    "vault_list"
   ],
   "internalOnly": [
-    "set_read_only",
     "settings_use_secret"
   ]
 }
