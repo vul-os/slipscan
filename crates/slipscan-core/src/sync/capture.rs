@@ -388,6 +388,59 @@ mod tests {
         assert_eq!(row.ns, book);
     }
 
+    /// Migration `0810_contacts`'s trigger set, exercised directly rather
+    /// than eyeballed: all three verbs must actually land a row in the
+    /// outbox, not merely exist in `sqlite_master` (the structural tests
+    /// above only check that a trigger by the right name exists — they would
+    /// stay green even if its body were empty).
+    #[test]
+    fn contact_writes_are_captured_through_insert_update_delete() {
+        let db = Db::open_in_memory().unwrap();
+        let book = seed_book(&db);
+
+        db.conn()
+            .execute(
+                "INSERT INTO contacts (id, book_id, role, name, is_active, created_at, updated_at)
+                 VALUES ('c-1', ?1, 'customer', 'Acme Wholesale', 1, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        let captured = drain_list(db.conn()).unwrap();
+        let inserted = captured
+            .iter()
+            .find(|c| c.table == "contacts" && c.row_id == "c-1")
+            .expect("the insert was captured");
+        assert_eq!(inserted.ns, book, "the namespace is the book id");
+        assert!(!inserted.deleted);
+
+        db.conn().execute("DELETE FROM sync_outbox", []).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE contacts SET role = 'both' WHERE id = 'c-1'",
+                [],
+            )
+            .unwrap();
+        let captured = drain_list(db.conn()).unwrap();
+        let updated = captured
+            .iter()
+            .find(|c| c.table == "contacts" && c.row_id == "c-1")
+            .expect("the update was captured");
+        assert_eq!(updated.ns, book);
+        assert!(!updated.deleted);
+
+        db.conn().execute("DELETE FROM sync_outbox", []).unwrap();
+        db.conn()
+            .execute("DELETE FROM contacts WHERE id = 'c-1'", [])
+            .unwrap();
+        let captured = drain_list(db.conn()).unwrap();
+        let deleted = captured
+            .iter()
+            .find(|c| c.table == "contacts" && c.row_id == "c-1")
+            .expect("the delete was captured");
+        assert_eq!(deleted.ns, book);
+        assert!(deleted.deleted, "a delete is captured with deleted = true");
+    }
+
     /// A cascade is still a write. Deleting a book takes its accounts with it,
     /// and every one of those deletions must be recorded — this is exactly the
     /// path a recorder called from the repo layer would have missed, because

@@ -59,6 +59,11 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0800_locations",
         include_str!("migrations/0800_locations.sql"),
     ),
+    (
+        810,
+        "0810_contacts",
+        include_str!("migrations/0810_contacts.sql"),
+    ),
 ];
 
 /// The embedded migration set, for tests that need to stop part-way through
@@ -163,13 +168,13 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 100, 101, 200, 201, 300, 301, 400, 500, 600, 700, 800]
+            vec![1, 100, 101, 200, 201, 300, 301, 400, 500, 600, 700, 800, 810]
         );
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 100, 101, 200, 201, 300, 301, 400, 500, 600, 700, 800]
+            vec![1, 100, 101, 200, 201, 300, 301, 400, 500, 600, 700, 800, 810]
         );
     }
 
@@ -274,6 +279,7 @@ mod tests {
             "chart_of_accounts",
             "coa_map",
             "classification_corrections",
+            "contacts",
             "document_extractions",
             "documents",
             "fx_rates",

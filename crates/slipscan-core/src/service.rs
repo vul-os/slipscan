@@ -81,6 +81,21 @@ fn derive_initial(label: &str) -> String {
         .unwrap_or_else(|| "?".to_string())
 }
 
+/// Trim an optional text field and fold "" to `None`. Used by contact fields
+/// (`email`, `phone`, addresses, …) so clearing a field in the UI (typing it
+/// down to empty) reads back as "not set" rather than a stored empty string
+/// that would still show as a value.
+fn normalize_optional(raw: Option<String>) -> Option<String> {
+    raw.and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Reconciliation matcher tuning.
 // ---------------------------------------------------------------------------
@@ -1061,6 +1076,191 @@ impl CoreService {
             &tx,
             Some(&before.book_id),
             "member",
+            Some(id),
+            "remove",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Contacts (Xero axis — PARITY.md "Contacts (customers & suppliers)")
+    //
+    // One table per book with a `role` (customer / supplier / both) rather
+    // than separate customer and supplier tables — see migration
+    // `0810_contacts` for why. Nothing posts a bill or invoice off a contact
+    // yet; this is the record the next link in that chain hangs off.
+    // -----------------------------------------------------------------------
+
+    pub fn contact_add(&self, new: NewContact) -> CoreResult<Contact> {
+        let book = self.book_get(&new.book_id)?;
+        let name = new.name.trim().to_string();
+        if name.is_empty() {
+            return Err(CoreError::Validation(
+                "contact name must not be empty".into(),
+            ));
+        }
+        if let Some(days) = new.payment_terms_days {
+            if days < 0 {
+                return Err(CoreError::Validation(
+                    "payment terms must be zero or more days".into(),
+                ));
+            }
+        }
+        if let Some(limit) = new.credit_limit_minor {
+            if limit < 0 {
+                return Err(CoreError::Validation(
+                    "credit limit must not be negative".into(),
+                ));
+            }
+        }
+
+        let now = now_iso();
+        let contact = Contact {
+            id: new_id(),
+            book_id: book.id,
+            role: new.role,
+            name,
+            company_name: normalize_optional(new.company_name),
+            email: normalize_optional(new.email),
+            phone: normalize_optional(new.phone),
+            billing_address: normalize_optional(new.billing_address),
+            shipping_address: normalize_optional(new.shipping_address),
+            tax_number: normalize_optional(new.tax_number),
+            payment_terms_days: new.payment_terms_days,
+            credit_limit_minor: new.credit_limit_minor,
+            notes: normalize_optional(new.notes),
+            is_active: true,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::contact::insert(&tx, &contact)?;
+        self.emit_audit(
+            &tx,
+            Some(&contact.book_id),
+            "contact",
+            Some(&contact.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&contact)?),
+        )?;
+        tx.commit()?;
+        Ok(contact)
+    }
+
+    pub fn contact_get(&self, id: &str) -> CoreResult<Contact> {
+        repo::contact::get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "contact",
+            id: id.to_string(),
+        })
+    }
+
+    /// Every contact in the book, either role, alphabetical by name.
+    pub fn contact_list(&self, book_id: &str) -> CoreResult<Vec<Contact>> {
+        repo::contact::list(self.conn(), book_id)
+    }
+
+    /// Contacts this book buys from: role `supplier` or `both`.
+    pub fn contact_list_suppliers(&self, book_id: &str) -> CoreResult<Vec<Contact>> {
+        repo::contact::list_by_role(self.conn(), book_id, ContactRole::Supplier.as_str())
+    }
+
+    /// Contacts this book sells to: role `customer` or `both`.
+    pub fn contact_list_customers(&self, book_id: &str) -> CoreResult<Vec<Contact>> {
+        repo::contact::list_by_role(self.conn(), book_id, ContactRole::Customer.as_str())
+    }
+
+    pub fn contact_update(&self, id: &str, patch: ContactPatch) -> CoreResult<Contact> {
+        let before = self.contact_get(id)?;
+        let mut after = before.clone();
+        if let Some(role) = patch.role {
+            after.role = role;
+        }
+        if let Some(name) = patch.name {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err(CoreError::Validation(
+                    "contact name must not be empty".into(),
+                ));
+            }
+            after.name = name;
+        }
+        if let Some(company_name) = patch.company_name {
+            after.company_name = normalize_optional(company_name);
+        }
+        if let Some(email) = patch.email {
+            after.email = normalize_optional(email);
+        }
+        if let Some(phone) = patch.phone {
+            after.phone = normalize_optional(phone);
+        }
+        if let Some(billing_address) = patch.billing_address {
+            after.billing_address = normalize_optional(billing_address);
+        }
+        if let Some(shipping_address) = patch.shipping_address {
+            after.shipping_address = normalize_optional(shipping_address);
+        }
+        if let Some(tax_number) = patch.tax_number {
+            after.tax_number = normalize_optional(tax_number);
+        }
+        if let Some(days) = patch.payment_terms_days {
+            if let Some(days) = days {
+                if days < 0 {
+                    return Err(CoreError::Validation(
+                        "payment terms must be zero or more days".into(),
+                    ));
+                }
+            }
+            after.payment_terms_days = days;
+        }
+        if let Some(limit) = patch.credit_limit_minor {
+            if let Some(limit) = limit {
+                if limit < 0 {
+                    return Err(CoreError::Validation(
+                        "credit limit must not be negative".into(),
+                    ));
+                }
+            }
+            after.credit_limit_minor = limit;
+        }
+        if let Some(notes) = patch.notes {
+            after.notes = normalize_optional(notes);
+        }
+        if let Some(is_active) = patch.is_active {
+            after.is_active = is_active;
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::contact::update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "contact",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Hard delete. There is no bill/invoice table yet to reference a
+    /// contact, so there is nothing today to restrain this the way
+    /// `account_delete` is restrained by transactions — that changes the
+    /// moment either one lands.
+    pub fn contact_remove(&self, id: &str) -> CoreResult<()> {
+        let before = self.contact_get(id)?;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::contact::delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "contact",
             Some(id),
             "remove",
             Some(serde_json::to_string(&before)?),
@@ -7992,5 +8192,251 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, CoreError::Sqlite(_)), "{err:?}");
+    }
+
+    // -------------------------------------------------------------------
+    // Contacts (Xero axis — PARITY.md "Contacts (customers & suppliers)")
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn contact_crud_and_role_defaults() {
+        let svc = svc();
+        let book = make_book(&svc);
+
+        assert!(svc.contact_list(&book.id).unwrap().is_empty());
+
+        let acme = svc
+            .contact_add(NewContact {
+                book_id: book.id.clone(),
+                role: ContactRole::Supplier,
+                name: "  Acme Wholesale  ".into(),
+                company_name: Some("Acme (Pty) Ltd".into()),
+                email: Some("billing@acme.example".into()),
+                phone: None,
+                billing_address: None,
+                shipping_address: None,
+                tax_number: Some("4123456789".into()),
+                payment_terms_days: Some(30),
+                credit_limit_minor: Some(500_000),
+                notes: None,
+            })
+            .unwrap();
+        assert_eq!(acme.name, "Acme Wholesale", "name is trimmed");
+        assert_eq!(acme.role, ContactRole::Supplier);
+        assert!(acme.is_active, "new contacts default to active");
+        assert_eq!(acme.payment_terms_days, Some(30));
+        assert_eq!(acme.credit_limit_minor, Some(500_000));
+
+        let jane = svc
+            .contact_add(NewContact {
+                book_id: book.id.clone(),
+                role: ContactRole::Customer,
+                name: "Jane Retailer".into(),
+                company_name: None,
+                email: None,
+                phone: None,
+                billing_address: None,
+                shipping_address: None,
+                tax_number: None,
+                payment_terms_days: None,
+                credit_limit_minor: None,
+                notes: None,
+            })
+            .unwrap();
+
+        // Both-role contacts show up on both sides; single-role contacts on
+        // only their own side.
+        let both = svc
+            .contact_add(NewContact {
+                book_id: book.id.clone(),
+                role: ContactRole::Both,
+                name: "Dual Trader".into(),
+                company_name: None,
+                email: None,
+                phone: None,
+                billing_address: None,
+                shipping_address: None,
+                tax_number: None,
+                payment_terms_days: None,
+                credit_limit_minor: None,
+                notes: None,
+            })
+            .unwrap();
+
+        assert_eq!(
+            svc.contact_list(&book.id).unwrap(),
+            vec![acme.clone(), both.clone(), jane.clone()],
+            "alphabetical by name"
+        );
+
+        let suppliers = svc.contact_list_suppliers(&book.id).unwrap();
+        assert_eq!(
+            suppliers.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+            vec![acme.id.clone(), both.id.clone()],
+            "supplier + both, never the customer-only contact"
+        );
+        let customers = svc.contact_list_customers(&book.id).unwrap();
+        assert_eq!(
+            customers.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+            vec![both.id.clone(), jane.id.clone()],
+            "customer + both, never the supplier-only contact"
+        );
+
+        // Update: change role, set a phone number, then clear it again —
+        // `Some(None)` must reach all the way through to a stored NULL.
+        let updated = svc
+            .contact_update(
+                &jane.id,
+                ContactPatch {
+                    role: Some(ContactRole::Both),
+                    phone: Some(Some("+27 11 555 0100".into())),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.role, ContactRole::Both);
+        assert_eq!(updated.phone.as_deref(), Some("+27 11 555 0100"));
+
+        let cleared = svc
+            .contact_update(
+                &jane.id,
+                ContactPatch {
+                    phone: Some(None),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(cleared.phone, None);
+        assert_eq!(cleared.role, ContactRole::Both, "untouched field stays");
+
+        // Deactivate rather than delete — the common "no longer trading with
+        // this party but keep the record" path.
+        let inactive = svc
+            .contact_update(
+                &acme.id,
+                ContactPatch {
+                    is_active: Some(false),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(!inactive.is_active);
+
+        // Remove.
+        svc.contact_remove(&both.id).unwrap();
+        assert!(matches!(
+            svc.contact_get(&both.id),
+            Err(CoreError::NotFound { .. })
+        ));
+        assert_eq!(svc.contact_list(&book.id).unwrap().len(), 2);
+
+        // Audited (create x3, update x3, remove).
+        let audits = svc.audit_list(Some(&book.id), 50).unwrap();
+        for action in ["create", "update", "remove"] {
+            assert!(
+                audits
+                    .iter()
+                    .any(|a| a.entity_type == "contact" && a.action == action),
+                "missing contact audit {action}"
+            );
+        }
+    }
+
+    #[test]
+    fn contact_add_validates_name_book_and_amounts() {
+        let svc = svc();
+        let book = make_book(&svc);
+
+        let base = |name: &str| NewContact {
+            book_id: book.id.clone(),
+            role: ContactRole::Customer,
+            name: name.into(),
+            company_name: None,
+            email: None,
+            phone: None,
+            billing_address: None,
+            shipping_address: None,
+            tax_number: None,
+            payment_terms_days: None,
+            credit_limit_minor: None,
+            notes: None,
+        };
+
+        assert!(matches!(
+            svc.contact_add(base("   ")),
+            Err(CoreError::Validation(_))
+        ));
+
+        assert!(matches!(
+            svc.contact_add(NewContact {
+                payment_terms_days: Some(-1),
+                ..base("Negative Terms")
+            }),
+            Err(CoreError::Validation(_))
+        ));
+
+        assert!(matches!(
+            svc.contact_add(NewContact {
+                credit_limit_minor: Some(-1),
+                ..base("Negative Limit")
+            }),
+            Err(CoreError::Validation(_))
+        ));
+
+        assert!(matches!(
+            svc.contact_add(NewContact {
+                book_id: "missing-book".into(),
+                ..base("Nobody")
+            }),
+            Err(CoreError::NotFound { .. })
+        ));
+
+        // Empty optional strings normalize to None rather than stored as "".
+        let contact = svc
+            .contact_add(NewContact {
+                email: Some("   ".into()),
+                ..base("Blank Email")
+            })
+            .unwrap();
+        assert_eq!(contact.email, None);
+    }
+
+    /// The structural half of the sync obligation, from the service surface:
+    /// an ordinary `contact_add` through `CoreService` reaches the outbox
+    /// exactly like a hand-written INSERT would (the trigger-level proof is
+    /// `sync::capture::tests::contact_writes_are_captured_through_insert_update_delete`).
+    #[test]
+    fn contact_add_reaches_the_sync_outbox() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = svc
+            .contact_add(NewContact {
+                book_id: book.id.clone(),
+                role: ContactRole::Customer,
+                name: "Synced Co".into(),
+                company_name: None,
+                email: None,
+                phone: None,
+                billing_address: None,
+                shipping_address: None,
+                tax_number: None,
+                payment_terms_days: None,
+                credit_limit_minor: None,
+                notes: None,
+            })
+            .unwrap();
+
+        let mut stmt = svc
+            .conn_for_test()
+            .prepare("SELECT ns, deleted FROM sync_outbox WHERE table_name = 'contacts' AND row_id = ?1")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map(rusqlite::params![contact.id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![(book.id.clone(), 0)]);
     }
 }

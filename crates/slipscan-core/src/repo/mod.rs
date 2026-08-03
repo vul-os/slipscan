@@ -9,6 +9,7 @@ pub mod audit;
 pub mod book;
 pub mod budget;
 pub mod category;
+pub mod contact;
 pub mod document;
 pub mod ledger;
 pub mod location;
