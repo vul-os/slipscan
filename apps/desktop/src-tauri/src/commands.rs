@@ -236,6 +236,99 @@ pub async fn location_delete(
 }
 
 // ---------------------------------------------------------------------------
+// contacts — customers and suppliers in one table (Phase 6.2, the flowstock
+// fold). Wired late: the model shipped with 6.2 but only `contact_list` was
+// on any surface, so purchasing and sales could name a `contact_id` that
+// nothing on this side could create. See `npm run reachable:check`.
+//
+// `ContactPatch` travels as-is rather than through a `dto.rs` request shape:
+// its nullable fields use the plain JSON convention (omit to leave alone,
+// null to clear), which is what `slipscan_core::util::double_option` makes
+// work over the wire.
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+pub struct ContactIdQuery {
+    pub id: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ContactUpdateQuery {
+    pub id: String,
+    #[serde(flatten)]
+    pub patch: core::ContactPatch,
+}
+
+#[tauri::command]
+pub async fn contact_add(
+    state: State<'_, AppState>,
+    query: core::NewContact,
+) -> Result<core::Contact, String> {
+    state.service()?.contact_add(query).map_err(err)
+}
+
+#[tauri::command]
+pub async fn contact_get(
+    state: State<'_, AppState>,
+    query: ContactIdQuery,
+) -> Result<core::Contact, String> {
+    state.service()?.contact_get(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn contact_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::Contact>, String> {
+    state.service()?.contact_list(&query.book_id).map_err(err)
+}
+
+/// Customers only — role `customer` or `both`.
+#[tauri::command]
+pub async fn contact_list_customers(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::Contact>, String> {
+    state
+        .service()?
+        .contact_list_customers(&query.book_id)
+        .map_err(err)
+}
+
+/// Suppliers only — role `supplier` or `both`.
+#[tauri::command]
+pub async fn contact_list_suppliers(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::Contact>, String> {
+    state
+        .service()?
+        .contact_list_suppliers(&query.book_id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn contact_update(
+    state: State<'_, AppState>,
+    query: ContactUpdateQuery,
+) -> Result<core::Contact, String> {
+    state
+        .service()?
+        .contact_update(&query.id, query.patch)
+        .map_err(err)
+}
+
+/// Hard delete, refused by the database when the contact has any trade
+/// history — those FKs are `ON DELETE RESTRICT` on purpose.
+#[tauri::command]
+pub async fn contact_remove(
+    state: State<'_, AppState>,
+    query: ContactIdQuery,
+) -> Result<(), String> {
+    state.service()?.contact_remove(&query.id).map_err(err)
+}
+
+// ---------------------------------------------------------------------------
 // purchasing — purchase orders, their line items, and goods receipts
 // (Phase 6.4, the flowstock fold). No screen calls these yet — that is
 // ROADMAP.md 6.9, "Desktop screens" — the same posture `book_profile` and

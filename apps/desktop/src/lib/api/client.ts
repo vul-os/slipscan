@@ -20,6 +20,8 @@ import type {
   BudgetUpsert,
   BudgetWithSpend,
   Category,
+  Contact,
+  ContactUpdateRequest,
   DataMoveRequest,
   DataStatus,
   DeviceIdentity,
@@ -51,6 +53,7 @@ import type {
   NetWorthSeries,
   NetWorthSnapshot,
   NewBook,
+  NewContact,
   NewInvoice,
   NewInvoicePayment,
   NewLocation,
@@ -183,6 +186,38 @@ export const api = {
 
   locationDelete: (q: { location_id: string }): Promise<null> =>
     call("location_delete", { query: q }, () => mockApi.location_delete(q)),
+
+  // -- contacts: customers and suppliers in one table (Phase 6.2). Wired
+  // late — the model shipped with 6.2 but nothing could create a contact, so
+  // purchasing and sales could name an id that did not exist. --
+
+  contactAdd: (q: NewContact): Promise<Contact> =>
+    call("contact_add", { query: q }, () => mockApi.contact_add(q)),
+
+  contactGet: (q: { id: string }): Promise<Contact> =>
+    call("contact_get", { query: q }, () => mockApi.contact_get(q)),
+
+  contactList: (q: { book_id: string }): Promise<Contact[]> =>
+    call("contact_list", { query: q }, () => mockApi.contact_list(q)),
+
+  /** Role `customer` or `both`. */
+  contactListCustomers: (q: { book_id: string }): Promise<Contact[]> =>
+    call("contact_list_customers", { query: q }, () =>
+      mockApi.contact_list_customers(q),
+    ),
+
+  /** Role `supplier` or `both`. */
+  contactListSuppliers: (q: { book_id: string }): Promise<Contact[]> =>
+    call("contact_list_suppliers", { query: q }, () =>
+      mockApi.contact_list_suppliers(q),
+    ),
+
+  contactUpdate: (q: ContactUpdateRequest): Promise<Contact> =>
+    call("contact_update", { query: q }, () => mockApi.contact_update(q)),
+
+  /** Refused by the database when the contact has any trade history. */
+  contactRemove: (q: { id: string }): Promise<null> =>
+    call("contact_remove", { query: q }, () => mockApi.contact_remove(q)),
 
   // -- purchasing: purchase orders, their line items, and goods receipts
   // (Phase 6.4, the flowstock fold). No screen calls these yet (ROADMAP.md

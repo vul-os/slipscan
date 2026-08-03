@@ -224,9 +224,13 @@ These were settled rather than escalated, and are recorded here so the reasoning
 - [x] **6.2 Contacts.** Customers and suppliers as one contact model per book *(shipped: one
       `contacts` table with a role of customer, supplier or both — a business buys from and sells to
       the same party, and duplicating it is how ledgers drift. Carries company name, email, phone,
-      billing/shipping address, tax number, payment terms, credit limit and active flag. Not built:
-      no surface exposes contacts, and nothing references them yet — PARITY's "Contacts" row does
-      not move until a document does)*
+      billing/shipping address, tax number, payment terms, credit limit and active flag. Reachable on
+      all four surfaces as of 2026-08-03 — `slipscan contact add|list|show|update|remove`, HTTP,
+      desktop IPC and a `client.ts` wrapper. It was not for three phases: only a read-only list was
+      routed, so 6.4 and 6.5 could name a `contact_id` nothing could create, and this entry said so
+      while PARITY briefly scored the row Built. `npm run reachable:check` now fails CI on that
+      class of gap. Still missing: no merge/dedupe, no statement, and the tax number, addresses and
+      credit limit are stored but unconsumed)*
 - [x] **6.3a Catalogue.** Product categories, products, and variants carrying SKU, price, cost
       price, reorder point and attributes *(shipped in core, and **reachable from almost nowhere**:
       1 of 16 catalogue operations is on a surface (`product_variant_list_for_book`, via the CLI's

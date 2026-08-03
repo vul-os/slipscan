@@ -19,12 +19,13 @@ use clap::{Parser, Subcommand, ValueEnum};
 use slipscan_core::datadir::{self, DataDirResolver, MoveStep};
 use slipscan_core::device::pairing::{KeynameCheck, DEFAULT_INVITE_TTL_SECONDS};
 use slipscan_core::domain::{
-    Account, Book, BookKind, Contact, DocumentSource, Location, LocationKind, LocationPatch,
-    Member, MemberPatch, NewBook, NewInvoice, NewInvoiceItemInput, NewInvoicePayment, NewLocation,
-    NewMember, NewPayEndpoint, NewPayWatch, NewPoReceipt, NewPurchaseOrder, NewPurchaseOrderItem,
-    NewSalesOrder, NewSalesOrderItem, PayDeliveryState, PayEndpointWithSecret, ProductVariant,
-    PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus, SalesOrderItemPatch,
-    SalesOrderPatch, SplitShare, TransactionFilter, TransactionSource,
+    Account, Book, BookKind, Contact, ContactPatch, ContactRole, DocumentSource, Location,
+    LocationKind, LocationPatch, Member, MemberPatch, NewBook, NewContact, NewInvoice,
+    NewInvoiceItemInput, NewInvoicePayment, NewLocation, NewMember, NewPayEndpoint, NewPayWatch,
+    NewPoReceipt, NewPurchaseOrder, NewPurchaseOrderItem, NewSalesOrder, NewSalesOrderItem,
+    PayDeliveryState, PayEndpointWithSecret, ProductVariant, PurchaseOrderItemPatch,
+    PurchaseOrderPatch, PurchaseOrderStatus, SalesOrderItemPatch, SalesOrderPatch, SplitShare,
+    TransactionFilter, TransactionSource,
 };
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
@@ -363,6 +364,12 @@ enum Command {
         #[command(subcommand)]
         action: LocationAction,
     },
+
+    /// Contacts — customers and suppliers, one table (Phase 6.2).
+    Contact {
+        #[command(subcommand)]
+        action: ContactAction,
+    },
     /// Purchase orders and goods receipts (Phase 6.4 — the flowstock fold).
     /// A goods receipt writes a stock movement in the same transaction, so
     /// `slipscan list` on-hand and a PO's receiving progress can never
@@ -624,6 +631,92 @@ enum LocationAction {
         /// Location id.
         id: String,
     },
+}
+
+/// Customers and suppliers live in one table with a role, deliberately —
+/// a real trading party is often both (migration `0010_contacts`).
+#[derive(Debug, Subcommand)]
+enum ContactAction {
+    /// Add a contact to the selected book.
+    Add {
+        /// Contact display name.
+        name: String,
+        /// customer, supplier, or both.
+        #[arg(long, value_enum, default_value = "customer")]
+        role: CliContactRole,
+        #[arg(long)]
+        company: Option<String>,
+        #[arg(long)]
+        email: Option<String>,
+        #[arg(long)]
+        phone: Option<String>,
+        #[arg(long)]
+        tax_number: Option<String>,
+        /// Payment terms in days, e.g. 30.
+        #[arg(long)]
+        terms_days: Option<i64>,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// List contacts in the book.
+    List {
+        /// Only customers (role customer or both).
+        #[arg(long, conflicts_with = "suppliers")]
+        customers: bool,
+        /// Only suppliers (role supplier or both).
+        #[arg(long)]
+        suppliers: bool,
+    },
+    /// Show one contact.
+    Show {
+        /// Contact id.
+        id: String,
+    },
+    /// Update a contact. Each `--clear-*` flag empties that field, as opposed
+    /// to leaving it unchanged.
+    Update {
+        /// Contact id.
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, value_enum)]
+        role: Option<CliContactRole>,
+        #[arg(long, conflicts_with = "clear_email")]
+        email: Option<String>,
+        #[arg(long)]
+        clear_email: bool,
+        #[arg(long, conflicts_with = "clear_phone")]
+        phone: Option<String>,
+        #[arg(long)]
+        clear_phone: bool,
+        #[arg(long, conflicts_with = "clear_notes")]
+        notes: Option<String>,
+        #[arg(long)]
+        clear_notes: bool,
+    },
+    /// Remove a contact. Refused by the database when the contact has any
+    /// sales order, invoice or purchase order against it.
+    Remove {
+        /// Contact id.
+        id: String,
+    },
+}
+
+#[derive(Debug, Copy, Clone, ValueEnum)]
+enum CliContactRole {
+    Customer,
+    Supplier,
+    Both,
+}
+
+impl From<CliContactRole> for ContactRole {
+    fn from(v: CliContactRole) -> Self {
+        match v {
+            CliContactRole::Customer => ContactRole::Customer,
+            CliContactRole::Supplier => ContactRole::Supplier,
+            CliContactRole::Both => ContactRole::Both,
+        }
+    }
 }
 
 /// Purchase orders, their line items and goods receipts (Phase 6.4).
@@ -2307,6 +2400,122 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 None => "auto (derived)",
                             }
                         );
+                    })
+                }
+            }
+        }
+
+        Command::Contact { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                ContactAction::Add {
+                    name,
+                    role,
+                    company,
+                    email,
+                    phone,
+                    tax_number,
+                    terms_days,
+                    notes,
+                } => {
+                    let contact = svc.contact_add(NewContact {
+                        book_id: book.id.clone(),
+                        role: (*role).into(),
+                        name: name.clone(),
+                        company_name: company.clone(),
+                        email: email.clone(),
+                        phone: phone.clone(),
+                        billing_address: None,
+                        shipping_address: None,
+                        tax_number: tax_number.clone(),
+                        payment_terms_days: *terms_days,
+                        credit_limit_minor: None,
+                        notes: notes.clone(),
+                    })?;
+                    emit(cli.json, &contact, || {
+                        println!(
+                            "Created contact {} ({}) — {}",
+                            contact.name, contact.id, contact.role
+                        );
+                    })
+                }
+                ContactAction::List {
+                    customers,
+                    suppliers,
+                } => {
+                    let rows = if *customers {
+                        svc.contact_list_customers(&book.id)?
+                    } else if *suppliers {
+                        svc.contact_list_suppliers(&book.id)?
+                    } else {
+                        svc.contact_list(&book.id)?
+                    };
+                    emit(cli.json, &rows, || {
+                        if rows.is_empty() {
+                            println!(
+                                "No contacts yet. Add one with `slipscan contact add <name>`."
+                            );
+                        }
+                        for c in &rows {
+                            println!(
+                                "{}\t{}\t{}\t{}",
+                                c.id,
+                                c.name,
+                                c.role,
+                                c.email.as_deref().unwrap_or("-")
+                            );
+                        }
+                    })
+                }
+                ContactAction::Show { id } => {
+                    let contact = svc.contact_get(id)?;
+                    emit(cli.json, &contact, || {
+                        println!("{}\t{}\t{}", contact.id, contact.name, contact.role);
+                    })
+                }
+                ContactAction::Update {
+                    id,
+                    name,
+                    role,
+                    email,
+                    clear_email,
+                    phone,
+                    clear_phone,
+                    notes,
+                    clear_notes,
+                } => {
+                    // `Some(None)` clears, plain `None` leaves untouched — the
+                    // same three states the JSON surfaces express with null.
+                    let patch = ContactPatch {
+                        role: role.map(|r| r.into()),
+                        name: name.clone(),
+                        email: if *clear_email {
+                            Some(None)
+                        } else {
+                            email.clone().map(Some)
+                        },
+                        phone: if *clear_phone {
+                            Some(None)
+                        } else {
+                            phone.clone().map(Some)
+                        },
+                        notes: if *clear_notes {
+                            Some(None)
+                        } else {
+                            notes.clone().map(Some)
+                        },
+                        ..Default::default()
+                    };
+                    let contact = svc.contact_update(id, patch)?;
+                    emit(cli.json, &contact, || {
+                        println!("Updated contact {} ({})", contact.name, contact.id);
+                    })
+                }
+                ContactAction::Remove { id } => {
+                    svc.contact_remove(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed contact {id}");
                     })
                 }
             }

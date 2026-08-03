@@ -14,9 +14,9 @@ re-scores this document without a human doing it.
 
 | | Built | Partial | Not built |
 |---|---:|---:|---:|
-| **Xero axis** (14) | 1 | 8 | 5 |
+| **Xero axis** (14) | 2 | 7 | 5 |
 | **Vault22 / 22seven axis** (10) | 3 | 5 | 2 |
-| **Total** (24) | **4** | **13** | **7** |
+| **Total** (24) | **5** | **12** | **7** |
 
 ## The honest headline
 
@@ -25,13 +25,15 @@ re-scores this document without a human doing it.
 paid/unpaid state — where this document's first scoring said, accurately, "there is no invoicing at
 all". Contacts, purchasing and aged receivables all have finished models behind them.
 
-**What none of that is yet is reachable.** This is the honest headline now, and it is not a detail:
-of core's seven contact operations exactly one is on any surface, of sixteen catalogue operations
-one, and of nine stock operations **none at all**. Purchasing and sales are the opposite — every one
-of their operations is on the CLI, the HTTP API and the desktop IPC layer — but an order needs a
-`contact_id` and a stock-tracked line needs a `variant_id`, and no surface can create either. So the
-capabilities this phase added are exercisable from their own tests and almost nowhere else. The
-schema work is real; the product surface over it is not finished.
+**Much of it is still not reachable, and that is the honest headline.** Phase 6 built its
+foundations in core and then wired almost none of them to a surface: of sixteen catalogue operations
+exactly one is reachable, and of nine stock operations **none at all**. Contacts were in the same
+state until 2026-08-03 and are now on all four surfaces, which is what makes a standalone invoice
+exercisable end to end at all. A *stock-tracked* line still is not: it needs a `variant_id`, and no
+surface can create a product variant. So purchasing and sales — every one of whose ~38 operations is
+on the CLI, the HTTP API and the desktop — sit on foundations a user can only half reach. The schema
+work is real; the product surface over it is half finished, and `npm run reachable:check` keeps the
+count honest (36 of 167 core operations reachable from nothing, down from 42).
 
 The rest is still missing outright: quotes, credit notes, fixed assets, payroll and tracking
 categories do not exist in any form, and the *payable* half of bills is unbuilt, so aged payables
@@ -76,10 +78,10 @@ them stops resolving. Paths are shortened for width: **`core/`** = `crates/slips
 
 | Capability | Status | Evidence | What's missing |
 |---|---|---|---|
-| **Invoicing** | **Built** | `invoices` / `invoice_items` / `invoice_payments` (migration `0014_sales`), issued through `CoreService::invoice_issue` with gapless per-book numbering, and reachable over HTTP, the CLI and desktop IPC | An issued invoice is immutable by trigger, so correcting one needs a credit note — **not built**, along with voiding, quotes, repeating invoices, partial fulfilment, per-line currency, and any posting to `journals` (that is ROADMAP 6.6). Multi-device numbering is unsolved: two offline devices would both mint the same number, caught loudly by `UNIQUE (book_id, series, number)` rather than silently. No desktop screen yet (6.9) — and more limiting, **an invoice needs a contact and a stock-tracked line needs a product variant, neither of which any surface can create** (see the Contacts row), so this cannot yet be exercised end to end outside tests. |
+| **Invoicing** | **Built** | `invoices` / `invoice_items` / `invoice_payments` (migration `0014_sales`), issued through `CoreService::invoice_issue` with gapless per-book numbering, and reachable over HTTP, the CLI and desktop IPC | An issued invoice is immutable by trigger, so correcting one needs a credit note — **not built**, along with voiding, quotes, repeating invoices, partial fulfilment, per-line currency, and any posting to `journals` (that is ROADMAP 6.6). Multi-device numbering is unsolved: two offline devices would both mint the same number, caught loudly by `UNIQUE (book_id, series, number)` rather than silently. No desktop screen yet (6.9). A contact can now be created on every surface, so a standalone invoice **is** exercisable end to end; a stock-tracked line still is not, because **no surface can create a product variant** (the catalogue is 1-of-16 reachable — see `npm run reachable:check`). |
 | **Quotes / estimates** | **Not built** | — | Everything, and it is blocked behind invoicing, which a quote converts into. |
 | **Bills / accounts payable** | **Partial** | `purchase_orders` / `purchase_order_items` / `po_receipts` (migration `0013_purchasing`) give the ordering and receiving half, with receipts insert-only so partial deliveries merge by union | The **payable** half is missing: no bill entity distinct from the order, no supplier payment or paid/unpaid state (a PO is only `draft`/`ordered`/`cancelled`), no due dates, no supplier balances, no payment run, and nothing posts to the Accounts Payable CoA line. |
-| **Contacts (customers & suppliers)** | **Partial** | The model is complete and correct — one `contacts` table (migration `0010_contacts`) deliberately not split into `customers`/`suppliers` because a real party is often both, referenced by `sales_orders`, `invoices` and `purchase_orders` with `ON DELETE RESTRICT` so trade history cannot be deleted out from under itself | **Reachable from almost nothing.** Of core's seven contact operations, exactly one (`contact_list`) is on any production surface, via the CLI's generic `list` — there is **no way to create, edit or remove a contact** over the CLI, the HTTP API or the desktop. Invoicing and purchasing both require a `contact_id` and neither can obtain one, so the capability is unusable end to end despite the schema being finished. Tax numbers, addresses and payment terms are stored and nothing consumes them.
+| **Contacts (customers & suppliers)** | **Built** | One `contacts` table (migration `0010_contacts`) with a `role`, deliberately not split into `customers`/`suppliers` because a real party is often both; referenced by `sales_orders`, `invoices` and `purchase_orders` with `ON DELETE RESTRICT` so trade history cannot be deleted out from under itself. Reachable on **all four surfaces** — CLI `slipscan contact`, HTTP, desktop IPC and a `client.ts` wrapper — which it was not until 2026-08-03: the model shipped with Phase 6.2 and only a read-only list was routed, so nothing could create the `contact_id` an invoice requires | No merge/dedupe of contacts, no statement, and no per-contact balance beyond aged receivables. Tax numbers, addresses and credit limits are stored and nothing consumes them yet. |
 | **Aged receivables / payables** | **Partial** | `report_aged_receivables` (migration `0014_sales`) buckets every outstanding invoice by age per contact, backed by the `invoices (book_id, due_date)` index | **Receivables only.** Aged *payables* needs the bill/payment half of purchasing, which is not built — see that row. No statement rendering or emailing. |
 | **Fixed-asset register** | **Not built** | `Accumulated Depreciation` and `Depreciation` are chart-of-accounts seed lines in [`core/src/region.rs`](crates/slipscan-core/src/region.rs) and nothing more | No asset records, cost/life/method, depreciation run, or disposal. You can hand-post a depreciation journal; nothing computes one. |
 | **Bank rules** | **Partial** | Categorisation cascade on every inbound transaction (`transaction_create` → `classify_by_packs`) in [`core/src/service.rs`](crates/slipscan-core/src/service.rs); rule kinds `Contains` / `Regex` / `KeywordRule` in [`packs/src/model.rs`](crates/slipscan-packs/src/model.rs); classifier registration in [`packs/src/engine.rs`](crates/slipscan-packs/src/engine.rs) | Rules only ever set a **category**, match only on merchant/description text, and arrive as installed signed packs — there is no in-app rule editor, no amount/date/account conditions, and no rule that codes to a ledger account, tax rate or contact. |

@@ -25,7 +25,7 @@
   ],
   "http": {
     "prefix": "/api/v1",
-    "count": 144,
+    "count": 151,
     "routes": [
       "account_create",
       "account_delete",
@@ -45,6 +45,13 @@
       "category_tree",
       "coa_list",
       "coa_seed",
+      "contact_add",
+      "contact_get",
+      "contact_list",
+      "contact_list_customers",
+      "contact_list_suppliers",
+      "contact_remove",
+      "contact_update",
       "data_status",
       "device_forget",
       "device_get",
@@ -180,7 +187,7 @@
     }
   },
   "ipc": {
-    "count": 133,
+    "count": 140,
     "commands": [
       "account_list",
       "book_create",
@@ -191,6 +198,13 @@
       "budget_list",
       "budget_upsert",
       "category_list",
+      "contact_add",
+      "contact_get",
+      "contact_list",
+      "contact_list_customers",
+      "contact_list_suppliers",
+      "contact_remove",
+      "contact_update",
       "data_move",
       "data_status",
       "device_forget",
@@ -318,7 +332,7 @@
     ]
   },
   "client": {
-    "count": 133,
+    "count": 140,
     "calls": [
       "account_list",
       "book_create",
@@ -329,6 +343,13 @@
       "budget_list",
       "budget_upsert",
       "category_list",
+      "contact_add",
+      "contact_get",
+      "contact_list",
+      "contact_list_customers",
+      "contact_list_suppliers",
+      "contact_remove",
+      "contact_update",
       "data_move",
       "data_status",
       "device_forget",

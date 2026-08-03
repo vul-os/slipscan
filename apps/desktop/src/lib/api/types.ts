@@ -124,6 +124,70 @@ export interface LocationUpdateRequest {
 }
 
 // ---------------------------------------------------------------------------
+// contacts — customers and suppliers in ONE table (Phase 6.2, the flowstock
+// fold), deliberately not split into two, because a real trading party is
+// often both. Referenced by sales orders, invoices and purchase orders with
+// ON DELETE RESTRICT, so a contact with trade history cannot be deleted.
+//
+// Wired to this client late: the model shipped with 6.2 but only a read-only
+// list was on any surface, so an order could name a contact_id that nothing
+// could create. `npm run reachable:check` is what keeps that from recurring.
+// ---------------------------------------------------------------------------
+
+export type ContactRole = "customer" | "supplier" | "both";
+
+export interface Contact {
+  id: string;
+  book_id: string;
+  role: ContactRole;
+  name: string;
+  company_name: string | null;
+  email: string | null;
+  phone: string | null;
+  billing_address: string | null;
+  shipping_address: string | null;
+  tax_number: string | null;
+  payment_terms_days: number | null;
+  credit_limit_minor: number | null;
+  notes: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewContact {
+  book_id: string;
+  role: ContactRole;
+  name: string;
+  company_name?: string;
+  email?: string;
+  phone?: string;
+  billing_address?: string;
+  shipping_address?: string;
+  tax_number?: string;
+  payment_terms_days?: number;
+  credit_limit_minor?: number;
+  notes?: string;
+}
+
+/** Selective update: omit a key to leave it alone, send `null` to clear it. */
+export interface ContactUpdateRequest {
+  id: string;
+  role?: ContactRole;
+  name?: string;
+  company_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  billing_address?: string | null;
+  shipping_address?: string | null;
+  tax_number?: string | null;
+  payment_terms_days?: number | null;
+  credit_limit_minor?: number | null;
+  notes?: string | null;
+  is_active?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // purchasing — purchase orders, their line items, and goods receipts
 // (Phase 6.4, the flowstock fold). No screen calls these yet (ROADMAP.md
 // 6.9, "Desktop screens") — the IPC layer is wired ahead of the UI, the same

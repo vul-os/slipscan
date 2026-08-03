@@ -82,6 +82,16 @@ pub fn run() {
             // Purchasing (Phase 6.4). No screen calls these yet (ROADMAP.md
             // 6.9) — wired now so the IPC layer is not the surface left
             // waiting on a UI, the same posture the CLI and HTTP routes take.
+            // Contacts (Phase 6.2). Wired late — the model shipped with 6.2
+            // but nothing on any surface could create one, which is what made
+            // purchasing and sales unusable end to end.
+            commands::contact_add,
+            commands::contact_get,
+            commands::contact_list,
+            commands::contact_list_customers,
+            commands::contact_list_suppliers,
+            commands::contact_update,
+            commands::contact_remove,
             commands::po_create,
             commands::po_get,
             commands::po_list,

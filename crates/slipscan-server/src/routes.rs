@@ -250,6 +250,13 @@ struct LocationUpdateReq {
     patch: LocationPatch,
 }
 
+#[derive(Debug, Deserialize)]
+struct ContactUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: ContactPatch,
+}
+
 // -- Purchasing (Phase 6.4) request shapes -----------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -767,6 +774,57 @@ async fn location_update(
 
 async fn location_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
     s.service()?.location_delete(&req.id)?;
+    Ok(Json(OK))
+}
+
+// -- Contacts: customers and suppliers, one table (Phase 6.2 — the flowstock
+// fold). Routed late: the model shipped with 6.2 but only `contact_list` was
+// on any surface, so an invoice or a purchase order could name a
+// `contact_id` that nothing could create. See `npm run reachable:check`.
+
+async fn contact_add(State(s): State<AppState>, Json(req): Json<NewContact>) -> ApiResult<Contact> {
+    Ok(Json(s.service()?.contact_add(req)?))
+}
+
+async fn contact_get(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<Contact> {
+    Ok(Json(s.service()?.contact_get(&req.id)?))
+}
+
+async fn contact_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<Contact>> {
+    Ok(Json(s.service()?.contact_list(&req.book_id)?))
+}
+
+/// Customers only — a contact whose role is `customer` or `both`.
+async fn contact_list_customers(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<Contact>> {
+    Ok(Json(s.service()?.contact_list_customers(&req.book_id)?))
+}
+
+/// Suppliers only — a contact whose role is `supplier` or `both`.
+async fn contact_list_suppliers(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<Contact>> {
+    Ok(Json(s.service()?.contact_list_suppliers(&req.book_id)?))
+}
+
+async fn contact_update(
+    State(s): State<AppState>,
+    Json(req): Json<ContactUpdateReq>,
+) -> ApiResult<Contact> {
+    Ok(Json(s.service()?.contact_update(&req.id, req.patch)?))
+}
+
+/// Hard delete. Refused by the database if the contact has any sales order,
+/// invoice or purchase order against it — those FKs are `ON DELETE RESTRICT`
+/// precisely so trade history cannot be deleted out from under itself.
+async fn contact_remove(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
+    s.service()?.contact_remove(&req.id)?;
     Ok(Json(OK))
 }
 
@@ -1986,6 +2044,13 @@ pub fn app(state: AppState) -> Router {
         .route("/location_list", post(location_list))
         .route("/location_update", post(location_update))
         .route("/location_delete", post(location_delete))
+        .route("/contact_add", post(contact_add))
+        .route("/contact_get", post(contact_get))
+        .route("/contact_list", post(contact_list))
+        .route("/contact_list_customers", post(contact_list_customers))
+        .route("/contact_list_suppliers", post(contact_list_suppliers))
+        .route("/contact_update", post(contact_update))
+        .route("/contact_remove", post(contact_remove))
         .route("/po_create", post(po_create))
         .route("/po_get", post(po_get))
         .route("/po_list", post(po_list))
@@ -2146,6 +2211,159 @@ pub fn app(state: AppState) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The contacts surface existed in core from Phase 6.2 and was routed
+    /// nowhere until this test's change — so an invoice or a purchase order
+    /// could name a `contact_id` that no surface could produce. Drives the
+    /// whole lifecycle over a real router, including the two behaviours that
+    /// are easy to get wrong: the role filters, and the RESTRICT that stops a
+    /// contact with trade history from being deleted.
+    #[tokio::test]
+    async fn contacts_are_creatable_filterable_and_protected_by_trade_history() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Biz", "kind": "business", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let (status, both) = call(
+            &app,
+            post_req(
+                "/api/v1/contact_add",
+                json!({"book_id": book_id, "role": "both", "name": "Wholesale Co",
+                       "email": "ops@w.example"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "contact_add: {both}");
+        let both_id = both["id"].as_str().unwrap().to_string();
+
+        let (_, cust) = call(
+            &app,
+            post_req(
+                "/api/v1/contact_add",
+                json!({"book_id": book_id, "role": "customer", "name": "Retail Buyer"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(cust["role"], "customer");
+
+        // A supplier-only contact is what makes the two filters load-bearing:
+        // without one, the unfiltered list and the customers list are the same
+        // set, and swapping the handler for `contact_list` passes.
+        let (_, supp) = call(
+            &app,
+            post_req(
+                "/api/v1/contact_add",
+                json!({"book_id": book_id, "role": "supplier", "name": "Parts Supplier"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(supp["role"], "supplier");
+
+        // `both` must appear on BOTH filtered lists — that is the whole reason
+        // customers and suppliers are one table with a role.
+        let names = |v: &Value| {
+            let mut n: Vec<String> = v
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["name"].as_str().unwrap().to_string())
+                .collect();
+            n.sort();
+            n
+        };
+        let (_, customers) = call(
+            &app,
+            post_req(
+                "/api/v1/contact_list_customers",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(names(&customers), vec!["Retail Buyer", "Wholesale Co"]);
+        assert!(!names(&customers).contains(&"Parts Supplier".to_string()));
+
+        let (_, suppliers) = call(
+            &app,
+            post_req(
+                "/api/v1/contact_list_suppliers",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(names(&suppliers), vec!["Parts Supplier", "Wholesale Co"]);
+
+        // Explicit null clears; an absent key leaves alone.
+        let (_, updated) = call(
+            &app,
+            post_req(
+                "/api/v1/contact_update",
+                json!({"id": both_id, "email": null}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(updated["email"], Value::Null);
+        assert_eq!(
+            updated["name"], "Wholesale Co",
+            "an absent key must leave the name alone"
+        );
+
+        // The point of routing contacts at all: an invoice can now name one.
+        let (status, invoice) = call(
+            &app,
+            post_req(
+                "/api/v1/invoice_issue",
+                json!({"book_id": book_id, "contact_id": both_id, "due_date": "2026-12-31",
+                       "currency": "ZAR",
+                       "items": [{"description": "Consulting", "quantity": 1,
+                                  "unit_price_minor": 250_000}]}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "invoice_issue: {invoice}");
+
+        // And now the contact is trade history, so it cannot be deleted.
+        let (status, body) = call(
+            &app,
+            post_req("/api/v1/contact_remove", json!({"id": both_id}), None),
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "a contact with an invoice against it must not be deletable, got {body}"
+        );
+
+        // The one with no history still can be.
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/contact_remove",
+                json!({"id": cust["id"].as_str().unwrap()}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a contact with no history must be deletable"
+        );
+    }
+
     /// **Every nullable patch field on this API was unclearable, on every
     /// endpoint, with no error to say so.** These routes take the core patch
     /// structs with `#[serde(flatten)]` and no clear-flag wrapper (unlike the

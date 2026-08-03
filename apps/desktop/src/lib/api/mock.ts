@@ -17,6 +17,8 @@ import type {
   BudgetUpsert,
   BudgetWithSpend,
   Category,
+  Contact,
+  ContactUpdateRequest,
   DataMoveRequest,
   DataStatus,
   DeviceIdentity,
@@ -53,6 +55,7 @@ import type {
   NetWorthSeries,
   NetWorthSnapshot,
   NewBook,
+  NewContact,
   NewInvoice,
   NewInvoicePayment,
   NewLocation,
@@ -158,6 +161,10 @@ const locations: Location[] = [];
  * append-only, mirroring core's own insert-only `po_receipts` table: nothing
  * here ever mutates or removes a row out of it.
  */
+/** Contacts (Phase 6.2). Empty by default, like locations and purchasing —
+ * no screen calls these yet (ROADMAP.md 6.9). */
+const contacts: Contact[] = [];
+
 const purchaseOrders: PurchaseOrder[] = [];
 const purchaseOrderItems: PurchaseOrderItem[] = [];
 const poReceipts: PoReceipt[] = [];
@@ -183,6 +190,12 @@ function nextNumber(bookId: string, series: string): number {
   const next = numberSequences.get(key) ?? 1;
   numberSequences.set(key, next + 1);
   return next;
+}
+
+function requireContact(contactId: string): Contact {
+  const c = contacts.find((x) => x.id === contactId);
+  if (!c) throw new Error(`no contact with id ${contactId}`);
+  return c;
 }
 
 function requireOrder(orderId: string): SalesOrder {
@@ -2164,6 +2177,96 @@ export const mockApi = {
     const i = locations.findIndex((x) => x.id === q.location_id);
     if (i === -1) throw new Error(`location not found: ${q.location_id}`);
     locations.splice(i, 1);
+    return null;
+  },
+
+  // -- contacts: customers and suppliers in one table (Phase 6.2). --
+
+  contact_add: async (q: NewContact): Promise<Contact> => {
+    const name = q.name.trim();
+    if (!name) throw new Error("contact name must not be empty");
+    const now = new Date().toISOString();
+    const created: Contact = {
+      id: id("ct00"),
+      book_id: q.book_id,
+      role: q.role,
+      name,
+      company_name: q.company_name?.trim() || null,
+      email: q.email?.trim() || null,
+      phone: q.phone?.trim() || null,
+      billing_address: q.billing_address?.trim() || null,
+      shipping_address: q.shipping_address?.trim() || null,
+      tax_number: q.tax_number?.trim() || null,
+      payment_terms_days: q.payment_terms_days ?? null,
+      credit_limit_minor: q.credit_limit_minor ?? null,
+      notes: q.notes?.trim() || null,
+      is_active: true,
+      created_at: now,
+      updated_at: now,
+    };
+    contacts.push(created);
+    return clone(created);
+  },
+
+  contact_get: async (q: { id: string }): Promise<Contact> =>
+    clone(requireContact(q.id)),
+
+  contact_list: async (q: { book_id: string }): Promise<Contact[]> =>
+    clone(contacts.filter((c) => c.book_id === q.book_id)),
+
+  contact_list_customers: async (q: { book_id: string }): Promise<Contact[]> =>
+    clone(
+      contacts.filter(
+        (c) => c.book_id === q.book_id && (c.role === "customer" || c.role === "both"),
+      ),
+    ),
+
+  contact_list_suppliers: async (q: { book_id: string }): Promise<Contact[]> =>
+    clone(
+      contacts.filter(
+        (c) => c.book_id === q.book_id && (c.role === "supplier" || c.role === "both"),
+      ),
+    ),
+
+  contact_update: async (q: ContactUpdateRequest): Promise<Contact> => {
+    const c = requireContact(q.id);
+    // `null` clears, an absent key leaves alone.
+    if (q.role !== undefined) c.role = q.role;
+    if (q.name !== undefined) {
+      const name = q.name.trim();
+      if (!name) throw new Error("contact name must not be empty");
+      c.name = name;
+    }
+    if (q.company_name !== undefined) c.company_name = q.company_name?.trim() || null;
+    if (q.email !== undefined) c.email = q.email?.trim() || null;
+    if (q.phone !== undefined) c.phone = q.phone?.trim() || null;
+    if (q.billing_address !== undefined)
+      c.billing_address = q.billing_address?.trim() || null;
+    if (q.shipping_address !== undefined)
+      c.shipping_address = q.shipping_address?.trim() || null;
+    if (q.tax_number !== undefined) c.tax_number = q.tax_number?.trim() || null;
+    if (q.payment_terms_days !== undefined)
+      c.payment_terms_days = q.payment_terms_days ?? null;
+    if (q.credit_limit_minor !== undefined)
+      c.credit_limit_minor = q.credit_limit_minor ?? null;
+    if (q.notes !== undefined) c.notes = q.notes?.trim() || null;
+    if (q.is_active !== undefined) c.is_active = q.is_active;
+    c.updated_at = new Date().toISOString();
+    return clone(c);
+  },
+
+  /** Mirrors core's ON DELETE RESTRICT: a contact with trade history stays. */
+  contact_remove: async (q: { id: string }): Promise<null> => {
+    const c = requireContact(q.id);
+    const used =
+      salesOrders.some((o) => o.contact_id === c.id) ||
+      invoices.some((v) => v.contact_id === c.id) ||
+      purchaseOrders.some((p) => p.supplier_id === c.id);
+    if (used)
+      throw new Error(
+        "this contact has orders or invoices against it and cannot be deleted",
+      );
+    contacts.splice(contacts.indexOf(c), 1);
     return null;
   },
 
