@@ -32,7 +32,7 @@
 # mechanics to add.
 #
 # CONFIGURATION (environment)
-#   BROKER_RE     POSIX ERE, case-insensitive, naming the broker. Default: ephor|vulos-relayd
+#   BROKER_RE     POSIX ERE, case-insensitive, naming the broker. Default: pier-|vul-os/pier|ephor|vulos-relayd
 #   SEAM_PATHS    Space-separated repo-relative path prefixes where naming the broker is
 #                 permitted — the optional provider implementation and its tests. Empty by
 #                 default, which is the strictest and correct setting for a product that has
@@ -67,7 +67,18 @@
 
 set -u
 
-BROKER_RE=${BROKER_RE:-'ephor|vulos-relayd'}
+# The broker was renamed ephor -> pier. `pier` is NOT safe as a bare alternative here: this is
+# `grep -Ei` with no word boundaries (see the closure scan and the doc scan below), so a bare
+# `pier` would flag "happier", "copier", "occupier" in ordinary prose and the gate would cry wolf
+# until someone silenced it. Match the shapes the broker actually takes instead:
+#   pier-        every crate is namespaced pier-gateway, pier-relay, pier-billing, ...
+#   vul-os/pier  the repo URL and the Go module path github.com/vul-os/pier
+#   ephor        RETAINED deliberately: a stale dependency on the pre-rename name is exactly the
+#                thing this gate should still catch, and dropping it would quietly narrow the gate
+#                at the moment it most needs to be wide.
+# Kept identical to kotva/tools/gates/no-broker-dep.sh — this gate exists in two repos and a
+# divergence between them is itself a hole.
+BROKER_RE=${BROKER_RE:-'pier-|vul-os/pier|ephor|vulos-relayd'}
 SEAM_PATHS=${SEAM_PATHS:-}
 SEAM_FLAG=${SEAM_FLAG:-}
 # `site/` is in the default set because every product in this suite mirrors `docs/` into
@@ -480,7 +491,31 @@ selftest() {
 		printf 'pub fn dial_ephor() {}\n' >"$tmp/rs_seam_off/src/reach/broker.rs"
 		printf '\n[features]\ndefault = []\nephor-reach = []\n' >>"$tmp/rs_seam_off/Cargo.toml"
 
-		E='BROKER_RE=ephor|vulos-relayd'
+		# POSITIVE D — the broker under its CURRENT name. Every control above is written in
+		# `ephor`, the PRE-rename name. That is why the ephor -> pier rename was able to blind
+		# this gate suite-wide while its own self-test stayed green: the fixtures could not
+		# tell the difference between "the gate matches the broker" and "the gate matches the
+		# string ephor". This control plants a `pier-` dependency and a `vul-os/pier` module
+		# path, so a BROKER_RE that has lost the current name FAILS here instead of passing.
+		mkdir -p "$tmp/pier-client/src"
+		cat >"$tmp/pier-client/Cargo.toml" <<-'EOF'
+			[package]
+			name = "pier-client"
+			version = "0.0.0"
+			edition = "2021"
+		EOF
+		echo 'pub fn dial() {}' >"$tmp/pier-client/src/lib.rs"
+		mkrust rs_dep_current_name
+		printf '\npier-client = { path = "../pier-client" }\n' >>"$tmp/rs_dep_current_name/Cargo.toml"
+		printf 'fn main() { pier_client::dial(); }\n' >"$tmp/rs_dep_current_name/src/main.rs"
+
+		# POSITIVE E — the repo/module path shape, with NO dependency, so this isolates
+		# C-START on `vul-os/pier` specifically.
+		mkrust rs_default_current_name
+		printf 'const BROKER: &str = "https://github.com/vul-os/pier";\nfn main() { let _ = BROKER; }\n' \
+			>"$tmp/rs_default_current_name/src/main.rs"
+
+		E='BROKER_RE=pier-|vul-os/pier|ephor|vulos-relayd'
 		expect rs_clean 0 "a clean tree passes with all 3 checks run" "$E" SEAM_PATHS= SEAM_FLAG=
 		expect rs_dep 1 "C-DEP catches a default-feature dependency" "$E" SEAM_PATHS= SEAM_FLAG=
 		expect rs_default 1 "C-START catches a default broker endpoint with no dependency" "$E" SEAM_PATHS= SEAM_FLAG=
@@ -499,6 +534,12 @@ selftest() {
 		# violation must outrank an unverifiable check.
 		expect rs_dep 1 "a violation outranks an unverifiable check (regression)" "$E" \
 			SEAM_PATHS="src/gone" SEAM_FLAG="ephor-reach"
+		# RENAME controls — the gate must catch the broker under the name it has TODAY, not
+		# only the name it had when these fixtures were written.
+		expect rs_dep_current_name 1 "C-DEP catches the broker under its CURRENT name (pier-)" "$E" \
+			SEAM_PATHS= SEAM_FLAG=
+		expect rs_default_current_name 1 "C-START catches the current repo path (vul-os/pier)" "$E" \
+			SEAM_PATHS= SEAM_FLAG=
 	else
 		unexercised="$unexercised rust(no-cargo)"
 	fi
@@ -546,7 +587,7 @@ selftest() {
 		printf '//go:build !broker\n\npackage reach\n\nimport "example.test/ephorclient"\n\nfunc Provider() string { return ephorclient.Dial() }\n' \
 			>"$tmp/go_planted/reach/default.go"
 
-		E='BROKER_RE=ephor|vulos-relayd'
+		E='BROKER_RE=pier-|vul-os/pier|ephor|vulos-relayd'
 		expect go_seam_off 0 "go: a build-tag seam is outside the default import closure" "$E" \
 			SEAM_PATHS="reach go.mod" SEAM_FLAG="broker"
 		expect go_planted 1 "go: C-DEP catches a broker imported by the default build" "$E" \
@@ -571,7 +612,7 @@ selftest() {
 			>"$tmp/prune_nested/web/node_modules/pkg/index.js"
 		printf 'ephor build fingerprint\n' >"$tmp/prune_nested/crates/x/target/debug/build.log"
 		expect prune_nested 0 "nested node_modules/ and target/ are pruned at any depth, not just the root" \
-			'BROKER_RE=ephor|vulos-relayd'
+			'BROKER_RE=pier-|vul-os/pier|ephor|vulos-relayd'
 
 		# DEFECT 2 — monorepo blind spot. package.json at the root, go.mod in backend/. The
 		# if/elif chain read the npm closure and never looked at Go, reporting a clean pass over
@@ -590,7 +631,7 @@ selftest() {
 		printf 'package main\n\nimport "example.test/ephorclient"\n\nfunc main() { println(ephorclient.Dial()) }\n' \
 			>"$tmp/multi_mod/backend/main.go"
 		expect multi_mod 1 "a second manifest below the root is CHECKED, not silently skipped" \
-			'BROKER_RE=ephor|vulos-relayd'
+			'BROKER_RE=pier-|vul-os/pier|ephor|vulos-relayd'
 
 		# DEFECT 3 — the gate flagged a CI step whose purpose was asserting the broker's absence.
 		# The marker exempts that file and prints the stated reason; without it this same tree
@@ -601,11 +642,11 @@ selftest() {
 		printf 'name: ci\njobs:\n  x:\n    steps:\n      - run: grep -rE "ephor" . && exit 1\n' \
 			>"$tmp/assert_absence/.github/workflows/ci.yml"
 		expect assert_absence 1 "an unmarked file naming the broker still FAILS (the marker is doing the work)" \
-			'BROKER_RE=ephor|vulos-relayd'
+			'BROKER_RE=pier-|vul-os/pier|ephor|vulos-relayd'
 		printf '# no-broker-dep%s asserts this broker is absent; the grep must spell its name\n' \
 			"$_ALLOW_SUFFIX" >>"$tmp/assert_absence/.github/workflows/ci.yml"
 		expect assert_absence 0 "a file may name the broker to assert its ABSENCE, with a printed reason" \
-			'BROKER_RE=ephor|vulos-relayd'
+			'BROKER_RE=pier-|vul-os/pier|ephor|vulos-relayd'
 	else
 		unexercised="$unexercised structural(no-go-toolchain)"
 	fi
