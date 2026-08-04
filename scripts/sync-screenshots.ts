@@ -37,7 +37,11 @@ const sourceDir = join(repoRoot, 'docs', 'screenshots');
 // no page or markdown chapter loads hero.png (which is a byte-identical copy
 // of dashboard.png), so shipping it would put ~900 kB of dead weight on a
 // deployed page.
-const TARGETS: string[] = [
+interface Target {
+  dir: string;
+  skip: Set<string>;
+}
+const TARGETS: Target[] = [
   { dir: join(repoRoot, 'assets', 'screens'), skip: new Set() },
   { dir: join(repoRoot, 'site', 'screenshots'), skip: new Set(['hero.png']) },
 ];

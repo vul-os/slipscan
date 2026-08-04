@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+/// <reference lib="dom" />
+// The tsconfig deliberately does not put "dom" in compilerOptions.lib — these
+// are Node scripts, not browser code — but the callbacks passed to
+// `page.evaluate`/`page.$$eval` below are serialised and actually run inside
+// the browser Playwright drives, so `document`/`location`/`HTMLElement` are
+// real globals there. This reference scopes DOM types to this file only,
+// rather than widening `lib` for every gate script.
 /**
  * check-site.ts — the gate site/ never had.
  *
@@ -80,7 +87,10 @@ const MIME: Record<string, string> = {
 /** Serve site/ under `base`, 404ing anything outside it — as the real route does. */
 function serve(base: string): Promise<ReturnType<typeof createServer>> {
   const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-    const path = decodeURIComponent((req.url ?? '').split('?')[0].split('#')[0]);
+    // split() on any string always returns at least one element, so index 0
+    // is never actually undefined here — the `?? ''` just says so to the type
+    // checker without changing behaviour.
+    const path = decodeURIComponent(((req.url ?? '').split('?')[0] ?? '').split('#')[0] ?? '');
     if (!path.startsWith(base)) { res.writeHead(404); res.end('outside base'); return; }
     const file = normalize(join(siteDir, path.slice(base.length - 1)));
     if (!file.startsWith(normalize(siteDir))) { res.writeHead(403); res.end(); return; }
@@ -120,7 +130,9 @@ function collectExternal(): string[] {
   };
   for (const el of document.querySelectorAll('[src]')) push(el.getAttribute('src'));
   for (const el of document.querySelectorAll('[srcset]')) {
-    (el.getAttribute('srcset') ?? '').split(',').forEach((s) => push(s.trim().split(/\s+/)[0]));
+    // split() on any string always returns at least one element, so index 0
+    // always exists; `?? null` just satisfies push()'s "nothing here" sentinel.
+    (el.getAttribute('srcset') ?? '').split(',').forEach((s) => push(s.trim().split(/\s+/)[0] ?? null));
   }
   for (const el of document.querySelectorAll('link[href]')) {
     if ((el.getAttribute('rel') || '').split(/\s+/).some((r) => FETCHED.test(r))) push(el.getAttribute('href'));
@@ -132,7 +144,9 @@ function collectExternal(): string[] {
       for (const r of rs) {
         const grouping = r as CSSGroupingRule;
         if (grouping.cssRules) scan(grouping.cssRules);
-        for (const m of (r.cssText || '').matchAll(/url\((['"]?)([^'")]+)\1\)/g)) push(m[2]);
+        // Group 2 requires >=1 char and is mandatory in the pattern, so it is
+        // always captured on a match; `?? null` only satisfies the type.
+        for (const m of (r.cssText || '').matchAll(/url\((['"]?)([^'")]+)\1\)/g)) push(m[2] ?? null);
       }
     };
     scan(rules);

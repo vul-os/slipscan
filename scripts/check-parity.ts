@@ -63,9 +63,11 @@ function atLeast<T>(what: string, list: T[], floor: number): T[] {
 // them, which is how "141 routes" was ever written down.
 function httpRoutes(): string[] {
   const src = read("crates/slipscan-server/src/routes.rs");
-  const found = [...src.matchAll(/\.route\(\s*"\/([a-z0-9_]+)"/g)].map(
-    (m) => m[1],
-  );
+  // The capture group is mandatory in the pattern, so it is always present
+  // when a match is found; filtered here only to satisfy the element type.
+  const found = [...src.matchAll(/\.route\(\s*"\/([a-z0-9_]+)"/g)]
+    .map((m) => m[1])
+    .filter((s): s is string => Boolean(s));
   atLeast("HTTP routes", found, 100);
   // `/health` is public and outside the versioned surface; parity.json counts
   // the /api/v1 operations, and API.md names /health separately.
@@ -78,7 +80,10 @@ function httpRoutes(): string[] {
 function ipcCommands(): string[] {
   const src = read("apps/desktop/src-tauri/src/lib.rs");
   const block = /generate_handler!\[([\s\S]*?)\]/.exec(src);
-  if (!block) {
+  // The capture group is mandatory in the pattern, so if `block` matched at
+  // all, `block[1]` is always present — but the array type is `string |
+  // undefined` per element, so this still has to be checked explicitly.
+  if (!block || block[1] === undefined) {
     console.error("check-parity: no generate_handler![...] block in lib.rs");
     process.exit(2);
   }
@@ -95,7 +100,10 @@ function ipcCommands(): string[] {
 // Every wrapper reaches the backend through `call("command_name", …)`.
 function clientCalls(): string[] {
   const src = read("apps/desktop/src/lib/api/client.ts");
-  const found = [...src.matchAll(/\bcall\(\s*"([a-z0-9_]+)"/g)].map((m) => m[1]);
+  // Same guarantee as httpRoutes(): the capture group is mandatory.
+  const found = [...src.matchAll(/\bcall\(\s*"([a-z0-9_]+)"/g)]
+    .map((m) => m[1])
+    .filter((s): s is string => Boolean(s));
   atLeast("client.ts wrappers", found, 100);
   return [...new Set(found)].sort();
 }

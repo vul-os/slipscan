@@ -67,10 +67,14 @@ interface NamedSpan {
 /** Core: `pub fn name(` … up to the next one, counting Validation guards. */
 function coreGuards(): Map<string, number> {
   const src = read("crates/slipscan-core/src/service.rs");
-  const starts: NamedSpan[] = [...src.matchAll(/^ {4}pub fn (\w+)/gm)].map((m) => ({
-    name: m[1],
-    at: m.index!,
-  }));
+  // The capture group is mandatory in the pattern, so it is always present
+  // when a match is found; filtered here only to satisfy the element type.
+  const starts: NamedSpan[] = [...src.matchAll(/^ {4}pub fn (\w+)/gm)]
+    .filter((m) => m[1] !== undefined)
+    .map((m) => ({
+      name: m[1]!,
+      at: m.index!,
+    }));
   if (starts.length < 100) {
     console.error(
       `check-mock-guards: parsed only ${starts.length} service fns — fix the parser rather than ` +
@@ -80,7 +84,7 @@ function coreGuards(): Map<string, number> {
   }
   const out = new Map<string, number>();
   starts.forEach((s, i) => {
-    const end = i + 1 < starts.length ? starts[i + 1].at : src.length;
+    const end = i + 1 < starts.length ? starts[i + 1]!.at : src.length;
     const body = src.slice(s.at, end);
     out.set(s.name, (body.match(/CoreError::Validation/g) ?? []).length);
   });
@@ -90,10 +94,13 @@ function coreGuards(): Map<string, number> {
 /** Mock: `name: async (` … up to the next top-level entry, counting throws. */
 function mockGuards(): Map<string, number> {
   const src = read("apps/desktop/src/lib/api/mock.ts");
-  const starts: NamedSpan[] = [...src.matchAll(/^ {2}(\w+): async \(/gm)].map((m) => ({
-    name: m[1],
-    at: m.index!,
-  }));
+  // Same guarantee as coreGuards(): the capture group is mandatory.
+  const starts: NamedSpan[] = [...src.matchAll(/^ {2}(\w+): async \(/gm)]
+    .filter((m) => m[1] !== undefined)
+    .map((m) => ({
+      name: m[1]!,
+      at: m.index!,
+    }));
   if (starts.length < 80) {
     console.error(
       `check-mock-guards: parsed only ${starts.length} mock operations — fix the parser.`,
@@ -102,7 +109,7 @@ function mockGuards(): Map<string, number> {
   }
   const out = new Map<string, number>();
   starts.forEach((s, i) => {
-    const end = i + 1 < starts.length ? starts[i + 1].at : src.length;
+    const end = i + 1 < starts.length ? starts[i + 1]!.at : src.length;
     const body = src.slice(s.at, end);
     out.set(s.name, (body.match(/throw new Error/g) ?? []).length);
   });

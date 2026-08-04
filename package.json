@@ -16,7 +16,8 @@
     "screenshots:check": "node scripts/sync-screenshots.ts --check",
     "brand:sync": "node scripts/sync-brand.ts",
     "brand:check": "node scripts/sync-brand.ts --check",
-    "site:check": "node scripts/check-site.ts"
+    "site:check": "node scripts/check-site.ts",
+    "types:check": "apps/desktop/node_modules/.bin/tsc -p tsconfig.scripts.json"
   },
   "engines": {
     "node": ">=22.18"

@@ -49,20 +49,79 @@ interface Chapter {
   source: string;
   /** Slug it is served under, i.e. `site/docs/<slug>`. */
   slug: string;
-  body: string;
+  /** Raw markdown text of the chapter. */
+  text: string;
 }
 
-/** A link found in a chapter, and where it points. */
+/** A link or image target found in a chapter, and the line it is on. */
 interface LinkTarget {
-  raw: string;
-  path: string;
-  hash: string;
+  line: number;
+  isImage: boolean;
+  href: string;
 }
 
-/** The docs viewer's own declared chapter list and asset map. */
+/** A `KNOWN_STALE_ANCHORS` entry: a link that reaches its chapter but a
+ * heading that has moved or been renamed. */
+interface StaleAnchor {
+  from: string;
+  slug: string;
+  anchor: string;
+  note: string;
+}
+
+/** One entry in the copy plan built by `collect()`: a chapter or a mirrored
+ * data file, source path -> where it lands under site/docs/. */
+interface FileEntry {
+  kind: 'chapter' | 'asset';
+  from: string;
+  to: string;
+}
+
+/** One entry of site/docs.html's own hand-written DOCS array. */
+interface ViewerChapter {
+  slug: string;
+  file: string;
+}
+
+/** Every shape site/docs.html's own `resolveDocsLink` can return, mirrored
+ * from the `@shared:docs-links` block so the switch in `auditLinks` below
+ * stays honest about what it is handling. */
+type ResolvedLink =
+  | { kind: 'unresolved'; href: string; why: string }
+  | { kind: 'external'; href: string }
+  | { kind: 'chapter'; slug: string; anchor: string; href: string }
+  | { kind: 'screenshot'; file: string; href: string }
+  | { kind: 'asset'; file: string; href: string }
+  | { kind: 'repo'; path: string; anchor: string; href: string };
+
+/** The parts of the `@shared:docs-links` block this script calls directly. */
+interface DocsLinksModule {
+  DOC_ASSETS: Record<string, boolean>;
+  headingId: (text: string, seen: Map<string, number>) => string;
+  resolveDocsLink: (
+    href: string,
+    ctx: { slug: string; docs: Record<string, string>; isImage: boolean },
+  ) => ResolvedLink;
+}
+
+/** The docs viewer's own declared chapter list and shared link-resolving code. */
 interface Viewer {
-  shared: Set<string>;
-  docs: Set<string>;
+  shared: DocsLinksModule;
+  docs: ViewerChapter[];
+}
+
+/** A dead link found by `auditLinks`: the target plus why it fails. */
+interface DeadLink extends LinkTarget {
+  chapter: string;
+  why: string;
+}
+
+/** `auditLinks`'s report: unresolvable links, and the KNOWN_STALE_ANCHORS
+ * ratchet split into entries that still apply and ones that no longer do. */
+interface AuditResult {
+  dead: DeadLink[];
+  obsolete: StaleAnchor[];
+  tolerated: StaleAnchor[];
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -108,7 +167,7 @@ const ASSETS: Record<string, string> = {
 // in docs/*.md, which this script does not own. Listing one here is a ratchet,
 // not an escape hatch: an entry that no longer applies fails this gate just as
 // loudly as a new stale anchor does, so the list cannot quietly rot.
-const KNOWN_STALE_ANCHORS: string[] = [];
+const KNOWN_STALE_ANCHORS: StaleAnchor[] = [];
 
 const args = new Set(process.argv.slice(2));
 const check = args.has('--check');
@@ -122,8 +181,8 @@ const log = (...a: unknown[]): void => {
   if (!quiet) console.log(...a);
 };
 
-async function collect(): Promise<Chapter[]> {
-  const out = [];
+async function collect(): Promise<FileEntry[]> {
+  const out: FileEntry[] = [];
 
   // Only docs/*.md itself — not subdirectories (docs/screenshots/ is images,
   // mirrored separately by scripts/sync-screenshots.ts).
@@ -168,12 +227,15 @@ async function loadViewer(): Promise<Viewer> {
     );
   }
 
-  const source = `${block[1]}\nexport { REPO_BLOB, REPO_RAW, DOC_ASSETS, slugifyHeading, headingId, resolveDocsLink };`;
-  const shared = await import(`data:text/javascript;base64,${Buffer.from(source, 'utf8').toString('base64')}`);
+  // Both capture groups in the marker pattern above are mandatory (no `?`),
+  // so a successful match always carries the block body in group 1.
+  const source = `${block[1]!}\nexport { REPO_BLOB, REPO_RAW, DOC_ASSETS, slugifyHeading, headingId, resolveDocsLink };`;
+  const shared: DocsLinksModule = await import(`data:text/javascript;base64,${Buffer.from(source, 'utf8').toString('base64')}`);
 
-  // The viewer's chapter list, in its own words.
-  const docs = [...html.matchAll(/\{\s*"slug"\s*:\s*"([^"]+)"\s*,\s*"title"\s*:\s*"[^"]*"\s*,\s*"path"\s*:\s*"\.\/docs\/([^"]+)"\s*\}/g)]
-    .map((m) => ({ slug: m[1], file: m[2] }));
+  // The viewer's chapter list, in its own words. Both capture groups are
+  // mandatory in the pattern below, so a match always carries both.
+  const docs: ViewerChapter[] = [...html.matchAll(/\{\s*"slug"\s*:\s*"([^"]+)"\s*,\s*"title"\s*:\s*"[^"]*"\s*,\s*"path"\s*:\s*"\.\/docs\/([^"]+)"\s*\}/g)]
+    .map((m) => ({ slug: m[1]!, file: m[2]! }));
   if (docs.length === 0) throw new Error(`${rel(viewerPath)} has no recognisable DOCS array`);
 
   return { shared, docs };
@@ -202,39 +264,48 @@ const stripCode = (md: string): string => md
   .replace(/`[^`\n]*`/g, (m) => ' '.repeat(m.length));
 
 /** Every id a chapter will actually have in the DOM once the viewer renders it. */
-function anchorIds(md: string, headingId: (text: string) => string): Set<string> {
+function anchorIds(md: string, headingId: (text: string, seen: Map<string, number>) => string): Set<string> {
   const text = stripCode(md);
-  const ids = new Set();
-  const seen = new Map();
+  const ids = new Set<string>();
+  const seen = new Map<string, number>();
 
   for (const line of text.split('\n')) {
     const h = line.match(/^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/);
-    if (h) ids.add(headingId(inlineText(h[2]), seen));
+    if (!h) continue;
+    // Group 2 is `(.*?)`, which matches even an empty heading title, so it is
+    // always captured when the line matches at all.
+    ids.add(headingId(inlineText(h[2]!), seen));
   }
 
   // Explicit HTML anchors count too. docs/THREAT-MODEL.md marks a numbered list
   // item with `<a id="self-host-mode"></a>` because it has no heading of its
   // own, and marked passes raw HTML straight through — so the browser really
   // does have that id, and treating it as missing would be a false alarm.
-  for (const m of text.matchAll(/<[a-z][a-z0-9-]*\b[^>]*?\b(?:id|name)="([^"]+)"/gi)) ids.add(m[1]);
+  // The id/name value is a mandatory capture group, always present on a match.
+  for (const m of text.matchAll(/<[a-z][a-z0-9-]*\b[^>]*?\b(?:id|name)="([^"]+)"/gi)) ids.add(m[1]!);
 
   return ids;
 }
 
 /** Every link and image target in a markdown file, with its line number. */
 function targets(md: string): LinkTarget[] {
-  const out = [];
-  const push = (line, isImage, href) => out.push({ line, isImage, href });
-  const lineOf = (index) => md.slice(0, index).split('\n').length;
+  const out: LinkTarget[] = [];
+  const push = (line: number, isImage: boolean, href: string): void => {
+    out.push({ line, isImage, href });
+  };
+  const lineOf = (index: number): number => md.slice(0, index).split('\n').length;
   const scan = stripCode(md);
 
+  // Every capture group used below is mandatory in its pattern (no `?`), so a
+  // successful match always carries it — the `!`s just say that to the type
+  // checker.
   for (const m of scan.matchAll(/(!?)\[([^\]]*)\]\(\s*([^)\s]+)(?:\s+"[^"]*")?\s*\)/g)) {
-    push(lineOf(m.index), m[1] === '!', m[3]);
+    push(lineOf(m.index), m[1] === '!', m[3]!);
   }
-  for (const m of scan.matchAll(/<img\b[^>]*?\bsrc="([^"]*)"/gi)) push(lineOf(m.index), true, m[1]);
-  for (const m of scan.matchAll(/<a\b[^>]*?\bhref="([^"]*)"/gi)) push(lineOf(m.index), false, m[1]);
+  for (const m of scan.matchAll(/<img\b[^>]*?\bsrc="([^"]*)"/gi)) push(lineOf(m.index), true, m[1]!);
+  for (const m of scan.matchAll(/<a\b[^>]*?\bhref="([^"]*)"/gi)) push(lineOf(m.index), false, m[1]!);
   // Reference-style definitions: [label]: target
-  for (const m of scan.matchAll(/^ {0,3}\[[^\]]+\]:\s*(\S+)/gm)) push(lineOf(m.index), false, m[1]);
+  for (const m of scan.matchAll(/^ {0,3}\[[^\]]+\]:\s*(\S+)/gm)) push(lineOf(m.index), false, m[1]!);
 
   return out;
 }
@@ -255,18 +326,20 @@ function insideRepo(path: string): boolean {
  */
 function auditLinks(
   chapters: Chapter[],
-  { shared, docs }: { shared: Set<string>; docs: Set<string> },
-): string[] {
+  { shared, docs }: { shared: DocsLinksModule; docs: ViewerChapter[] },
+): AuditResult {
   const { resolveDocsLink, headingId, DOC_ASSETS } = shared;
-  const fileToSlug = Object.fromEntries(docs.map((d) => [d.file.toLowerCase(), d.slug]));
+  const fileToSlug = Object.fromEntries(docs.map((d): [string, string] => [d.file.toLowerCase(), d.slug]));
   const published = new Set(docs.map((d) => d.slug));
-  const anchors = new Map();
+  const anchors = new Map<string, Set<string>>();
   for (const c of chapters) anchors.set(c.slug, anchorIds(c.text, headingId));
 
-  const dead = [];
-  const tolerated = new Set();
+  const dead: DeadLink[] = [];
+  const tolerated = new Set<number>();
   for (const chapter of chapters) {
-    const fail = (t, why) => dead.push({ chapter: chapter.slug, ...t, why });
+    const fail = (t: LinkTarget, why: string): void => {
+      dead.push({ chapter: chapter.slug, ...t, why });
+    };
 
     for (const t of targets(chapter.text)) {
       const r = resolveDocsLink(t.href, { slug: chapter.slug, docs: fileToSlug, isImage: t.isImage });
@@ -279,7 +352,13 @@ function auditLinks(
 
         case 'chapter': {
           if (!published.has(r.slug)) { fail(t, `no published chapter "${r.slug}"`); break; }
-          if (!r.anchor || anchors.get(r.slug).has(r.anchor)) break;
+          // `main()` checks published chapters against the viewer's DOCS array
+          // and exits before `chapters` (and so `anchors`) is even built if
+          // they disagree, so every `r.slug` here has an entry in `anchors`.
+          // The `?.` is only there because the type checker cannot see across
+          // that function boundary — if it were ever wrong, that would now
+          // report as a normal dead-anchor failure instead of a crash.
+          if (!r.anchor || anchors.get(r.slug)?.has(r.anchor)) break;
           const known = KNOWN_STALE_ANCHORS.findIndex(
             (k) => k.from === chapter.source && k.slug === r.slug && k.anchor === r.anchor
           );
@@ -321,7 +400,10 @@ function auditLinks(
   return {
     dead,
     obsolete: KNOWN_STALE_ANCHORS.filter((_, i) => !tolerated.has(i)),
-    tolerated: [...tolerated].map((i) => KNOWN_STALE_ANCHORS[i]),
+    // Every index in `tolerated` came from a `findIndex` call above that was
+    // checked `!== -1` before being added, so each one is a valid index into
+    // KNOWN_STALE_ANCHORS.
+    tolerated: [...tolerated].map((i) => KNOWN_STALE_ANCHORS[i]!),
   };
 }
 
@@ -410,7 +492,7 @@ async function main(): Promise<void> {
   // Audit the content that will be served: in --check that is the source, which
   // is byte-identical to site/docs/ whenever the freshness check below passes,
   // and is the right thing to read when it does not.
-  const chapters = [];
+  const chapters: Chapter[] = [];
   for (const f of files) {
     if (f.kind !== 'chapter') continue;
     const name = f.to.slice(siteDocsDir.length + 1);
@@ -422,7 +504,10 @@ async function main(): Promise<void> {
     console.error(
       `\nsync-docs: ${dead.length} link(s) would not resolve on the published site:\n` +
       dead.map((d) => {
-        const src = chapters.find((c) => c.slug === d.chapter).source;
+        // Every d.chapter came from `chapter.slug` in this same `chapters`
+        // array, inside auditLinks's loop over it — the lookup always finds
+        // a match.
+        const src = chapters.find((c) => c.slug === d.chapter)!.source;
         return `  - ${src}:${d.line}  ${d.isImage ? '!' : ''}[…](${d.href})  — ${d.why}`;
       }).join('\n') +
       '\nFix the target, publish it, or point it at the repo.'

@@ -68,8 +68,14 @@ function stripTests(src: string): string {
 }
 
 const core = stripTests(read("crates/slipscan-core/src/service.rs"));
+// The capture group is mandatory in the pattern, so it is always present
+// when a match is found; filtered here only to satisfy the element type.
 const methods = [
-  ...new Set([...core.matchAll(/^ {4}pub fn (\w+)/gm)].map((m) => m[1])),
+  ...new Set(
+    [...core.matchAll(/^ {4}pub fn (\w+)/gm)]
+      .map((m) => m[1])
+      .filter((s): s is string => Boolean(s)),
+  ),
 ].sort();
 
 if (methods.length < 100) {
@@ -133,9 +139,9 @@ const table: ReachabilityRow[] = methods.map((name) => {
   const constructed = new RegExp(`CoreService::${name}\\s*\\(`);
   return {
     name,
-    on: Object.keys(surfaces).filter(
-      (k) => called.test(surfaces[k]) || constructed.test(surfaces[k]),
-    ),
+    on: Object.entries(surfaces)
+      .filter(([, src]) => called.test(src) || constructed.test(src))
+      .map(([k]) => k),
   };
 });
 const noSurface = table.filter((r) => r.on.length === 0).map((r) => r.name);
@@ -148,7 +154,8 @@ const unreachable = noSurface.filter((n) => !internalOnly.includes(n));
 // Group by the prefix before the first underscore — close enough to a domain.
 const byDomain: Record<string, string[]> = {};
 for (const name of unreachable) {
-  const key = name.split("_")[0];
+  // split("_") on any string (even "") always yields at least one element.
+  const key = name.split("_")[0]!;
   (byDomain[key] ??= []).push(name);
 }
 

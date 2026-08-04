@@ -193,6 +193,10 @@ const RUST_ASSERTION =
 for (const file of rustFiles) {
   const src = read(file);
   for (const m of src.matchAll(/#\[(?:tokio::)?test\]([\s\S]{0,400}?)fn (\w+)/g)) {
+    // Both groups are mandatory in the pattern (the first can match zero
+    // characters but is still captured), so they are always present on a
+    // successful match; this only documents that for the type checker.
+    if (m[1] === undefined || m[2] === undefined) continue;
     const attrs = m[1];
     const name = m[2];
     const body = blockAt(src, m.index! + m[0].length);
@@ -216,6 +220,10 @@ for (const file of rustFiles) {
 for (const file of tsTestFiles) {
   const src = read(file);
   for (const m of src.matchAll(/\b(it|test)(?:\.\w+)?\s*\(\s*(['"`])([\s\S]*?)\2\s*,/g)) {
+    // Group 3 is mandatory in the pattern (it can match zero characters but is
+    // still captured), so it is always present on a successful match; this
+    // only documents that for the type checker.
+    if (m[3] === undefined) continue;
     const name = m[3].replace(/\s+/g, " ").slice(0, 70);
     // Start at the arrow, not the first `{` — Playwright's
     // `async ({ page }) => {` puts a destructuring pattern in the way, and

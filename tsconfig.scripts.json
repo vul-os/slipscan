@@ -1,0 +1,52 @@
+{
+  // Type-checking for the repo's own gate scripts in scripts/.
+  //
+  // Those nine scripts are what enforce docs sync, API parity, reachability,
+  // mock/core agreement, test assertions, source text and brand mirroring —
+  // and until this file existed, not one of them was type-checked by anything.
+  // Node runs them directly via native type stripping, which erases the
+  // annotations without ever verifying them, so a wrong type in the code that
+  // guards the rest of the repo was invisible.
+  //
+  // Deliberately NOT a root tsconfig.json, and no compiler in the root
+  // package.json: the gates are dependency-free on purpose (CI runs them
+  // before any `npm ci`, see .github/workflows/ci.yml), and adding a root
+  // dependency to type-check them would trade that away. Instead this reuses
+  // the compiler and @types the desktop app already installs, which is why
+  // `types:check` runs after the desktop's install rather than beside the
+  // other gates.
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "typeRoots": ["apps/desktop/node_modules/@types"],
+    // No "baseUrl": TypeScript 6 deprecates it and 7 drops it. Without one,
+    // "paths" entries resolve relative to this file, which is what we want.
+    "paths": {
+      // NodeNext resolution does not do directory/main-field fallback for a
+      // "paths" substitution the way plain node_modules resolution does, so
+      // the target has to name the declaration file directly.
+      "playwright": ["./apps/desktop/node_modules/playwright/index.d.ts"]
+    },
+
+    "noEmit": true,
+    "skipLibCheck": true,
+
+    // Node's type stripping only accepts erasable syntax, so these scripts
+    // already cannot use enums, namespaces, parameter properties or
+    // decorators. Making that a compiler error rather than a runtime surprise
+    // means the failure arrives here instead of when a gate is next run.
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["scripts/**/*.ts"]
+}

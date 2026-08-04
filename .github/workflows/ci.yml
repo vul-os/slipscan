@@ -193,6 +193,21 @@ jobs:
       # app is a posting error with no symptom.
       - name: Lint
         run: npm run lint
+      # The gate scripts in scripts/ enforce everything above, and until this
+      # step existed nothing type-checked THEM: Node runs them via native type
+      # stripping, which erases the annotations without verifying any of them.
+      # Several interfaces in sync-docs.ts had drifted to shapes the code never
+      # used, and KNOWN_STALE_ANCHORS was declared string[] while every reader
+      # treated its entries as objects — a ratchet that would have silently
+      # stopped working rather than failing.
+      #
+      # It uses the compiler apps/desktop already installs, so the root
+      # package.json stays dependency-free and the checks above can keep
+      # running before any npm ci. That is also why this runs here rather than
+      # beside them.
+      - name: Gate scripts type-check
+        run: npm run types:check
+        working-directory: .
       - name: Test (vitest)
         run: npm test
       - name: Build
