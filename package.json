@@ -2,18 +2,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "docs:sync": "node scripts/sync-docs.mjs",
-    "docs:check": "node scripts/sync-docs.mjs --check",
-    "parity:sync": "node scripts/check-parity.mjs --write",
-    "parity:check": "node scripts/check-parity.mjs",
-    "reachable:sync": "node scripts/check-reachable.mjs --write",
-    "reachable:check": "node scripts/check-reachable.mjs",
-    "mock-guards:sync": "node scripts/check-mock-guards.mjs --write",
-    "mock-guards:check": "node scripts/check-mock-guards.mjs",
-    "tests:check": "node scripts/check-tests-assert.mjs",
-    "source:check": "node scripts/check-source-text.mjs",
-    "screenshots:sync": "node scripts/sync-screenshots.mjs",
-    "screenshots:check": "node scripts/sync-screenshots.mjs --check",
-    "site:check": "node scripts/check-site.mjs"
+    "docs:sync": "node scripts/sync-docs.ts",
+    "docs:check": "node scripts/sync-docs.ts --check",
+    "parity:sync": "node scripts/check-parity.ts --write",
+    "parity:check": "node scripts/check-parity.ts",
+    "reachable:sync": "node scripts/check-reachable.ts --write",
+    "reachable:check": "node scripts/check-reachable.ts",
+    "mock-guards:sync": "node scripts/check-mock-guards.ts --write",
+    "mock-guards:check": "node scripts/check-mock-guards.ts",
+    "tests:check": "node scripts/check-tests-assert.ts",
+    "source:check": "node scripts/check-source-text.ts",
+    "screenshots:sync": "node scripts/sync-screenshots.ts",
+    "screenshots:check": "node scripts/sync-screenshots.ts --check",
+    "site:check": "node scripts/check-site.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
   }
 }

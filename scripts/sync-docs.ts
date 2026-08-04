@@ -34,14 +34,36 @@
 // name (ASSETS below), so the site serves the actual bytes.
 //
 // Usage:
-//   node scripts/sync-docs.mjs           copy docs/*.md  -> site/docs/*.md
-//   node scripts/sync-docs.mjs --check   exit 1 if the copies are out of date
-//   node scripts/sync-docs.mjs --quiet   only report changes and errors
+//   node scripts/sync-docs.ts           copy docs/*.md  -> site/docs/*.md
+//   node scripts/sync-docs.ts --check   exit 1 if the copies are out of date
+//   node scripts/sync-docs.ts --quiet   only report changes and errors
 
 import { readdir, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+/** One markdown chapter mirrored from the repo into the docs viewer. */
+interface Chapter {
+  /** Source path relative to the repo root. */
+  source: string;
+  /** Slug it is served under, i.e. `site/docs/<slug>`. */
+  slug: string;
+  body: string;
+}
+
+/** A link found in a chapter, and where it points. */
+interface LinkTarget {
+  raw: string;
+  path: string;
+  hash: string;
+}
+
+/** The docs viewer's own declared chapter list and asset map. */
+interface Viewer {
+  shared: Set<string>;
+  docs: Set<string>;
+}
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const docsDir = join(repoRoot, 'docs');
@@ -57,7 +79,7 @@ const viewerPath = join(siteDir, 'docs.html');
 // feature parity vs Xero/Vault22, the data file is IPC-vs-HTTP surface parity —
 // but they cannot collide: resolveDocsLink sends `*.md` targets to the chapter
 // map and everything else to DOC_ASSETS, so each name resolves one way only.
-const EXTRA = {
+const EXTRA: Record<string, string> = {
   'CHANGELOG.md': 'changelog',
   'ROADMAP.md': 'roadmap',
   'PARITY.md': 'parity',
@@ -76,7 +98,7 @@ const EXTRA = {
 // canonical home is the repo root, site/LICENSE.txt already carries the MIT
 // text, and a third copy of each is a thing that can go stale silently. Those
 // resolve to the repo instead.
-const ASSETS = {
+const ASSETS: Record<string, string> = {
   'docs/parity.json': 'parity.json',
 };
 
@@ -86,23 +108,25 @@ const ASSETS = {
 // in docs/*.md, which this script does not own. Listing one here is a ratchet,
 // not an escape hatch: an entry that no longer applies fails this gate just as
 // loudly as a new stale anchor does, so the list cannot quietly rot.
-const KNOWN_STALE_ANCHORS = [];
+const KNOWN_STALE_ANCHORS: string[] = [];
 
 const args = new Set(process.argv.slice(2));
 const check = args.has('--check');
 const quiet = args.has('--quiet');
 
 /** `GETTING-STARTED.md` -> `getting-started.md` */
-const slugFor = (name) => name.replace(/\.md$/i, '').toLowerCase() + '.md';
+const slugFor = (name: string): string => name.replace(/\.md$/i, '').toLowerCase() + '.md';
 
-const rel = (p) => relative(repoRoot, p);
-const log = (...a) => { if (!quiet) console.log(...a); };
+const rel = (p: string): string => relative(repoRoot, p);
+const log = (...a: unknown[]): void => {
+  if (!quiet) console.log(...a);
+};
 
-async function collect() {
+async function collect(): Promise<Chapter[]> {
   const out = [];
 
   // Only docs/*.md itself — not subdirectories (docs/screenshots/ is images,
-  // mirrored separately by scripts/sync-screenshots.mjs).
+  // mirrored separately by scripts/sync-screenshots.ts).
   const entries = await readdir(docsDir, { withFileTypes: true });
   for (const e of entries) {
     if (!e.isFile() || !e.name.toLowerCase().endsWith('.md')) continue;
@@ -132,7 +156,7 @@ async function collect() {
  * rather than degrading: an audit that silently stopped matching the viewer
  * would be worse than no audit.
  */
-async function loadViewer() {
+async function loadViewer(): Promise<Viewer> {
   if (!existsSync(viewerPath)) throw new Error(`no viewer at ${rel(viewerPath)}`);
   const html = await readFile(viewerPath, 'utf8');
 
@@ -160,7 +184,7 @@ async function loadViewer() {
 // ---------------------------------------------------------------------------
 
 /** Markdown inline syntax -> the text content the browser will see in a heading. */
-const inlineText = (s) => s
+const inlineText = (s: string): string => s
   .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
   .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
   .replace(/<[^>]+>/g, '')
@@ -173,12 +197,12 @@ const inlineText = (s) => s
  * sample is not a link. Replacement keeps byte length and newlines, so indices
  * into the result still point at the right line of the original.
  */
-const stripCode = (md) => md
+const stripCode = (md: string): string => md
   .replace(/^([ \t]*)(```+|~~~+)[^\n]*\n[^]*?\n\1?\2[^\n]*$/gm, (m) => m.replace(/[^\n]/g, ' '))
   .replace(/`[^`\n]*`/g, (m) => ' '.repeat(m.length));
 
 /** Every id a chapter will actually have in the DOM once the viewer renders it. */
-function anchorIds(md, headingId) {
+function anchorIds(md: string, headingId: (text: string) => string): Set<string> {
   const text = stripCode(md);
   const ids = new Set();
   const seen = new Map();
@@ -198,7 +222,7 @@ function anchorIds(md, headingId) {
 }
 
 /** Every link and image target in a markdown file, with its line number. */
-function targets(md) {
+function targets(md: string): LinkTarget[] {
   const out = [];
   const push = (line, isImage, href) => out.push({ line, isImage, href });
   const lineOf = (index) => md.slice(0, index).split('\n').length;
@@ -216,7 +240,7 @@ function targets(md) {
 }
 
 /** A repo path is only servable if it stays inside the repo. */
-function insideRepo(path) {
+function insideRepo(path: string): boolean {
   const abs = resolve(repoRoot, path);
   return abs === repoRoot || abs.startsWith(repoRoot + sep);
 }
@@ -229,7 +253,10 @@ function insideRepo(path) {
  * `default` case rejects anything else, so a resolver that grows a new kind
  * fails the gate instead of being waved through.
  */
-function auditLinks(chapters, { shared, docs }) {
+function auditLinks(
+  chapters: Chapter[],
+  { shared, docs }: { shared: Set<string>; docs: Set<string> },
+): string[] {
   const { resolveDocsLink, headingId, DOC_ASSETS } = shared;
   const fileToSlug = Object.fromEntries(docs.map((d) => [d.file.toLowerCase(), d.slug]));
   const published = new Set(docs.map((d) => d.slug));
@@ -300,7 +327,7 @@ function auditLinks(chapters, { shared, docs }) {
 
 // ---------------------------------------------------------------------------
 
-async function main() {
+async function main(): Promise<void> {
   if (!existsSync(docsDir)) {
     console.error(`sync-docs: no docs/ directory at ${docsDir}`);
     process.exit(1);
@@ -406,7 +433,7 @@ async function main() {
     console.error(
       `\nsync-docs: ${obsolete.length} KNOWN_STALE_ANCHORS entr(y/ies) no longer apply:\n` +
       obsolete.map((k) => `  - ${k.from} -> #${k.slug}:${k.anchor}`).join('\n') +
-      '\nThe anchor resolves now — delete the entry from scripts/sync-docs.mjs.'
+      '\nThe anchor resolves now — delete the entry from scripts/sync-docs.ts.'
     );
     process.exit(1);
   }

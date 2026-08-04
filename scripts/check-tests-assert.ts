@@ -27,8 +27,8 @@
 // ones impossible, which is the floor.
 //
 // Usage:
-//   node scripts/check-tests-assert.mjs          fail on any finding
-//   node scripts/check-tests-assert.mjs --list   print every test it examined
+//   node scripts/check-tests-assert.ts          fail on any finding
+//   node scripts/check-tests-assert.ts --list   print every test it examined
 
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -36,7 +36,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const read = (p) => readFileSync(join(ROOT, p), "utf8");
+const read = (p: string): string => readFileSync(join(ROOT, p), "utf8");
 
 const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT })
   .toString("utf8")
@@ -55,7 +55,7 @@ if (rustFiles.length < 20 || tsTestFiles.length < 3) {
 }
 
 /** Strip `#[cfg(test)] mod … { … }` by brace matching. */
-function stripTestMods(src) {
+function stripTestMods(src: string): string {
   let out = "";
   let i = 0;
   for (;;) {
@@ -89,7 +89,7 @@ function stripTestMods(src) {
  * So: skip line and block comments, char literals, ordinary strings with
  * escapes, and Rust raw strings including the `r#"…"#` hash forms.
  */
-function blockAt(src, from) {
+function blockAt(src: string, from: number): string {
   const open = src.indexOf("{", from);
   if (open < 0) return "";
   let depth = 0;
@@ -156,8 +156,8 @@ function blockAt(src, from) {
   return "";
 }
 
-const problems = [];
-const examined = [];
+const problems: string[] = [];
+const examined: string[] = [];
 
 // --- 1. shipped stubs ------------------------------------------------------
 for (const file of rustFiles) {
@@ -166,7 +166,7 @@ for (const file of rustFiles) {
     [/\btodo!\s*\(/g, "todo!()"],
     [/\bunimplemented!\s*\(/g, "unimplemented!()"],
     [/panic!\s*\(\s*"[^"]*not implemented/gi, 'panic!("not implemented")'],
-  ]) {
+  ] as const) {
     for (const m of shipped.matchAll(re)) {
       const line = shipped.slice(0, m.index).split("\n").length;
       problems.push(`${file}:${line}: ${what} in code that ships — a stub behind a real signature`);
@@ -195,7 +195,7 @@ for (const file of rustFiles) {
   for (const m of src.matchAll(/#\[(?:tokio::)?test\]([\s\S]{0,400}?)fn (\w+)/g)) {
     const attrs = m[1];
     const name = m[2];
-    const body = blockAt(src, m.index + m[0].length);
+    const body = blockAt(src, m.index! + m[0].length);
     examined.push(`${file}::${name}`);
     if (/#\[ignore\]/.test(attrs)) {
       problems.push(`${file}: test \`${name}\` is #[ignore]d — a test that never runs is not a test`);
@@ -220,8 +220,8 @@ for (const file of tsTestFiles) {
     // Start at the arrow, not the first `{` — Playwright's
     // `async ({ page }) => {` puts a destructuring pattern in the way, and
     // reading that as the body reported every one of those tests as empty.
-    const arrow = src.indexOf("=>", m.index + m[0].length);
-    const body = blockAt(src, arrow < 0 ? m.index + m[0].length : arrow);
+    const arrow = src.indexOf("=>", m.index! + m[0].length);
+    const body = blockAt(src, arrow < 0 ? m.index! + m[0].length : arrow);
     examined.push(`${file}::${name}`);
     if (/\.(skip|todo)\s*\(/.test(m[0])) {
       problems.push(`${file}: test "${name}" is skipped — a test that never runs is not a test`);

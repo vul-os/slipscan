@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * check-site.mjs — the gate site/ never had.
+ * check-site.ts — the gate site/ never had.
  *
  * `docs:check` proves the chapters are mirrored and their links resolve, and
  * `screenshots:check` proves the captures are in step. Nothing proved the two
@@ -18,15 +18,17 @@
  * This is those three, for this repo, in one pass.
  *
  * Usage:
- *   node scripts/check-site.mjs            both path shapes, both pages
- *   node scripts/check-site.mjs --quiet     only failures
+ *   node scripts/check-site.ts            both path shapes, both pages
+ *   node scripts/check-site.ts --quiet     only failures
  */
-import { createServer } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { readFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join, extname, normalize, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
+import type { Browser, ConsoleMessage, Page, Request as PwRequest, Response as PwResponse } from 'playwright';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const siteDir = join(repoRoot, 'site');
@@ -36,7 +38,7 @@ const quiet = process.argv.includes('--quiet');
 // that already depends on it. Resolving from there keeps this script a
 // zero-install addition rather than a second copy of a 100MB dependency.
 const require = createRequire(join(repoRoot, 'apps', 'desktop', 'package.json'));
-let chromium;
+let chromium: typeof import('playwright').chromium;
 try {
   ({ chromium } = require('playwright'));
 } catch {
@@ -49,7 +51,13 @@ try {
 
 // The deployed shape. collect-repo-landings.mjs writes public/projects/<slug>/,
 // which Astro serves at /projects/slipscan/. Root is the repo shape.
-const SHAPES = [
+interface Shape {
+  name: string;
+  base: string;
+  entry: string;
+}
+
+const SHAPES: Shape[] = [
   { name: 'repo root', base: '/', entry: 'index.html' },
   { name: 'deployed', base: '/projects/slipscan/', entry: 'index.html' },
 ];
@@ -60,7 +68,7 @@ const BREAKPOINTS = [360, 768, 1440];
 const CHECKS_PER_PAGE = 4 + BREAKPOINTS.length;
 const EXPECTED_CHECKS = SHAPES.length * 2 * CHECKS_PER_PAGE;
 
-const MIME = {
+const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.md': 'text/markdown; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json',
@@ -70,9 +78,9 @@ const MIME = {
 };
 
 /** Serve site/ under `base`, 404ing anything outside it — as the real route does. */
-function serve(base) {
-  const server = createServer(async (req, res) => {
-    const path = decodeURIComponent(req.url.split('?')[0].split('#')[0]);
+function serve(base: string): Promise<ReturnType<typeof createServer>> {
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    const path = decodeURIComponent((req.url ?? '').split('?')[0].split('#')[0]);
     if (!path.startsWith(base)) { res.writeHead(404); res.end('outside base'); return; }
     const file = normalize(join(siteDir, path.slice(base.length - 1)));
     if (!file.startsWith(normalize(siteDir))) { res.writeHead(403); res.end(); return; }
@@ -94,26 +102,36 @@ function serve(base) {
  * and rel=canonical/og:url are metadata a scraper reads — neither is a fetch,
  * and both are REQUIRED to be absolute, so counting them would make the
  * self-containment rule impossible to satisfy.
+ *
+ * Runs inside the page via `page.evaluate`, so it only has DOM globals — no
+ * import from this module reaches it, which is why its types are declared
+ * loosely (`document`/`location` are ambient DOM globals in this file only
+ * because playwright's `evaluate` serialises the function source, not because
+ * this script itself runs in a browser).
  */
-function collectExternal() {
-  const out = new Set();
+function collectExternal(): string[] {
+  const out = new Set<string>();
   const FETCHED = /^(stylesheet|icon|apple-touch-icon|manifest|preload|prefetch|modulepreload|mask-icon)$/i;
-  const push = (v) => {
-    let u; try { u = new URL(v, location.href); } catch { return; }
+  const push = (v: string | null) => {
+    if (v === null) return;
+    let u: URL;
+    try { u = new URL(v, location.href); } catch { return; }
     if (u.origin !== location.origin && u.protocol !== 'data:' && u.protocol !== 'blob:') out.add(u.origin + '  <- ' + v);
   };
   for (const el of document.querySelectorAll('[src]')) push(el.getAttribute('src'));
   for (const el of document.querySelectorAll('[srcset]')) {
-    el.getAttribute('srcset').split(',').forEach((s) => push(s.trim().split(/\s+/)[0]));
+    (el.getAttribute('srcset') ?? '').split(',').forEach((s) => push(s.trim().split(/\s+/)[0]));
   }
   for (const el of document.querySelectorAll('link[href]')) {
     if ((el.getAttribute('rel') || '').split(/\s+/).some((r) => FETCHED.test(r))) push(el.getAttribute('href'));
   }
   for (const sheet of document.styleSheets) {
-    let rules; try { rules = sheet.cssRules; } catch { continue; }
-    const scan = (rs) => {
+    let rules: CSSRuleList;
+    try { rules = sheet.cssRules; } catch { continue; }
+    const scan = (rs: CSSRuleList) => {
       for (const r of rs) {
-        if (r.cssRules) scan(r.cssRules);
+        const grouping = r as CSSGroupingRule;
+        if (grouping.cssRules) scan(grouping.cssRules);
         for (const m of (r.cssText || '').matchAll(/url\((['"]?)([^'")]+)\1\)/g)) push(m[2]);
       }
     };
@@ -124,11 +142,11 @@ function collectExternal() {
 
 async function main() {
   if (!existsSync(siteDir)) { console.error(`check-site: no site/ at ${siteDir}`); process.exit(1); }
-  const browser = await chromium.launch();
-  const problems = [];
+  const browser: Browser = await chromium.launch();
+  const problems: string[] = [];
   let ran = 0;
-  const log = (...a) => { if (!quiet) console.log(...a); };
-  const note = (ok, where, msg) => {
+  const log = (...a: unknown[]) => { if (!quiet) console.log(...a); };
+  const note = (ok: boolean, where: string, msg: string) => {
     ran++;
     if (ok) log(`  ok    ${msg}`);
     else { problems.push(`${where}: ${msg}`); console.log(`  FAIL  ${msg}`); }
@@ -136,15 +154,15 @@ async function main() {
 
   for (const shape of SHAPES) {
     const server = await serve(shape.base);
-    const origin = `http://127.0.0.1:${server.address().port}`;
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     for (const page of [shape.entry, 'docs.html']) {
       const url = `${origin}${shape.base}${page}`;
       const where = `${page} @ ${shape.name}`;
       log(`\n${page}  (${shape.name}: ${shape.base})`);
 
       const ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-      const pg = await ctx.newPage();
-      const failed = [], bad = [], errors = [];
+      const pg: Page = await ctx.newPage();
+      const failed: string[] = [], bad: string[] = [], errors: string[] = [];
       // `net::ERR_ABORTED` means the request was CANCELLED, not that the
       // resource is missing — flipping an <img> src supersedes the in-flight
       // load for the previous one. It is not evidence of a broken capture
@@ -152,14 +170,14 @@ async function main() {
       // which is worse than not having it: a gate that fails randomly teaches
       // people to re-run until green. A genuinely missing file still fails,
       // via the >= 400 response check below or a non-aborted error here.
-      pg.on('requestfailed', (r) => {
+      pg.on('requestfailed', (r: PwRequest) => {
         const why = r.failure()?.errorText ?? '';
         if (why.includes('net::ERR_ABORTED')) return;
         failed.push(`${r.url()} — ${why}`);
       });
-      pg.on('response', (r) => { if (r.status() >= 400) bad.push(`${r.status()} ${r.url()}`); });
-      pg.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
-      pg.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
+      pg.on('response', (r: PwResponse) => { if (r.status() >= 400) bad.push(`${r.status()} ${r.url()}`); });
+      pg.on('console', (m: ConsoleMessage) => { if (m.type() === 'error') errors.push(m.text()); });
+      pg.on('pageerror', (e: Error) => errors.push('pageerror: ' + e.message));
 
       await pg.goto(url, { waitUntil: 'networkidle' });
       // Walk the gallery and flip the theme: both fetch lazily, so a broken
@@ -176,22 +194,22 @@ async function main() {
         await pg.evaluate(() => document.getElementById('galNext')?.click());
         await pg.waitForTimeout(120);
       }
-      await pg.evaluate(() => { const t = document.getElementById('themeBtn'); if (t) t.click(); });
+      await pg.evaluate(() => { const t = document.getElementById('themeBtn'); if (t) (t as HTMLElement).click(); });
       await pg.waitForTimeout(2500);
       // Every docs chapter, including the built-in one, has to render.
       if (page === 'docs.html') {
-        const slugs = await pg.$$eval('.docs-nav a[data-slug]', (as) => as.map((a) => a.dataset.slug));
+        const slugs = await pg.$$eval('.docs-nav a[data-slug]', (as) => as.map((a) => (a as HTMLElement).dataset.slug));
         for (const slug of slugs) {
           await pg.evaluate((s) => { location.hash = '#' + s; }, slug);
           await pg.waitForFunction(() => {
             const c = document.getElementById('content');
-            return c && c.textContent.trim() !== 'Loading…' && c.textContent.length > 200;
+            return c && c.textContent!.trim() !== 'Loading…' && c.textContent!.length > 200;
           }, null, { timeout: 8000 }).catch(() => errors.push(`docs chapter "${slug}" never rendered`));
           const err = await pg.$('.docs-error');
           if (err) errors.push(`docs chapter "${slug}" rendered an error box`);
         }
       }
-      await pg.evaluate(() => { const t = document.getElementById('themeBtn'); if (t) t.click(); });
+      await pg.evaluate(() => { const t = document.getElementById('themeBtn'); if (t) (t as HTMLElement).click(); });
       await pg.waitForTimeout(1200);
 
       note(failed.length === 0, where, `no failed requests${failed.length ? ' — ' + failed.join('; ') : ''}`);

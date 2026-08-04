@@ -29,6 +29,11 @@ const BINARY = new Set([
   ".woff", ".woff2", ".ttf", ".otf", ".zip", ".sqlite", ".wasm",
 ]);
 
+interface Offender {
+  file: string;
+  count: number;
+}
+
 const files = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT })
   .toString("utf8")
   .split("\0")
@@ -43,7 +48,7 @@ if (files.length < 100) {
   process.exit(2);
 }
 
-const offenders = [];
+const offenders: Offender[] = [];
 for (const file of files) {
   const raw = readFileSync(join(ROOT, file));
   let count = 0;

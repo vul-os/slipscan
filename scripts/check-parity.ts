@@ -19,18 +19,33 @@
 // implausible count is a hard failure here, not a shrug.
 //
 // Usage:
-//   node scripts/check-parity.mjs           report drift, exit 1 if any
-//   node scripts/check-parity.mjs --write   rewrite parity.json's lists/counts
+//   node scripts/check-parity.ts           report drift, exit 1 if any
+//   node scripts/check-parity.ts --write   rewrite parity.json's lists/counts
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const read = (p) => readFileSync(join(ROOT, p), "utf8");
+const read = (p: string): string => readFileSync(join(ROOT, p), "utf8");
+
+interface CountedList {
+  count: number;
+}
+
+interface ParityFile {
+  "//": string[];
+  http: CountedList & { prefix: string; routes: string[]; public: string[]; aliases: Record<string, string> };
+  ipc: CountedList & { commands: string[] };
+  client: CountedList & { calls: string[] };
+  renames: Record<string, string>;
+  missing_from_ipc: CountedList & { operations: string[] };
+  desktop_only: CountedList & { commands: string[] };
+  missing_from_client?: CountedList & { operations: string[] };
+}
 
 /** A parse that finds far too little has failed, not succeeded. */
-function atLeast(what, list, floor) {
+function atLeast<T>(what: string, list: T[], floor: number): T[] {
   if (list.length < floor) {
     console.error(
       `check-parity: parsing ${what} found only ${list.length} (expected >= ${floor}).\n` +
@@ -46,7 +61,7 @@ function atLeast(what, list, floor) {
 // `.route("/name", post(handler))`, including the multi-line form where the
 // path sits on its own line. Matching only single-line `.route("` misses six of
 // them, which is how "141 routes" was ever written down.
-function httpRoutes() {
+function httpRoutes(): string[] {
   const src = read("crates/slipscan-server/src/routes.rs");
   const found = [...src.matchAll(/\.route\(\s*"\/([a-z0-9_]+)"/g)].map(
     (m) => m[1],
@@ -60,7 +75,7 @@ function httpRoutes() {
 // --- desktop IPC commands --------------------------------------------------
 // The single `tauri::generate_handler![...]` list in lib.rs is the only thing
 // that actually registers a command, so it is the only honest source.
-function ipcCommands() {
+function ipcCommands(): string[] {
   const src = read("apps/desktop/src-tauri/src/lib.rs");
   const block = /generate_handler!\[([\s\S]*?)\]/.exec(src);
   if (!block) {
@@ -71,14 +86,14 @@ function ipcCommands() {
     .replace(/\/\/[^\n]*/g, "")
     .split(",")
     .map((s) => s.trim().split("::").pop())
-    .filter(Boolean);
+    .filter((s): s is string => Boolean(s));
   atLeast("IPC commands", found, 100);
   return [...new Set(found)].sort();
 }
 
 // --- client.ts wrappers ----------------------------------------------------
 // Every wrapper reaches the backend through `call("command_name", …)`.
-function clientCalls() {
+function clientCalls(): string[] {
   const src = read("apps/desktop/src/lib/api/client.ts");
   const found = [...src.matchAll(/\bcall\(\s*"([a-z0-9_]+)"/g)].map((m) => m[1]);
   atLeast("client.ts wrappers", found, 100);
@@ -91,7 +106,7 @@ const commands = ipcCommands();
 const calls = clientCalls();
 
 const parityPath = "docs/parity.json";
-const parity = JSON.parse(read(parityPath));
+const parity = JSON.parse(read(parityPath)) as ParityFile;
 
 // Two deliberate name mismatches the file already documents, and both have to
 // be honoured or this check invents drift that is not there:
@@ -101,10 +116,10 @@ const parity = JSON.parse(read(parityPath));
 //   aliases  a route kept as a deprecated second spelling of another route
 //            (`report_vat` -> `report_tax`), which is why API.md says 144
 //            routes but 143 distinct handlers
-const renames = parity.renames ?? {};
-const aliases = parity.http?.aliases ?? {};
-const httpNameOf = (command) => renames[command] ?? command;
-const canonicalRoute = (route) => aliases[route] ?? route;
+const renames: Record<string, string> = parity.renames ?? {};
+const aliases: Record<string, string> = parity.http?.aliases ?? {};
+const httpNameOf = (command: string): string => renames[command] ?? command;
+const canonicalRoute = (route: string): string => aliases[route] ?? route;
 
 // `health` is registered as an IPC command, wrapped in client.ts like any
 // other, and also served as a public route — but `httpRoutes()` drops it,
@@ -127,7 +142,9 @@ const desktopOnly = commands
   .filter((c) => !NOT_DRIFT.has(c) && !routeTargets.has(httpNameOf(c)))
   .sort();
 
-const expected = {
+type ExpectedEntry = [actual: string[], listed: string[], count: number];
+
+const expected: Record<string, ExpectedEntry> = {
   "http.routes": [routes, parity.http.routes, parity.http.count],
   "ipc.commands": [commands, parity.ipc.commands, parity.ipc.count],
   "client.calls": [calls, parity.client.calls, parity.client.count],
@@ -148,9 +165,9 @@ const expected = {
   ],
 };
 
-const problems = [];
+const problems: string[] = [];
 for (const [label, [actual, listed, count]] of Object.entries(expected)) {
-  const only = (a, b) => a.filter((x) => !b.includes(x));
+  const only = (a: string[], b: string[]) => a.filter((x) => !b.includes(x));
   const missing = only(actual, listed);
   const extra = only(listed, actual);
   if (missing.length) problems.push(`${label}: in the code but not listed — ${missing.join(", ")}`);
@@ -192,7 +209,7 @@ if (process.argv.includes("--write")) {
 if (problems.length) {
   console.error("check-parity: docs/parity.json does not match the code:\n");
   for (const p of problems) console.error(`  - ${p}`);
-  console.error("\nRe-derive it with: node scripts/check-parity.mjs --write");
+  console.error("\nRe-derive it with: node scripts/check-parity.ts --write");
   console.error("Then check docs/API.md, which quotes these counts in prose.");
   process.exit(1);
 }

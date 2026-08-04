@@ -17,9 +17,9 @@
 // screenshot` in apps/desktop); this only copies what that produced.
 //
 // Usage:
-//   node scripts/sync-screenshots.mjs           mirror into both targets
-//   node scripts/sync-screenshots.mjs --check   exit 1 if a target is stale
-//   node scripts/sync-screenshots.mjs --quiet   only report changes and errors
+//   node scripts/sync-screenshots.ts           mirror into both targets
+//   node scripts/sync-screenshots.ts --check   exit 1 if a target is stale
+//   node scripts/sync-screenshots.ts --quiet   only report changes and errors
 
 import { readdir, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -37,7 +37,7 @@ const sourceDir = join(repoRoot, 'docs', 'screenshots');
 // no page or markdown chapter loads hero.png (which is a byte-identical copy
 // of dashboard.png), so shipping it would put ~900 kB of dead weight on a
 // deployed page.
-const TARGETS = [
+const TARGETS: string[] = [
   { dir: join(repoRoot, 'assets', 'screens'), skip: new Set() },
   { dir: join(repoRoot, 'site', 'screenshots'), skip: new Set(['hero.png']) },
 ];
@@ -46,12 +46,14 @@ const args = new Set(process.argv.slice(2));
 const check = args.has('--check');
 const quiet = args.has('--quiet');
 
-const rel = (p) => relative(repoRoot, p);
-const log = (...a) => { if (!quiet) console.log(...a); };
+const rel = (p: string): string => relative(repoRoot, p);
+const log = (...a: unknown[]): void => {
+  if (!quiet) console.log(...a);
+};
 
-const isPng = (name) => name.toLowerCase().endsWith('.png');
+const isPng = (name: string): boolean => name.toLowerCase().endsWith('.png');
 
-async function main() {
+async function main(): Promise<void> {
   if (!existsSync(sourceDir)) {
     console.error(`sync-screenshots: no source directory at ${sourceDir}`);
     process.exit(1);
