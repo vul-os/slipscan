@@ -166,6 +166,14 @@ jobs:
       - name: Desktop mock guards still line up with core
         run: npm run mock-guards:check
         working-directory: .
+      # A test that asserts nothing passes on a broken build and is
+      # indistinguishable from a real one in every summary line; a todo!()
+      # behind a real signature is a feature that does not exist. Both are
+      # this codebase's documented failure mode — complete-looking layers that
+      # are collectively hollow.
+      - name: Every test asserts something, and no stubs ship
+        run: npm run tests:check
+        working-directory: .
       - name: Install
         run: npm ci
       - name: Check

@@ -10,6 +10,7 @@
     "reachable:check": "node scripts/check-reachable.mjs",
     "mock-guards:sync": "node scripts/check-mock-guards.mjs --write",
     "mock-guards:check": "node scripts/check-mock-guards.mjs",
+    "tests:check": "node scripts/check-tests-assert.mjs",
     "source:check": "node scripts/check-source-text.mjs",
     "screenshots:sync": "node scripts/sync-screenshots.mjs",
     "screenshots:check": "node scripts/sync-screenshots.mjs --check",
