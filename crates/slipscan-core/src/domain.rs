@@ -114,6 +114,24 @@ str_enum!(JournalSourceType {
     Transaction => "transaction",
     Document => "document",
     OpeningBalance => "opening_balance",
+    // A `po_receipts` row (migration `0013_purchasing`) posted straight to
+    // the ledger — ROADMAP.md 6.6. `source_id` is the receipt's own id, so
+    // each receiving event gets at most one net-live journal, the same
+    // dedup guarantee `post_journal_in_tx` already gives transactions and
+    // documents.
+    PoReceipt => "po_receipt",
+    // The cost/inventory half of a confirmed sales order's posting —
+    // ROADMAP.md 6.6. Deliberately a *separate* journal from `SalesRevenue`
+    // (two paired postings, not one four-line entry) so either can be
+    // reversed and independently re-derived without touching the other.
+    // `source_id` is the `sales_orders` id.
+    SalesCogs => "sales_cogs",
+    // The revenue/AR/VAT half of a confirmed sales order's posting — see
+    // `SalesCogs`. `source_id` is the `sales_orders` id.
+    SalesRevenue => "sales_revenue",
+    // An `invoice_payments` row posted straight to the ledger —
+    // ROADMAP.md 6.6. `source_id` is the payment's own id.
+    InvoicePayment => "invoice_payment",
 });
 
 str_enum!(ReconState {

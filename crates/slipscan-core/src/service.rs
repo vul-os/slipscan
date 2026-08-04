@@ -22,7 +22,7 @@ use crate::util::{
     days_between, merchant_key_from_description, merchant_similarity, new_id,
     normalize_currency_code, normalize_merchant, now_iso, parse_date, transaction_dedupe_hash,
 };
-use crate::vat::split_inclusive;
+use crate::vat::{split_inclusive, vat_on_net};
 
 // ---------------------------------------------------------------------------
 // Well-known chart-of-accounts codes (stable across both seed sets) used as
@@ -35,6 +35,16 @@ const COA_CODE_BANK: &str = "1000";
 const COA_CODE_VAT_INPUT: &str = "1400";
 /// VAT output control (liability; business seed only).
 const COA_CODE_VAT_OUTPUT: &str = "2100";
+/// Inventory asset control (business seed only) — ROADMAP.md 6.6.
+const COA_CODE_INVENTORY: &str = "1200";
+/// Accounts payable control (business seed only) — ROADMAP.md 6.6.
+const COA_CODE_AP: &str = "2000";
+/// Accounts receivable control (business seed only) — ROADMAP.md 6.6.
+const COA_CODE_AR: &str = "1100";
+/// Sales/revenue income account (business seed only) — ROADMAP.md 6.6.
+const COA_CODE_REVENUE: &str = "4000";
+/// Cost-of-sales/COGS expense account (business seed only) — ROADMAP.md 6.6.
+const COA_CODE_COGS: &str = "5000";
 
 const fn fallback_expense_code(kind: BookKind) -> &'static str {
     match kind {
@@ -2826,9 +2836,17 @@ impl CoreService {
     /// `Cancelled`; a `Draft` PO may still receive (goods sometimes arrive
     /// before the paperwork catches up, and nothing here should force a user
     /// to backdate a status just to record what physically happened).
+    ///
+    /// Since Phase 6.6, also posts the goods-receipt journal (**DR**
+    /// inventory-asset, **CR** accounts-payable) in this same transaction —
+    /// see `post_po_receipt_journal`. A book with no chart of accounts posts
+    /// nothing and still receives the stock; a locked accounting period
+    /// fails the whole call, receipt included, rather than landing stock
+    /// with no journal behind it.
     pub fn po_receive(&self, new: NewPoReceipt) -> CoreResult<PoReceipt> {
         let item = self.po_item_get(&new.purchase_order_item_id)?;
         let po = self.po_get(&item.purchase_order_id)?;
+        let book = self.book_get(&item.book_id)?;
         if po.status == PurchaseOrderStatus::Cancelled {
             return Err(CoreError::Validation(
                 "cannot receive against a cancelled purchase order".into(),
@@ -2882,6 +2900,7 @@ impl CoreService {
             receipt.note.clone(),
             receipt.received_by.clone(),
         )?;
+        self.post_po_receipt_journal(&tx, &book, &receipt, &item, &po.currency)?;
         tx.commit()?;
         Ok(receipt)
     }
@@ -3343,9 +3362,12 @@ impl CoreService {
     /// check availability — see the migration header's note on why that
     /// matches the stock ledger's existing permissive model.
     ///
-    /// NOTE (Phase 6.6): this is exactly the call site that will also post a
-    /// revenue/COGS/VAT journal once double-entry posting lands. It does not
-    /// today — Phase 6.5 is inventory and documents only.
+    /// Since Phase 6.6, also posts the confirm-time journals in this same
+    /// transaction — see `post_sales_confirm_journals` for the cost/
+    /// inventory and revenue/AR/VAT legs. A book with no chart of accounts
+    /// posts nothing and still confirms the order; a locked accounting
+    /// period fails the whole call, stock deduction included, rather than
+    /// confirming with no journal behind it.
     pub fn sales_order_confirm(&self, id: &str) -> CoreResult<SalesOrder> {
         let before = self.sales_order_get(id)?;
         if before.status != SalesOrderStatus::Draft {
@@ -3368,6 +3390,7 @@ impl CoreService {
                     .into(),
             ));
         }
+        let book = self.book_get(&before.book_id)?;
 
         let now = now_iso();
         let tx = self.conn().unchecked_transaction()?;
@@ -3388,6 +3411,7 @@ impl CoreService {
                 )?;
             }
         }
+        self.post_sales_confirm_journals(&tx, &book, &before, &items)?;
         let mut after = before.clone();
         after.status = SalesOrderStatus::Confirmed;
         after.confirmed_at = Some(now.clone());
@@ -3413,6 +3437,14 @@ impl CoreService {
     /// `stock_movements_for_ref` shows the whole story for one order,
     /// exactly as migration 0012 already does for a transfer's two legs. A
     /// cancel from `draft` never touched stock and moves none.
+    ///
+    /// Since Phase 6.6, a cancel from `confirmed` also reverses whichever of
+    /// the confirm-time journals are still net-live, via
+    /// `reverse_sales_confirm_journals` (`journal_reverse`'s machinery —
+    /// never an edit or a delete). Dated at cancellation, not at the
+    /// original confirm: a book locked after the sale was confirmed can
+    /// still cancel it, because the reversal lands in the (open) current
+    /// period rather than the (closed) original one.
     pub fn sales_order_cancel(&self, id: &str) -> CoreResult<SalesOrder> {
         let before = self.sales_order_get(id)?;
         if !matches!(
@@ -3424,6 +3456,7 @@ impl CoreService {
                 to: SalesOrderStatus::Cancelled.to_string(),
             });
         }
+        let book = self.book_get(&before.book_id)?;
 
         let now = now_iso();
         let tx = self.conn().unchecked_transaction()?;
@@ -3451,6 +3484,7 @@ impl CoreService {
                     )?;
                 }
             }
+            self.reverse_sales_confirm_journals(&tx, &book, &before, &now[..10])?;
         }
         let mut after = before.clone();
         after.status = SalesOrderStatus::Cancelled;
@@ -3729,6 +3763,13 @@ impl CoreService {
     /// balance due — a genuine overpayment happens, and `invoice_totals`
     /// simply reports `due_minor` at or below zero rather than refusing the
     /// fact that it happened.
+    ///
+    /// Since Phase 6.6, also posts the payment's journal (**DR** bank,
+    /// **CR** accounts-receivable) in this same transaction — see
+    /// `post_invoice_payment_journal`. A book with no chart of accounts
+    /// posts nothing and still records the payment; a locked accounting
+    /// period fails the whole call rather than recording a payment with no
+    /// journal behind it.
     pub fn invoice_payment_record(&self, new: NewInvoicePayment) -> CoreResult<InvoicePayment> {
         let invoice = self.invoice_get(&new.invoice_id)?;
         if new.amount_minor <= 0 {
@@ -3736,6 +3777,7 @@ impl CoreService {
                 "invoice payment amount must be positive".into(),
             ));
         }
+        let book = self.book_get(&invoice.book_id)?;
         let paid_at = new.paid_at.clone().unwrap_or_else(today);
         parse_date(&paid_at)?;
 
@@ -3760,6 +3802,7 @@ impl CoreService {
             None,
             Some(serde_json::to_string(&payment)?),
         )?;
+        self.post_invoice_payment_journal(&tx, &book, &invoice, &payment)?;
         tx.commit()?;
         Ok(payment)
     }
@@ -4044,7 +4087,27 @@ impl CoreService {
     ) -> CoreResult<PostedJournal> {
         let original = self.journal_get(journal_id)?;
         let book = self.book_get(&original.journal.book_id)?;
-        if let Some(reversal_id) = repo::ledger::find_reversal(self.conn(), journal_id)? {
+        let tx = self.conn().unchecked_transaction()?;
+        let posted = self.reverse_journal_in_tx(&tx, &book, journal_id, posted_date, narrative)?;
+        tx.commit()?;
+        Ok(posted)
+    }
+
+    /// Shared reversal path: builds and posts the flipped-sides journal.
+    /// Caller owns the SQLite transaction — this is what lets ROADMAP.md 6.6
+    /// trade reversals (`reverse_sales_confirm_journals`) reverse a
+    /// confirm-time journal in the same transaction as the compensating
+    /// stock movement, rather than as a second, separately-committed step.
+    fn reverse_journal_in_tx(
+        &self,
+        tx: &Connection,
+        book: &Book,
+        journal_id: &str,
+        posted_date: Option<&str>,
+        narrative: Option<&str>,
+    ) -> CoreResult<PostedJournal> {
+        let original = self.journal_get(journal_id)?;
+        if let Some(reversal_id) = repo::ledger::find_reversal(tx, journal_id)? {
             return Err(CoreError::DuplicateJournal {
                 source_type: "reversal".into(),
                 source_id: reversal_id,
@@ -4079,10 +4142,7 @@ impl CoreService {
             source_id: None,
             lines,
         };
-        let tx = self.conn().unchecked_transaction()?;
-        let posted = self.post_journal_in_tx(&tx, &book, new, Some(journal_id.to_string()))?;
-        tx.commit()?;
-        Ok(posted)
+        self.post_journal_in_tx(tx, book, new, Some(journal_id.to_string()))
     }
 
     /// Shared posting path: validates, inserts, audits. Caller owns the
@@ -4914,6 +4974,364 @@ impl CoreService {
         let posted = self.post_journal_in_tx(&tx, &book, new, None)?;
         tx.commit()?;
         Ok(posted)
+    }
+
+    // -----------------------------------------------------------------------
+    // Trade -> ledger (ROADMAP.md Phase 6.6, "Stock posts to the ledger").
+    //
+    // Every function below is called from *inside* an already-open
+    // transaction (`po_receive`, `sales_order_confirm`, `sales_order_cancel`,
+    // `invoice_payment_record`) — the same "one code path produces every
+    // fact, in one transaction, or none of them land" discipline migration
+    // `0013_purchasing`'s header already documents for a receipt and its
+    // stock movement. None of them ever error for a missing chart of
+    // accounts: a personal book, or a business book that never ran
+    // `coa_seed`, resolves every required account to `None`, and the trade
+    // simply posts nothing — a deliberate, tested behaviour (ROADMAP.md 6.6
+    // hard requirement #3), not a silent gap. A locked accounting period is
+    // different: `post_journal_in_tx`'s existing lock-date check still
+    // applies whenever there *is* something to post, and that error
+    // propagates out through the trade action's own `?`, rolling the whole
+    // transaction back — receiving stock (or confirming a sale, or
+    // recording a payment) into a closed period fails outright rather than
+    // silently landing the stock/order/payment fact with no journal behind
+    // it.
+    // -----------------------------------------------------------------------
+
+    /// Chart-of-accounts entry for a well-known seed code, or `None` when the
+    /// book has no row for it at all — never an error. The trade-posting
+    /// functions below use this instead of `coa_by_code` specifically so a
+    /// missing account degrades to "post nothing" (see the section header)
+    /// rather than refusing the trade. There is no `coa_map` indirection
+    /// here (unlike `mapped_or_fallback_coa`): `CoaMapEntity` has no variant
+    /// for a contact/variant/product-category to map from, so every one of
+    /// these accounts is resolved by its seed code alone — still never a
+    /// hardcoded id.
+    fn coa_by_code_opt(
+        &self,
+        tx: &Connection,
+        book_id: &str,
+        code: &str,
+    ) -> CoreResult<Option<CoaAccount>> {
+        repo::ledger::get_coa_by_code(tx, book_id, code)
+    }
+
+    /// Post the goods-receipt journal for one `po_receipts` row: **DR**
+    /// inventory-asset, **CR** accounts-payable, valued at the line's
+    /// `unit_price_minor` times the receipt's own (signed) `qty`. A
+    /// compensating correction (`qty < 0`, see migration `0013_purchasing`'s
+    /// header) posts with debit/credit swapped rather than a negative
+    /// amount, since a journal line's amount is never signed. `source_id` is
+    /// the receipt's own id — freshly generated by `po_receive` on every
+    /// call — so this can never collide with an earlier receipt's journal;
+    /// `post_journal_in_tx`'s per-source dedup guard is what stops a literal
+    /// double-call (e.g. a retried request replaying the same receipt id)
+    /// from posting twice.
+    fn post_po_receipt_journal(
+        &self,
+        tx: &Connection,
+        book: &Book,
+        receipt: &PoReceipt,
+        item: &PurchaseOrderItem,
+        po_currency: &str,
+    ) -> CoreResult<Option<PostedJournal>> {
+        let cost_minor = item.unit_price_minor * receipt.qty;
+        if cost_minor == 0 {
+            return Ok(None);
+        }
+        let (inventory, ap) = match (
+            self.coa_by_code_opt(tx, &book.id, COA_CODE_INVENTORY)?,
+            self.coa_by_code_opt(tx, &book.id, COA_CODE_AP)?,
+        ) {
+            (Some(inventory), Some(ap)) => (inventory, ap),
+            _ => return Ok(None),
+        };
+        let amount = cost_minor.abs();
+        let currency = normalize_currency_code(po_currency)?;
+        let (inv_debit, inv_credit, ap_debit, ap_credit) = if cost_minor > 0 {
+            (amount, 0, 0, amount)
+        } else {
+            (0, amount, amount, 0)
+        };
+        let line = |coa: &CoaAccount, debit: i64, credit: i64| NewJournalLine {
+            coa_id: coa.id.clone(),
+            debit_minor: debit,
+            credit_minor: credit,
+            currency: currency.clone(),
+            description: receipt.note.clone(),
+            vat_rate_id: None,
+            vat_role: None,
+        };
+        let new = NewJournal {
+            book_id: book.id.clone(),
+            posted_date: receipt.created_at.chars().take(10).collect(),
+            narrative: Some("Goods receipt".to_string()),
+            reference: Some(receipt.id.clone()),
+            source_type: JournalSourceType::PoReceipt,
+            source_id: Some(receipt.id.clone()),
+            lines: vec![
+                line(&inventory, inv_debit, inv_credit),
+                line(&ap, ap_debit, ap_credit),
+            ],
+        };
+        Ok(Some(self.post_journal_in_tx(tx, book, new, None)?))
+    }
+
+    /// Post the two paired journals a confirmed sales order generates — see
+    /// migration `0016_ledger_trade`'s header for why these are two
+    /// journals sharing one `source_id` rather than one four-line entry:
+    ///
+    /// * cost/inventory: **DR** cost-of-goods-sold, **CR** inventory-asset,
+    ///   summed over every stock-tracked line's `variant.cost_price_minor *
+    ///   quantity`. `None` when the order has no stock-tracked lines, or
+    ///   every one of them costs zero.
+    /// * revenue/AR/VAT: **DR** accounts-receivable for the gross total,
+    ///   **CR** revenue for the net total, **CR** VAT-output control per
+    ///   distinct `tax_rate_bps` present on the order's lines (grouped
+    ///   exactly like `journal_generate_for_document` groups a slip's VAT
+    ///   groups, so a mixed-rate order still balances one rate at a time).
+    ///   Line VAT is `crate::vat::vat_on_net` — round-half-away-from-zero on
+    ///   each line before summing, the same rule `repo::sales::order_totals`
+    ///   already uses for `SalesOrderTotals`, so the journal's tax total
+    ///   never drifts from the total a person already sees on the order.
+    ///   `None` when the order's gross total is zero, or the VAT-output
+    ///   control account is required (some line carries tax) but missing —
+    ///   posting AR/Revenue alone and silently dropping the tax would
+    ///   misstate income, so that case posts nothing rather than posting
+    ///   something wrong.
+    ///
+    /// Each leg resolves its own accounts independently, so a book with
+    /// Inventory/COGS seeded but no Revenue/AR (or vice versa) still gets
+    /// whichever leg it can support rather than an all-or-nothing failure.
+    fn post_sales_confirm_journals(
+        &self,
+        tx: &Connection,
+        book: &Book,
+        order: &SalesOrder,
+        items: &[SalesOrderItem],
+    ) -> CoreResult<(Option<PostedJournal>, Option<PostedJournal>)> {
+        let currency = normalize_currency_code(&order.currency)?;
+
+        // -- cost / inventory leg ------------------------------------------
+        let mut total_cost: i64 = 0;
+        for item in items.iter().filter(|i| i.variant_id.is_some()) {
+            let variant =
+                self.product_variant_get(item.variant_id.as_deref().expect("filtered above"))?;
+            total_cost += variant.cost_price_minor * item.quantity;
+        }
+        let cost_journal = if total_cost != 0 {
+            match (
+                self.coa_by_code_opt(tx, &book.id, COA_CODE_COGS)?,
+                self.coa_by_code_opt(tx, &book.id, COA_CODE_INVENTORY)?,
+            ) {
+                (Some(cogs), Some(inventory)) => {
+                    let line = |coa: &CoaAccount, debit: i64, credit: i64| NewJournalLine {
+                        coa_id: coa.id.clone(),
+                        debit_minor: debit,
+                        credit_minor: credit,
+                        currency: currency.clone(),
+                        description: Some(format!("Cost of sale: order #{}", order.number)),
+                        vat_rate_id: None,
+                        vat_role: None,
+                    };
+                    let new = NewJournal {
+                        book_id: book.id.clone(),
+                        posted_date: order.order_date.clone(),
+                        narrative: Some(format!("Cost of sale: order #{}", order.number)),
+                        reference: Some(order.id.clone()),
+                        source_type: JournalSourceType::SalesCogs,
+                        source_id: Some(order.id.clone()),
+                        lines: vec![line(&cogs, total_cost, 0), line(&inventory, 0, total_cost)],
+                    };
+                    Some(self.post_journal_in_tx(tx, book, new, None)?)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        // -- revenue / AR / VAT leg ----------------------------------------
+        // Grouped by tax_rate_bps, exactly like journal_generate_for_document
+        // groups a slip's VAT groups — a mixed-rate order still balances one
+        // rate at a time and each VAT line can carry the matching VatRate id.
+        let mut groups: std::collections::BTreeMap<i64, (i64, i64)> =
+            std::collections::BTreeMap::new();
+        for item in items {
+            let net = item.quantity * item.unit_price_minor;
+            let vat = vat_on_net(net, item.tax_rate_bps);
+            let g = groups.entry(item.tax_rate_bps).or_insert((0, 0));
+            g.0 += net;
+            g.1 += vat;
+        }
+        let total_net: i64 = groups.values().map(|(n, _)| *n).sum();
+        let total_vat: i64 = groups.values().map(|(_, v)| *v).sum();
+        let gross = total_net + total_vat;
+        let revenue_journal = if gross != 0 {
+            let ar = self.coa_by_code_opt(tx, &book.id, COA_CODE_AR)?;
+            let revenue = self.coa_by_code_opt(tx, &book.id, COA_CODE_REVENUE)?;
+            let need_vat_control = total_vat != 0;
+            let vat_control = if need_vat_control {
+                self.coa_by_code_opt(tx, &book.id, COA_CODE_VAT_OUTPUT)?
+            } else {
+                None
+            };
+            match (ar, revenue) {
+                (Some(ar), Some(revenue)) if !need_vat_control || vat_control.is_some() => {
+                    let rates = repo::ledger::list_vat_rates(tx, &book.id)?;
+                    let rate_for = |bps: i64| -> Option<&VatRate> {
+                        if bps <= 0 {
+                            return None;
+                        }
+                        rates
+                            .iter()
+                            .filter(|r| r.is_active && r.rate_bps == bps)
+                            .min_by_key(|r| (r.code == "EXE", r.code.clone()))
+                    };
+                    let mut lines = vec![NewJournalLine {
+                        coa_id: ar.id.clone(),
+                        debit_minor: gross,
+                        credit_minor: 0,
+                        currency: currency.clone(),
+                        description: Some(format!("Sale: order #{}", order.number)),
+                        vat_rate_id: None,
+                        vat_role: None,
+                    }];
+                    for (bps, (net, vat)) in &groups {
+                        if *net != 0 {
+                            lines.push(NewJournalLine {
+                                coa_id: revenue.id.clone(),
+                                debit_minor: 0,
+                                credit_minor: *net,
+                                currency: currency.clone(),
+                                description: None,
+                                vat_rate_id: rate_for(*bps).map(|r| r.id.clone()),
+                                vat_role: Some(VatRole::OutputBase),
+                            });
+                        }
+                        if *vat != 0 {
+                            let vat_control = vat_control
+                                .as_ref()
+                                .expect("need_vat_control guaranteed Some above");
+                            lines.push(NewJournalLine {
+                                coa_id: vat_control.id.clone(),
+                                debit_minor: 0,
+                                credit_minor: *vat,
+                                currency: currency.clone(),
+                                description: None,
+                                vat_rate_id: rate_for(*bps).map(|r| r.id.clone()),
+                                vat_role: Some(VatRole::OutputVat),
+                            });
+                        }
+                    }
+                    let new = NewJournal {
+                        book_id: book.id.clone(),
+                        posted_date: order.order_date.clone(),
+                        narrative: Some(format!("Sale: order #{}", order.number)),
+                        reference: Some(order.id.clone()),
+                        source_type: JournalSourceType::SalesRevenue,
+                        source_id: Some(order.id.clone()),
+                        lines,
+                    };
+                    Some(self.post_journal_in_tx(tx, book, new, None)?)
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        Ok((cost_journal, revenue_journal))
+    }
+
+    /// Reverse whichever of a confirmed order's two posted journals
+    /// (`SalesCogs`/`SalesRevenue` — see `post_sales_confirm_journals`) are
+    /// still net-live, via `reverse_journal_in_tx` — never an edit or a
+    /// delete. No-ops (not an error) for a leg that never posted in the
+    /// first place (no CoA at confirm time, or nothing to post), and skips a
+    /// leg that is already reversed, so this is itself safe to call more
+    /// than once.
+    fn reverse_sales_confirm_journals(
+        &self,
+        tx: &Connection,
+        book: &Book,
+        order: &SalesOrder,
+        reversal_date: &str,
+    ) -> CoreResult<()> {
+        for source_type in [
+            JournalSourceType::SalesCogs,
+            JournalSourceType::SalesRevenue,
+        ] {
+            for journal_id in repo::ledger::find_journals_by_source(
+                tx,
+                &book.id,
+                source_type.as_str(),
+                &order.id,
+            )? {
+                if !repo::ledger::is_net_reversed(tx, &journal_id)? {
+                    self.reverse_journal_in_tx(
+                        tx,
+                        book,
+                        &journal_id,
+                        Some(reversal_date),
+                        Some(&format!(
+                            "Cancelled: reversing sale order #{}",
+                            order.number
+                        )),
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Post an invoice payment's journal: **DR** bank, **CR**
+    /// accounts-receivable, at the payment amount. `source_id` is the
+    /// payment's own id — freshly generated by `invoice_payment_record` on
+    /// every call, so two genuinely separate payments (a part payment, then
+    /// the balance) each get their own journal; a literal double-call
+    /// replaying the same payment id is what `post_journal_in_tx`'s
+    /// per-source dedup guard stops.
+    fn post_invoice_payment_journal(
+        &self,
+        tx: &Connection,
+        book: &Book,
+        invoice: &Invoice,
+        payment: &InvoicePayment,
+    ) -> CoreResult<Option<PostedJournal>> {
+        if payment.amount_minor == 0 {
+            return Ok(None);
+        }
+        let (bank, ar) = match (
+            self.coa_by_code_opt(tx, &book.id, COA_CODE_BANK)?,
+            self.coa_by_code_opt(tx, &book.id, COA_CODE_AR)?,
+        ) {
+            (Some(bank), Some(ar)) => (bank, ar),
+            _ => return Ok(None),
+        };
+        let currency = normalize_currency_code(&invoice.currency)?;
+        let line = |coa: &CoaAccount, debit: i64, credit: i64| NewJournalLine {
+            coa_id: coa.id.clone(),
+            debit_minor: debit,
+            credit_minor: credit,
+            currency: currency.clone(),
+            description: payment.method.clone(),
+            vat_rate_id: None,
+            vat_role: None,
+        };
+        let new = NewJournal {
+            book_id: book.id.clone(),
+            posted_date: payment.paid_at.clone(),
+            narrative: Some(format!("Payment received: invoice #{}", invoice.number)),
+            reference: Some(payment.id.clone()),
+            source_type: JournalSourceType::InvoicePayment,
+            source_id: Some(payment.id.clone()),
+            lines: vec![
+                line(&bank, payment.amount_minor, 0),
+                line(&ar, 0, payment.amount_minor),
+            ],
+        };
+        Ok(Some(self.post_journal_in_tx(tx, book, new, None)?))
     }
 
     // -----------------------------------------------------------------------
@@ -9004,6 +9422,761 @@ mod tests {
         assert_eq!(report.totals.total_minor, 20_000);
         let _ = not_yet_due.id;
         let _ = overdue.id;
+    }
+
+    // -- Phase 6.6: stock posts to the ledger (ROADMAP.md, migration 0016) --
+
+    fn make_variant_priced(
+        svc: &CoreService,
+        book: &Book,
+        sku: &str,
+        price_minor: i64,
+        cost_price_minor: i64,
+    ) -> ProductVariant {
+        let product = svc
+            .product_create(NewProduct {
+                book_id: book.id.clone(),
+                product_category_id: None,
+                name: "Cola".into(),
+                description: None,
+            })
+            .unwrap();
+        svc.product_variant_add(NewProductVariant {
+            product_id: product.id,
+            sku: sku.into(),
+            name: "330ml can".into(),
+            price_minor: Some(price_minor),
+            cost_price_minor: Some(cost_price_minor),
+            currency: "ZAR".into(),
+            reorder_point: Some(10),
+            attributes: None,
+        })
+        .unwrap()
+    }
+
+    fn find_journal<'a>(
+        journals: &'a [PostedJournal],
+        source_type: JournalSourceType,
+        source_id: &str,
+    ) -> Option<&'a PostedJournal> {
+        journals.iter().find(|j| {
+            j.journal.source_type == source_type
+                && j.journal.source_id.as_deref() == Some(source_id)
+        })
+    }
+
+    fn assert_journal_balances(journal: &PostedJournal) {
+        let debit: i64 = journal.lines.iter().map(|l| l.debit_minor).sum();
+        let credit: i64 = journal.lines.iter().map(|l| l.credit_minor).sum();
+        assert_eq!(
+            debit, credit,
+            "journal {} does not balance: debit {debit} != credit {credit}",
+            journal.journal.id
+        );
+    }
+
+    fn all_journals(svc: &CoreService, book_id: &str) -> Vec<PostedJournal> {
+        svc.journal_list(book_id, "2000-01-01", "2100-01-01")
+            .unwrap()
+    }
+
+    /// **po_receive posts DR inventory / CR accounts-payable, valued at
+    /// exactly the line's cost.**
+    #[test]
+    fn po_receive_posts_inventory_and_accounts_payable() {
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let location = make_location(&svc, &book, "Warehouse");
+        let po = make_po(&svc, &book, &supplier, &location, "PO-1");
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let item = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 10,
+                unit_price_minor: Some(500),
+            })
+            .unwrap();
+
+        let receipt = svc
+            .po_receive(NewPoReceipt {
+                purchase_order_item_id: item.id.clone(),
+                location_id: location.id.clone(),
+                qty: 10,
+                note: None,
+                received_by: None,
+            })
+            .unwrap();
+
+        let journals = all_journals(&svc, &book.id);
+        let posted = find_journal(&journals, JournalSourceType::PoReceipt, &receipt.id)
+            .expect("a goods receipt must post a journal");
+        assert_journal_balances(posted);
+        assert_eq!(posted.lines.len(), 2);
+        let inventory = by_code(&coa, "1200");
+        let ap = by_code(&coa, "2000");
+        assert_eq!(
+            posted
+                .lines
+                .iter()
+                .find(|l| l.coa_id == inventory.id)
+                .unwrap()
+                .debit_minor,
+            5_000,
+            "10 units at 500 minor units each"
+        );
+        assert_eq!(
+            posted
+                .lines
+                .iter()
+                .find(|l| l.coa_id == ap.id)
+                .unwrap()
+                .credit_minor,
+            5_000
+        );
+    }
+
+    /// **sales_order_confirm posts the cost/inventory and revenue/AR/VAT
+    /// legs, and the VAT amount matches the line's tax_rate_bps.**
+    #[test]
+    fn sales_order_confirm_posts_cogs_inventory_ar_revenue_and_vat() {
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let rates = svc.vat_rate_list(&book.id).unwrap();
+        let std = rate(&rates, "STD"); // 15% for the ZA profile
+        let location = make_location(&svc, &book, "Main Branch");
+        let contact = make_contact(&svc, &book, "Acme Retail");
+        let variant = make_variant_priced(&svc, &book, "COLA-330", 2_000, 1_200);
+        svc.stock_movement_record(new_movement(
+            &variant.id,
+            &location.id,
+            50,
+            StockMovementKind::Receipt,
+        ))
+        .unwrap();
+
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: Some(location.id.clone()),
+                order_date: Some("2026-07-01".into()),
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: order.id.clone(),
+            variant_id: Some(variant.id.clone()),
+            description: None,
+            quantity: 3,
+            unit_price_minor: None, // defaults to the variant's price, 2 000
+            tax_rate_bps: Some(1_500),
+        })
+        .unwrap();
+
+        let confirmed = svc.sales_order_confirm(&order.id).unwrap();
+        assert_eq!(confirmed.status, SalesOrderStatus::Confirmed);
+
+        let journals = all_journals(&svc, &book.id);
+
+        let cost = find_journal(&journals, JournalSourceType::SalesCogs, &order.id)
+            .expect("confirm must post the cost/inventory leg");
+        assert_journal_balances(cost);
+        let cogs_coa = by_code(&coa, "5000");
+        let inventory_coa = by_code(&coa, "1200");
+        assert_eq!(
+            cost.lines
+                .iter()
+                .find(|l| l.coa_id == cogs_coa.id)
+                .unwrap()
+                .debit_minor,
+            3_600,
+            "3 units at cost_price_minor 1 200 each"
+        );
+        assert_eq!(
+            cost.lines
+                .iter()
+                .find(|l| l.coa_id == inventory_coa.id)
+                .unwrap()
+                .credit_minor,
+            3_600
+        );
+
+        let revenue = find_journal(&journals, JournalSourceType::SalesRevenue, &order.id)
+            .expect("confirm must post the revenue/AR/VAT leg");
+        assert_journal_balances(revenue);
+        let ar_coa = by_code(&coa, "1100");
+        let rev_coa = by_code(&coa, "4000");
+        let vat_coa = by_code(&coa, "2100");
+        // net = 3 * 2 000 = 6 000, VAT = 15% of 6 000 = 900, gross = 6 900.
+        let rev_line = revenue
+            .lines
+            .iter()
+            .find(|l| l.coa_id == rev_coa.id)
+            .unwrap();
+        assert_eq!(rev_line.credit_minor, 6_000);
+        assert_eq!(rev_line.vat_role, Some(VatRole::OutputBase));
+        let vat_line = revenue
+            .lines
+            .iter()
+            .find(|l| l.coa_id == vat_coa.id)
+            .unwrap();
+        assert_eq!(vat_line.credit_minor, 900);
+        assert_eq!(vat_line.vat_role, Some(VatRole::OutputVat));
+        assert_eq!(vat_line.vat_rate_id.as_deref(), Some(std.id.as_str()));
+        assert_eq!(
+            revenue
+                .lines
+                .iter()
+                .find(|l| l.coa_id == ar_coa.id)
+                .unwrap()
+                .debit_minor,
+            6_900
+        );
+    }
+
+    /// **VAT rounding boundary.** `vat_on_net` is round-half-away-from-zero
+    /// (the exact rule `repo::sales::order_totals` already uses, restated in
+    /// `post_sales_confirm_journals`'s own doc comment) — a line whose VAT is
+    /// not a whole cent must still round to a whole cent, and the journal
+    /// must still balance to that exact cent, never a float's worth of
+    /// drift.
+    #[test]
+    fn sales_confirm_vat_rounds_half_away_from_zero_and_balances_to_the_cent() {
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let contact = make_contact(&svc, &book, "Retail Customer");
+        // A free-text (non-stock) line keeps this test to the revenue/VAT leg
+        // alone — no variant, no cost/inventory journal to reason about.
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: None,
+                order_date: Some("2026-07-05".into()),
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: order.id.clone(),
+            variant_id: None,
+            description: Some("Odd amount".into()),
+            quantity: 1,
+            // 333 * 15% = 49.95 -> rounds to 50 (half away from zero).
+            unit_price_minor: Some(333),
+            tax_rate_bps: Some(1_500),
+        })
+        .unwrap();
+        svc.sales_order_confirm(&order.id).unwrap();
+
+        let journals = all_journals(&svc, &book.id);
+        let revenue = find_journal(&journals, JournalSourceType::SalesRevenue, &order.id).unwrap();
+        assert_journal_balances(revenue);
+        let ar = by_code(&coa, "1100");
+        let rev = by_code(&coa, "4000");
+        let vat = by_code(&coa, "2100");
+        assert_eq!(
+            revenue
+                .lines
+                .iter()
+                .find(|l| l.coa_id == rev.id)
+                .unwrap()
+                .credit_minor,
+            333
+        );
+        assert_eq!(
+            revenue
+                .lines
+                .iter()
+                .find(|l| l.coa_id == vat.id)
+                .unwrap()
+                .credit_minor,
+            50
+        );
+        assert_eq!(
+            revenue
+                .lines
+                .iter()
+                .find(|l| l.coa_id == ar.id)
+                .unwrap()
+                .debit_minor,
+            383
+        );
+    }
+
+    /// **invoice_payment_record posts DR bank / CR accounts-receivable, for
+    /// both a part payment and the balancing full payment.**
+    #[test]
+    fn invoice_payment_record_posts_bank_and_ar_for_part_and_full_payment() {
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let contact = make_contact(&svc, &book, "Acme Retail");
+        let invoice = svc
+            .invoice_issue(NewInvoice {
+                book_id: book.id.clone(),
+                contact_id: Some(contact.id.clone()),
+                sales_order_id: None,
+                series: None,
+                issue_date: None,
+                due_date: "2026-12-31".into(),
+                currency: Some("ZAR".into()),
+                notes: None,
+                items: vec![NewInvoiceItemInput {
+                    variant_id: None,
+                    description: "Retainer".into(),
+                    quantity: 1,
+                    unit_price_minor: 10_000,
+                    tax_rate_bps: None,
+                }],
+            })
+            .unwrap();
+
+        let part = svc
+            .invoice_payment_record(NewInvoicePayment {
+                invoice_id: invoice.id.clone(),
+                amount_minor: 4_000,
+                paid_at: None,
+                method: Some("eft".into()),
+                note: None,
+            })
+            .unwrap();
+        let full = svc
+            .invoice_payment_record(NewInvoicePayment {
+                invoice_id: invoice.id.clone(),
+                amount_minor: 6_000,
+                paid_at: None,
+                method: Some("eft".into()),
+                note: None,
+            })
+            .unwrap();
+
+        let journals = all_journals(&svc, &book.id);
+        let bank = by_code(&coa, "1000");
+        let ar = by_code(&coa, "1100");
+
+        let j1 = find_journal(&journals, JournalSourceType::InvoicePayment, &part.id)
+            .expect("the part payment must post its own journal");
+        assert_journal_balances(j1);
+        assert_eq!(
+            j1.lines
+                .iter()
+                .find(|l| l.coa_id == bank.id)
+                .unwrap()
+                .debit_minor,
+            4_000
+        );
+        assert_eq!(
+            j1.lines
+                .iter()
+                .find(|l| l.coa_id == ar.id)
+                .unwrap()
+                .credit_minor,
+            4_000
+        );
+
+        let j2 = find_journal(&journals, JournalSourceType::InvoicePayment, &full.id)
+            .expect("the balancing payment must post its own, separate journal");
+        assert_journal_balances(j2);
+        assert_eq!(
+            j2.lines
+                .iter()
+                .find(|l| l.coa_id == bank.id)
+                .unwrap()
+                .debit_minor,
+            6_000
+        );
+        assert_eq!(
+            j2.lines
+                .iter()
+                .find(|l| l.coa_id == ar.id)
+                .unwrap()
+                .credit_minor,
+            6_000
+        );
+        assert_ne!(
+            j1.journal.id, j2.journal.id,
+            "two real payments, two real journals"
+        );
+    }
+
+    /// **cancelling a confirmed order reverses both posted journals, and the
+    /// net effect on every account they touched is zero.** Never an edit or
+    /// a delete — `journal_reverse`'s machinery, proven directly by the
+    /// presence of `reversal_of`-linked journals.
+    #[test]
+    fn sales_order_cancel_reverses_confirm_journals_to_net_zero() {
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let location = make_location(&svc, &book, "Main Branch");
+        let contact = make_contact(&svc, &book, "Acme Retail");
+        let variant = make_variant_priced(&svc, &book, "COLA-330", 2_000, 1_200);
+        svc.stock_movement_record(new_movement(
+            &variant.id,
+            &location.id,
+            50,
+            StockMovementKind::Receipt,
+        ))
+        .unwrap();
+
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: Some(location.id.clone()),
+                order_date: Some("2026-07-01".into()),
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: order.id.clone(),
+            variant_id: Some(variant.id.clone()),
+            description: None,
+            quantity: 3,
+            unit_price_minor: None,
+            tax_rate_bps: Some(1_500),
+        })
+        .unwrap();
+        svc.sales_order_confirm(&order.id).unwrap();
+        let cancelled = svc.sales_order_cancel(&order.id).unwrap();
+        assert_eq!(cancelled.status, SalesOrderStatus::Cancelled);
+
+        let journals = all_journals(&svc, &book.id);
+        let reversals: Vec<_> = journals
+            .iter()
+            .filter(|j| j.journal.reversal_of.is_some())
+            .collect();
+        assert_eq!(
+            reversals.len(),
+            2,
+            "both the cost/inventory and revenue/AR/VAT legs must be reversed"
+        );
+        for r in &reversals {
+            assert_journal_balances(r);
+        }
+
+        let tb = svc.report_trial_balance(&book.id).unwrap();
+        for code in ["5000", "1200", "1100", "4000", "2100"] {
+            let account = by_code(&coa, code);
+            let row = tb.iter().find(|r| r.coa_id == account.id);
+            let (debit, credit) = row
+                .map(|r| (r.debit_minor, r.credit_minor))
+                .unwrap_or((0, 0));
+            assert_eq!(
+                debit, credit,
+                "account {code} must net to zero once the confirm is fully reversed"
+            );
+        }
+        let total_debit: i64 = tb.iter().map(|r| r.debit_minor).sum();
+        let total_credit: i64 = tb.iter().map(|r| r.credit_minor).sum();
+        assert_eq!(
+            total_debit, total_credit,
+            "the whole trial balance must still balance"
+        );
+    }
+
+    /// **Idempotence.** The same receipt id can never post twice — the
+    /// scenario a retried call or a bug would produce — even though nothing
+    /// in the public `po_receive` surface can trigger it today (every
+    /// successful receive mints a brand-new receipt id). Exercises the exact
+    /// production code path (`post_po_receipt_journal`, reachable from
+    /// `mod tests` because it lives in this module) against the real
+    /// `post_journal_in_tx` dedup guard, not a re-implementation of it.
+    #[test]
+    fn po_receipt_journal_is_never_posted_twice_for_the_same_receipt() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let location = make_location(&svc, &book, "Warehouse");
+        let po = make_po(&svc, &book, &supplier, &location, "PO-1");
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let item = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 10,
+                unit_price_minor: Some(500),
+            })
+            .unwrap();
+        let receipt = svc
+            .po_receive(NewPoReceipt {
+                purchase_order_item_id: item.id.clone(),
+                location_id: location.id.clone(),
+                qty: 10,
+                note: None,
+                received_by: None,
+            })
+            .unwrap();
+        assert_eq!(
+            all_journals(&svc, &book.id).len(),
+            1,
+            "po_receive must have posted exactly one journal already"
+        );
+
+        let tx = svc.conn_for_test().unchecked_transaction().unwrap();
+        let err = svc
+            .post_po_receipt_journal(&tx, &book, &receipt, &item, &po.currency)
+            .unwrap_err();
+        assert!(
+            matches!(err, CoreError::DuplicateJournal { .. }),
+            "posting the same receipt's journal a second time must be refused, got {err:?}"
+        );
+        tx.rollback().unwrap();
+        assert_eq!(
+            all_journals(&svc, &book.id).len(),
+            1,
+            "the refused second attempt must not have left a second journal behind"
+        );
+    }
+
+    /// **Lock date.** A posting on or before the book's `financial_lock_date`
+    /// is refused, and the refusal rolls back the *whole* trade action — the
+    /// receipt itself is never recorded with no journal behind it.
+    #[test]
+    fn po_receive_refuses_to_post_on_or_before_the_lock_date() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let location = make_location(&svc, &book, "Warehouse");
+        let po = make_po(&svc, &book, &supplier, &location, "PO-1");
+        let variant = make_variant(&svc, &book, "COLA-330");
+        let item = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 10,
+                unit_price_minor: Some(500),
+            })
+            .unwrap();
+
+        // A receipt is always dated "now" — lock the book up to (and
+        // including) today so every receipt from here on falls on-or-before
+        // the lock.
+        let today_str = now_iso()[..10].to_string();
+        svc.book_set_lock_date(&book.id, Some(&today_str)).unwrap();
+
+        let err = svc
+            .po_receive(NewPoReceipt {
+                purchase_order_item_id: item.id.clone(),
+                location_id: location.id.clone(),
+                qty: 10,
+                note: None,
+                received_by: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)));
+        assert_eq!(
+            svc.po_receipts_for_item(&item.id).unwrap().len(),
+            0,
+            "a refused journal must roll back the receipt too, not just itself"
+        );
+        assert_eq!(svc.stock_on_hand(&variant.id, &location.id).unwrap(), 0);
+    }
+
+    /// **Lock date, sales side.** Same guarantee as the purchasing test
+    /// above, exercised through `sales_order_confirm` — a locked accounting
+    /// period refuses the confirm outright, stock deduction included.
+    #[test]
+    fn sales_order_confirm_refuses_to_post_on_or_before_the_lock_date() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let contact = make_contact(&svc, &book, "Acme Retail");
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: None,
+                order_date: Some("2026-06-01".into()),
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: order.id.clone(),
+            variant_id: None,
+            description: Some("Consulting".into()),
+            quantity: 1,
+            unit_price_minor: Some(10_000),
+            tax_rate_bps: Some(1_500),
+        })
+        .unwrap();
+        svc.book_set_lock_date(&book.id, Some("2026-06-30"))
+            .unwrap();
+
+        let err = svc.sales_order_confirm(&order.id).unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)));
+        let reloaded = svc.sales_order_get(&order.id).unwrap();
+        assert_eq!(
+            reloaded.status,
+            SalesOrderStatus::Draft,
+            "a refused journal must roll back the confirm too, not just itself"
+        );
+    }
+
+    /// **Graceful with no chart of accounts.** A personal book, and a
+    /// business book that never ran `coa_seed`, must both still let a trade
+    /// through — the trade succeeds and simply posts nothing, which is a
+    /// deliberate behaviour this test pins down rather than an accident.
+    #[test]
+    fn trade_posts_nothing_when_the_book_has_no_chart_of_accounts() {
+        let svc = svc();
+
+        // Personal book: `GENERIC_PERSONAL_COA`/`personal_coa` never carries
+        // Inventory/AP/AR/Revenue/COGS codes at all, seeded or not.
+        let personal = make_book(&svc);
+        let supplier = make_supplier(&svc, &personal, "Acme Wholesale");
+        let location = make_location(&svc, &personal, "Warehouse");
+        let po = make_po(&svc, &personal, &supplier, &location, "PO-1");
+        let variant = make_variant(&svc, &personal, "COLA-330");
+        let item = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 10,
+                unit_price_minor: Some(500),
+            })
+            .unwrap();
+        svc.po_receive(NewPoReceipt {
+            purchase_order_item_id: item.id.clone(),
+            location_id: location.id.clone(),
+            qty: 10,
+            note: None,
+            received_by: None,
+        })
+        .unwrap();
+        assert_eq!(
+            svc.stock_on_hand(&variant.id, &location.id).unwrap(),
+            10,
+            "the trade must still succeed"
+        );
+        assert!(
+            all_journals(&svc, &personal.id).is_empty(),
+            "no chart of accounts means nothing posts, not an error"
+        );
+
+        // Business book that never called coa_seed.
+        let business = svc
+            .book_create(NewBook {
+                name: "Side biz".into(),
+                kind: BookKind::Business,
+                currency: None,
+                country: Some("ZA".into()),
+                region: None,
+            })
+            .unwrap();
+        let contact = make_contact(&svc, &business, "Retail Customer");
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: business.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: None,
+                order_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: order.id.clone(),
+            variant_id: None,
+            description: Some("Consulting".into()),
+            quantity: 1,
+            unit_price_minor: Some(10_000),
+            tax_rate_bps: Some(1_500),
+        })
+        .unwrap();
+        let confirmed = svc.sales_order_confirm(&order.id).unwrap();
+        assert_eq!(
+            confirmed.status,
+            SalesOrderStatus::Confirmed,
+            "the trade must still succeed"
+        );
+        assert!(
+            all_journals(&svc, &business.id).is_empty(),
+            "an unseeded business book posts nothing, not an error"
+        );
+    }
+
+    /// **The full round trip.** Receive 10 at cost, confirm a sale of 3, and
+    /// the trial balance still balances while the inventory account nets to
+    /// exactly 7 * cost — the number that actually matters, not merely "some
+    /// balance exists".
+    #[test]
+    fn round_trip_receive_then_sell_keeps_trial_balance_balanced() {
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let supplier = make_supplier(&svc, &book, "Acme Wholesale");
+        let customer = make_contact(&svc, &book, "Retail Customer");
+        let location = make_location(&svc, &book, "Warehouse");
+        let cost_minor = 1_200;
+        let variant = make_variant_priced(&svc, &book, "COLA-330", 2_000, cost_minor);
+
+        let po = make_po(&svc, &book, &supplier, &location, "PO-1");
+        let item = svc
+            .po_item_add(NewPurchaseOrderItem {
+                purchase_order_id: po.id.clone(),
+                variant_id: variant.id.clone(),
+                qty_ordered: 10,
+                unit_price_minor: Some(cost_minor),
+            })
+            .unwrap();
+        svc.po_receive(NewPoReceipt {
+            purchase_order_item_id: item.id.clone(),
+            location_id: location.id.clone(),
+            qty: 10,
+            note: None,
+            received_by: None,
+        })
+        .unwrap();
+
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: customer.id.clone(),
+                location_id: Some(location.id.clone()),
+                order_date: Some("2026-07-05".into()),
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: order.id.clone(),
+            variant_id: Some(variant.id.clone()),
+            description: None,
+            quantity: 3,
+            unit_price_minor: None,
+            tax_rate_bps: Some(1_500),
+        })
+        .unwrap();
+        svc.sales_order_confirm(&order.id).unwrap();
+
+        let tb = svc.report_trial_balance(&book.id).unwrap();
+        let total_debit: i64 = tb.iter().map(|r| r.debit_minor).sum();
+        let total_credit: i64 = tb.iter().map(|r| r.credit_minor).sum();
+        assert_eq!(
+            total_debit, total_credit,
+            "the trial balance must still balance"
+        );
+
+        let inventory = by_code(&coa, "1200");
+        let inv_row = tb.iter().find(|r| r.coa_id == inventory.id).unwrap();
+        assert_eq!(
+            inv_row.debit_minor - inv_row.credit_minor,
+            7 * cost_minor,
+            "10 received minus 3 sold, at cost"
+        );
+        assert_eq!(svc.stock_on_hand(&variant.id, &location.id).unwrap(), 7);
     }
 
     // -- budgets ------------------------------------------------------------

@@ -783,17 +783,21 @@ CREATE TABLE journal_lines (
 );
 
 -- table journals
-CREATE TABLE journals (
+CREATE TABLE "journals" (
     id          TEXT PRIMARY KEY,
     book_id     TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     posted_date TEXT NOT NULL,
     narrative   TEXT,
     reference   TEXT,
     source_type TEXT NOT NULL DEFAULT 'manual'
-        CHECK (source_type IN ('manual', 'transaction', 'document', 'opening_balance')),
+        CHECK (source_type IN (
+            'manual', 'transaction', 'document', 'opening_balance',
+            'po_receipt', 'sales_cogs', 'sales_revenue', 'invoice_payment'
+        )),
     source_id   TEXT,
-    created_at  TEXT NOT NULL
-, reversal_of TEXT REFERENCES journals (id));
+    created_at  TEXT NOT NULL,
+    reversal_of TEXT REFERENCES journals (id)
+);
 
 -- table locations
 CREATE TABLE locations (
