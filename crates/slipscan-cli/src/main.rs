@@ -32,6 +32,7 @@ use slipscan_core::domain::{
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
 use slipscan_ingest::bank::import_statement_lines;
+use slipscan_ingest::bank::ofx_statement::{OfxStatementAdapter, OFX_BANK_ID};
 use slipscan_ingest::email::gmail::{GmailConfig, GmailConnector};
 use slipscan_ingest::email::graph::{
     begin_device_login, finish_device_login, GraphConfig, GraphConnector,
@@ -255,18 +256,21 @@ enum Command {
         list_regions: bool,
     },
     /// Import document/statement files (pdf, images, html, csv, ofx). With
-    /// --preset, CSV statements are also parsed into transactions.
+    /// --preset, CSV statements are also parsed into transactions; .ofx
+    /// files parse into transactions on their own (just needs --account).
     Import {
         /// Files to import.
         #[arg(required_unless_present = "list_presets")]
         paths: Vec<PathBuf>,
         /// Statement-preset id (see --list-presets, e.g. za-fnb,
         /// generic-mdy): parse each CSV with this column mapping and import
-        /// the lines as transactions (requires --account).
+        /// the lines as transactions (requires --account). Not used for
+        /// .ofx files — OFX carries its own structure.
         #[arg(long)]
         preset: Option<String>,
         /// Account (id or exact name) the statement lines belong to.
-        /// Required with --preset; create one with `slipscan account add`.
+        /// Required with --preset or with any .ofx path; create one with
+        /// `slipscan account add`.
         #[arg(long)]
         account: Option<String>,
         /// List the statement-preset catalog (grouped by region) and exit.
@@ -2569,19 +2573,31 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             // statement document).
             let preset = match preset.as_deref() {
                 None => None,
-                Some(id) => {
-                    let preset = slipscan_ingest::bank::presets::statement_preset(id)
-                        .ok_or_else(|| {
-                            anyhow!("unknown statement preset {id:?}; see `slipscan import --list-presets`")
-                        })?;
-                    let account = account.as_deref().ok_or_else(|| {
+                Some(id) => Some(
+                    slipscan_ingest::bank::presets::statement_preset(id).ok_or_else(|| {
                         anyhow!(
-                            "--preset needs --account <id-or-name> (create one with \
-                             `slipscan account add`)"
+                            "unknown statement preset {id:?}; see `slipscan import --list-presets`"
                         )
-                    })?;
-                    Some((preset, resolve_account(&svc, &book.id, account)?))
+                    })?,
+                ),
+            };
+            // OFX carries its own column structure, so unlike CSV it needs no
+            // preset — any .ofx path parses into transactions given just
+            // --account.
+            let has_ofx = paths
+                .iter()
+                .any(|p| slipscan_ingest::import::extension_of(p).as_deref() == Some("ofx"));
+            let account = match account.as_deref() {
+                None => {
+                    if preset.is_some() || has_ofx {
+                        bail!(
+                            "statement import (--preset or an .ofx file) needs --account \
+                             <id-or-name> (create one with `slipscan account add`)"
+                        );
+                    }
+                    None
                 }
+                Some(a) => Some(resolve_account(&svc, &book.id, a)?),
             };
             let mut results = Vec::new();
             for path in paths {
@@ -2594,30 +2610,64 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         Err(IngestError::UnsupportedFile(_)) => ("unsupported", None),
                         Err(e) => return Err(e).context(format!("importing {}", path.display())),
                     };
-                let statement = match &preset {
-                    None => None,
-                    Some((preset, account)) => {
-                        let lines =
-                            preset
-                                .adapter_for_path(path)?
-                                .parse_all()
-                                .with_context(|| {
-                                    format!("parsing {} with preset {}", path.display(), preset.id)
-                                })?;
-                        let outcome = import_statement_lines(
-                            &svc,
-                            &book.id,
-                            &account.id,
-                            TransactionSource::Import,
-                            lines,
-                        )?;
-                        Some(serde_json::json!({
-                            "preset": preset.id,
-                            "account_id": account.id,
-                            "transactions_imported": outcome.imported.len(),
-                            "duplicates": outcome.duplicates,
-                            "content_duplicates": outcome.content_duplicates,
-                        }))
+                let is_ofx = slipscan_ingest::import::extension_of(path).as_deref() == Some("ofx");
+                let statement = if is_ofx {
+                    // `account` is guaranteed `Some` here: the pre-flight
+                    // check above refuses to reach this loop otherwise.
+                    let account = account.as_ref().expect("checked above");
+                    let stmt = OfxStatementAdapter::from_path(OFX_BANK_ID, path)
+                        .and_then(|a| a.parse_statement())
+                        .with_context(|| format!("parsing {} as OFX", path.display()))?;
+                    let outcome = import_statement_lines(
+                        &svc,
+                        &book.id,
+                        &account.id,
+                        TransactionSource::Import,
+                        stmt.lines,
+                    )?;
+                    Some(serde_json::json!({
+                        "format": "ofx",
+                        "account_id": account.id,
+                        "currency": stmt.currency,
+                        "ledger_balance_minor": stmt.ledger_balance_minor,
+                        "ledger_balance_date": stmt.ledger_balance_date,
+                        "transactions_imported": outcome.imported.len(),
+                        "duplicates": outcome.duplicates,
+                        "content_duplicates": outcome.content_duplicates,
+                    }))
+                } else {
+                    match &preset {
+                        None => None,
+                        Some(preset) => {
+                            // `account` is guaranteed `Some` here too, by the
+                            // same pre-flight check.
+                            let account = account.as_ref().expect("checked above");
+                            let lines =
+                                preset
+                                    .adapter_for_path(path)?
+                                    .parse_all()
+                                    .with_context(|| {
+                                        format!(
+                                            "parsing {} with preset {}",
+                                            path.display(),
+                                            preset.id
+                                        )
+                                    })?;
+                            let outcome = import_statement_lines(
+                                &svc,
+                                &book.id,
+                                &account.id,
+                                TransactionSource::Import,
+                                lines,
+                            )?;
+                            Some(serde_json::json!({
+                                "preset": preset.id,
+                                "account_id": account.id,
+                                "transactions_imported": outcome.imported.len(),
+                                "duplicates": outcome.duplicates,
+                                "content_duplicates": outcome.content_duplicates,
+                            }))
+                        }
                     }
                 };
                 results.push(serde_json::json!({
@@ -7066,6 +7116,103 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("--account"), "{err}");
+    }
+
+    #[test]
+    fn import_ofx_needs_no_preset_and_parses_through_the_same_core_path() {
+        // Closes ROADMAP's ".ofx is only a recognised extension" gap: an
+        // .ofx file parses into transactions on its own, through
+        // `import_statement_lines` — the same function --preset CSV import
+        // calls — so dedupe and the document store both apply.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("ofx.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let ofx_path = dir.path().join("statement.ofx");
+        std::fs::write(
+            &ofx_path,
+            "OFXHEADER:100\r\n\
+             DATA:OFXSGML\r\n\
+             VERSION:102\r\n\
+             SECURITY:NONE\r\n\
+             ENCODING:USASCII\r\n\
+             CHARSET:1252\r\n\
+             COMPRESSION:NONE\r\n\
+             OLDFILEUID:NONE\r\n\
+             NEWFILEUID:NONE\r\n\
+             \r\n\
+             <OFX>\r\n\
+             <BANKMSGSRSV1>\r\n\
+             <STMTTRNRS>\r\n\
+             <STMTRS>\r\n\
+             <CURDEF>ZAR\r\n\
+             <BANKTRANLIST>\r\n\
+             <STMTTRN>\r\n\
+             <DTPOSTED>20260602\r\n\
+             <TRNAMT>-184.50\r\n\
+             <FITID>OFX-1\r\n\
+             <NAME>CARD PURCHASE WOOLWORTHS\r\n\
+             </STMTTRN>\r\n\
+             <STMTTRN>\r\n\
+             <DTPOSTED>20260603\r\n\
+             <TRNAMT>25000.00\r\n\
+             <FITID>OFX-2\r\n\
+             <NAME>SALARY ACME PTY LTD\r\n\
+             </STMTTRN>\r\n\
+             </BANKTRANLIST>\r\n\
+             <LEDGERBAL>\r\n\
+             <BALAMT>35325.75\r\n\
+             <DTASOF>20260630\r\n\
+             </LEDGERBAL>\r\n\
+             </STMTRS>\r\n\
+             </STMTTRNRS>\r\n\
+             </BANKMSGSRSV1>\r\n\
+             </OFX>\r\n",
+        )
+        .unwrap();
+        let run_cli = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_cli(&["init", "--name", "W", "--region", "generic", "--seed-coa"]).unwrap();
+
+        // No --account: OFX needs one exactly like --preset does.
+        let err = run_cli(&["import", ofx_path.to_str().unwrap()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--account"), "{err}");
+
+        run_cli(&["account", "add", "Cheque"]).unwrap();
+        run_cli(&["import", ofx_path.to_str().unwrap(), "--account", "Cheque"]).unwrap();
+
+        let svc = CoreService::open(&db).unwrap();
+        let book = svc.book_list().unwrap().remove(0);
+        let txns = svc
+            .transaction_list(&book.id, &TransactionFilter::default())
+            .unwrap();
+        assert_eq!(txns.len(), 2, "OFX transactions imported with no --preset");
+        let woolies = txns
+            .iter()
+            .find(|t| t.description.as_deref() == Some("CARD PURCHASE WOOLWORTHS"))
+            .unwrap();
+        assert_eq!(woolies.amount_minor, -18_450, "OFX debit is negative");
+        assert_eq!(woolies.posted_date, "2026-06-02");
+        assert_eq!(woolies.currency, "ZAR", "CURDEF read from the file");
+        let salary = txns
+            .iter()
+            .find(|t| t.description.as_deref() == Some("SALARY ACME PTY LTD"))
+            .unwrap();
+        assert_eq!(salary.amount_minor, 2_500_000, "OFX credit is positive");
+        // The statement document is stored too, same as CSV.
+        assert_eq!(svc.document_list(&book.id, None).unwrap().len(), 1);
+
+        // Re-importing the same file dedupes by FITID — the same
+        // `import_statement_lines` path CSV uses.
+        run_cli(&["import", ofx_path.to_str().unwrap(), "--account", "Cheque"]).unwrap();
+        let txns_again = svc
+            .transaction_list(&book.id, &TransactionFilter::default())
+            .unwrap();
+        assert_eq!(txns_again.len(), 2, "FITID dedupe absorbed the re-import");
     }
 
     /// Bank-alert mail rules end to end through the CLI, exactly as a user

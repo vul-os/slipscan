@@ -15,8 +15,13 @@
 //! banks (FNB, Standard Bank, Capitec, Nedbank, Absa) as the first region,
 //! a `generic` family for common worldwide layouts, and
 //! [`csv_statement::CustomMappingSpec`] for any other bank on day one.
+//!
+//! Second: [`ofx_statement::OfxStatementAdapter`], over OFX 1.x (SGML) and
+//! OFX 2.x (XML) statement exports. OFX carries its own column structure, so
+//! unlike CSV it needs no preset — one adapter reads any bank's export.
 
 pub mod csv_statement;
+pub mod ofx_statement;
 pub mod presets;
 
 use crate::{IngestError, IngestResult};

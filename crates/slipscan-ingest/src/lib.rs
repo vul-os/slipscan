@@ -19,8 +19,9 @@
 //!   column-mapping preset catalog ([`bank::presets`]): SA banks (FNB,
 //!   Standard Bank, Capitec, Nedbank, Absa), a `generic` worldwide family,
 //!   and a custom-mapping constructor
-//!   ([`bank::csv_statement::CustomMappingSpec`]) for any other bank. See
-//!   `docs/BANK-ADAPTERS.md`.
+//!   ([`bank::csv_statement::CustomMappingSpec`]) for any other bank; plus an
+//!   OFX adapter ([`bank::ofx_statement::OfxStatementAdapter`], OFX 1.x and
+//!   2.x, no preset needed). See `docs/BANK-ADAPTERS.md`.
 //! * [`vault`] — how connectors receive credentials: a `use_with`-style
 //!   handoff mirroring the core credential vault. Connectors never load,
 //!   display, or persist secret material themselves; rotated tokens go back

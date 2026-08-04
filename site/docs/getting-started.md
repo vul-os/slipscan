@@ -64,12 +64,15 @@ Every book carries a **region profile** — the data bundle (chart-of-accounts s
 
 Data locations are documented in [CONFIGURATION.md](CONFIGURATION.md#data-locations).
 
-## 2. Import a bank statement (CSV)
+## 2. Import a bank statement (CSV or OFX)
 
-1. Download a statement CSV (or OFX) from your bank's internet banking.
+1. Download a statement from your bank's internet banking — CSV or OFX, whichever it offers.
 2. Create the account the lines belong to (once): `slipscan account add "Cheque"` — it inherits the book currency unless you pass `--currency`.
-3. Import it **with a statement preset**: `slipscan import statement.csv --preset za-fnb --account Cheque`. The preset's column mapping (a region-grouped catalog: SA-bank presets, a `generic` worldwide family — `slipscan import --list-presets` shows all of it; see [BANK-ADAPTERS.md](BANK-ADAPTERS.md#statement-csv-presets--region-data-not-code)) parses the rows into transactions, deduplicated by provider id / content hash, and the file itself is also stored as a bank-statement document. Without `--preset`, the file is stored as a document only.
-4. Honest gaps: the desktop app cannot run preset imports yet, the fully custom column mapping has no CLI flags yet, and there is no OFX parser at all — all tracked in [ROADMAP.md](../ROADMAP.md).
+3. Import it:
+   - **CSV, with a statement preset**: `slipscan import statement.csv --preset za-fnb --account Cheque`. The preset's column mapping (a region-grouped catalog: SA-bank presets, a `generic` worldwide family — `slipscan import --list-presets` shows all of it; see [BANK-ADAPTERS.md](BANK-ADAPTERS.md#statement-csv-presets--region-data-not-code)) parses the rows into transactions. Without `--preset`, a CSV file is stored as a document only.
+   - **OFX, no preset needed**: `slipscan import statement.ofx --account Cheque`. OFX carries its own structure (OFX 1.x and 2.x are both read), so there is no column mapping to choose.
+   Either way the lines are deduplicated (by the bank's own transaction id when present, content hash otherwise) and the file itself is also stored as a bank-statement document.
+4. Honest gaps: the desktop app cannot run statement imports yet (CSV or OFX), the fully custom CSV column mapping has no CLI flags yet, and no adapter automates the download itself — all tracked in [ROADMAP.md](../ROADMAP.md).
 
 For the design of automatic pulls straight from your bank, see [BANK-ADAPTERS.md](BANK-ADAPTERS.md).
 

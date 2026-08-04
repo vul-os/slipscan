@@ -79,7 +79,7 @@ Until your bank has a live adapter, downloaded statement CSVs are the way in —
 2. **The `generic` family** — common single-format layouts (date/description/signed-amount and date/description/debit/credit) in the widespread conventions: ISO and DMY dates, US MM/DD/YYYY, EU dotted dates with decimal comma and `;` delimiters.
 3. **Custom mapping** — a declarative spec (`CustomMappingSpec`: column indices, date format, decimal style, delimiter, debit/credit or signed amounts) that handles any other bank, in any country, on day one. Amount parsing is float-free and knows both `1,234.56` and `1.234,56`.
 
-The statement→transactions path is wired on the CLI: `slipscan import statement.csv --preset za-fnb --account Cheque` parses the rows into transactions (dedup by provider id / content hash) and stores the file as a bank-statement document; `slipscan import --list-presets` prints the catalog grouped by region. **The desktop cannot run a preset import** — `document_import` stores the file and parses nothing — and the custom column mapping has no CLI flags yet. Walkthrough: [GETTING-STARTED.md](GETTING-STARTED.md#2-import-a-bank-statement-csv).
+The statement→transactions path is wired on the CLI: `slipscan import statement.csv --preset za-fnb --account Cheque` parses the rows into transactions (dedup by provider id / content hash) and stores the file as a bank-statement document; `slipscan import --list-presets` prints the catalog grouped by region. **The desktop cannot run a preset import** — `document_import` stores the file and parses nothing — and the custom column mapping has no CLI flags yet. Walkthrough: [GETTING-STARTED.md](GETTING-STARTED.md#2-import-a-bank-statement-csv-or-ofx).
 
 ## Adapter roadmap
 
