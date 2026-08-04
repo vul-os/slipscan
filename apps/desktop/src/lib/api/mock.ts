@@ -2342,8 +2342,20 @@ export const mockApi = {
     q: NewStockMovement,
   ): Promise<StockMovement> => {
     if (q.qty_delta === 0)
-      throw new Error("a stock movement must not be zero");
+      throw new Error("stock movement qty_delta must not be zero");
     const variant = requireVariant(q.variant_id);
+    // Both of these are core guards the mock was missing. A ref_id with no
+    // ref_kind is a pointer with nothing saying what it points at, and a
+    // location from another book would file the movement in the wrong ledger.
+    if (q.ref_id !== undefined && q.ref_kind === undefined)
+      throw new Error(
+        "stock movement has a ref_id but no ref_kind to name what it refers to",
+      );
+    const location = locations.find((l) => l.id === q.location_id);
+    if (location && location.book_id !== variant.book_id)
+      throw new Error(
+        "stock movement location and variant belong to different books",
+      );
     const created: StockMovement = {
       id: id("stkm"),
       book_id: variant.book_id,

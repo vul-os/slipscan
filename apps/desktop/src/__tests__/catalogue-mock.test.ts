@@ -31,6 +31,87 @@ async function productWithVariant(sku: string) {
   return { product, variant };
 }
 
+describe("stock mock guards match core", () => {
+  it("refuses a zero movement, and a ref_id with no ref_kind", async () => {
+    const product = await mockApi.product_create({ book_id: BOOK, name: "P-stock" });
+    const variant = await mockApi.product_variant_add({
+      product_id: product.id,
+      sku: "SKU-STOCK",
+      name: "V",
+      currency: "ZAR",
+    });
+
+    await expect(
+      mockApi.stock_movement_record({
+        variant_id: variant.id,
+        location_id: "loc-1",
+        qty_delta: 0,
+        kind: "adjustment",
+      }),
+    ).rejects.toThrow(/not be zero/);
+
+    // A pointer with nothing saying what it points at.
+    await expect(
+      mockApi.stock_movement_record({
+        variant_id: variant.id,
+        location_id: "loc-1",
+        qty_delta: 5,
+        kind: "receipt",
+        ref_id: "some-doc",
+      }),
+    ).rejects.toThrow(/ref_kind/);
+
+    // With both, it is accepted.
+    const ok = await mockApi.stock_movement_record({
+      variant_id: variant.id,
+      location_id: "loc-1",
+      qty_delta: 5,
+      kind: "receipt",
+      ref_kind: "po_receipt",
+      ref_id: "some-doc",
+    });
+    expect(ok.qty_delta).toBe(5);
+  });
+
+  it("a transfer conserves the total and refuses a same-location move", async () => {
+    const product = await mockApi.product_create({ book_id: BOOK, name: "P-xfer" });
+    const variant = await mockApi.product_variant_add({
+      product_id: product.id,
+      sku: "SKU-XFER",
+      name: "V",
+      currency: "ZAR",
+    });
+    await mockApi.stock_movement_record({
+      variant_id: variant.id,
+      location_id: "loc-a",
+      qty_delta: 10,
+      kind: "receipt",
+    });
+
+    await expect(
+      mockApi.stock_transfer({
+        variant_id: variant.id,
+        from_location_id: "loc-a",
+        to_location_id: "loc-a",
+        qty: 3,
+      }),
+    ).rejects.toThrow(/different locations/);
+
+    const before = await mockApi.stock_on_hand_total({ variant_id: variant.id });
+    const moved = await mockApi.stock_transfer({
+      variant_id: variant.id,
+      from_location_id: "loc-a",
+      to_location_id: "loc-b",
+      qty: 4,
+    });
+    expect(moved.out.qty_delta + moved.in_.qty_delta).toBe(0);
+    expect(await mockApi.stock_on_hand_total({ variant_id: variant.id })).toBe(before);
+    expect(
+      await mockApi.stock_on_hand({ variant_id: variant.id, location_id: "loc-b" }),
+    ).toBe(4);
+  });
+});
+
 describe("catalogue mock delete rules", () => {
   it("deleting a product CASCADES to its variants when none has been traded", async () => {
     const { product, variant } = await productWithVariant("CASCADE-1");
