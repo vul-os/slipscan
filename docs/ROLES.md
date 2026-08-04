@@ -36,6 +36,15 @@ person who was paid to be there.
 `members` gains `status` and a capability set, and `device_peers` gains a
 `member_id`. There is one table of humans, not two.
 
+The strongest argument for this is a property `members` already has and
+`device_peers` does not. `member_remove` refuses to remove a member with
+attributed transactions or splits unless the caller names an explicit
+reassignment target, and `transaction_splits.member_id` is
+`ON DELETE RESTRICT` for the same reason. A member is already a durable
+entity with history that cannot be quietly dropped — which is exactly the
+property this phase exists to give a principal. A fresh `people` table would
+have started with none of it and had to re-earn it.
+
 The cost is real and worth stating: attribution and authority can now never
 diverge. A till operator appears in the same table as the household member
 whose groceries are being categorised. Two flags keep that from becoming a
@@ -113,6 +122,34 @@ stays deferred rather than answered wrongly.
 
 What it costs: every screen has to be rebuilt for touch, and roles must land
 first, because today the only credential is a token that can do everything.
+
+### Two things `members` gets wrong for staff, and must change first
+
+Both are cheap now and expensive later. Nothing has shipped, so the baseline
+schema can still move.
+
+**`UNIQUE (book_id, label)` cannot survive turnover.** Revocation retains the
+row, because audit history points at it. So a departed *Sam Patel* occupies
+the label *Sam Patel* permanently, and the next Sam Patel cannot be added at
+all. A household never meets this — nobody cycles through household members.
+A branch meets it the first time someone is replaced, which is the case this
+phase exists for. The constraint has to become a partial unique index over
+active rows only, so a revoked person keeps their name in the history and
+releases it for the living:
+
+```sql
+CREATE UNIQUE INDEX members_active_label_idx
+    ON members (book_id, label) WHERE status = 'active';
+```
+
+**`member_remove` guards the wrong axis for a principal.** It refuses to
+remove a member with attributed transactions or splits — money history. It
+knows nothing about authority history. A till operator plausibly has *zero*
+attributed transactions, because they operate the till rather than incurring
+household spend, so they pass the check and can be deleted outright, orphaning
+whatever the oplog signed under their id. `member_remove` must also refuse any
+member that is or ever was a `principal`. For those, revocation is the only
+exit, exactly as it already is for a peer key.
 
 ## Open questions
 
