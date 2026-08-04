@@ -2867,6 +2867,11 @@ export const mockApi = {
     q: PoItemUpdateRequest,
   ): Promise<PurchaseOrderItem> => {
     const item = requirePoItem(q.id);
+    // Core refuses this and the mock did not: a cancelled order is finished,
+    // and editing its lines would rewrite what was ordered after the fact.
+    const po = purchaseOrders.find((p) => p.id === item.purchase_order_id);
+    if (po?.status === "cancelled")
+      throw new Error("cannot edit a line on a cancelled purchase order");
     if (q.qty_ordered !== undefined) {
       if (q.qty_ordered <= 0)
         throw new Error("purchase order line quantity must be positive");
