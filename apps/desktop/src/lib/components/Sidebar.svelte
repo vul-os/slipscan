@@ -67,9 +67,12 @@
   class="flex w-14 shrink-0 flex-col border-r border-line bg-panel rail:w-60"
   aria-label="Primary"
 >
-  <!-- brand -->
+  <!-- brand: this is the shell's top bar, and the one place the product
+       gets to say its own name — sized and centred to read as confidently
+       as the rest of the chrome is quiet. A hairline states it as a
+       distinct band, mirroring the one above the footer signature below. -->
   <div
-    class="flex items-center justify-center gap-2.5 px-0 pt-4 pb-3 rail:justify-start rail:px-4"
+    class="flex items-center justify-center border-b border-line px-0 pt-5 pb-4 rail:px-4"
   >
     <!--
       One mark, never two. The mark IS the slash: the wordmark lockup already
@@ -78,16 +81,16 @@
       the two are mutually exclusive.
     -->
     <span
-      class="inline-flex size-8 shrink-0 rounded-[7px] ring-1 ring-line dark:ring-ink-700 rail:hidden [&>svg]:size-8"
+      class="inline-flex size-9 shrink-0 rounded-[8px] ring-1 ring-line dark:ring-ink-700 rail:hidden [&>svg]:size-9"
     >
       {@html logoMark}
     </span>
     <span class="hidden rail:inline-flex">
-      <img src={wordmarkLight} alt="slip/scan" class="h-5 w-auto dark:hidden" />
+      <img src={wordmarkLight} alt="slip/scan" class="h-9 w-auto dark:hidden" />
       <img
         src={wordmarkDark}
         alt="slip/scan"
-        class="hidden h-5 w-auto dark:block"
+        class="hidden h-9 w-auto dark:block"
       />
     </span>
   </div>
@@ -235,6 +238,26 @@
         ></span>
         {health ? `v${health.version}` : "…"}{mockData ? " · mock" : ""}
       </span>
+    </div>
+
+    <!-- footer signature: the same wordmark that opens the rail, quieter and
+         centred, closing the shell the way the brand band above opens it.
+         Decorative — the accessible name already lives on the mark up top —
+         and expanded-rail only, the same gate as the version chip above it,
+         since there is no room to say it twice in a 56px icon rail. -->
+    <div class="hidden items-center justify-center border-t border-line pt-3 rail:flex">
+      <img
+        src={wordmarkLight}
+        alt=""
+        aria-hidden="true"
+        class="h-6 w-auto opacity-70 dark:hidden"
+      />
+      <img
+        src={wordmarkDark}
+        alt=""
+        aria-hidden="true"
+        class="hidden h-6 w-auto opacity-70 dark:block"
+      />
     </div>
   </div>
 </aside>
