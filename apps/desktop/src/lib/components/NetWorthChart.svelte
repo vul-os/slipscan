@@ -7,9 +7,19 @@
    * One series, so no legend — the card title already names it (dataviz
    * convention: a legend earns its place at two series, not one). The line
    * is thin (2px), the fill is a soft gradient down to the chart's own
-   * baseline, and the only labels drawn directly on the chart are the first
-   * and last dates plus the current total at the end-cap — everything else
-   * lives in the hover tooltip so the chart itself stays quiet.
+   * baseline; direct labels are the requested date range, the zero
+   * baseline, the series max and the current total at the end-cap —
+   * everything else lives in the hover tooltip so the chart itself stays
+   * quiet.
+   *
+   * The x-axis spans `rangeFrom`..`rangeTo` — the window the caller actually
+   * asked the backend for — rather than merely the extent of the points that
+   * came back. A book with three months of history inside a twelve-month
+   * request must draw as three months of line sitting in a twelve-month
+   * axis, not as a rescaled line that quietly claims the whole window: the
+   * caller's period label (e.g. "last 12 months") is only honest if the
+   * axis underneath actually shows that period. See Dashboard.svelte, the
+   * "Net worth" card header.
    *
    * `unconvertedNotice` — when a point excluded a currency for lack of a
    * cached exchange rate, that is stated in the caption under the chart,
@@ -21,15 +31,23 @@
   let {
     points,
     currency,
+    rangeFrom,
+    rangeTo,
   }: {
     points: NetWorthPoint[];
     currency: string;
+    /** The `from`/`to` actually requested (`YYYY-MM-DD`), which is what the
+     * axis is drawn to span — see the module doc above. */
+    rangeFrom: string;
+    rangeTo: string;
   } = $props();
 
   const width = 640;
-  const height = 220;
-  const padTop = 16;
-  const padBottom = 28;
+  // Short (not the ~500px-tall near-straight-line this used to render): a
+  // net-worth trend needs to be legible as a shape, not a hero visual.
+  const height = 140;
+  const padTop = 20;
+  const padBottom = 24;
   const padLeft = 8;
   const padRight = 8;
 
@@ -40,8 +58,13 @@
   const domain = $derived.by(() => {
     if (parsed.length === 0) return { tMin: 0, tMax: 1, vMin: 0, vMax: 1 };
     const values = parsed.map((p) => p.total_minor);
-    const tMin = parsed[0].t;
-    const tMax = parsed[parsed.length - 1].t;
+    // The requested window, not the data's own extent — widened (never
+    // narrowed) to the data in the edge case where a point falls outside it,
+    // so a real snapshot is never clipped off the chart.
+    const requestedMin = Date.parse(`${rangeFrom}T00:00:00Z`);
+    const requestedMax = Date.parse(`${rangeTo}T00:00:00Z`);
+    const tMin = Math.min(requestedMin, parsed[0].t);
+    const tMax = Math.max(requestedMax, parsed[parsed.length - 1].t);
     // The baseline always includes zero, so a net-worth line that dips
     // negative is visibly below it rather than silently rescaled to look
     // like the bottom of the chart.
@@ -93,6 +116,18 @@
 
   const last = $derived(coords.length > 0 ? coords[coords.length - 1] : null);
 
+  // -- y-axis reference ----------------------------------------------------
+  //
+  // A shape with no value anywhere near it can only be read as "up" or
+  // "down", never "worth about how much" — this is the minimal reference the
+  // dataviz guide calls for (min/max labels, or a gridline) on an otherwise
+  // deliberately quiet chart: the actual series peak (not the padded domain
+  // ceiling) at the top, and the zero baseline already drawn above.
+  const seriesMax = $derived(
+    parsed.length > 0 ? Math.max(...parsed.map((p) => p.total_minor)) : 0,
+  );
+  const seriesMaxY = $derived(y(seriesMax));
+
   // -- hover / crosshair --------------------------------------------------
 
   let hoverIndex = $state<number | null>(null);
@@ -125,6 +160,22 @@
   const unconvertedCurrencies = $derived(
     Array.from(new Set(points.flatMap((p) => p.unconverted))).sort(),
   );
+
+  // States the axis range actually drawn (rangeFrom..rangeTo), and — only
+  // when it differs — the shorter span the data on record actually covers.
+  // Keeping both true is the point of this component: a short book must
+  // never read, to a screen reader either, as if it had the full window.
+  const chartLabel = $derived.by(() => {
+    if (points.length === 0) return "";
+    const first = points[0]!.as_of_date;
+    const latestPoint = points[points.length - 1]!;
+    const coverage =
+      first === rangeFrom ? "" : ` — on record from ${fmtDate(first)}`;
+    return (
+      `Net worth, ${fmtDate(rangeFrom)} to ${fmtDate(rangeTo)}${coverage}; ` +
+      `latest ${fmtMoney(latestPoint.total_minor, currency)}`
+    );
+  });
 </script>
 
 {#if coords.length > 0}
@@ -133,9 +184,7 @@
       viewBox="0 0 {width} {height}"
       class="block w-full touch-none"
       role="img"
-      aria-label="Net worth from {fmtDate(points[0].as_of_date)} to {fmtDate(
-        points[points.length - 1].as_of_date,
-      )}, ending at {fmtMoney(points[points.length - 1].total_minor, currency)}"
+      aria-label={chartLabel}
       onpointermove={onMove}
       onpointerleave={onLeave}
     >
@@ -146,6 +195,10 @@
         </linearGradient>
       </defs>
 
+      <!-- Minimal y-axis reference: the zero baseline and the series peak,
+           each a hairline gridline drawn *behind* the fill (so it only shows
+           through where the shape doesn't cover it, never cutting across the
+           line), with its value right-aligned at the same edge below. -->
       {#if zeroVisible}
         <line
           x1={padLeft}
@@ -154,6 +207,17 @@
           y2={zeroY}
           stroke="var(--ss-line)"
           stroke-width="1"
+        />
+      {/if}
+      {#if last && seriesMax !== 0}
+        <line
+          x1={padLeft}
+          x2={width - padRight}
+          y1={seriesMaxY}
+          y2={seriesMaxY}
+          stroke="var(--ss-line)"
+          stroke-width="1"
+          opacity="0.6"
         />
       {/if}
 
@@ -191,21 +255,47 @@
         />
       {/if}
 
-      <!-- First/last date only — selective direct labels, not one per point. -->
+      <!-- Axis start/end are the requested window, not merely the data's own
+           extent — so a book with three months of history inside a
+           twelve-month request draws as three months of line sitting in a
+           twelve-month axis, matching whatever period the caller claims
+           above the chart. -->
       <text
         x={padLeft}
         y={height - 8}
         fill="var(--ss-t3)"
         font-size="10.5"
-        text-anchor="start">{fmtDate(points[0].as_of_date)}</text
+        text-anchor="start">{fmtDate(rangeFrom)}</text
       >
       <text
         x={width - padRight}
         y={height - 8}
         fill="var(--ss-t3)"
         font-size="10.5"
-        text-anchor="end">{fmtDate(points[points.length - 1].as_of_date)}</text
+        text-anchor="end">{fmtDate(rangeTo)}</text
       >
+
+      <!-- The reference values themselves, right-aligned at the same edge
+           as their gridline above, so the two read as one small y-axis
+           rather than two disconnected captions. -->
+      {#if zeroVisible}
+        <text
+          x={width - padRight}
+          y={zeroY - 5}
+          fill="var(--ss-t3)"
+          font-size="10.5"
+          text-anchor="end">0</text
+        >
+      {/if}
+      {#if last && seriesMax !== 0}
+        <text
+          x={width - padRight}
+          y={Math.max(11, seriesMaxY - 5)}
+          fill="var(--ss-t3)"
+          font-size="10.5"
+          text-anchor="end">{fmtMoney(seriesMax, currency)}</text
+        >
+      {/if}
     </svg>
 
     {#if hovered}
