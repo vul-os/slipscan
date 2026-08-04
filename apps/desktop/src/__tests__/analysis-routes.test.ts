@@ -366,4 +366,47 @@ describe("Reports", () => {
     expect(text(target)).toContain("Jun 1, 2026 – Jun 30, 2026");
     expect(fatal).toEqual([]);
   }, 20_000);
+
+  /**
+   * Profit & loss and the balance sheet used to be either absent from this
+   * screen (no account-level P&L existed at all) or computed over the
+   * book's ENTIRE history with no period (the two duplicate report
+   * implementations `report_profit_loss`/`report_balance_sheet` in
+   * `slipscan-server/src/ops.rs` were retired for exactly this reason).
+   * This pins that switching the one range control changes both — not just
+   * spending — using the mock's real July/June journal entries, not a
+   * fixture built for the test.
+   */
+  it("scopes profit & loss and the balance sheet to the picked period", async () => {
+    const target = render(Reports as Component);
+    await settle(target);
+
+    const cardByHeading = (heading: string): HTMLElement => {
+      const h2 = [...target.querySelectorAll("h2")].find((h) =>
+        text(h).startsWith(heading),
+      );
+      if (!h2) throw new Error(`no card headed "${heading}"`);
+      return h2.closest("section")!;
+    };
+
+    // "This month" (frozen "now" = 2026-07-20): July's Eskom + fuel expense
+    // journals and the July salary + rent income journals are all in range.
+    const plJuly = cardByHeading("Profit & loss");
+    expect(text(plJuly)).toContain("R 90,600.00"); // income total
+    expect(text(plJuly)).toContain("R 1,626.44"); // expense total
+    expect(text(plJuly)).toContain("R 88,973.56"); // net profit
+    expect(text(cardByHeading("Balance sheet"))).toContain("as of Jul 20, 2026");
+
+    await click(target, button(target, "Last month"));
+
+    // June only has the June-salaries journal — no expense journals at all,
+    // and a smaller income total (July also books the rental income).
+    const plJune = cardByHeading("Profit & loss");
+    const juneText = text(plJune);
+    expect(juneText).toContain("R 83,100.00"); // income total AND net profit
+    expect(juneText).not.toContain("R 90,600.00");
+    expect(juneText).not.toContain("R 88,973.56");
+    expect(text(cardByHeading("Balance sheet"))).toContain("as of Jun 30, 2026");
+    expect(fatal).toEqual([]);
+  }, 20_000);
 });

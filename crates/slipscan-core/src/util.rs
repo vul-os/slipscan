@@ -197,6 +197,33 @@ pub fn days_between(a: &str, b: &str) -> crate::error::CoreResult<i64> {
     Ok((parse_date(a)? - parse_date(b)?).whole_days().abs())
 }
 
+/// Validate an inclusive `[from_date, to_date]` report period: both must be
+/// well-formed `YYYY-MM-DD` dates, and `from_date` must not be after
+/// `to_date`.
+///
+/// Every period report (`report_income_statement`, `report_tax_summary`,
+/// `report_spending_by_month`) calls this before touching the database, so
+/// an inverted range is a refusal rather than a query that silently matches
+/// zero rows — a caller that got `--from`/`--to` backwards gets told, instead
+/// of reading "no activity this period" and believing it.
+///
+/// Not applied to every date-ranged query in this crate: `report_spending`
+/// and the per-member reports predate this helper and (in `report_spending`'s
+/// case) are also called with a synthetic `{month}-31` upper bound by
+/// `slipscan_server::ops::pack_benchmark`, which is not a real calendar date
+/// in every month — adding strict parsing there would break that caller, not
+/// this one.
+pub fn parse_date_range(from_date: &str, to_date: &str) -> crate::error::CoreResult<()> {
+    let from = parse_date(from_date)?;
+    let to = parse_date(to_date)?;
+    if from > to {
+        return Err(crate::error::CoreError::Validation(format!(
+            "invalid range: from_date {from_date:?} is after to_date {to_date:?}"
+        )));
+    }
+    Ok(())
+}
+
 /// Today's date, `YYYY-MM-DD`, UTC — the same day boundary `posted_date`
 /// itself uses everywhere in the schema. Used where a caller wants "as of
 /// now" without pinning an exact instant, e.g. the default `as_of_date` for

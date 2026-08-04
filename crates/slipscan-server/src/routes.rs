@@ -21,10 +21,7 @@ use slipscan_core::device::pairing::PairingInviteMeta;
 use slipscan_core::device::{DeviceIdentity, DevicePeer, DeviceRotation};
 use slipscan_core::secrets::VaultSecretMeta;
 
-use crate::ops::{
-    self, BalanceSheet, BenchmarkReport, InstalledPackEntry, OpsError, PackInstallResult,
-    ProfitAndLoss, TaxReport,
-};
+use crate::ops::{self, BenchmarkReport, InstalledPackEntry, OpsError, PackInstallResult};
 use crate::{ct_eq, hex_decode, token_hash, AppState, AUTH_TOKEN_SETTING};
 
 // ---------------------------------------------------------------------------
@@ -504,6 +501,34 @@ struct MemberReportReq {
     book_id: String,
     from_date: String,
     to_date: String,
+}
+
+/// `report_income_statement`'s request: an inclusive posted-date range —
+/// same `(book_id, from_date, to_date)` shape as `ReportSpendingReq` /
+/// `MemberReportReq`, kept as its own type since it is a distinct report
+/// family (see the comment on `MemberReportReq`).
+#[derive(Debug, Deserialize)]
+struct ReportIncomeStatementReq {
+    book_id: String,
+    from_date: String,
+    to_date: String,
+}
+
+/// `report_tax`'s request: an inclusive posted-date range, one tax period.
+#[derive(Debug, Deserialize)]
+struct ReportTaxReq {
+    book_id: String,
+    from_date: String,
+    to_date: String,
+}
+
+/// `report_balance_sheet`'s request: `as_of_date` defaults to today (UTC)
+/// when omitted — the same default `networth_capture` uses.
+#[derive(Debug, Deserialize)]
+struct BalanceSheetReq {
+    book_id: String,
+    #[serde(default)]
+    as_of_date: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1829,24 +1854,61 @@ async fn report_trial_balance(
     Ok(Json(s.service()?.report_trial_balance(&req.book_id)?))
 }
 
-async fn report_tax(State(s): State<AppState>, Json(req): Json<BookIdReq>) -> ApiResult<TaxReport> {
-    Ok(Json(ops::report_tax(&*s.service()?, &req.book_id)?))
-}
-
-async fn report_profit_loss(
+/// Tax-period summary — output/input tax and the net position over an
+/// inclusive posted-date range, delegating straight to core's
+/// `report_tax_summary` (the report used to be reimplemented here as an
+/// ALL-TIME figure with no period at all; see `crate::ops` module docs).
+async fn report_tax(
     State(s): State<AppState>,
-    Json(req): Json<BookIdReq>,
-) -> ApiResult<ProfitAndLoss> {
-    Ok(Json(ops::report_profit_loss(&*s.service()?, &req.book_id)?))
+    Json(req): Json<ReportTaxReq>,
+) -> ApiResult<TaxPeriodSummary> {
+    Ok(Json(s.service()?.report_tax_summary(
+        &req.book_id,
+        &req.from_date,
+        &req.to_date,
+    )?))
 }
 
+/// Income statement (profit & loss) over an inclusive posted-date range —
+/// core's own `report_income_statement`, not the ALL-TIME duplicate this
+/// route used to serve (see `crate::ops` module docs). `/report_profit_loss`
+/// is kept as a compatibility alias below, the same pattern `/report_vat`
+/// already uses for `report_tax`.
+async fn report_income_statement(
+    State(s): State<AppState>,
+    Json(req): Json<ReportIncomeStatementReq>,
+) -> ApiResult<IncomeStatement> {
+    Ok(Json(s.service()?.report_income_statement(
+        &req.book_id,
+        &req.from_date,
+        &req.to_date,
+    )?))
+}
+
+/// Balance sheet as of a date — `as_of_date` defaults to today when omitted.
+/// Replaces the old ALL-TIME-derived duplicate (see `crate::ops` module
+/// docs); every figure here can now be pinned to a closing date.
 async fn report_balance_sheet(
     State(s): State<AppState>,
-    Json(req): Json<BookIdReq>,
+    Json(req): Json<BalanceSheetReq>,
 ) -> ApiResult<BalanceSheet> {
-    Ok(Json(ops::report_balance_sheet(
-        &*s.service()?,
+    let as_of_date = req.as_of_date.unwrap_or_else(slipscan_core::util::today);
+    Ok(Json(
+        s.service()?
+            .report_balance_sheet(&req.book_id, &as_of_date)?,
+    ))
+}
+
+/// Spending grouped by calendar month and category, over an inclusive
+/// posted-date range — core's `report_spending_by_month`, unrouted until now.
+async fn report_spending_by_month(
+    State(s): State<AppState>,
+    Json(req): Json<ReportSpendingReq>,
+) -> ApiResult<Vec<MonthlySpendingRow>> {
+    Ok(Json(s.service()?.report_spending_by_month(
         &req.book_id,
+        &req.from_date,
+        &req.to_date,
     )?))
 }
 
@@ -2586,11 +2648,17 @@ pub fn app(state: AppState) -> Router {
         .route("/report_member_category", post(report_member_category))
         .route("/report_settle_up", post(report_settle_up))
         .route("/report_trial_balance", post(report_trial_balance))
+        .route("/report_spending_by_month", post(report_spending_by_month))
         // Generic name first; `/report_vat` stays as a compatibility alias
         // ("VAT" wording belongs to region profiles, not the API).
         .route("/report_tax", post(report_tax))
         .route("/report_vat", post(report_tax))
-        .route("/report_profit_loss", post(report_profit_loss))
+        // Generic name first; `/report_profit_loss` stays as a compatibility
+        // alias — same pairing pattern as `/report_vat` above ("profit &
+        // loss" is the accounting-report's colloquial name, "income
+        // statement" is what core itself calls it).
+        .route("/report_income_statement", post(report_income_statement))
+        .route("/report_profit_loss", post(report_income_statement))
         .route("/report_balance_sheet", post(report_balance_sheet))
         .route("/region_list", post(region_list))
         .route("/fx_configure", post(fx_configure))
@@ -5130,6 +5198,7 @@ mod tests {
         // name the local command, because pairing needs a human at the device.
         const INTENDED: &[(&str, &str)] = &[
             ("/report_vat", "report_tax"),
+            ("/report_profit_loss", "report_income_statement"),
             ("/device_pair_invite", "device_pair_refused"),
             ("/device_pair_accept", "device_pair_refused"),
             ("/device_pair_confirm", "device_pair_refused"),
@@ -5605,47 +5674,391 @@ mod tests {
         assert_eq!(point("2026-01-25")["total_minor"], 130_000);
     }
 
+    /// **Every derived ledger report now takes a period, and the period is
+    /// what actually scopes the numbers** — this is the whole point of
+    /// routing core's date-aware `report_income_statement` /
+    /// `report_balance_sheet` / `report_tax_summary` in place of the old
+    /// ALL-TIME duplicates that used to live in `ops.rs` (see that module's
+    /// docs). A fixture with journals on both sides of a period boundary, so
+    /// "the route answers 200" can never pass for the wrong reason.
     #[tokio::test]
-    async fn derived_report_routes_respond() {
+    async fn derived_report_routes_scope_to_a_period() {
         let app = open_app();
         let (_, book) = call(
             &app,
             post_req(
                 "/api/v1/book_create",
-                json!({"name": "Biz", "kind": "business"}),
+                json!({"name": "Biz", "kind": "business", "currency": null, "country": "ZA"}),
                 None,
             ),
         )
         .await;
-        let book_id = book["id"].as_str().unwrap();
-        let (status, _) = call(
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let (_, coa) = call(
             &app,
             post_req("/api/v1/coa_seed", json!({"book_id": book_id}), None),
         )
         .await;
-        assert_eq!(status, StatusCode::OK);
+        let coa = coa.as_array().unwrap().clone();
+        let acct = |code: &str| -> String {
+            coa.iter()
+                .find(|a| a["code"] == code)
+                .unwrap_or_else(|| panic!("no seeded account {code}: {coa:#?}"))["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let bank = acct("1000");
+        let sales = acct("4000");
+        let vat_out = acct("2100");
+        let expense = acct("6100");
 
-        for route in [
-            "/api/v1/report_profit_loss",
-            "/api/v1/report_balance_sheet",
-            "/api/v1/report_tax",
-            "/api/v1/report_vat", // compatibility alias for report_tax
-            "/api/v1/report_trial_balance",
-        ] {
-            let (status, body) =
-                call(&app, post_req(route, json!({"book_id": book_id}), None)).await;
-            assert_eq!(status, StatusCode::OK, "{route}: {body}");
-        }
+        let (_, rates) = call(
+            &app,
+            post_req("/api/v1/vat_rate_list", json!({"book_id": book_id}), None),
+        )
+        .await;
+        let std_rate = rates
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["code"] == "STD")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let post_journal = |date: &str, lines: Value| {
+            post_req(
+                "/api/v1/journal_post",
+                json!({
+                    "book_id": book_id, "posted_date": date, "narrative": "test",
+                    "reference": null, "source_type": "manual", "source_id": null,
+                    "lines": lines,
+                }),
+                None,
+            )
+        };
+
+        // Inside the period (July): a cash sale with output VAT — the figure
+        // every one of these reports must show for July and July alone.
         let (status, _) = call(
             &app,
+            post_journal(
+                "2026-07-15",
+                json!([
+                    {"coa_id": bank, "debit_minor": 11_500, "credit_minor": 0,
+                     "currency": "ZAR", "description": null},
+                    {"coa_id": sales, "debit_minor": 0, "credit_minor": 10_000,
+                     "currency": "ZAR", "description": null,
+                     "vat_rate_id": std_rate, "vat_role": "output_base"},
+                    {"coa_id": vat_out, "debit_minor": 0, "credit_minor": 1_500,
+                     "currency": "ZAR", "description": null,
+                     "vat_rate_id": std_rate, "vat_role": "output_vat"},
+                ]),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // On the boundary itself (2026-07-31): must count as IN the period —
+        // this is the assertion that pins `to_date` as inclusive.
+        let (status, _) = call(
+            &app,
+            post_journal(
+                "2026-07-31",
+                json!([
+                    {"coa_id": expense, "debit_minor": 2_000, "credit_minor": 0,
+                     "currency": "ZAR", "description": null},
+                    {"coa_id": bank, "debit_minor": 0, "credit_minor": 2_000,
+                     "currency": "ZAR", "description": null},
+                ]),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Outside the period entirely (August): must never leak into a July
+        // report — the whole reason these routes used to be broken.
+        let (status, _) = call(
+            &app,
+            post_journal(
+                "2026-08-01",
+                json!([
+                    {"coa_id": expense, "debit_minor": 99_999, "credit_minor": 0,
+                     "currency": "ZAR", "description": null},
+                    {"coa_id": bank, "debit_minor": 0, "credit_minor": 99_999,
+                     "currency": "ZAR", "description": null},
+                ]),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // -- income statement: narrow range excludes August, includes the
+        // boundary day -----------------------------------------------------
+        let (status, pl) = call(
+            &app,
             post_req(
-                "/api/v1/report_profit_loss",
-                json!({"book_id": "nope"}),
+                "/api/v1/report_income_statement",
+                json!({"book_id": book_id, "from_date": "2026-07-01", "to_date": "2026-07-31"}),
                 None,
             ),
         )
         .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(status, StatusCode::OK, "{pl}");
+        assert_eq!(pl["income_total_minor"], 10_000);
+        assert_eq!(
+            pl["expense_total_minor"], 2_000,
+            "to_date must be INCLUSIVE — the 2026-07-31 expense belongs in this report: {pl}"
+        );
+        assert_eq!(pl["net_profit_minor"], 8_000);
+
+        // The `/report_profit_loss` compatibility alias answers identically.
+        let (status, pl_alias) = call(
+            &app,
+            post_req(
+                "/api/v1/report_profit_loss",
+                json!({"book_id": book_id, "from_date": "2026-07-01", "to_date": "2026-07-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(pl_alias, pl);
+
+        // One day short of the boundary: the 07-31 expense must drop out —
+        // proving inclusion above was `to_date`'s doing, not a coincidence.
+        let (status, pl_before_boundary) = call(
+            &app,
+            post_req(
+                "/api/v1/report_income_statement",
+                json!({"book_id": book_id, "from_date": "2026-07-01", "to_date": "2026-07-30"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(pl_before_boundary["expense_total_minor"], 0);
+
+        // A range covering only August sees none of July's income — the
+        // EXCLUDES half of the assertion.
+        let (status, pl_august) = call(
+            &app,
+            post_req(
+                "/api/v1/report_income_statement",
+                json!({"book_id": book_id, "from_date": "2026-08-01", "to_date": "2026-08-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(pl_august["income_total_minor"], 0);
+        assert_eq!(pl_august["expense_total_minor"], 99_999);
+
+        // -- invalid range: refused, not silently answered empty -----------
+        let (status, err) = call(
+            &app,
+            post_req(
+                "/api/v1/report_income_statement",
+                json!({"book_id": book_id, "from_date": "2026-07-31", "to_date": "2026-07-01"}),
+                None,
+            ),
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "an inverted range must be refused, not answered with an empty report: {err}"
+        );
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/report_tax",
+                json!({"book_id": book_id, "from_date": "2026-07-31", "to_date": "2026-07-01"}),
+                None,
+            ),
+        )
+        .await;
+        assert_ne!(status, StatusCode::OK);
+
+        // -- balance sheet: as_of an early date differs from as_of a late one,
+        // and it still balances at both -------------------------------------
+        let (status, bs_before) = call(
+            &app,
+            post_req(
+                "/api/v1/report_balance_sheet",
+                json!({"book_id": book_id, "as_of_date": "2026-07-20"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{bs_before}");
+        assert_eq!(bs_before["assets_total_minor"], 11_500);
+
+        let (status, bs_after) = call(
+            &app,
+            post_req(
+                "/api/v1/report_balance_sheet",
+                json!({"book_id": book_id, "as_of_date": "2026-07-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{bs_after}");
+        assert_eq!(bs_after["assets_total_minor"], 9_500); // the 07-31 expense left the bank
+        assert_ne!(
+            bs_before["assets_total_minor"], bs_after["assets_total_minor"],
+            "as_of_date must change what the balance sheet reports"
+        );
+        for bs in [&bs_before, &bs_after] {
+            assert_eq!(
+                bs["assets_total_minor"],
+                json!(
+                    bs["liabilities_total_minor"].as_i64().unwrap()
+                        + bs["equity_total_minor"].as_i64().unwrap()
+                ),
+                "the trial balance underlying the statement must still balance \
+                 as of this date: {bs}"
+            );
+        }
+
+        // Omitting as_of_date defaults to today rather than erroring.
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/report_balance_sheet",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // -- tax summary: matches only the period's journals ----------------
+        let (status, tax) = call(
+            &app,
+            post_req(
+                "/api/v1/report_tax",
+                json!({"book_id": book_id, "from_date": "2026-07-01", "to_date": "2026-07-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{tax}");
+        assert_eq!(tax["report_name"], "VAT201");
+        assert_eq!(tax["output_vat_minor"], 1_500);
+        assert_eq!(tax["net_vat_minor"], 1_500);
+
+        // Outside the period: the sale's VAT does not leak in.
+        let (status, tax_august) = call(
+            &app,
+            post_req(
+                "/api/v1/report_tax",
+                json!({"book_id": book_id, "from_date": "2026-08-01", "to_date": "2026-08-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(tax_august["output_vat_minor"], 0);
+        assert_eq!(tax_august["net_vat_minor"], 0);
+
+        // `/report_vat` is still the compatibility alias for `/report_tax`.
+        let (status, tax_alias) = call(
+            &app,
+            post_req(
+                "/api/v1/report_vat",
+                json!({"book_id": book_id, "from_date": "2026-07-01", "to_date": "2026-07-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(tax_alias, tax);
+
+        // -- spending by month: newly routed at all, scoped the same way ----
+        let (_, account) = call(
+            &app,
+            post_req(
+                "/api/v1/account_create",
+                json!({"book_id": book_id, "name": "Wallet", "kind": "cash",
+                       "currency": "ZAR", "institution": null,
+                       "account_number_masked": null, "opening_balance_minor": null}),
+                None,
+            ),
+        )
+        .await;
+        let account_id = account["id"].as_str().unwrap().to_string();
+        let post_txn = |date: &str, amount_minor: i64, occurrence: u32| {
+            post_req(
+                "/api/v1/transaction_create",
+                json!({
+                    "book_id": book_id, "account_id": account_id, "source": "manual",
+                    "provider_txn_id": null, "posted_date": date,
+                    "amount_minor": amount_minor, "currency": "ZAR", "merchant": null,
+                    "description": null, "notes": null, "category_id": null,
+                    "document_id": null, "dedupe_occurrence": occurrence,
+                }),
+                None,
+            )
+        };
+        let (status, _) = call(&app, post_txn("2026-07-10", -4_000, 0)).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = call(&app, post_txn("2026-08-10", -7_000, 0)).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, spending) = call(
+            &app,
+            post_req(
+                "/api/v1/report_spending_by_month",
+                json!({"book_id": book_id, "from_date": "2026-07-01", "to_date": "2026-07-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{spending}");
+        let months = spending.as_array().unwrap();
+        assert_eq!(months.len(), 1, "{months:#?}");
+        assert_eq!(months[0]["month"], "2026-07");
+        assert_eq!(
+            months[0]["total_minor"], 4_000,
+            "August's spend must not leak into a July-only report: {months:#?}"
+        );
+
+        // -- trial balance is unaffected (no period concept — see its own
+        // route) --------------------------------------------------------
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/report_trial_balance",
+                json!({"book_id": book_id}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // A missing book is still 404 on every one of these routes.
+        for (route, body) in [
+            (
+                "/api/v1/report_income_statement",
+                json!({"book_id": "nope", "from_date": "2026-01-01", "to_date": "2026-01-31"}),
+            ),
+            ("/api/v1/report_balance_sheet", json!({"book_id": "nope"})),
+            (
+                "/api/v1/report_tax",
+                json!({"book_id": "nope", "from_date": "2026-01-01", "to_date": "2026-01-31"}),
+            ),
+            // report_spending_by_month is NOT in this list: like its sibling
+            // report_spending, it reads straight off `transactions` with no
+            // book_get first, so an unknown book answers an empty report
+            // rather than 404 — pre-existing behaviour, unrelated to periods.
+        ] {
+            let (status, _) = call(&app, post_req(route, body, None)).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{route}");
+        }
     }
 
     // -- Devices (docs/NODES.md): identity only, nothing syncs ------------

@@ -20,7 +20,8 @@ use crate::secrets::{KeyringSecretStore, SecretStore};
 use crate::slip::SlipPayload;
 use crate::util::{
     days_between, merchant_key_from_description, merchant_similarity, new_id,
-    normalize_currency_code, normalize_merchant, now_iso, parse_date, transaction_dedupe_hash,
+    normalize_currency_code, normalize_merchant, now_iso, parse_date, parse_date_range,
+    transaction_dedupe_hash,
 };
 use crate::vat::{split_inclusive, vat_on_net};
 
@@ -5747,13 +5748,16 @@ impl CoreService {
         repo::report::spending(self.conn(), book_id, from_date, to_date)
     }
 
-    /// Spending grouped by calendar month and category.
+    /// Spending grouped by calendar month and category, over an inclusive
+    /// posted-date range. `from_date` must not be after `to_date` — refused
+    /// up front rather than silently answered with zero rows.
     pub fn report_spending_by_month(
         &self,
         book_id: &str,
         from_date: &str,
         to_date: &str,
     ) -> CoreResult<Vec<MonthlySpendingRow>> {
+        parse_date_range(from_date, to_date)?;
         repo::report::spending_by_month(self.conn(), book_id, from_date, to_date)
     }
 
@@ -5764,10 +5768,11 @@ impl CoreService {
         repo::report::trial_balance(self.conn(), book_id, &book.currency)
     }
 
-    /// Income statement (profit & loss) over an inclusive posted-date range,
-    /// computed in the book's base currency (foreign-currency lines are
-    /// excluded, not mixed in — see the trial balance for per-currency
-    /// figures).
+    /// Income statement (profit & loss) over an inclusive posted-date range
+    /// (`from_date` must not be after `to_date`, or this refuses rather than
+    /// silently answering an empty statement), computed in the book's base
+    /// currency (foreign-currency lines are excluded, not mixed in — see the
+    /// trial balance for per-currency figures).
     pub fn report_income_statement(
         &self,
         book_id: &str,
@@ -5775,6 +5780,7 @@ impl CoreService {
         to_date: &str,
     ) -> CoreResult<IncomeStatement> {
         let book = self.book_get(book_id)?;
+        parse_date_range(from_date, to_date)?;
         repo::report::income_statement(self.conn(), book_id, from_date, to_date, &book.currency)
     }
 
@@ -5793,7 +5799,8 @@ impl CoreService {
     /// supply-type totals and the net position — in the book's base
     /// currency (a return is filed in one currency). The report name and
     /// box labels come from the book's region profile (e.g. "VAT201" for
-    /// za, "Tax summary" for generic).
+    /// za, "Tax summary" for generic). `from_date` must not be after
+    /// `to_date`, or this refuses rather than answering an empty return.
     pub fn report_tax_summary(
         &self,
         book_id: &str,
@@ -5801,6 +5808,7 @@ impl CoreService {
         to_date: &str,
     ) -> CoreResult<TaxPeriodSummary> {
         let book = self.book_get(book_id)?;
+        parse_date_range(from_date, to_date)?;
         let profile = crate::region::profile_or_generic(&book.region);
         repo::report::tax_period_summary(
             self.conn(),
@@ -12466,6 +12474,41 @@ mod tests {
             .report_vat201(&book.id, "2026-01-01", "2026-03-31")
             .unwrap();
         assert_eq!(via_alias, vat);
+    }
+
+    /// An inverted range (`to_date` before `from_date`) is a refusal on
+    /// every period report, not a query that silently matches nothing — a
+    /// caller that got `--from`/`--to` backwards must be told, rather than
+    /// reading "no activity this period" and believing it.
+    #[test]
+    fn period_reports_refuse_an_inverted_range() {
+        let svc = svc();
+        let (book, _, _) = fixture_book(&svc);
+
+        assert!(matches!(
+            svc.report_income_statement(&book.id, "2026-02-28", "2026-02-01"),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.report_tax_summary(&book.id, "2026-03-31", "2026-01-01"),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.report_spending_by_month(&book.id, "2026-02-28", "2026-02-01"),
+            Err(CoreError::Validation(_))
+        ));
+
+        // A malformed date is refused the same way, not silently treated as
+        // "before everything" or "after everything".
+        assert!(matches!(
+            svc.report_income_statement(&book.id, "not-a-date", "2026-02-28"),
+            Err(CoreError::Validation(_))
+        ));
+
+        // An equal from/to (a one-day period) is NOT an inverted range.
+        assert!(svc
+            .report_income_statement(&book.id, "2026-02-01", "2026-02-01")
+            .is_ok());
     }
 
     #[test]

@@ -35,7 +35,9 @@ import type {
   FxQuote,
   FxStatus,
   Health,
+  BalanceSheet,
   IncomeExpenseReport,
+  IncomeStatement,
   InstalledPackInfo,
   Invoice,
   InvoiceItem,
@@ -3894,12 +3896,134 @@ export const mockApi = {
     ],
   }),
 
-  report_vat_summary: async (_q: {
+  /**
+   * Real per-account totals from the seeded journal entries, filtered to
+   * the requested range — the same shape (and the same journal rows) the
+   * trial balance below reads, so an income statement and the trial
+   * balance can never quietly disagree about what was posted.
+   */
+  report_income_statement: async (q: {
     book_id: string;
-    period: string;
+    from: string;
+    to: string;
+  }): Promise<IncomeStatement> => {
+    const inRange = journalEntries.filter(
+      (e) => e.entry_date >= q.from && e.entry_date <= q.to,
+    );
+    const byAccount = new Map<string, { debit: number; credit: number }>();
+    for (const e of inRange) {
+      for (const l of e.lines) {
+        const totals = byAccount.get(l.ledger_account_id) ?? {
+          debit: 0,
+          credit: 0,
+        };
+        totals.debit += l.debit_minor;
+        totals.credit += l.credit_minor;
+        byAccount.set(l.ledger_account_id, totals);
+      }
+    }
+    const rowsFor = (kind: "income" | "expense", creditNormal: boolean) =>
+      ledgerAccounts
+        .filter((a) => a.type === kind)
+        .map((a) => {
+          const t = byAccount.get(a.id) ?? { debit: 0, credit: 0 };
+          return {
+            coa_id: a.id,
+            code: a.code,
+            name: a.name,
+            kind: a.type,
+            amount_minor: creditNormal ? t.credit - t.debit : t.debit - t.credit,
+          };
+        })
+        .filter((r) => r.amount_minor !== 0);
+    const income = rowsFor("income", true);
+    const expenses = rowsFor("expense", false);
+    const income_total_minor = income.reduce((s, r) => s + r.amount_minor, 0);
+    const expense_total_minor = expenses.reduce((s, r) => s + r.amount_minor, 0);
+    return {
+      book_id: q.book_id,
+      from_date: q.from,
+      to_date: q.to,
+      currency: "ZAR",
+      income,
+      expenses,
+      income_total_minor,
+      expense_total_minor,
+      net_profit_minor: income_total_minor - expense_total_minor,
+    };
+  },
+
+  /**
+   * As-of totals from the same seeded journal entries — an earlier
+   * `as_of` genuinely sees fewer of them, so this behaves like the real
+   * report rather than a fixed snapshot.
+   */
+  report_balance_sheet: async (q: {
+    book_id: string;
+    as_of?: string;
+  }): Promise<BalanceSheet> => {
+    const asOf = q.as_of ?? "2026-07-17";
+    const upTo = journalEntries.filter((e) => e.entry_date <= asOf);
+    const byAccount = new Map<string, { debit: number; credit: number }>();
+    for (const e of upTo) {
+      for (const l of e.lines) {
+        const totals = byAccount.get(l.ledger_account_id) ?? {
+          debit: 0,
+          credit: 0,
+        };
+        totals.debit += l.debit_minor;
+        totals.credit += l.credit_minor;
+        byAccount.set(l.ledger_account_id, totals);
+      }
+    }
+    const rowsFor = (
+      kind: "asset" | "liability" | "equity" | "income" | "expense",
+      creditNormal: boolean,
+    ) =>
+      ledgerAccounts
+        .filter((a) => a.type === kind)
+        .map((a) => {
+          const t = byAccount.get(a.id) ?? { debit: 0, credit: 0 };
+          return {
+            coa_id: a.id,
+            code: a.code,
+            name: a.name,
+            kind: a.type,
+            amount_minor: creditNormal ? t.credit - t.debit : t.debit - t.credit,
+          };
+        })
+        .filter((r) => r.amount_minor !== 0);
+    const assets = rowsFor("asset", false);
+    const liabilities = rowsFor("liability", true);
+    const equity = rowsFor("equity", true);
+    const income = rowsFor("income", true);
+    const expenses = rowsFor("expense", false);
+    const retained_earnings_minor =
+      income.reduce((s, r) => s + r.amount_minor, 0) -
+      expenses.reduce((s, r) => s + r.amount_minor, 0);
+    return {
+      book_id: q.book_id,
+      as_of_date: asOf,
+      currency: "ZAR",
+      assets,
+      liabilities,
+      equity,
+      retained_earnings_minor,
+      assets_total_minor: assets.reduce((s, r) => s + r.amount_minor, 0),
+      liabilities_total_minor: liabilities.reduce((s, r) => s + r.amount_minor, 0),
+      equity_total_minor:
+        equity.reduce((s, r) => s + r.amount_minor, 0) + retained_earnings_minor,
+    };
+  },
+
+  report_vat_summary: async (q: {
+    book_id: string;
+    from: string;
+    to: string;
   }): Promise<VatSummary> => ({
     book_id: BOOK_ID,
-    period: "2026-07",
+    from: q.from,
+    to: q.to,
     currency: "ZAR",
     // Labels come from the demo book's za profile — data, not code.
     report_name: "VAT201",

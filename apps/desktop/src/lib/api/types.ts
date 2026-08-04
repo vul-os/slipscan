@@ -1206,6 +1206,63 @@ export interface IncomeExpenseReport {
   months: IncomeExpensePoint[];
 }
 
+/** One income/expense account's net movement over a period. */
+export interface IncomeStatementRow {
+  coa_id: string;
+  code: string;
+  name: string;
+  kind: LedgerAccountType;
+  /** Income: credits − debits. Expenses: debits − credits. */
+  amount_minor: number;
+}
+
+/**
+ * Income statement (profit & loss) over an inclusive posted-date range —
+ * core's `report_income_statement`, passed straight through with no
+ * reshaping. Replaces the old ALL-TIME `report_income_expense` chart as the
+ * account-level P&L; that command is still used for the trend chart, which
+ * is intentionally NOT scoped by the report period (see Reports.svelte).
+ */
+export interface IncomeStatement {
+  book_id: string;
+  from_date: string;
+  to_date: string;
+  currency: string;
+  income: IncomeStatementRow[];
+  expenses: IncomeStatementRow[];
+  income_total_minor: number;
+  expense_total_minor: number;
+  net_profit_minor: number;
+}
+
+/** One balance-sheet account's natural-side balance as of a date. */
+export interface BalanceSheetRow {
+  coa_id: string;
+  code: string;
+  name: string;
+  kind: LedgerAccountType;
+  amount_minor: number;
+}
+
+/**
+ * Balance sheet as of a date — core's `report_balance_sheet`. Income/expense
+ * movement up to `as_of_date` is folded into `retained_earnings_minor`
+ * (part of `equity_total_minor`) so the statement always balances:
+ * `assets_total_minor === liabilities_total_minor + equity_total_minor`.
+ */
+export interface BalanceSheet {
+  book_id: string;
+  as_of_date: string;
+  currency: string;
+  assets: BalanceSheetRow[];
+  liabilities: BalanceSheetRow[];
+  equity: BalanceSheetRow[];
+  retained_earnings_minor: number;
+  assets_total_minor: number;
+  liabilities_total_minor: number;
+  equity_total_minor: number;
+}
+
 /** Tax-report box labels, straight from the book's region profile. */
 export interface TaxBoxLabels {
   standard_rated_supplies: string;
@@ -1218,7 +1275,9 @@ export interface TaxBoxLabels {
 
 export interface VatSummary {
   book_id: string;
-  period: string;
+  /** Inclusive posted-date range this summary covers. */
+  from: string;
+  to: string;
   currency: string;
   /** Region-profile report name ("VAT201" for za, "Tax summary" generic). */
   report_name: string;
