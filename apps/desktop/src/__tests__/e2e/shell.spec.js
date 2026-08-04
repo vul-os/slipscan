@@ -142,13 +142,13 @@ test.describe("the rail collapses", () => {
     await open(page);
 
     const links = page.locator("nav a");
-    await expect(links).toHaveCount(11);
+    await expect(links).toHaveCount(13);
     await expect(links.first()).toContainText("Dashboard");
 
     await page.setViewportSize({ width: RAIL_BREAKPOINT - 100, height: 900 });
-    // Same eleven destinations, now icon-only — collapsed must not mean
+    // Same thirteen destinations, now icon-only — collapsed must not mean
     // "some screens are unreachable".
-    await expect(links).toHaveCount(11);
+    await expect(links).toHaveCount(13);
     const railWidth = await page
       .locator("aside")
       .evaluate((el) => el.getBoundingClientRect().width);
@@ -190,7 +190,7 @@ test.describe("accessibility of the shell", () => {
       // `:focus-visible` is a *keyboard* state, and the ring is only owed on
       // controls a keyboard actually reaches.
       const stops = [];
-      for (let i = 0; i < 13; i++) {
+      for (let i = 0; i < 15; i++) {
         await page.keyboard.press("Tab");
         stops.push(
           await page.evaluate(async () => {
@@ -233,6 +233,8 @@ test.describe("accessibility of the shell", () => {
         "#/reconcile",
         "#/payments",
         "#/reports",
+        "#/stock",
+        "#/purchasing",
         "#/packs",
         "#/settings",
       ]);

@@ -17,6 +17,8 @@ export const ROUTES = [
   "reconcile",
   "payments",
   "reports",
+  "stock",
+  "purchasing",
   "packs",
   "settings",
 ] as const;

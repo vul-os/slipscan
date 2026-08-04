@@ -27,6 +27,10 @@ const ROUTES = [
   ["reconcile", "TAKEALOT.COM CPT"],
   ["payments", "RENT-12B"],
   ["reports", "Net refundable"],
+  // Business-only (BookProfile.show_catalogue/show_purchasing); the mock's
+  // one book is personal, so the anchor is the gate itself.
+  ["stock", "Stock is a business feature"],
+  ["purchasing", "Purchasing is a business feature"],
   ["packs", "South African retail merchants"],
   ["settings", "~/SlipScan/personal.slipscan.db"],
 ];
