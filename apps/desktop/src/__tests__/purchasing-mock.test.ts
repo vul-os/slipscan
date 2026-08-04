@@ -94,6 +94,42 @@ describe("purchasing mock rules match core", () => {
     ).rejects.toThrow(/cancelled purchase order/);
   });
 
+  it("applies the same supplier-role and tax rules on UPDATE as on create", async () => {
+    const book = "book-po-update";
+    const customer = await mockApi.contact_add({
+      book_id: book,
+      role: "customer",
+      name: "Buyer only",
+    });
+    const supplier = await mockApi.contact_add({
+      book_id: book,
+      role: "supplier",
+      name: "Real supplier",
+    });
+    const po = await mockApi.po_create({
+      book_id: book,
+      supplier_id: supplier.id,
+      location_id: "loc-1",
+      po_number: "PO-UPD-1",
+      order_date: "2026-01-05",
+      currency: "ZAR",
+    });
+
+    // Reassigning to a customer-only contact is the same mistake as opening
+    // the order that way, and was still possible after create was fixed.
+    await expect(
+      mockApi.po_update({ id: po.id, supplier_id: customer.id }),
+    ).rejects.toThrow(/not marked as a supplier/);
+    await expect(
+      mockApi.po_update({ id: po.id, tax_minor: -1 }),
+    ).rejects.toThrow(/tax must not be negative/);
+
+    // Nothing half-applied.
+    const after = await mockApi.po_get({ po_id: po.id });
+    expect(after.supplier_id).toBe(supplier.id);
+    expect(after.tax_minor).toBe(0);
+  });
+
   it("refuses to edit a line once the order is cancelled", async () => {
     const { po, item } = await poWithLine();
     // Editable while it is still open.

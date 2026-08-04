@@ -2846,7 +2846,13 @@ export const mockApi = {
 
   po_update: async (q: PoUpdateRequest): Promise<PurchaseOrder> => {
     const po = requirePo(q.id);
-    if (q.supplier_id !== undefined) po.supplier_id = q.supplier_id;
+    // The same guards `po_create` applies — reassigning a PO to a
+    // customer-only contact is the same mistake as opening one that way, and
+    // it was possible here after being closed there.
+    if (q.supplier_id !== undefined) {
+      requireSupplierRole(q.supplier_id);
+      po.supplier_id = q.supplier_id;
+    }
     if (q.location_id !== undefined) po.location_id = q.location_id;
     if (q.po_number !== undefined) {
       const poNumber = q.po_number.trim();
@@ -2857,6 +2863,8 @@ export const mockApi = {
     if (q.expected_delivery !== undefined)
       po.expected_delivery = q.expected_delivery ?? null;
     if (q.tax_minor !== undefined) {
+      if (q.tax_minor < 0)
+        throw new Error("purchase order tax must not be negative");
       po.tax_minor = q.tax_minor;
       po.total_minor = po.subtotal_minor + q.tax_minor;
     }
