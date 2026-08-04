@@ -18,18 +18,18 @@
  * it writes outside the repo rather than to a path someone has to remember
  * not to `git add`.
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
-import { readRoutes } from "./routes.mjs";
+import { chromium, type Page } from "playwright";
+import { readRoutes } from "./routes.ts";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = process.env.QA_OUT || join(tmpdir(), "slipscan-qa-shots");
 const BASE = "http://localhost:1420";
-const WIDTHS = [760, 1100, 1520];
+const WIDTHS = [760, 1100, 1520] as const;
 const HEIGHT = 960;
 // Same authority as the gallery — see scripts/routes.mjs. This list used to
 // be inline here too, and was missing `household` and `packs`.
@@ -40,13 +40,15 @@ const ROUTES = readRoutes();
 const LOCALE_TZ = "Africa/Johannesburg";
 const CAPTURE_TIME = "2026-07-16T09:30:00+02:00";
 
-async function serverUp() {
+async function serverUp(): Promise<boolean> {
   try {
     const res = await fetch(BASE, { signal: AbortSignal.timeout(1500) });
     return res.ok;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
-async function waitForServer(deadlineMs = 40_000) {
+async function waitForServer(deadlineMs = 40_000): Promise<void> {
   const t0 = Date.now();
   while (Date.now() - t0 < deadlineMs) {
     if (await serverUp()) return;
@@ -55,8 +57,10 @@ async function waitForServer(deadlineMs = 40_000) {
   throw new Error(`vite dev did not start on ${BASE}`);
 }
 
-async function openRoute(page, route) {
-  await page.goto(`${BASE}/?screenshot=1#/${route}`, { waitUntil: "networkidle" });
+async function openRoute(page: Page, route: string): Promise<void> {
+  await page.goto(`${BASE}/?screenshot=1#/${route}`, {
+    waitUntil: "networkidle",
+  });
   await page.evaluate(() => document.fonts.ready);
   await page.waitForFunction(
     () => document.querySelectorAll('[aria-busy="true"]').length === 0,
@@ -64,14 +68,16 @@ async function openRoute(page, route) {
   await page.waitForTimeout(500);
 }
 
-async function main() {
-  let vite = null;
+async function main(): Promise<void> {
+  let vite: ChildProcess | null = null;
   if (await serverUp()) {
     console.log(`Reusing dev server at ${BASE}`);
   } else {
     console.log("Starting vite dev server…");
     vite = spawn("npx", ["vite", "--port", "1420", "--strictPort"], {
-      cwd: appDir, stdio: "ignore", detached: true,
+      cwd: appDir,
+      stdio: "ignore",
+      detached: true,
     });
     await waitForServer();
   }
@@ -79,7 +85,7 @@ async function main() {
 
   const browser = await chromium.launch();
   try {
-    for (const themeName of ["dark", "light"]) {
+    for (const themeName of ["dark", "light"] as const) {
       for (const width of WIDTHS) {
         const context = await browser.newContext({
           viewport: { width, height: HEIGHT },
@@ -90,7 +96,8 @@ async function main() {
         });
         await context.clock.setFixedTime(new Date(CAPTURE_TIME));
         await context.addInitScript(
-          (t) => localStorage.setItem("slipscan.theme", t), themeName,
+          (t: string) => localStorage.setItem("slipscan.theme", t),
+          themeName,
         );
         const page = await context.newPage();
         for (const route of ROUTES) {
@@ -106,7 +113,9 @@ async function main() {
           await page.keyboard.press("Tab"); // first real control
           await page.keyboard.press("Tab");
           await page.waitForTimeout(200);
-          await page.screenshot({ path: join(OUT, `focus__${width}__${themeName}.png`) });
+          await page.screenshot({
+            path: join(OUT, `focus__${width}__${themeName}.png`),
+          });
           console.log(`  ✓ focus__${width}__${themeName}.png`);
         }
         // Receipt detail expansion (full theme only).
@@ -117,11 +126,20 @@ async function main() {
             // row — see the matching note in screenshot.mjs.
             const row = page.locator("tbody button[aria-expanded]").first();
             await row.click({ timeout: 3000 });
-            await page.waitForSelector('button[aria-expanded="true"]', { timeout: 3000 });
+            await page.waitForSelector('button[aria-expanded="true"]', {
+              timeout: 3000,
+            });
             await page.waitForTimeout(450);
-            await page.screenshot({ path: join(OUT, `receipt-detail__${width}__${themeName}.png`) });
+            await page.screenshot({
+              path: join(OUT, `receipt-detail__${width}__${themeName}.png`),
+            });
             console.log(`  ✓ receipt-detail__${width}__${themeName}.png`);
-          } catch (e) { console.log("  (receipt-detail skipped)", e.message); }
+          } catch (e) {
+            console.log(
+              "  (receipt-detail skipped)",
+              e instanceof Error ? e.message : String(e),
+            );
+          }
         }
         await context.close();
       }
@@ -129,9 +147,16 @@ async function main() {
   } finally {
     await browser.close();
     if (vite) {
-      try { process.kill(-vite.pid, "SIGTERM"); } catch { vite.kill("SIGTERM"); }
+      try {
+        process.kill(-vite.pid!, "SIGTERM");
+      } catch {
+        vite.kill("SIGTERM");
+      }
     }
   }
   console.log("Done ->", OUT);
 }
-main().catch((err) => { console.error(err); process.exit(1); });
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

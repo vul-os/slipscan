@@ -20,7 +20,7 @@ const PORT = Number(process.env.VITE_PORT ?? 1420);
 
 export default defineConfig({
   testDir: "./src/__tests__/e2e",
-  testMatch: "**/*.spec.js",
+  testMatch: "**/*.spec.ts",
 
   // Serial, deliberately. The default (cores/2 workers) starved the workers
   // on an 8-core machine once the app grew to sixteen routes: the suite took

@@ -15,12 +15,12 @@
  * The `?screenshot=1` query param hides the sidebar "mock" badge
  * (see src/lib/components/Sidebar.svelte).
  */
-import { spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
-import { readRoutes } from "./routes.mjs";
+import { chromium, type Page } from "playwright";
+import { readRoutes } from "./routes.ts";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(appDir, "..", "..");
@@ -42,7 +42,7 @@ const CAPTURE_TIME = "2026-07-16T09:30:00+02:00";
 /** Every route, in sidebar order, captured in the dark (brand-first) theme. */
 const ROUTES = readRoutes();
 
-async function serverUp() {
+async function serverUp(): Promise<boolean> {
   try {
     const res = await fetch(BASE, { signal: AbortSignal.timeout(1500) });
     return res.ok;
@@ -51,7 +51,7 @@ async function serverUp() {
   }
 }
 
-async function waitForServer(deadlineMs = 30_000) {
+async function waitForServer(deadlineMs = 30_000): Promise<void> {
   const t0 = Date.now();
   while (Date.now() - t0 < deadlineMs) {
     if (await serverUp()) return;
@@ -61,7 +61,7 @@ async function waitForServer(deadlineMs = 30_000) {
 }
 
 /** Navigate, then wait for fonts + all loaders to settle before capture. */
-async function openRoute(page, route) {
+async function openRoute(page: Page, route: string): Promise<void> {
   await page.goto(`${BASE}/?screenshot=1#/${route}`, {
     waitUntil: "networkidle",
   });
@@ -86,14 +86,14 @@ async function openRoute(page, route) {
   });
 }
 
-function save(page, name) {
+function save(page: Page, name: string): Promise<void> {
   return page
     .screenshot({ path: join(OUT_DIR, `${name}.png`) })
     .then(() => console.log(`  ✓ ${name}.png`));
 }
 
-async function main() {
-  let vite = null;
+async function main(): Promise<void> {
+  let vite: ChildProcess | null = null;
   if (await serverUp()) {
     console.log(`Reusing dev server at ${BASE}`);
   } else {
@@ -111,7 +111,7 @@ async function main() {
 
   const browser = await chromium.launch();
   try {
-    for (const themeName of ["dark", "light"]) {
+    for (const themeName of ["dark", "light"] as const) {
       const context = await browser.newContext({
         viewport: VIEWPORT,
         deviceScaleFactor: 2,
@@ -137,7 +137,7 @@ async function main() {
       // Force the theme deterministically (src/lib/theme.svelte.ts reads
       // this key; index.html applies the class before first paint).
       await context.addInitScript(
-        (t) => localStorage.setItem("slipscan.theme", t),
+        (t: string) => localStorage.setItem("slipscan.theme", t),
         themeName,
       );
       const page = await context.newPage();
@@ -186,7 +186,7 @@ async function main() {
     await browser.close();
     if (vite) {
       try {
-        process.kill(-vite.pid, "SIGTERM");
+        process.kill(-vite.pid!, "SIGTERM");
       } catch {
         vite.kill("SIGTERM");
       }

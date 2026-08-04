@@ -14,11 +14,11 @@
 // No backend: outside Tauri the client serves every call from the in-memory
 // mock dataset (which, like a real install after setup, already has a book).
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const FROZEN_NOW = new Date("2026-07-20T09:00:00Z");
 
-async function open(page, route = "dashboard") {
+async function open(page: Page, route = "dashboard"): Promise<void> {
   await page.clock.setFixedTime(FROZEN_NOW);
   await page.goto(`/#/${route}`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(
@@ -29,7 +29,8 @@ async function open(page, route = "dashboard") {
 }
 
 /** The setup dialog, told apart from the palette by its accessible name. */
-const setupDialog = (page) => page.getByRole("dialog", { name: /set up slipscan/i });
+const setupDialog = (page: Page): Locator =>
+  page.getByRole("dialog", { name: /set up slipscan/i });
 
 test.describe("first-run setup is reachable", () => {
   test("the command palette opens it from any screen", async ({ page }) => {
