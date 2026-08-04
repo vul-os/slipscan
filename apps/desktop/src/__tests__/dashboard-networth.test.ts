@@ -23,7 +23,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount, type Component } from "svelte";
 import Dashboard from "../routes/Dashboard.svelte";
-import { fmtDate, localDate, localMonth, shiftMonth } from "../lib/format";
+import { fmtDate, localDate, localMonth, shiftMonth } from "../lib/util/format";
 
 // Same frozen instant render-smoke.test.ts uses — inside the mock dataset's
 // July 2026 transaction window.

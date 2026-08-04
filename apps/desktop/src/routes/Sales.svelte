@@ -27,7 +27,7 @@
   import { api } from "../lib/api/client";
   import { requireBook } from "../lib/book";
   import { swrLoad } from "../lib/loadCache";
-  import { router } from "../lib/router.svelte";
+  import { router } from "../lib/state/router.svelte";
   import type { Book, BookProfile } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";

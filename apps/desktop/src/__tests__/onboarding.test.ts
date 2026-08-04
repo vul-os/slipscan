@@ -32,7 +32,7 @@ import {
   stepNumber,
   type FirstRunRecord,
   type FirstRunStep,
-} from "../lib/onboarding.svelte";
+} from "../lib/state/onboarding.svelte";
 import type { RegionInfo } from "../lib/api/types";
 
 const FRESH: FirstRunRecord = {
@@ -235,13 +235,13 @@ describe("first-run controller", () => {
       FIRST_RUN_KEY,
       JSON.stringify({ dismissed: true, completed: false }),
     );
-    const dismissed = await import("../lib/onboarding.svelte");
+    const dismissed = await import("../lib/state/onboarding.svelte");
     dismissed.firstRun.consider(0);
     expect(dismissed.firstRun.open).toBe(false);
 
     vi.resetModules();
     localStorage.removeItem(FIRST_RUN_KEY);
-    const fresh = await import("../lib/onboarding.svelte");
+    const fresh = await import("../lib/state/onboarding.svelte");
     fresh.firstRun.consider(1);
     expect(fresh.firstRun.open).toBe(false);
     fresh.firstRun.consider(0);

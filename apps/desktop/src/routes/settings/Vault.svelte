@@ -15,7 +15,7 @@
   import { tick } from "svelte";
   import { api } from "../../lib/api/client";
   import type { VaultCredentialMeta } from "../../lib/api/types";
-  import { fmtDate, fmtRelative } from "../../lib/format";
+  import { fmtDate, fmtRelative } from "../../lib/util/format";
   import EmptyState from "../../lib/components/EmptyState.svelte";
   import Icon from "../../lib/components/Icon.svelte";
   import ConfirmDialog from "../../lib/components/ConfirmDialog.svelte";

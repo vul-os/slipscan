@@ -40,7 +40,7 @@
     fmtRelative,
     localMonth,
     shiftMonth,
-  } from "../lib/format";
+  } from "../lib/util/format";
   import { api } from "../lib/api/client";
   import { requireBook } from "../lib/book";
   import type {

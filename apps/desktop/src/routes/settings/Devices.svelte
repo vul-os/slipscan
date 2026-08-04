@@ -42,7 +42,7 @@
     DeviceRotation,
     PairingInviteMeta,
   } from "../../lib/api/types";
-  import { fmtDate, fmtRelative } from "../../lib/format";
+  import { fmtDate, fmtRelative } from "../../lib/util/format";
   import Badge from "../../lib/components/Badge.svelte";
   import ConfirmDialog from "../../lib/components/ConfirmDialog.svelte";
   import EmptyState from "../../lib/components/EmptyState.svelte";

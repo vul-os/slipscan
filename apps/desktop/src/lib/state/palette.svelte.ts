@@ -15,7 +15,7 @@
  * focus into the new screen instead.
  */
 
-import { rankCommands, type Command } from "./commands";
+import { rankCommands, type Command } from "../commands";
 
 /** Enough rows that scrolling is possible, few enough that ranking matters. */
 const MAX_RESULTS = 40;

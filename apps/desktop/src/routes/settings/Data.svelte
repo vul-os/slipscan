@@ -12,7 +12,7 @@
   import { tick } from "svelte";
   import { api } from "../../lib/api/client";
   import type { DataStatus } from "../../lib/api/types";
-  import { fmtBytes } from "../../lib/format";
+  import { fmtBytes } from "../../lib/util/format";
   import EmptyState from "../../lib/components/EmptyState.svelte";
   import Skeleton from "../../lib/components/Skeleton.svelte";
   import Badge from "../../lib/components/Badge.svelte";

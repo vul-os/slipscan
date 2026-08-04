@@ -4,11 +4,11 @@
   import CommandPalette from "./lib/components/CommandPalette.svelte";
   import FirstRun from "./lib/components/FirstRun.svelte";
   import { api } from "./lib/api/client";
-  import { bookEpoch } from "./lib/books.svelte";
+  import { bookEpoch } from "./lib/state/books.svelte";
   import { GOTO_KEYS } from "./lib/nav";
-  import { firstRun } from "./lib/onboarding.svelte";
-  import { isPaletteChord, palette } from "./lib/palette.svelte";
-  import { router, type RouteId } from "./lib/router.svelte";
+  import { firstRun } from "./lib/state/onboarding.svelte";
+  import { isPaletteChord, palette } from "./lib/state/palette.svelte";
+  import { router, type RouteId } from "./lib/state/router.svelte";
   import Dashboard from "./routes/Dashboard.svelte";
   import Transactions from "./routes/Transactions.svelte";
   import Receipts from "./routes/Receipts.svelte";

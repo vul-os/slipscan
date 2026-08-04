@@ -29,7 +29,7 @@ import {
   matchPreset,
   rangeDays,
   rangeError,
-} from "../lib/daterange";
+} from "../lib/util/daterange";
 import { contrast } from "./helpers/color";
 
 // ---------------------------------------------------------------------------

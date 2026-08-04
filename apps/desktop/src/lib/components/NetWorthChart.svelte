@@ -26,7 +26,7 @@
    * never silently folded into the line.
    */
   import type { NetWorthPoint } from "../api/types";
-  import { fmtDate, fmtMoney } from "../format";
+  import { fmtDate, fmtMoney } from "../util/format";
 
   let {
     points,

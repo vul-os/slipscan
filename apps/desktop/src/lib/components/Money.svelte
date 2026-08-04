@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { fmtMoneyParts } from "../format";
+  import { fmtMoneyParts } from "../util/format";
 
   let {
     amount,

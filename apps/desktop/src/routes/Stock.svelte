@@ -35,9 +35,9 @@
    */
   import { api } from "../lib/api/client";
   import { requireBook } from "../lib/book";
-  import { router } from "../lib/router.svelte";
+  import { router } from "../lib/state/router.svelte";
   import { routeCache } from "../lib/loadCache";
-  import { fmtDate } from "../lib/format";
+  import { fmtDate } from "../lib/util/format";
   import type {
     Book,
     BookProfile,

@@ -23,7 +23,7 @@
     localDate,
     minorToInput,
     parseMoneyInput,
-  } from "../lib/format";
+  } from "../lib/util/format";
   import { swrLoad } from "../lib/loadCache";
   import type { JournalEntry, LedgerAccountType } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";

@@ -15,7 +15,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushSync, mount, unmount, type Component } from "svelte";
 import App from "../App.svelte";
-import { fuzzyPositions, fuzzyScore, highlight } from "../lib/fuzzy";
+import { fuzzyPositions, fuzzyScore, highlight } from "../lib/util/fuzzy";
 import {
   buildCommands,
   groupCommands,
@@ -27,11 +27,11 @@ import {
   type CommandDeps,
 } from "../lib/commands";
 import { GOTO_KEYS, NAV_ITEMS } from "../lib/nav";
-import { clearIntent, peekIntent } from "../lib/intent.svelte";
-import { isPaletteChord, optionId, palette } from "../lib/palette.svelte";
-import { ROUTES, router } from "../lib/router.svelte";
-import { globalSearch } from "../lib/search.svelte";
-import { firstRun } from "../lib/onboarding.svelte";
+import { clearIntent, peekIntent } from "../lib/state/intent.svelte";
+import { isPaletteChord, optionId, palette } from "../lib/state/palette.svelte";
+import { ROUTES, router } from "../lib/state/router.svelte";
+import { globalSearch } from "../lib/state/search.svelte";
+import { firstRun } from "../lib/state/onboarding.svelte";
 import type { Transaction } from "../lib/api/types";
 
 // ---------------------------------------------------------------------------
@@ -710,7 +710,7 @@ describe("command palette in the shell", () => {
 describe("intent hand-off", () => {
   it("is claimed once, by the screen that asked for its kind", async () => {
     const { requestIntent, takeIntent, peekIntent: peek } = await import(
-      "../lib/intent.svelte"
+      "../lib/state/intent.svelte"
     );
     clearIntent();
     requestIntent({ kind: "settings-tab", tab: "data" });

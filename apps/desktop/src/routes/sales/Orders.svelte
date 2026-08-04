@@ -34,7 +34,7 @@
     localDate,
     minorToInput,
     parseMoneyInput,
-  } from "../../lib/format";
+  } from "../../lib/util/format";
   import type {
     Book,
     Contact,

@@ -26,8 +26,8 @@
    */
   import { api } from "../lib/api/client";
   import { requireBook } from "../lib/book";
-  import { router } from "../lib/router.svelte";
-  import { minorToInput, parseMoneyInput } from "../lib/format";
+  import { router } from "../lib/state/router.svelte";
+  import { minorToInput, parseMoneyInput } from "../lib/util/format";
   import type {
     Book,
     BookProfile,

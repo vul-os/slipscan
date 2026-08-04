@@ -24,17 +24,17 @@
    * code, so there is no hardcoded jurisdiction anywhere in this file.
    */
   import { api } from "../api/client";
-  import { bookEpoch } from "../books.svelte";
-  import { fmtBytes } from "../format";
-  import { requestIntent } from "../intent.svelte";
+  import { bookEpoch } from "../state/books.svelte";
+  import { fmtBytes } from "../util/format";
+  import { requestIntent } from "../state/intent.svelte";
   import {
     currencyForRegion,
     currencyOptions,
     firstRun,
     stepNumber,
     FIRST_RUN_STEPS,
-  } from "../onboarding.svelte";
-  import { router } from "../router.svelte";
+  } from "../state/onboarding.svelte";
+  import { router } from "../state/router.svelte";
   import type {
     Book,
     BookKind,

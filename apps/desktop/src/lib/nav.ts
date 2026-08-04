@@ -13,7 +13,7 @@
 
 import type { BookProfile } from "./api/types";
 import type { IconName } from "./icons";
-import type { RouteId } from "./router.svelte";
+import type { RouteId } from "./state/router.svelte";
 
 export interface NavItem {
   route: RouteId;

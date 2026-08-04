@@ -13,14 +13,14 @@
  * pretended a composer opened.
  */
 
-import { fuzzyScore } from "./fuzzy";
+import { fuzzyScore } from "./util/fuzzy";
 import type { IconName } from "./icons";
-import { intentRoute, type Intent } from "./intent.svelte";
+import { intentRoute, type Intent } from "./state/intent.svelte";
 import { NAV_GROUPS } from "./nav";
-import type { RouteId } from "./router.svelte";
-import type { ThemeMode } from "./theme.svelte";
+import type { RouteId } from "./state/router.svelte";
+import type { ThemeMode } from "./state/theme.svelte";
 import type { Transaction } from "./api/types";
-import { fmtDate, fmtMoney } from "./format";
+import { fmtDate, fmtMoney } from "./util/format";
 
 export type CommandKind = "nav" | "action" | "theme" | "recent" | "search";
 

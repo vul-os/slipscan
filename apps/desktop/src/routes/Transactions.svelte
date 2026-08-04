@@ -28,9 +28,9 @@
   import { tick } from "svelte";
   import { api } from "../lib/api/client";
   import { requireBook } from "../lib/book";
-  import { router } from "../lib/router.svelte";
-  import { globalSearch } from "../lib/search.svelte";
-  import { takeIntent } from "../lib/intent.svelte";
+  import { router } from "../lib/state/router.svelte";
+  import { globalSearch } from "../lib/state/search.svelte";
+  import { takeIntent } from "../lib/state/intent.svelte";
   import { routeCache } from "../lib/loadCache";
   import {
     fmtDate,
@@ -39,8 +39,8 @@
     minorToInput,
     monthEnd,
     parseMoneyInput,
-  } from "../lib/format";
-  import type { DateRange } from "../lib/daterange";
+  } from "../lib/util/format";
+  import type { DateRange } from "../lib/util/daterange";
   import type {
     Account,
     Book,

@@ -23,13 +23,13 @@
     type Command,
     type CommandDeps,
   } from "../commands";
-  import { highlight } from "../fuzzy";
-  import { requestIntent } from "../intent.svelte";
-  import { firstRun } from "../onboarding.svelte";
-  import { optionId, palette } from "../palette.svelte";
-  import { router } from "../router.svelte";
-  import { globalSearch } from "../search.svelte";
-  import { theme } from "../theme.svelte";
+  import { highlight } from "../util/fuzzy";
+  import { requestIntent } from "../state/intent.svelte";
+  import { firstRun } from "../state/onboarding.svelte";
+  import { optionId, palette } from "../state/palette.svelte";
+  import { router } from "../state/router.svelte";
+  import { globalSearch } from "../state/search.svelte";
+  import { theme } from "../state/theme.svelte";
   import type { Transaction } from "../api/types";
   import Dialog from "./Dialog.svelte";
   import EmptyState from "./EmptyState.svelte";

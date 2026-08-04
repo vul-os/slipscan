@@ -11,7 +11,7 @@
    * `book.currency` rather than inventing a per-row one.
    */
   import { api } from "../../lib/api/client";
-  import { localDate } from "../../lib/format";
+  import { localDate } from "../../lib/util/format";
   import type { AgedReceivables, Book } from "../../lib/api/types";
   import EmptyState from "../../lib/components/EmptyState.svelte";
   import Skeleton from "../../lib/components/Skeleton.svelte";

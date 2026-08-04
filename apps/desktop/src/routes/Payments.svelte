@@ -34,7 +34,7 @@
     PayMatch,
     PayWatch,
   } from "../lib/api/types";
-  import { fmtMoney, fmtRelative, parseMoneyInput } from "../lib/format";
+  import { fmtMoney, fmtRelative, parseMoneyInput } from "../lib/util/format";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";

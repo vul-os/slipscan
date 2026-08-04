@@ -26,7 +26,7 @@
     monthEnd,
     parseMoneyInput,
     shiftMonth,
-  } from "../lib/format";
+  } from "../lib/util/format";
   import { swrLoad } from "../lib/loadCache";
   import type {
     Book,

@@ -25,7 +25,7 @@
     rangeDays,
     rangeError,
     type DateRange,
-  } from "../daterange";
+  } from "../util/daterange";
   import Icon from "./Icon.svelte";
 
   let {

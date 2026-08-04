@@ -9,7 +9,7 @@
    * owns and saves, so `settings` is bound rather than copied.
    */
   import { api } from "../../lib/api/client";
-  import { router } from "../../lib/router.svelte";
+  import { router } from "../../lib/state/router.svelte";
   import type {
     Account,
     Book,
@@ -18,7 +18,7 @@
     InstalledPackInfo,
     Settings,
   } from "../../lib/api/types";
-  import { fmtRelative } from "../../lib/format";
+  import { fmtRelative } from "../../lib/util/format";
   import EmptyState from "../../lib/components/EmptyState.svelte";
   import Badge from "../../lib/components/Badge.svelte";
   import Icon from "../../lib/components/Icon.svelte";

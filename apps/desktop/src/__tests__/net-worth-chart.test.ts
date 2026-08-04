@@ -18,7 +18,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mount, unmount, type Component } from "svelte";
 import NetWorthChart from "../lib/components/NetWorthChart.svelte";
 import type { NetWorthPoint } from "../lib/api/types";
-import { fmtDate, fmtMoney } from "../lib/format";
+import { fmtDate, fmtMoney } from "../lib/util/format";
 
 let mounted: Array<() => void> = [];
 

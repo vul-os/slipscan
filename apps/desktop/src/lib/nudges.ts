@@ -8,7 +8,7 @@
  * detection.
  */
 import type { BudgetWithSpend, Category, Transaction } from "./api/types";
-import { fmtMoney, localMonth } from "./format";
+import { fmtMoney, localMonth } from "./util/format";
 
 export type NudgeKind = "budget" | "duplicate" | "subscription";
 export type NudgeSeverity = "info" | "warning" | "danger";

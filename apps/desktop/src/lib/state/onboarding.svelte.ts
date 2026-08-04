@@ -47,7 +47,7 @@
  * the profile the user chose without re-reading it off the book.
  */
 
-import type { RegionInfo } from "./api/types";
+import type { RegionInfo } from "../api/types";
 
 export const FIRST_RUN_STEPS = [
   "welcome",

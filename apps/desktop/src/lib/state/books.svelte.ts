@@ -11,7 +11,7 @@
  * cache and remounts the current screen. It is not a store of books — the
  * screens still fetch their own — it is only the signal that they must.
  */
-import { routeCache } from "./loadCache";
+import { routeCache } from "../loadCache";
 
 class BookEpoch {
   /** Incremented on every book creation; part of the shell's remount key. */

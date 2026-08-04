@@ -11,9 +11,9 @@
    */
   import { api } from "../../lib/api/client";
   import { currentBook } from "../../lib/book";
-  import { bookEpoch } from "../../lib/books.svelte";
-  import { currencyForRegion, currencyOptions } from "../../lib/onboarding.svelte";
-  import { theme, type ThemeMode } from "../../lib/theme.svelte";
+  import { bookEpoch } from "../../lib/state/books.svelte";
+  import { currencyForRegion, currencyOptions } from "../../lib/state/onboarding.svelte";
+  import { theme, type ThemeMode } from "../../lib/state/theme.svelte";
   import type {
     Book,
     BookKind,

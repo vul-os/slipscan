@@ -2,14 +2,14 @@
   import logoMark from "../../assets/logo-mark.svg?raw";
   import wordmarkLight from "../../assets/logo-wordmark.svg";
   import wordmarkDark from "../../assets/logo-wordmark-dark.svg";
-  import { router } from "../router.svelte";
-  import { theme, type ThemeMode } from "../theme.svelte";
+  import { router } from "../state/router.svelte";
+  import { theme, type ThemeMode } from "../state/theme.svelte";
   import { api, isTauri } from "../api/client";
-  import { bookEpoch } from "../books.svelte";
+  import { bookEpoch } from "../state/books.svelte";
   import { currentBook } from "../book";
   import { apiStatus } from "../api/status.svelte";
   import { NAV_GROUPS } from "../nav";
-  import { palette } from "../palette.svelte";
+  import { palette } from "../state/palette.svelte";
   import type { Book, BookProfile, Health } from "../api/types";
   import type { IconName } from "../icons";
   import Icon from "./Icon.svelte";

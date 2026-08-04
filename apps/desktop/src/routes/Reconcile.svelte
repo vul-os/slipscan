@@ -23,8 +23,8 @@
   import { api } from "../lib/api/client";
   import { requireBook } from "../lib/book";
   import { routeCache } from "../lib/loadCache";
-  import { fmtMoney, fmtPct } from "../lib/format";
-  import { takeIntent } from "../lib/intent.svelte";
+  import { fmtMoney, fmtPct } from "../lib/util/format";
+  import { takeIntent } from "../lib/state/intent.svelte";
   import type { ReconSuggestion } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
