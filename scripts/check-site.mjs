@@ -145,7 +145,18 @@ async function main() {
       const ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
       const pg = await ctx.newPage();
       const failed = [], bad = [], errors = [];
-      pg.on('requestfailed', (r) => failed.push(`${r.url()} — ${r.failure()?.errorText}`));
+      // `net::ERR_ABORTED` means the request was CANCELLED, not that the
+      // resource is missing — flipping an <img> src supersedes the in-flight
+      // load for the previous one. It is not evidence of a broken capture
+      // path, and counting it made this check fail about one run in four,
+      // which is worse than not having it: a gate that fails randomly teaches
+      // people to re-run until green. A genuinely missing file still fails,
+      // via the >= 400 response check below or a non-aborted error here.
+      pg.on('requestfailed', (r) => {
+        const why = r.failure()?.errorText ?? '';
+        if (why.includes('net::ERR_ABORTED')) return;
+        failed.push(`${r.url()} — ${why}`);
+      });
       pg.on('response', (r) => { if (r.status() >= 400) bad.push(`${r.status()} ${r.url()}`); });
       pg.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
       pg.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
@@ -153,11 +164,19 @@ async function main() {
       await pg.goto(url, { waitUntil: 'networkidle' });
       // Walk the gallery and flip the theme: both fetch lazily, so a broken
       // capture path only shows up if something actually asks for it.
-      await pg.evaluate(() => {
+      // Paced, not hammered. Clicking 13 times in one synchronous loop
+      // superseded every image before it finished loading, so the walk proved
+      // nothing about whether those captures exist — the point of walking it.
+      // A beat between clicks lets each one actually load and be checked.
+      const shots = await pg.evaluate(() => {
         const next = document.getElementById('galNext');
-        if (next) for (let i = 0; i < 13; i++) next.click();
-        const t = document.getElementById('themeBtn'); if (t) t.click();
+        return next ? 13 : 0;
       });
+      for (let i = 0; i < shots; i++) {
+        await pg.evaluate(() => document.getElementById('galNext')?.click());
+        await pg.waitForTimeout(120);
+      }
+      await pg.evaluate(() => { const t = document.getElementById('themeBtn'); if (t) t.click(); });
       await pg.waitForTimeout(2500);
       // Every docs chapter, including the built-in one, has to render.
       if (page === 'docs.html') {
