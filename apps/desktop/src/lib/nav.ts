@@ -11,6 +11,7 @@
  * (pinned by a test).
  */
 
+import type { BookProfile } from "./api/types";
 import type { IconName } from "./icons";
 import type { RouteId } from "./router.svelte";
 
@@ -25,6 +26,14 @@ export interface NavItem {
    * label. Search-only: never rendered, so they can be blunt.
    */
   keywords: string;
+  /**
+   * A `BookProfile` flag gating this destination — omitted for one every
+   * book shows. A personal book resolves every business-only flag to
+   * `false`, so the sidebar hides the entry (Sidebar.svelte) and the screen
+   * itself refuses the route when it is opened directly (by hash, or from
+   * the command palette) rather than through the rail.
+   */
+  requires?: keyof BookProfile;
 }
 
 export interface NavGroup {
@@ -34,7 +43,7 @@ export interface NavGroup {
 
 /**
  * More destinations than reads as one list, so the rail is grouped: what the
- * money did, what the books say, what the business trades, and what the
+ * money did, what the business trades, what the books say, and what the
  * machine is set up with.
  */
 export const NAV_GROUPS: NavGroup[] = [
@@ -79,6 +88,54 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    // Business-only destinations, gated by `BookProfile` — a personal book
+    // resolves every `requires` flag below to `false`, so this whole group
+    // renders with zero visible items and Sidebar.svelte drops it rather
+    // than showing an empty heading. Order within the group, across every
+    // agent adding to it: Contacts, Catalogue, Stock, Purchasing, Sales.
+    heading: "Trade",
+    items: [
+      {
+        route: "contacts",
+        label: "Contacts",
+        icon: "contacts",
+        key: "N",
+        keywords:
+          "customers suppliers parties company email phone address credit terms",
+        requires: "show_contacts",
+      },
+      {
+        route: "catalogue",
+        label: "Catalogue",
+        icon: "catalogue",
+        // Not "G": that is the jump chord's own trigger key, and pairing it
+        // with itself (press G, then G again) works mechanically but reads
+        // as a typo waiting to happen.
+        key: "U",
+        keywords:
+          "products variants sku price cost reorder point category attributes",
+        requires: "show_catalogue",
+      },
+      {
+        route: "stock",
+        label: "Stock",
+        icon: "layers",
+        key: "I",
+        keywords:
+          "inventory on hand levels warehouse count adjustment transfer low reorder variants",
+        requires: "show_catalogue",
+      },
+      {
+        route: "purchasing",
+        label: "Purchasing",
+        icon: "truck",
+        key: "O",
+        keywords: "purchase orders suppliers goods receipt receiving po",
+        requires: "show_purchasing",
+      },
+    ],
+  },
+  {
     heading: "Books",
     items: [
       {
@@ -109,33 +166,6 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: "reports",
         key: "P",
         keywords: "vat tax spending income expense trial balance export csv",
-      },
-    ],
-  },
-  {
-    // Business-only, gated on the book profile at the screen level
-    // (`BookProfile.show_catalogue`/`show_purchasing`) rather than hidden
-    // from the rail — a personal book still sees the destination and is told
-    // why it is empty, the same pattern Settings › General already states
-    // for these groups (ROADMAP.md "Phase 6.0" doc comment: "the screens
-    // they would gate are 6.9"). Order within this heading, across every
-    // agent adding to it: Contacts, Catalogue, Stock, Purchasing, Sales.
-    heading: "Trade",
-    items: [
-      {
-        route: "stock",
-        label: "Stock",
-        icon: "layers",
-        key: "I",
-        keywords:
-          "inventory on hand levels warehouse count adjustment transfer low reorder variants",
-      },
-      {
-        route: "purchasing",
-        label: "Purchasing",
-        icon: "truck",
-        key: "U",
-        keywords: "purchase orders suppliers goods receipt receiving po",
       },
     ],
   },

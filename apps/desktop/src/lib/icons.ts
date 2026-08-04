@@ -85,6 +85,12 @@ export const icons = {
   /** Delivery truck — incoming goods (Purchasing nav item). */
   truck:
     '<rect x="2.5" y="8" width="11" height="7.5" rx="1"/><path d="M13.5 10.5H17l3.5 3v2H13.5z"/><circle cx="7" cy="18" r="1.6"/><circle cx="17" cy="18" r="1.6"/>',
+  /** Trade — contacts: a person, for customers and suppliers alike. */
+  contacts:
+    '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-4.1 3.1-6.5 7-6.5s7 2.4 7 6.5"/>',
+  /** Trade — catalogue: a price tag, for products and variants. */
+  catalogue:
+    '<path d="M20.5 13.4 13.4 20.5a2 2 0 0 1-2.8 0l-7.1-7.1a2 2 0 0 1-.6-1.4V5.5a2 2 0 0 1 2-2H11a2 2 0 0 1 1.4.6l7.1 7.1a2 2 0 0 1 0 2.8z"/><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"/>',
 } as const;
 
 export type IconName = keyof typeof icons;
