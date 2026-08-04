@@ -118,6 +118,13 @@ impl From<CoreError> for ApiError {
             | CoreError::UnbalancedJournal { .. } => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "validation")
             }
+            // Period close: a refusal to lock over a problem (named reasons
+            // in the message) is the same "precondition, not a fault"
+            // posture as `UnbalancedJournal`; reopening a book that was
+            // never closed has nothing to undo, so it is a 404 like any
+            // other "there is no such thing here" refusal.
+            CoreError::CloseBlocked { .. } => (StatusCode::UNPROCESSABLE_ENTITY, "close_blocked"),
+            CoreError::NotClosed => (StatusCode::NOT_FOUND, "not_closed"),
             CoreError::Json(_) => (StatusCode::BAD_REQUEST, "invalid_json"),
             // FX: not configured is a user-precondition (set the OpenRate URL
             // first), an unknown pair is a missing rate, and transport/parse
@@ -336,6 +343,25 @@ struct BookLockDateReq {
     /// `null` clears the lock date.
     #[serde(default)]
     lock_date: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClosePeriodReq {
+    book_id: String,
+    /// `YYYY-MM-DD`, inclusive — the date the close would seal through.
+    to_date: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReopenPeriodReq {
+    book_id: String,
+    /// Required — reopening a closed period is a deliberate act, never a
+    /// side effect.
+    reason: String,
+    /// Reopen back to this date instead of clearing the lock entirely.
+    /// Must be strictly before the current lock date.
+    #[serde(default)]
+    to_date: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -974,6 +1000,41 @@ async fn book_set_lock_date(
     Ok(Json(s.service()?.book_set_lock_date(
         &req.book_id,
         req.lock_date.as_deref(),
+    )?))
+}
+
+/// Preview closing the period through `to_date` — every check
+/// `close_period` performs, with no mutation whatsoever.
+async fn close_period_check(
+    State(s): State<AppState>,
+    Json(req): Json<ClosePeriodReq>,
+) -> ApiResult<ClosePeriodReport> {
+    Ok(Json(
+        s.service()?
+            .close_period_check(&req.book_id, &req.to_date)?,
+    ))
+}
+
+/// Close the period through `to_date`. Advances the book's financial lock
+/// date on success; refuses (422 `close_blocked`, reasons in the message)
+/// when the trial balance does not balance or the range is already closed.
+async fn close_period(
+    State(s): State<AppState>,
+    Json(req): Json<ClosePeriodReq>,
+) -> ApiResult<ClosePeriodReport> {
+    Ok(Json(s.service()?.close_period(&req.book_id, &req.to_date)?))
+}
+
+/// Reopen a closed period — a deliberate, audited act. `reason` is
+/// required.
+async fn reopen_period(
+    State(s): State<AppState>,
+    Json(req): Json<ReopenPeriodReq>,
+) -> ApiResult<Book> {
+    Ok(Json(s.service()?.reopen_period(
+        &req.book_id,
+        req.to_date.as_deref(),
+        &req.reason,
     )?))
 }
 
@@ -2564,6 +2625,9 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/journal_reverse", post(journal_reverse))
         .route("/book_set_lock_date", post(book_set_lock_date))
+        .route("/close_period_check", post(close_period_check))
+        .route("/close_period", post(close_period))
+        .route("/reopen_period", post(reopen_period))
         .route("/po_create", post(po_create))
         .route("/po_get", post(po_get))
         .route("/po_list", post(po_list))
@@ -2847,6 +2911,113 @@ mod tests {
             "book_set_lock_date clear: {cleared}"
         );
         assert_eq!(cleared["financial_lock_date"], Value::Null);
+    }
+
+    /// Period close end to end over HTTP: a dry run that mutates nothing, a
+    /// real close that locks the book and then blocks re-closing the same
+    /// range (422 `close_blocked`), and a reopen that restores postability.
+    #[tokio::test]
+    async fn period_close_check_run_and_reopen_round_trip_over_http() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Biz", "kind": "business", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let (status, dry) = call(
+            &app,
+            post_req(
+                "/api/v1/close_period_check",
+                json!({"book_id": book_id, "to_date": "2026-07-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "close_period_check: {dry}");
+        assert_eq!(dry["closed"], false);
+        assert_eq!(dry["closeable"], true);
+
+        let (status, closed) = call(
+            &app,
+            post_req(
+                "/api/v1/close_period",
+                json!({"book_id": book_id, "to_date": "2026-07-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "close_period: {closed}");
+        assert_eq!(closed["closed"], true);
+
+        let (_, after_close) = call(
+            &app,
+            post_req("/api/v1/book_get", json!({"id": book_id}), None),
+        )
+        .await;
+        assert_eq!(after_close["financial_lock_date"], "2026-07-31");
+
+        // Re-closing the identical range is refused, not a silent no-op.
+        let (status, blocked) = call(
+            &app,
+            post_req(
+                "/api/v1/close_period",
+                json!({"book_id": book_id, "to_date": "2026-07-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "re-closing an already-closed range must be refused: {blocked}"
+        );
+        assert_eq!(blocked["error"]["code"], "close_blocked");
+
+        // Reopening without a reason is refused.
+        let (status, no_reason) = call(
+            &app,
+            post_req(
+                "/api/v1/reopen_period",
+                json!({"book_id": book_id, "reason": ""}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "an empty reason must be refused: {no_reason}"
+        );
+
+        let (status, reopened) = call(
+            &app,
+            post_req(
+                "/api/v1/reopen_period",
+                json!({"book_id": book_id, "reason": "found a miscoded expense"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "reopen_period: {reopened}");
+        assert_eq!(reopened["financial_lock_date"], Value::Null);
+
+        // Postable again, and closeable again.
+        let (_, dry_again) = call(
+            &app,
+            post_req(
+                "/api/v1/close_period_check",
+                json!({"book_id": book_id, "to_date": "2026-07-31"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(dry_again["closeable"], true);
     }
 
     /// Stock was the last of the three Phase 6 foundations with nothing on any

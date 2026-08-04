@@ -197,6 +197,16 @@ pub fn days_between(a: &str, b: &str) -> crate::error::CoreResult<i64> {
     Ok((parse_date(a)? - parse_date(b)?).whole_days().abs())
 }
 
+/// The calendar day after a `YYYY-MM-DD` date, same format. Used to turn a
+/// book's lock date (inclusive of everything sealed through it) into the
+/// first date a newly-closing period can cover.
+pub fn day_after(s: &str) -> crate::error::CoreResult<String> {
+    let fmt = time::macros::format_description!("[year]-[month]-[day]");
+    (parse_date(s)? + time::Duration::days(1))
+        .format(&fmt)
+        .map_err(|e| crate::error::CoreError::Validation(format!("date arithmetic on {s:?}: {e}")))
+}
+
 /// Validate an inclusive `[from_date, to_date]` report period: both must be
 /// well-formed `YYYY-MM-DD` dates, and `from_date` must not be after
 /// `to_date`.

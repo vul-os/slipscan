@@ -33,6 +33,12 @@ pub enum CoreError {
     #[error("invalid status transition: {from} -> {to}")]
     InvalidStatusTransition { from: String, to: String },
 
+    #[error("book is not closeable for this period: {reasons:?}")]
+    CloseBlocked { reasons: Vec<String> },
+
+    #[error("book is not closed; there is no period to reopen")]
+    NotClosed,
+
     #[error("validation error: {0}")]
     Validation(String),
 

@@ -284,6 +284,20 @@ pub struct BookLockDateQuery {
     pub lock_date: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+pub struct ClosePeriodQuery {
+    pub book_id: String,
+    pub to_date: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct ReopenPeriodQuery {
+    pub book_id: String,
+    pub reason: String,
+    #[serde(default)]
+    pub to_date: Option<String>,
+}
+
 #[tauri::command]
 pub async fn coa_create(
     state: State<'_, AppState>,
@@ -378,6 +392,46 @@ pub async fn book_set_lock_date(
     state
         .service()?
         .book_set_lock_date(&query.book_id, query.lock_date.as_deref())
+        .map_err(err)
+}
+
+/// Preview closing the period through `to_date` — every check
+/// `close_period` performs, with no mutation whatsoever.
+#[tauri::command]
+pub async fn close_period_check(
+    state: State<'_, AppState>,
+    query: ClosePeriodQuery,
+) -> Result<core::ClosePeriodReport, String> {
+    state
+        .service()?
+        .close_period_check(&query.book_id, &query.to_date)
+        .map_err(err)
+}
+
+/// Close the period through `to_date`. Advances the book's financial lock
+/// date on success; refuses, naming every reason, when the trial balance
+/// does not balance or the range is already closed.
+#[tauri::command]
+pub async fn close_period(
+    state: State<'_, AppState>,
+    query: ClosePeriodQuery,
+) -> Result<core::ClosePeriodReport, String> {
+    state
+        .service()?
+        .close_period(&query.book_id, &query.to_date)
+        .map_err(err)
+}
+
+/// Reopen a closed period — a deliberate, audited act. `reason` is
+/// required.
+#[tauri::command]
+pub async fn reopen_period(
+    state: State<'_, AppState>,
+    query: ReopenPeriodQuery,
+) -> Result<core::Book, String> {
+    state
+        .service()?
+        .reopen_period(&query.book_id, query.to_date.as_deref(), &query.reason)
         .map_err(err)
 }
 

@@ -340,6 +340,49 @@ inventory adds capabilities to measure before it adds ones that are built. PARIT
 look worse for a while, and that is the document working correctly rather than a reason to soften
 it.
 
+## Phase 6.95 — Period close
+
+The last structural gap before release: `financial_lock_date` could be set directly
+(`book_set_lock_date`), but nothing checked whether the period behind it was actually *ready* to
+lock, there was no way to preview a close before committing to it, and reopening one — a legitimate,
+routine act ("an accountant finds something") — was indistinguishable from any other call that
+happens to clear the same field.
+
+- [x] **6.95 Period close.** `close_period_check` / `close_period` / `reopen_period` in
+      `core/src/service.rs` *(shipped. `close_period_check` and `close_period` run the identical
+      checks — read-only preview vs. the real thing, never two implementations that can drift apart
+      — built by a shared private `build_close_report`. One hard refusal: the trial balance must
+      balance as of the close date, which every posted journal already guarantees on its own
+      (`post_journal_in_tx`), so this exists as a data-integrity guard against anything that ever
+      reaches `journal_lines` outside the service layer, proven by a test that writes an unbalanced
+      line directly and confirms the refusal names the exact imbalance. Closing an already-closed
+      range is refused too, not a silent no-op — the fix is `reopen_period`, not a second close.
+      Four advisory warnings, computed over the period between the previous lock date and the new
+      one and **never** blocking: uncategorised transactions, unreconciled statement lines (no
+      `auto`- or human-confirmed `recon_matches` row), draft sales orders dated in the period, and
+      invoices due in the period with zero payments recorded. None of the four make the books
+      *wrong* — a "Miscellaneous" category, an immaterial unreconciled line, a sales order correctly
+      still being edited, an invoice a customer has 30 days to pay are all legitimate states — so
+      refusing to close over them would be a close that lies about how often a real one succeeds.
+      They are reported on `close_period`'s own successful return, not only on the dry run: closing
+      does not make the messiness disappear, only seals the period it was found in. `reopen_period`
+      requires a non-empty `reason` and is audited under its own `"reopen"` action, distinct from
+      `book_set_lock_date`'s `"lock_date"` audit action — reopening is a deliberate act with its own
+      trail, never a side effect indistinguishable from setting the date the first time. No new
+      migration: every check reads tables that already exist, and the report itself is the audit
+      record (serialized into `audit_log.after_json`), so a `period_closes` table was considered and
+      rejected as a second, redundant history. Reachable on all three surfaces the same change it
+      landed in — `slipscan close check|run|reopen`, three HTTP routes, three desktop IPC commands
+      and their `client.ts` wrappers — rather than in a later wiring pass, the gap the rest of Phase
+      6 kept finding. Seven tests against a real in-memory `CoreService`: a clean close locks and
+      then refuses posting into it; the dry run matches the real close byte-for-byte except `closed`
+      and mutates nothing; the broken-balance refusal; all four warnings each appear only when their
+      condition holds, cleared one at a time in the same test; closing an already-closed range is
+      refused, not silent; reopening restores postability and is audited; and reopening is itself
+      refused with no reason or with nothing closed to reopen. Every key assertion was mutation-
+      tested — the balance check, the lock-date write, and the dry run's read-only-ness — each
+      confirmed to turn its test red before being reverted.)*
+
 ## Non-goals
 
 - Hosted SaaS of any kind
