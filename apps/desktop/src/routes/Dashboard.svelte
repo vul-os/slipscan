@@ -402,7 +402,12 @@
           body="SlipScan reconstructs history from transactions already on record and records a new snapshot each time you open this book — the chart fills in from here."
         />
       {:else}
-        <NetWorthChart points={d.networth.points} currency={d.networth.currency} />
+        <NetWorthChart
+          points={d.networth.points}
+          currency={d.networth.currency}
+          rangeFrom={networthFrom}
+          rangeTo={networthTo}
+        />
       {/if}
     </div>
   </section>
