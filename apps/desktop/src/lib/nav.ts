@@ -133,6 +133,15 @@ export const NAV_GROUPS: NavGroup[] = [
         keywords: "purchase orders suppliers goods receipt receiving po",
         requires: "show_purchasing",
       },
+      {
+        route: "sales",
+        label: "Sales",
+        icon: "cart",
+        key: "V",
+        keywords:
+          "orders invoices invoicing customers quotes billing receivables aged",
+        requires: "show_sales",
+      },
     ],
   },
   {

@@ -17,6 +17,7 @@ export const ROUTES = [
   "catalogue",
   "stock",
   "purchasing",
+  "sales",
   "ledger",
   "reconcile",
   "payments",

@@ -27,10 +27,18 @@ const ROUTES = [
   ["reconcile", "TAKEALOT.COM CPT"],
   ["payments", "RENT-12B"],
   ["reports", "Net refundable"],
-  // Business-only (BookProfile.show_catalogue/show_purchasing); the mock's
-  // one book is personal, so the anchor is the gate itself.
+  // Business-only (their BookProfile.show_* flag); the mock's one book is
+  // personal, so the anchor is the gate itself. Every one of these is still
+  // reachable by hash — the gate is what renders, which is exactly the
+  // behaviour worth smoke-testing.
+  ["contacts", "Contacts is for business books"],
+  ["catalogue", "Catalogue is for business books"],
   ["stock", "Stock is a business feature"],
   ["purchasing", "Purchasing is a business feature"],
+  // The mock's one book is personal, so `show_sales` is false and this
+  // route renders the business-book gate, not the trade UI — the flow that
+  // needs a business book lives in the jsdom suite (sales.test.ts).
+  ["sales", "Sales is a business-book feature"],
   ["packs", "South African retail merchants"],
   ["settings", "~/SlipScan/personal.slipscan.db"],
 ];
@@ -247,11 +255,27 @@ test("the sidebar navigates and the keyboard shortcut jumps sections", async ({
   const { pageErrors } = watchForErrors(page);
   await open(page, "dashboard");
 
-  // Every registered route has a sidebar link, in router order.
+  // Every route the CURRENT BOOK can use has a sidebar link, in router order.
+  //
+  // Not every registered route: the five Trade destinations carry a
+  // `requires` profile flag and the demo book is personal, so the rail
+  // genuinely does not render them. They remain reachable by hash — this
+  // spec navigates to each one above and asserts its gate — so the right
+  // assertion is "the rail shows what this book can do", not "the rail shows
+  // everything that exists".
+  const BUSINESS_ONLY = new Set([
+    "contacts",
+    "catalogue",
+    "stock",
+    "purchasing",
+    "sales",
+  ]);
   const hrefs = await page
     .locator('nav[aria-label="Sections"] a')
     .evaluateAll((els) => els.map((e) => e.getAttribute("href")));
-  expect(hrefs).toEqual(ROUTES.map(([r]) => `#/${r}`));
+  expect(hrefs).toEqual(
+    ROUTES.filter(([r]) => !BUSINESS_ONLY.has(r)).map(([r]) => `#/${r}`),
+  );
 
   await page.locator('nav[aria-label="Sections"] a[href="#/ledger"]').click();
   await expect(page.locator("h1")).toHaveText("Ledger");

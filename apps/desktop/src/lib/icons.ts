@@ -91,6 +91,8 @@ export const icons = {
   /** Trade — catalogue: a price tag, for products and variants. */
   catalogue:
     '<path d="M20.5 13.4 13.4 20.5a2 2 0 0 1-2.8 0l-7.1-7.1a2 2 0 0 1-.6-1.4V5.5a2 2 0 0 1 2-2H11a2 2 0 0 1 1.4.6l7.1 7.1a2 2 0 0 1 0 2.8z"/><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"/>',
+  /** Sales — a customer order, cart-shaped, distinct from Receipts' slip. */
+  cart: '<circle cx="9.5" cy="19.5" r="1.5"/><circle cx="17" cy="19.5" r="1.5"/><path d="M3.5 4h2.3l2.1 11.5h9.7l1.7-8H6.6"/>',
 } as const;
 
 export type IconName = keyof typeof icons;

@@ -22,6 +22,15 @@ export default defineConfig({
   testDir: "./src/__tests__/e2e",
   testMatch: "**/*.spec.js",
 
+  // Serial, deliberately. The default (cores/2 workers) starved the workers
+  // on an 8-core machine once the app grew to sixteen routes: the suite took
+  // four to nine minutes and failed two *different* tests on each run, every
+  // one of which passed in isolation. That is the same trap `site:check` fell
+  // into — a suite that fails randomly teaches people to re-run until green,
+  // which is worse than not having it. Serially it is 43 tests in 33 seconds,
+  // and the same 43 every time. Trading half a minute for determinism is not
+  // a close call.
+  workers: 1,
   timeout: 30_000,
   // A cold vite dev server compiles on first request; the first navigation is
   // the slow one.

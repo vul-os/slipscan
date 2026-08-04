@@ -142,13 +142,18 @@ test.describe("the rail collapses", () => {
     await open(page);
 
     const links = page.locator("nav a");
-    await expect(links).toHaveCount(13);
+    // Eleven, not sixteen: the five Trade destinations (contacts, catalogue,
+    // stock, purchasing, sales) carry a `requires` profile flag and the demo
+    // book is personal, so the rail genuinely does not render them. This
+    // number tracks what a PERSONAL book shows — it is not ROUTES.length and
+    // should not be "corrected" to it.
+    await expect(links).toHaveCount(11);
     await expect(links.first()).toContainText("Dashboard");
 
     await page.setViewportSize({ width: RAIL_BREAKPOINT - 100, height: 900 });
-    // Same thirteen destinations, now icon-only — collapsed must not mean
+    // Same eleven destinations, now icon-only — collapsed must not mean
     // "some screens are unreachable".
-    await expect(links).toHaveCount(13);
+    await expect(links).toHaveCount(11);
     const railWidth = await page
       .locator("aside")
       .evaluate((el) => el.getBoundingClientRect().width);
@@ -190,7 +195,7 @@ test.describe("accessibility of the shell", () => {
       // `:focus-visible` is a *keyboard* state, and the ring is only owed on
       // controls a keyboard actually reaches.
       const stops = [];
-      for (let i = 0; i < 15; i++) {
+      for (let i = 0; i < 13; i++) {
         await page.keyboard.press("Tab");
         stops.push(
           await page.evaluate(async () => {
@@ -223,6 +228,9 @@ test.describe("accessibility of the shell", () => {
       // rail's destinations in rail order.
       expect(stops[0].name).toBe("Skip to content");
       expect(stops[1].id).toBe("palette-trigger");
+      // The five Trade destinations are absent on purpose: they carry a
+      // `requires` profile flag and the demo book is personal, so the rail
+      // does not render them and they cannot be in the tab order either.
       expect(stops.slice(2).map((s) => s.href)).toEqual([
         "#/dashboard",
         "#/transactions",
@@ -233,8 +241,6 @@ test.describe("accessibility of the shell", () => {
         "#/reconcile",
         "#/payments",
         "#/reports",
-        "#/stock",
-        "#/purchasing",
         "#/packs",
         "#/settings",
       ]);

@@ -3067,16 +3067,17 @@ export const mockApi = {
   },
 
   // -- sales orders & invoicing (Phase 6.5). Empty by default, like
-  // purchasing above: no screen calls these yet (ROADMAP.md 6.9).
+  // purchasing above. The Sales screen (ROADMAP.md 6.9) is the first caller.
   //
   // What this mock does NOT simulate, deliberately, so nobody reads a green
   // screen as proof the real thing works: confirming an order does not move
   // stock and cancelling does not write a compensating movement (this mock has
-  // no stock ledger at all, exactly as the purchasing mock has none), and
-  // `report_aged_receivables` uses the contact id in place of a name because
-  // there is no contacts store here either. Numbering, draft-only editing,
-  // invoice immutability and the derived totals ARE modelled, because those
-  // are the behaviours a screen has to be written against. --
+  // no stock ledger at all, exactly as the purchasing mock has none — a
+  // screen-level test asserting on-hand actually changed would be exactly
+  // that false-green). Numbering, draft-only editing, invoice immutability,
+  // the derived totals and `report_aged_receivables` resolving each row's
+  // `contact_name` from the real `contacts` table ARE modelled, because
+  // those are the behaviours a screen has to be written against. --
 
   sales_order_create: async (q: NewSalesOrder): Promise<SalesOrder> => {
     const now = new Date().toISOString();
@@ -3405,8 +3406,14 @@ export const mockApi = {
     const rows: AgedReceivablesRow[] = [...byContact.entries()].map(
       ([contact_id, buckets]) => {
         addBucket(totals, buckets);
-        // No contacts store in this mock — the id stands in for the name.
-        return { contact_id, contact_name: contact_id, buckets };
+        // Contacts (Phase 6.2) postdate this report — the id-as-name
+        // fallback below only fires for a contact this book no longer has
+        // (deleted contacts are ON DELETE RESTRICT against trade history,
+        // so this should be unreachable in practice, not a real fallback
+        // path this screen relies on).
+        const contact_name =
+          contacts.find((c) => c.id === contact_id)?.name ?? contact_id;
+        return { contact_id, contact_name, buckets };
       },
     );
     return { as_of: asOf, rows, totals };
