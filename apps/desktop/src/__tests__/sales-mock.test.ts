@@ -100,6 +100,41 @@ describe("sales order mock", () => {
     ).rejects.toThrow(/confirmed order cannot be confirmed/);
   });
 
+  /** Core refuses this and the mock did not — found by comparing the two
+   * rather than by either being tested on its own. A stock-tracked line has
+   * to leave a location, so confirming without one would mean a movement with
+   * nowhere to write it. */
+  it("refuses to confirm a stock-tracked order that has no location", async () => {
+    const noLocation = await mockApi.sales_order_create({
+      book_id: BOOK,
+      contact_id: CONTACT,
+    });
+    await mockApi.sales_order_item_add({
+      sales_order_id: noLocation.id,
+      variant_id: "variant-1",
+      description: "Stock line",
+      quantity: 1,
+      unit_price_minor: 100,
+    });
+    await expect(
+      mockApi.sales_order_confirm({ id: noLocation.id }),
+    ).rejects.toThrow(/no location set/);
+
+    // A free-text line needs no location, so that order confirms fine.
+    const serviceOnly = await mockApi.sales_order_create({
+      book_id: BOOK,
+      contact_id: CONTACT,
+    });
+    await mockApi.sales_order_item_add({
+      sales_order_id: serviceOnly.id,
+      description: "Consulting",
+      quantity: 1,
+      unit_price_minor: 100,
+    });
+    const confirmed = await mockApi.sales_order_confirm({ id: serviceOnly.id });
+    expect(confirmed.status).toBe("confirmed");
+  });
+
   it("refuses to confirm an order with no lines", async () => {
     const empty = await mockApi.sales_order_create({
       book_id: BOOK,

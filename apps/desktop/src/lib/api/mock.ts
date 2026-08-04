@@ -3115,8 +3115,16 @@ export const mockApi = {
   sales_order_confirm: async (q: { id: string }): Promise<SalesOrder> => {
     const order = requireOrder(q.id);
     requireDraft(order, "confirmed");
-    if (!salesOrderItems.some((i) => i.sales_order_id === order.id))
+    const lines = salesOrderItems.filter((i) => i.sales_order_id === order.id);
+    if (lines.length === 0)
       throw new Error("an order with no lines cannot be confirmed");
+    // Core refuses this and the mock did not: a stock-tracked line has to
+    // come out of somewhere, so confirming one without a location would be a
+    // movement with no location to write it against.
+    if (lines.some((i) => i.variant_id !== null) && order.location_id === null)
+      throw new Error(
+        "cannot confirm: this order has stock-tracked line items but no location set",
+      );
     order.status = "confirmed";
     order.confirmed_at = new Date().toISOString();
     order.updated_at = order.confirmed_at;
