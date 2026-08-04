@@ -96,30 +96,44 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
 }
 .skip:focus{top:12px}
 
-/* Top bar — the same chrome as the landing, minus the palette. */
+/* Top bar — the same chrome as the landing, minus the palette, and now the
+   same wordmark treatment too: dead centre and larger than the rest of the
+   bar, on a 1fr / auto / 1fr grid so the middle column centres truly
+   regardless of how lopsided the nav links and the action cluster are. Below
+   1160px — the same width the landing's own nav disappears at — there is no
+   longer a left side to balance the centring against, so the bar falls back
+   to a plain left-aligned row, exactly as it always has. */
 .topbar{
-  position:sticky;top:0;z-index:60;height:56px;display:flex;align-items:center;gap:10px;
+  position:sticky;top:0;z-index:60;height:64px;
+  display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;column-gap:14px;
   padding:0 14px;border-bottom:1px solid var(--line);
   background:color-mix(in srgb,var(--surface) 82%,transparent);backdrop-filter:blur(14px);
 }
-.brand{display:flex;align-items:center;flex:none}
-.brand img{height:22px;width:auto}
+.brand{display:flex;align-items:center;flex:none;justify-self:center}
+.brand img{height:clamp(30px,3.4vw,40px);width:auto}
 .bookchip{
   display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 10px;
   border:1px solid var(--line);border-radius:999px;background:var(--sunken);
   font-family:var(--mono);font-size:12px;color:var(--t2);white-space:nowrap;
 }
 .bookchip i{width:6px;height:6px;border-radius:50%;background:var(--accent);flex:none}
-.spacer{flex:1}
-.navlinks{display:flex;align-items:center;gap:18px}
+.navlinks{display:flex;align-items:center;gap:18px;justify-self:start;min-width:0}
 .navlinks a{color:var(--t2);font-size:14px;font-weight:500;transition:color var(--quick) var(--ease)}
 .navlinks a:hover{color:var(--t1)}
+.topbar-actions{display:flex;align-items:center;gap:10px;justify-self:end;min-width:0}
+@media(max-width:1160px){
+  .topbar{display:flex;gap:10px}
+  .brand img{height:26px}
+  .topbar-actions{margin-left:auto}
+}
 /* The bar's fixed items (wordmark, chip, four links, theme, Download, and the
    Vulos mark) need ~777px, so hiding them only at 720px left a broken band from
    721px to ~790px where the last item overhung the viewport — `site:check`
    caught it at exactly 768, the iPad portrait width. The chip is decoration and
    goes first, which buys ~250px and keeps the four nav links alive across the
-   whole tablet range; the links only go at 720 as before. */
+   whole tablet range; the links only go at 720 as before. Both thresholds sit
+   well inside the flex fallback above, so the grid-centred layout never has to
+   reason about them. */
 @media(max-width:820px){.bookchip{display:none}}
 @media(max-width:720px){.navlinks{display:none}}
 .iconbtn{
@@ -145,8 +159,8 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
 .docs-shell{display:grid;grid-template-columns:250px minmax(0,1fr);gap:36px;align-items:start;padding:30px 0 70px}
 @media(max-width:900px){.docs-shell{grid-template-columns:1fr;gap:22px}}
 .docs-nav{
-  position:sticky;top:74px;border:1px solid var(--line);border-radius:var(--radius);
-  background:var(--panel);padding:12px;box-shadow:var(--shadow-raised);max-height:calc(100dvh - 96px);overflow-y:auto;
+  position:sticky;top:82px;border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--panel);padding:12px;box-shadow:var(--shadow-raised);max-height:calc(100dvh - 104px);overflow-y:auto;
 }
 .docs-nav .label{
   font-family:var(--mono);font-size:12px;text-transform:uppercase;letter-spacing:.1em;
@@ -287,8 +301,21 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
   border:1px solid color-mix(in srgb,var(--err) 32%,transparent);padding:14px 16px;border-radius:10px;
 }
 
-/* Footer — matches the landing's bottom bar exactly. */
+/* Footer — the landing's brand-row-plus-bottom-bar shape, without the
+   marketing link grid: the chapter list already lives in the sidebar and
+   the four section links already live in the top nav, so repeating them
+   down here would be the same links twice rather than a second surface
+   worth having. The one thing this page was missing outright is the big
+   wordmark — .site-footer/.foot-bar existed with nothing rendering into
+   them, so the docs page ended mid-scroll with no footer at all. */
 .site-footer{border-top:1px solid var(--line);background:var(--panel)}
+/* .brand sets justify-self:center for the topbar's grid; here it is not a
+   grid item, but modern browsers now honour justify-self on ordinary block
+   boxes too, which would otherwise centre it in the full content width
+   below — pinned back to the left, matching the blurb underneath it. */
+.docs-foot-brand{padding-top:34px;padding-bottom:4px}
+.docs-foot-brand .brand{justify-self:start}
+.docs-foot-brand p{margin:12px 0 0;color:var(--t2);font-size:13.5px;max-width:56ch}
 .foot-bar{
   max-width:var(--max);margin:0 auto;padding:20px clamp(16px,3vw,40px);
   display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;
@@ -333,23 +360,24 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
 <a class="skip" href="#content">Skip to the chapter</a>
 
 <header class="topbar">
-  <a class="brand" href="./index.html" aria-label="slip/scan home">
-    <img data-wordmark src="./assets/brand/logo-wordmark-dark.svg" alt="slip/scan" width="206" height="64">
-  </a>
-  <span class="bookchip"><i></i>docs · rendered from the repo</span>
-  <div class="spacer"></div>
   <nav class="navlinks" aria-label="Site">
     <a href="./index.html#features">What you get</a>
     <a href="./index.html#screens">Screens</a>
     <a href="./index.html#honest">What works today</a>
     <a href="https://github.com/vul-os/slipscan" target="_blank" rel="noopener">GitHub</a>
   </nav>
-  <button class="iconbtn" id="themeBtn" type="button" aria-label="Switch to the light theme" title="Toggle theme">
-    <svg class="t-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></svg>
-    <svg class="t-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-  </button>
-  <a class="btn" href="./index.html#install">Download</a>
-  <a class="vulos-home" href="https://vulos.org" target="_blank" rel="noopener" title="Vulos — open, self-hostable software" aria-label="Vulos — open, self-hostable software"><img src="./assets/vulos-logo.png" alt="" width="22" height="22"></a>
+  <a class="brand" href="./index.html" aria-label="slip/scan home">
+    <img data-wordmark src="./assets/brand/logo-wordmark-dark.svg" alt="slip/scan" width="206" height="64">
+  </a>
+  <div class="topbar-actions">
+    <span class="bookchip"><i></i>docs · rendered from the repo</span>
+    <button class="iconbtn" id="themeBtn" type="button" aria-label="Switch to the light theme" title="Toggle theme">
+      <svg class="t-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></svg>
+      <svg class="t-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <a class="btn" href="./index.html#install">Download</a>
+    <a class="vulos-home" href="https://vulos.org" target="_blank" rel="noopener" title="Vulos — open, self-hostable software" aria-label="Vulos — open, self-hostable software"><img src="./assets/vulos-logo.png" alt="" width="22" height="22"></a>
+  </div>
 </header>
 
 <div class="wrap docs-shell">
@@ -380,6 +408,22 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
     <article class="markdown" id="content">Loading…</article>
   </main>
 </div>
+
+<footer class="site-footer">
+  <div class="wrap docs-foot-brand">
+    <a class="brand" href="./index.html" aria-label="slip/scan home">
+      <img data-wordmark src="./assets/brand/logo-wordmark-dark.svg" alt="slip/scan" width="206" height="64">
+    </a>
+    <p>Self-hosted, decentralized personal finance and accounting. These docs render straight from
+      the repo's own markdown — the same source anyone building slip/scan reads.</p>
+  </div>
+  <div class="foot-bar">
+    <a class="vulos-foot" href="https://vulos.org" target="_blank" rel="noopener"><img src="./assets/vulos-logo.png" alt="" width="18" height="18"><span>Part of <strong>Vulos</strong> — open, self-hostable software</span></a>
+    <span class="sp"></span>
+    <span>0.2.0</span><span>under active development</span>
+  </div>
+</footer>
+
 <template id="tpl-how-it-works">
 <!-- ═══════════════════════════════════════════════════════════════════════
      Moved here verbatim from site/index.html, where these three sections

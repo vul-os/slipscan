@@ -138,15 +138,33 @@ p{margin:0}
 }
 .skip:focus{top:12px}
 
-/* ── top bar ───────────────────────────────────────────────────────────── */
+/* ── top bar ───────────────────────────────────────────────────────────
+   The wordmark sits dead-centre, and larger than the rest of the chrome —
+   the product's call for its own site, not the suite default of a small
+   corner mark tucked in the corner of a nav. Grid, not flex: a
+   1fr / auto / 1fr track truly centres the middle column no matter how
+   lopsided the two sides are, which a flex `margin:auto` trick cannot do
+   once the action cluster (palette, theme, GitHub, the Vulos mark,
+   Download) outweighs the section nav. Below the width the nav itself
+   disappears at (1160px, the existing .topnav breakpoint) there is no
+   longer a left side to balance against, so the bar drops back to a plain
+   left-aligned row — centring a wordmark against nothing but the action
+   cluster would just push it off-centre the other way. */
 .topbar{
-  position:sticky;top:0;z-index:60;height:56px;display:flex;align-items:center;gap:10px;
+  position:sticky;top:0;z-index:60;height:64px;
+  display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;column-gap:14px;
   padding:0 14px;border-bottom:1px solid var(--line);
   background:color-mix(in srgb,var(--surface) 82%,transparent);backdrop-filter:blur(14px);
 }
-.brand{display:flex;align-items:center;gap:9px;flex:none}
-.brand img{height:22px;width:auto}
-.spacer{flex:1}
+.topbar>.topnav{justify-self:start;min-width:0}
+.brand{display:flex;align-items:center;gap:9px;flex:none;justify-self:center}
+.brand img{height:clamp(30px,3.4vw,40px);width:auto}
+.topbar-actions{display:flex;align-items:center;gap:10px;justify-self:end;min-width:0}
+@media(max-width:1160px){
+  .topbar{display:flex;gap:10px}
+  .brand img{height:26px}
+  .topbar-actions{margin-left:auto}
+}
 .kbtn{
   display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 10px;
   border:1px solid var(--line);border-radius:9px;background:var(--sunken);
@@ -225,7 +243,7 @@ kbd{
   position:absolute;left:0;bottom:-1px;height:2px;width:0;max-width:100%;
   background:var(--accent);border-radius:0 2px 2px 0;pointer-events:none;
 }
-.pane{padding:clamp(44px,6vw,76px) 0;border-bottom:1px solid var(--line);scroll-margin-top:72px}
+.pane{padding:clamp(44px,6vw,76px) 0;border-bottom:1px solid var(--line);scroll-margin-top:80px}
 .pane:last-of-type{border-bottom:0}
 .eyebrow{
   display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;
@@ -341,6 +359,37 @@ h1 .slash{color:var(--accent-text)}
 .stats .n em{font-style:normal;font-size:.5em;color:var(--t3);margin-left:4px;letter-spacing:0}
 .stats .l{margin-top:9px;font-size:12.5px;color:var(--t2);line-height:1.45}
 @media(max-width:820px){.stats{grid-template-columns:1fr 1fr}}
+
+/* ── section head + illustrations ─────────────────────────────────────────
+   A reusable two-column header: the eyebrow/h2/lead on one side, a small
+   hand-authored inline illustration on the other. Every illustration below
+   is drawn from the same restrained parts bin the rest of the page already
+   uses — rounded rects, straight wires, the exact lock glyph the "Secrets
+   are write-only" card and the docs' engineering-contract row already
+   draw — rather than an imported icon set or a photograph. Nothing here
+   is an <img>: it is markup, so it inherits the page's tokens and repaints
+   itself for free on every theme flip. Decorative only — the sentence next
+   to each one already carries the meaning, so every illustration carries
+   aria-hidden and contributes nothing to the accessibility tree. Hidden
+   under 900px: at that width the illustration would either shrink into
+   noise or steal width the section head's own text needs, and this page's
+   real visual proof is the screenshots below, not a diagram standing in
+   for one. */
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:36px}
+.section-head .sh-text{flex:1;min-width:0}
+.illo-wrap{flex:none;width:clamp(126px,15vw,190px)}
+@media(max-width:900px){.illo-wrap{display:none}}
+.illo{display:block;width:100%;height:auto;overflow:visible}
+.illo .i-line{stroke:var(--line-2);stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.illo .i-fill{fill:var(--sunken);stroke:var(--line-2);stroke-width:1.3}
+.illo .i-panel{fill:var(--panel);stroke:var(--line-2);stroke-width:1.3}
+.illo .i-overlay{fill:var(--overlay);stroke:var(--line-2);stroke-width:1.3}
+.illo .i-accent{fill:var(--accent)}
+.illo .i-accent-line{stroke:var(--accent);stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.illo .i-check{stroke:var(--accent-fg);stroke-width:1.8;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.illo .i-dim{stroke:var(--t3);stroke-width:1.4;fill:none;stroke-linecap:round;stroke-dasharray:1 5}
+.illo .i-x{stroke:var(--t3);stroke-width:1.6;fill:none;stroke-linecap:round}
+.illo .i-cap{font-family:var(--mono);font-size:10.5px;fill:var(--t3);letter-spacing:.03em}
 
 /* ── generic card grids ────────────────────────────────────────────────── */
 .grid{display:grid;gap:14px;margin-top:30px}
@@ -528,6 +577,7 @@ h1 .slash{color:var(--accent-text)}
 .plat .arr{margin-left:auto;color:var(--t3);flex:none;align-self:center}
 .plat .arr svg{width:15px;height:15px}
 .final{text-align:center;padding:clamp(48px,7vw,84px) 0 clamp(36px,5vw,56px)}
+.final-illo{width:clamp(108px,11vw,148px);margin:0 auto 22px}
 .final h2{font-size:clamp(28px,4.4vw,44px);letter-spacing:-.035em;line-height:1.08}
 .final p{color:var(--t2);margin-top:14px;font-size:16.5px}
 .final .cta-row{justify-content:center}
@@ -539,6 +589,13 @@ h1 .slash{color:var(--accent-text)}
 }
 @media(max-width:860px){.foot-grid{grid-template-columns:1fr 1fr}}
 @media(max-width:520px){.foot-grid{grid-template-columns:1fr}}
+/* .brand sets justify-self:center for the topbar's grid; footer's is not a
+   grid item there, but modern browsers now honour justify-self on ordinary
+   block boxes too (CSS box alignment), which centred it here as a side
+   effect and shrank it to content width. The blurb below reads left-aligned,
+   so the mark needs to stay left-aligned above it — pinned back explicitly
+   rather than left to inherit a rule written for a different context. */
+.foot-brand{justify-self:start;margin-bottom:14px}
 .foot-grid .blurb{color:var(--t2);font-size:13.5px;margin-top:12px;max-width:42ch}
 .foot-grid h4{font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--t3);margin-bottom:12px;font-weight:600}
 .foot-grid ul{list-style:none;margin:0;padding:0;display:grid;gap:8px}
@@ -632,10 +689,6 @@ h1 .slash{color:var(--accent-text)}
 
 <!-- ═══ top bar ══════════════════════════════════════════════════════════ -->
 <header class="topbar">
-  <a class="brand" href="./index.html" aria-label="slip/scan home">
-    <img data-wordmark src="./assets/brand/logo-wordmark-dark.svg" alt="slip/scan" width="206" height="64">
-  </a>
-  <div class="spacer"></div>
   <!-- The rail's nine links, in space the header already occupies. -->
   <nav class="topnav" id="topnav" aria-label="Sections">
     <a href="#features" data-sec="features">What you get</a>
@@ -644,20 +697,24 @@ h1 .slash{color:var(--accent-text)}
     <a href="#honest" data-sec="honest">What works today</a>
     <a href="./docs.html">Docs</a>
   </nav>
-  <div class="spacer"></div>
-  <button class="kbtn" id="palBtn" type="button" aria-label="Open the command palette">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-    <span class="hide-xs">Jump to…</span><kbd>⌘K</kbd>
-  </button>
-  <button class="iconbtn" id="themeBtn" type="button" aria-label="Switch to the light theme" title="Toggle theme">
-    <svg class="t-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></svg>
-    <svg class="t-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-  </button>
-  <a class="iconbtn hdr-gh" href="https://github.com/vul-os/slipscan" target="_blank" rel="noopener" aria-label="slip/scan on GitHub" title="GitHub">
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49l-.01-1.7c-2.78.62-3.37-1.37-3.37-1.37-.45-1.19-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.28 9.28 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9l-.01 2.82c0 .27.18.6.69.49A10.03 10.03 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg>
+  <a class="brand" href="./index.html" aria-label="slip/scan home">
+    <img data-wordmark src="./assets/brand/logo-wordmark-dark.svg" alt="slip/scan" width="206" height="64">
   </a>
-  <a class="vulos-home" href="https://vulos.org" target="_blank" rel="noopener" title="Vulos — open, self-hostable software" aria-label="Vulos — open, self-hostable software"><img src="./assets/vulos-logo.png" alt="" width="22" height="22"></a>
-  <a class="btn btn-primary btn-sm" href="#install">Download</a>
+  <div class="topbar-actions">
+    <button class="kbtn" id="palBtn" type="button" aria-label="Open the command palette">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      <span class="hide-xs">Jump to…</span><kbd>⌘K</kbd>
+    </button>
+    <button class="iconbtn" id="themeBtn" type="button" aria-label="Switch to the light theme" title="Toggle theme">
+      <svg class="t-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M6.3 17.7l-1.4 1.4M19.1 4.9l-1.4 1.4"/></svg>
+      <svg class="t-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <a class="iconbtn hdr-gh" href="https://github.com/vul-os/slipscan" target="_blank" rel="noopener" aria-label="slip/scan on GitHub" title="GitHub">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49l-.01-1.7c-2.78.62-3.37-1.37-3.37-1.37-.45-1.19-1.11-1.5-1.11-1.5-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.86.09-.66.35-1.12.63-1.38-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.28 9.28 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.81-4.57 5.06.36.32.68.94.68 1.9l-.01 2.82c0 .27.18.6.69.49A10.03 10.03 0 0 0 22 12.25C22 6.58 17.52 2 12 2z"/></svg>
+    </a>
+    <a class="vulos-home" href="https://vulos.org" target="_blank" rel="noopener" title="Vulos — open, self-hostable software" aria-label="Vulos — open, self-hostable software"><img src="./assets/vulos-logo.png" alt="" width="22" height="22"></a>
+    <a class="btn btn-primary btn-sm" href="#install">Download</a>
+  </div>
   <div class="progress" id="progress" aria-hidden="true"></div>
 </header>
 
@@ -737,13 +794,56 @@ h1 .slash{color:var(--accent-text)}
 
     <!-- ═══ what you get ══════════════════════════════════════════════════ -->
     <section class="pane" id="features">
-      <div class="reveal">
-        <span class="eyebrow">what you get</span>
-        <h2>Six things it does for you.</h2>
-        <p class="lead">Written as what happens to your afternoon, not as what is in the
-          binary. The mono line under each card names the machinery, and the
-          <a href="#honest" style="color:var(--accent-text);text-decoration:underline;text-underline-offset:2px">status table</a>
-          further down has the unvarnished version.</p>
+      <div class="section-head reveal">
+        <div class="sh-text">
+          <span class="eyebrow">what you get</span>
+          <h2>A pile of slips becomes an answer.</h2>
+          <p class="lead">Written as what happens to your afternoon, not as what is in the
+            binary. The mono line under each card names the machinery, and the
+            <a href="#honest" style="color:var(--accent-text);text-decoration:underline;text-underline-offset:2px">status table</a>
+            further down has the unvarnished version.</p>
+        </div>
+        <div class="illo-wrap">
+          <!-- A drawer of loose slips, sorted into a clean, ticked-off list.
+               Nothing here reads a system value — it is composed entirely of
+               the same rounded rects and lines the icons above already use. -->
+          <svg class="illo" viewBox="0 0 200 140" aria-hidden="true" focusable="false">
+            <g transform="translate(8,46) rotate(-13)">
+              <rect class="i-fill" width="44" height="56" rx="5"/>
+              <path class="i-line" d="M8 13h28M8 23h28M8 33h16"/>
+            </g>
+            <g transform="translate(2,12) rotate(8)">
+              <rect class="i-fill" width="44" height="56" rx="5"/>
+              <path class="i-line" d="M8 13h28M8 23h28M8 33h16"/>
+            </g>
+            <g transform="translate(22,-4) rotate(-3)">
+              <rect class="i-panel" width="44" height="56" rx="5"/>
+              <path class="i-line" d="M8 13h28M8 23h28M8 33h16"/>
+            </g>
+            <path class="i-accent-line" d="M82 66h30"/>
+            <path class="i-accent-line" d="M106 56l14 10-14 10"/>
+            <g>
+              <rect class="i-panel" x="132" y="10" width="60" height="16" rx="8"/>
+              <circle class="i-accent" cx="182" cy="18" r="7"/>
+              <path class="i-check" d="M179 18l2 2 4-4"/>
+            </g>
+            <g>
+              <rect class="i-panel" x="132" y="36" width="60" height="16" rx="8"/>
+              <circle class="i-accent" cx="182" cy="44" r="7"/>
+              <path class="i-check" d="M179 44l2 2 4-4"/>
+            </g>
+            <g>
+              <rect class="i-panel" x="132" y="62" width="60" height="16" rx="8"/>
+              <circle class="i-accent" cx="182" cy="70" r="7"/>
+              <path class="i-check" d="M179 70l2 2 4-4"/>
+            </g>
+            <g>
+              <rect class="i-panel" x="132" y="88" width="60" height="16" rx="8"/>
+              <circle class="i-accent" cx="182" cy="96" r="7"/>
+              <path class="i-check" d="M179 96l2 2 4-4"/>
+            </g>
+          </svg>
+        </div>
       </div>
 
       <div class="grid g3 reveal">
@@ -856,14 +956,39 @@ h1 .slash{color:var(--accent-text)}
          architecture diagram. The diagram itself now lives in the docs, where
          somebody who wants it will go looking. ═══════════════════════════ -->
     <section class="pane" id="different">
-      <div class="reveal">
-        <span class="eyebrow">why it's different</span>
-        <h2>You are the server.</h2>
-        <p class="lead">Every other finance app asks you to put your transactions and your bank
-          credentials into a database somebody else runs, and then asks you to pay monthly for the
-          privilege. slip/scan does not have that database. <strong>There is no slip/scan
-          server</strong> — not a small one, not an optional one. Here is what that actually buys
-          you.</p>
+      <div class="section-head reveal">
+        <div class="sh-text">
+          <span class="eyebrow">why it's different</span>
+          <h2>You are the server.</h2>
+          <p class="lead">Every other finance app asks you to put your transactions and your bank
+            credentials into a database somebody else runs, and then asks you to pay monthly for the
+            privilege. slip/scan does not have that database. <strong>There is no slip/scan
+            server</strong> — not a small one, not an optional one. Here is what that actually buys
+            you.</p>
+        </div>
+        <div class="illo-wrap">
+          <!-- The machine on your desk, keychain-locked, with nothing reaching
+               out toward the crossed-out "somewhere else" — the whole
+               architecture argument as one small picture rather than a
+               paragraph. -->
+          <svg class="illo" viewBox="0 0 200 140" aria-hidden="true" focusable="false">
+            <rect class="i-panel" x="16" y="30" width="98" height="64" rx="10"/>
+            <path class="i-line" d="M32 48h66M32 60h66M32 72h40"/>
+            <rect class="i-fill" x="54" y="98" width="26" height="7" rx="2"/>
+            <rect class="i-fill" x="36" y="107" width="62" height="7" rx="3"/>
+            <g transform="translate(104,82)">
+              <circle class="i-panel" cx="0" cy="0" r="19"/>
+              <path class="i-accent-line" d="M-6 -3v-4a6 6 0 0 1 12 0v4"/>
+              <rect class="i-accent" x="-8" y="-3" width="16" height="12" rx="3"/>
+            </g>
+            <path class="i-dim" d="M116 40q16 -4 30 -14"/>
+            <g transform="translate(162,20)">
+              <circle class="i-dim" cx="0" cy="0" r="17"/>
+              <path class="i-x" d="M-7 -7l14 14M7 -7l-14 14"/>
+            </g>
+            <text class="i-cap" x="126" y="58">no server</text>
+          </svg>
+        </div>
       </div>
 
       <div class="promises reveal">
@@ -1148,6 +1273,25 @@ cd apps/desktop &amp;&amp; npm install &amp;&amp; npm run tauri dev
     <section class="pane" id="vulos">
 
       <div class="final">
+        <div class="illo-wrap final-illo">
+          <!-- The folder your books actually live in, not a database
+               somewhere — the same three ledger lines the receipt icons and
+               the other two illustrations already draw, so it reads as the
+               same "these are your rows" motif rather than a new one. The
+               lock is the same glyph the "no server" illustration and the
+               keychain card use — one shape, drawn once, meaning the same
+               thing everywhere it appears. -->
+          <svg class="illo" viewBox="0 0 180 130" aria-hidden="true" focusable="false">
+            <path class="i-fill" d="M14 40h44l10 12h98a6 6 0 0 1 6 6v48a6 6 0 0 1-6 6H14a6 6 0 0 1-6-6V46a6 6 0 0 1 6-6z"/>
+            <path class="i-panel" d="M14 52h152a6 6 0 0 1 6 6v36a6 6 0 0 1-6 6H14a6 6 0 0 1-6-6V58a6 6 0 0 1 6-6z"/>
+            <path class="i-line" d="M30 74h60M30 84h60M30 94h36"/>
+            <g transform="translate(90,100)">
+              <circle class="i-overlay" cx="0" cy="0" r="21"/>
+              <path class="i-accent-line" d="M-7 -3v-4a7 7 0 0 1 14 0v4"/>
+              <rect class="i-accent" x="-9" y="-3" width="18" height="13" rx="3"/>
+            </g>
+          </svg>
+        </div>
         <h2>Your books. Your machine.<br>Nobody else's database.</h2>
         <p><a href="./LICENSE.txt">MIT OR Apache-2.0</a>, at your option.</p>
         <p>Free, dual-licensed MIT or Apache-2.0, and yours to keep running whatever happens next.</p>
@@ -1166,7 +1310,7 @@ cd apps/desktop &amp;&amp; npm install &amp;&amp; npm run tauri dev
 <footer class="site-footer">
   <div class="foot-grid">
     <div>
-      <a class="brand" href="./index.html"><img data-wordmark src="./assets/brand/logo-wordmark-dark.svg" alt="slip/scan" width="206" height="64" style="height:20px"></a>
+      <a class="brand foot-brand" href="./index.html"><img data-wordmark src="./assets/brand/logo-wordmark-dark.svg" alt="slip/scan" width="206" height="64"></a>
       <p class="blurb">Self-hosted, decentralized personal finance and accounting. A Rust core over
         one SQLite file, a Tauri desktop app over the top, and no server anywhere in the picture.</p>
     </div>
