@@ -19,6 +19,7 @@
  * July 2026 window so the month-scoped screens have data whenever this runs.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MockInstance } from "vitest";
 import { flushSync, mount, unmount, type Component } from "svelte";
 import { api } from "../lib/api/client";
 import Budgets from "../routes/Budgets.svelte";
@@ -29,7 +30,7 @@ import Reports from "../routes/Reports.svelte";
 const FROZEN_NOW = new Date("2026-07-20T09:00:00Z");
 
 let fatal: string[] = [];
-let consoleError: ReturnType<typeof vi.spyOn>;
+let consoleError: MockInstance<typeof console.error>;
 let mounted: Array<() => void> = [];
 
 function onError(e: ErrorEvent) {
@@ -64,7 +65,7 @@ function render(component: Component): HTMLElement {
   document.body.appendChild(target);
   const instance = mount(component, { target });
   mounted.push(() => {
-    unmount(instance);
+    void unmount(instance);
     target.remove();
   });
   return target;

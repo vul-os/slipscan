@@ -157,9 +157,9 @@
       members = cached.members;
       transactions = cached.transactions;
       loading = false;
-      load(true);
+      void load(true);
     } else {
-      load();
+      void load();
     }
   }
 

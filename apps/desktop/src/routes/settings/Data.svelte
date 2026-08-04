@@ -57,7 +57,7 @@
       dataLoadError = String(err);
     }
   }
-  loadDataStatus();
+  void loadDataStatus();
 
   async function openMoveForm() {
     moveError = null;

@@ -71,7 +71,7 @@
       loading = false;
     }
   }
-  load();
+  void load();
 
   function setTab(t: Tab) {
     if (t === tab) return;
@@ -541,7 +541,7 @@
     class="space-y-3 px-5 pb-4"
     onsubmit={(e) => {
       e.preventDefault();
-      submitForm();
+      void submitForm();
     }}
   >
     <div class="grid gap-3 sm:grid-cols-2">

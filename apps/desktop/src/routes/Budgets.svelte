@@ -139,7 +139,7 @@
 
   function toggleForm() {
     if (showForm) closeForm();
-    else openForm();
+    else void openForm();
   }
 
   async function saveBudget() {
@@ -297,7 +297,7 @@
     class="card animate-slide-up mb-4 p-4"
     onsubmit={(e) => {
       e.preventDefault();
-      saveBudget();
+      void saveBudget();
     }}
     onkeydown={(e) => {
       if (e.key === "Escape") closeForm();

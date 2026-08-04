@@ -79,7 +79,7 @@
     // so this is refreshed with the list, not independently of it.
     await loadBenchmarks();
   }
-  load();
+  void load();
 
   // -- the install form -----------------------------------------------------
   // The three inputs the user actually holds, exactly as `slipscan pack
@@ -500,7 +500,7 @@
 
   function shiftPeriod(months: number) {
     period = shiftMonth(period, months);
-    loadBenchmarks();
+    void loadBenchmarks();
   }
 
   /** Placement wording, straight from the op's `position`. Deliberately
@@ -1032,7 +1032,7 @@
       class="grid gap-3"
       onsubmit={(e) => {
         e.preventDefault();
-        verify();
+        void verify();
       }}
       onkeydown={(e) => {
         if (e.key === "Escape") closeInstall();

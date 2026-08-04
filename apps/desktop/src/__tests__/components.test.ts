@@ -49,7 +49,7 @@ function render<P extends Record<string, unknown>>(
     props: (props ?? {}) as Record<string, unknown>,
   });
   mounted.push(() => {
-    unmount(instance);
+    void unmount(instance);
     target.remove();
   });
   return target;

@@ -122,7 +122,7 @@
       loaded = true;
     }
   }
-  load();
+  void load();
 
   /** Re-read whenever an invite changes rather than on a timer: an invite's
    * remaining life is information, not an animation. */
@@ -410,7 +410,7 @@
             class="flex items-center gap-2"
             onsubmit={(e) => {
               e.preventDefault();
-              createIdentity();
+              void createIdentity();
             }}
           >
             <input
@@ -649,7 +649,7 @@
           class="mb-3 flex flex-wrap items-center gap-2"
           onsubmit={(e) => {
             e.preventDefault();
-            createInvite();
+            void createInvite();
           }}
         >
           <input
@@ -678,7 +678,7 @@
           class="mb-3 grid gap-2 rounded-lg border border-line bg-sunken/40 p-3"
           onsubmit={(e) => {
             e.preventDefault();
-            completePairing();
+            void completePairing();
           }}
         >
           <span class="text-[11.5px] font-medium text-t2">
@@ -821,7 +821,7 @@
           class="grid gap-2"
           onsubmit={(e) => {
             e.preventDefault();
-            acceptInvite();
+            void acceptInvite();
           }}
         >
           <textarea

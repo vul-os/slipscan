@@ -65,7 +65,7 @@
       loadError = String(err);
     }
   }
-  load();
+  void load();
 
   async function save() {
     if (!s) return;

@@ -62,7 +62,7 @@
       vaultLoadError = String(err);
     }
   }
-  loadVault();
+  void loadVault();
 
   function closeAddForm() {
     showAddForm = false;
@@ -206,7 +206,7 @@
       class="mb-4 grid gap-3 rounded-lg border border-line bg-sunken/40 p-3 sm:grid-cols-2"
       onsubmit={(e) => {
         e.preventDefault();
-        addCredential();
+        void addCredential();
       }}
       onkeydown={(e) => {
         if (e.key === "Escape") closeAddForm();
@@ -334,7 +334,7 @@
               class="mt-2 flex items-center gap-2 pl-11"
               onsubmit={(e) => {
                 e.preventDefault();
-                replaceCredential(c.name);
+                void replaceCredential(c.name);
               }}
               onkeydown={(e) => {
                 if (e.key === "Escape") {

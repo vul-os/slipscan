@@ -339,7 +339,7 @@ function render(component: Component): {
   return {
     target,
     dispose: () => {
-      unmount(instance);
+      void unmount(instance);
       target.remove();
     },
   };

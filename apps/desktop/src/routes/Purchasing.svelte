@@ -127,9 +127,9 @@
       variants = cached.variants;
       pos = cached.pos;
       loading = false;
-      load(true);
+      void load(true);
     } else {
-      load();
+      void load();
     }
   }
 
@@ -686,7 +686,7 @@
             class="flex flex-wrap items-end gap-2"
             onsubmit={(e) => {
               e.preventDefault();
-              addLocation();
+              void addLocation();
             }}
           >
             <label class="block">
@@ -724,7 +724,7 @@
             class="flex flex-wrap items-end gap-2"
             onsubmit={(e) => {
               e.preventDefault();
-              addSupplier();
+              void addSupplier();
             }}
           >
             <label class="block">
@@ -957,7 +957,7 @@
                                 class="flex flex-wrap items-end gap-2 border-t border-line pt-3"
                                 onsubmit={(e) => {
                                   e.preventDefault();
-                                  commitAddLine(po);
+                                  void commitAddLine(po);
                                 }}
                               >
                                 <label class="block">

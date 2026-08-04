@@ -363,7 +363,7 @@
       class="card animate-slide-up mb-4 grid gap-3 p-4 sm:grid-cols-2"
       onsubmit={(e) => {
         e.preventDefault();
-        addMember(d.book.id);
+        void addMember(d.book.id);
       }}
       onkeydown={(e) => {
         if (e.key === "Escape") closeMemberForm();
@@ -575,7 +575,7 @@
                 class="mt-2 grid gap-3 rounded-lg border border-line bg-sunken/40 p-3 sm:grid-cols-2"
                 onsubmit={(e) => {
                   e.preventDefault();
-                  saveMember(m);
+                  void saveMember(m);
                 }}
                 onkeydown={(e) => {
                   if (e.key === "Escape") editingMemberId = null;

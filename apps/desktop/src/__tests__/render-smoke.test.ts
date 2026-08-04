@@ -29,6 +29,7 @@
  * frozen instant (09:00Z on the 20th) is mid-July in every real zone.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MockInstance } from "vitest";
 import { flushSync, mount, unmount, type Component } from "svelte";
 import App from "../App.svelte";
 import { mockApi } from "../lib/api/mock";
@@ -239,7 +240,7 @@ const CASES: Record<RouteId, RouteCase & { component: Component }> = {
 
 /** Uncaught runtime failures observed while a component is mounted. */
 let fatal: string[] = [];
-let consoleError: ReturnType<typeof vi.spyOn>;
+let consoleError: MockInstance<typeof console.error>;
 
 function onError(e: ErrorEvent) {
   fatal.push(`window.error: ${e.message}`);
@@ -316,7 +317,7 @@ function render(component: Component): {
   return {
     target,
     dispose: () => {
-      unmount(instance);
+      void unmount(instance);
       target.remove();
     },
   };

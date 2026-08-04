@@ -535,7 +535,7 @@
               onkeydown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  addLocation();
+                  void addLocation();
                 }
               }}
             />

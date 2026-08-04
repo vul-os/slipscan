@@ -27,7 +27,7 @@ function render(props: Record<string, unknown>): HTMLElement {
   document.body.appendChild(target);
   const instance = mount(NetWorthChart as Component, { target, props });
   mounted.push(() => {
-    unmount(instance);
+    void unmount(instance);
     target.remove();
   });
   return target;

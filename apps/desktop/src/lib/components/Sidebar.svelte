@@ -48,7 +48,13 @@
       .catch(() => (book = null))
       .finally(() => (bookLoaded = true));
   });
-  api.health().then((h) => (health = h));
+  // Same treatment as bookList above: a failed health probe leaves the chip
+  // unknown rather than raising an unhandled rejection. It is the one status
+  // read that cannot itself report that it failed.
+  api
+    .health()
+    .then((h) => (health = h))
+    .catch(() => (health = null));
 
   /**
    * This book's capability flags (Phase 6.0, `BookProfile`) — what a

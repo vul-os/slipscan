@@ -37,7 +37,7 @@
       loading = false;
     }
   }
-  load();
+  void load();
 
   const overdueOf = (b: { overdue_1_30_minor: number; overdue_31_60_minor: number; overdue_61_90_minor: number; overdue_90_plus_minor: number }) =>
     b.overdue_1_30_minor + b.overdue_31_60_minor + b.overdue_61_90_minor + b.overdue_90_plus_minor;

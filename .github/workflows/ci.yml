@@ -185,6 +185,14 @@ jobs:
         run: npm ci
       - name: Check
         run: npm run check
+      # Type-aware lint. Deliberately a short allow-list rather than the full
+      # recommended set — see the header of eslint.config.mjs, which records
+      # what was measured off and why. The rule that pays for this step is
+      # no-floating-promises: an unawaited call whose callee does not catch
+      # internally becomes a rejection nobody sees, which in a double-entry
+      # app is a posting error with no symptom.
+      - name: Lint
+        run: npm run lint
       - name: Test (vitest)
         run: npm test
       - name: Build

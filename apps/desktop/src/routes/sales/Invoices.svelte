@@ -86,7 +86,7 @@
       if (!background) loading = false;
     }
   }
-  load();
+  void load();
 
   function contactName(id: string): string {
     return contacts.find((c) => c.id === id)?.name ?? "Unknown contact";

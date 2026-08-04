@@ -49,7 +49,7 @@
       fxError = String(err);
     }
   }
-  loadFx();
+  void loadFx();
 
   async function saveFxUrl() {
     fxSaving = true;
@@ -122,7 +122,7 @@
       alertLoadError = String(err);
     }
   }
-  loadAlertReadiness();
+  void loadAlertReadiness();
 
   /** The command to run, with the chosen account already in it. `--account`
    * is required by the CLI precisely because alerts have to be booked
@@ -177,7 +177,7 @@
       class="mb-3 flex flex-wrap items-center gap-2"
       onsubmit={(e) => {
         e.preventDefault();
-        saveFxUrl();
+        void saveFxUrl();
       }}
     >
       <input
@@ -195,7 +195,7 @@
         class="mb-3 flex items-center gap-2"
         onsubmit={(e) => {
           e.preventDefault();
-          fetchFxRate(fxFrom.trim(), fxTo.trim(), "new");
+          void fetchFxRate(fxFrom.trim(), fxTo.trim(), "new");
         }}
       >
         <input

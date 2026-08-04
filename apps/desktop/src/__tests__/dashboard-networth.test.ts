@@ -40,7 +40,7 @@ function render(component: Component): { target: HTMLElement; dispose: () => voi
   return {
     target,
     dispose: () => {
-      unmount(instance);
+      void unmount(instance);
       target.remove();
     },
   };

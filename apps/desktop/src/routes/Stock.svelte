@@ -126,9 +126,9 @@
       lowVariants = cached.lowVariants;
       onHandTotals = cached.onHandTotals;
       loading = false;
-      load(true);
+      void load(true);
     } else {
-      load();
+      void load();
     }
   }
 
@@ -465,7 +465,7 @@
         class="flex flex-wrap items-end gap-2"
         onsubmit={(e) => {
           e.preventDefault();
-          addLocation();
+          void addLocation();
         }}
       >
         <label class="block">

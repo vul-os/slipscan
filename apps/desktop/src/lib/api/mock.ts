@@ -1338,11 +1338,29 @@ function decodeMockBlob(blob: string): MockBlobPayload {
   const trimmed = blob.trim();
   if (!trimmed.startsWith(MOCK_BLOB_PREFIX))
     throw new Error("not a SlipScan pairing blob");
+  let parsed: unknown;
   try {
-    return JSON.parse(atob(trimmed.slice(MOCK_BLOB_PREFIX.length)));
+    parsed = JSON.parse(atob(trimmed.slice(MOCK_BLOB_PREFIX.length)));
   } catch {
     throw new Error("this pairing blob is not readable — copy it again in full");
   }
+  // JSON.parse hands back `any`, so returning it directly would assert a shape
+  // nothing checked — and this decodes a blob pasted in by hand, which is
+  // exactly the input most likely to be truncated or from another app. Check
+  // the fields the callers actually read, and fail with the same message a
+  // corrupt blob gives, because to the person pasting it the two are one
+  // problem.
+  const p = parsed as Partial<Record<keyof MockBlobPayload, unknown>>;
+  const wellFormed =
+    typeof p === "object" &&
+    p !== null &&
+    (p.typ === "slipscan.pair.invite" || p.typ === "slipscan.pair.accept") &&
+    typeof p.device_id === "string" &&
+    typeof p.label === "string" &&
+    typeof p.claim === "string";
+  if (!wellFormed)
+    throw new Error("this pairing blob is not readable — copy it again in full");
+  return parsed as MockBlobPayload;
 }
 
 const THIS_DEVICE_KEY = mockPublicKey("this-laptop");

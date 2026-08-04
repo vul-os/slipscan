@@ -101,9 +101,9 @@
       docs = cached.docs;
       suggestions = cached.suggestions ?? [];
       loading = false;
-      load(true);
+      void load(true);
     } else {
-      load();
+      void load();
     }
   }
 

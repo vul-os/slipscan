@@ -215,7 +215,7 @@
       loadError = String(err);
     }
   }
-  load();
+  void load();
 
   const matchCount = (watchId: string): number =>
     matches.filter((m) => m.watch_id === watchId).length;
@@ -522,7 +522,7 @@
           class="mb-4 grid gap-3 rounded-lg border border-line bg-sunken/40 p-3 sm:grid-cols-2"
           onsubmit={(e) => {
             e.preventDefault();
-            addWatch();
+            void addWatch();
           }}
           onkeydown={(e) => {
             if (e.key === "Escape") closeWatchForm();
@@ -669,7 +669,7 @@
           class="mb-4 grid gap-3 rounded-lg border border-line bg-sunken/40 p-3 sm:grid-cols-[1fr_2fr]"
           onsubmit={(e) => {
             e.preventDefault();
-            addEndpoint();
+            void addEndpoint();
           }}
           onkeydown={(e) => {
             if (e.key === "Escape") closeEndpointForm();

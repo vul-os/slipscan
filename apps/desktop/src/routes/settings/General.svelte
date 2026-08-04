@@ -262,7 +262,7 @@
         class="animate-slide-up mb-4 rounded-lg border border-line bg-sunken p-3"
         onsubmit={(e) => {
           e.preventDefault();
-          createBook();
+          void createBook();
         }}
         onkeydown={(e) => {
           if (e.key === "Escape") showForm = false;

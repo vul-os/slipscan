@@ -27,9 +27,9 @@
   import { requestIntent } from "../state/intent.svelte";
   import { firstRun } from "../state/onboarding.svelte";
   import { optionId, palette } from "../state/palette.svelte";
-  import { router } from "../state/router.svelte";
+  import { router, type RouteId } from "../state/router.svelte";
   import { globalSearch } from "../state/search.svelte";
-  import { theme } from "../state/theme.svelte";
+  import { theme, type ThemeMode } from "../state/theme.svelte";
   import type { Transaction } from "../api/types";
   import Dialog from "./Dialog.svelte";
   import EmptyState from "./EmptyState.svelte";
@@ -42,10 +42,15 @@
   let recents = $state<Transaction[]>([]);
   let loadedRecents = false;
 
+  // These parameters are annotated rather than inferred from CommandDeps
+  // because svelte-eslint-parser does not reproduce svelte2tsx's view of the
+  // runes: svelte-check types them correctly from the annotation on `deps`,
+  // but ESLint sees `any` and cannot tell a real unsafe argument from this.
+  // Spelling them out satisfies both readers and costs nothing.
   const deps: CommandDeps = $derived({
-    go: (route) => router.go(route),
+    go: (route: RouteId) => router.go(route),
     requestIntent,
-    setTheme: (mode) => theme.set(mode),
+    setTheme: (mode: ThemeMode) => theme.set(mode),
     themeMode: theme.mode,
     searchTransactions: (query) => {
       globalSearch.query = query;

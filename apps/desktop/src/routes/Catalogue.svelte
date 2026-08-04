@@ -76,7 +76,7 @@
       loading = false;
     }
   }
-  load();
+  void load();
 
   function variantsFor(productId: string): ProductVariant[] {
     return variants.filter((v) => v.product_id === productId);
@@ -650,7 +650,7 @@
                     class="rounded-lg border border-line bg-panel p-3"
                     onsubmit={(e) => {
                       e.preventDefault();
-                      submitVariant(p.id);
+                      void submitVariant(p.id);
                     }}
                   >
                     <div class="flex flex-wrap items-end gap-2">
@@ -718,7 +718,7 @@
     class="space-y-3 px-5 pb-4"
     onsubmit={(e) => {
       e.preventDefault();
-      submitProduct();
+      void submitProduct();
     }}
   >
     <label class="block">
@@ -796,7 +796,7 @@
       class="flex items-center gap-2"
       onsubmit={(e) => {
         e.preventDefault();
-        addCategory();
+        void addCategory();
       }}
     >
       <label class="flex-1">
@@ -836,7 +836,7 @@
                 onkeydown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();
-                    commitRename(c);
+                    void commitRename(c);
                   } else if (e.key === "Escape") {
                     renamingId = null;
                   }

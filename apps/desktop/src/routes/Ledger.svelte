@@ -447,7 +447,7 @@
           class="card animate-slide-up mb-4 p-4"
           onsubmit={(e) => {
             e.preventDefault();
-            postJournal();
+            void postJournal();
           }}
           onkeydown={(e) => {
             if (e.key === "Escape") closeForm();

@@ -21,6 +21,7 @@
  * nothing rather than merely proving a dialog appeared.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MockInstance } from "vitest";
 import { flushSync, mount, unmount, type Component } from "svelte";
 import Sales from "../routes/Sales.svelte";
 import { mockApi } from "../lib/api/mock";
@@ -28,7 +29,7 @@ import { mockApi } from "../lib/api/mock";
 const FROZEN_NOW = new Date("2026-07-20T09:00:00Z");
 
 let fatal: string[] = [];
-let consoleError: ReturnType<typeof vi.spyOn>;
+let consoleError: MockInstance<typeof console.error>;
 
 function onError(e: ErrorEvent) {
   fatal.push(`window.error: ${e.message}`);
@@ -118,7 +119,7 @@ function render(component: Component): {
   return {
     target,
     dispose: () => {
-      unmount(instance);
+      void unmount(instance);
       target.remove();
     },
   };
