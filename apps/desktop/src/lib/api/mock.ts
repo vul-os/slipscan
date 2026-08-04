@@ -2271,6 +2271,11 @@ export const mockApi = {
     entity_id: string;
     coa_id: string;
   }): Promise<CoaMapEntry> => {
+    // Core refuses three cross-book pairings; the mock models the chart of
+    // accounts, so it can check that one at least.
+    const entry = ledgerAccounts.find((a) => a.id === q.coa_id);
+    if (entry && entry.book_id !== q.book_id)
+      throw new Error("chart-of-accounts entry belongs to a different book");
     const now = new Date().toISOString();
     const existing = coaMap.find(
       (m) =>
@@ -2653,6 +2658,10 @@ export const mockApi = {
   contact_add: async (q: NewContact): Promise<Contact> => {
     const name = q.name.trim();
     if (!name) throw new Error("contact name must not be empty");
+    if (q.payment_terms_days !== undefined && q.payment_terms_days < 0)
+      throw new Error("payment terms must be zero or more days");
+    if (q.credit_limit_minor !== undefined && q.credit_limit_minor < 0)
+      throw new Error("credit limit must not be negative");
     const now = new Date().toISOString();
     const created: Contact = {
       id: id("ct00"),
@@ -2713,10 +2722,16 @@ export const mockApi = {
     if (q.shipping_address !== undefined)
       c.shipping_address = q.shipping_address?.trim() || null;
     if (q.tax_number !== undefined) c.tax_number = q.tax_number?.trim() || null;
-    if (q.payment_terms_days !== undefined)
+    if (q.payment_terms_days !== undefined) {
+      if (q.payment_terms_days !== null && q.payment_terms_days < 0)
+        throw new Error("payment terms must be zero or more days");
       c.payment_terms_days = q.payment_terms_days ?? null;
-    if (q.credit_limit_minor !== undefined)
+    }
+    if (q.credit_limit_minor !== undefined) {
+      if (q.credit_limit_minor !== null && q.credit_limit_minor < 0)
+        throw new Error("credit limit must not be negative");
       c.credit_limit_minor = q.credit_limit_minor ?? null;
+    }
     if (q.notes !== undefined) c.notes = q.notes?.trim() || null;
     if (q.is_active !== undefined) c.is_active = q.is_active;
     c.updated_at = new Date().toISOString();

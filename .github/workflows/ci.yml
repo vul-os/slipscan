@@ -158,6 +158,14 @@ jobs:
       - name: No new core capability is left unreachable
         run: npm run reachable:check
         working-directory: .
+      # apps/desktop/src/lib/api/mock.ts is what screens are developed against
+      # when the app runs outside Tauri. Six of its operations disagreed with
+      # core — each internally consistent and separately tested, so nothing
+      # caught it until someone read both. Counts only; the point is the
+      # trigger when either side's guards move.
+      - name: Desktop mock guards still line up with core
+        run: npm run mock-guards:check
+        working-directory: .
       - name: Install
         run: npm ci
       - name: Check

@@ -8,6 +8,8 @@
     "parity:check": "node scripts/check-parity.mjs",
     "reachable:sync": "node scripts/check-reachable.mjs --write",
     "reachable:check": "node scripts/check-reachable.mjs",
+    "mock-guards:sync": "node scripts/check-mock-guards.mjs --write",
+    "mock-guards:check": "node scripts/check-mock-guards.mjs",
     "source:check": "node scripts/check-source-text.mjs",
     "screenshots:sync": "node scripts/sync-screenshots.mjs",
     "screenshots:check": "node scripts/sync-screenshots.mjs --check",
