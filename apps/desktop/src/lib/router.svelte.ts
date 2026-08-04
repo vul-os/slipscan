@@ -13,6 +13,8 @@ export const ROUTES = [
   "receipts",
   "budgets",
   "household",
+  "contacts",
+  "catalogue",
   "ledger",
   "reconcile",
   "payments",

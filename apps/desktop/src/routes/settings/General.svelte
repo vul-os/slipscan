@@ -153,6 +153,14 @@
     profileError = null;
     try {
       profile = await api.bookSetKind({ book_id: book.id, kind });
+      // Every business-only screen's own gate (Contacts, Catalogue, …) and
+      // the sidebar's "Trade" group both read a `BookProfile` cached against
+      // `bookEpoch.value` — without this, switching Personal -> Business
+      // here left the rail showing the old capability set until the next
+      // book was created or the app reloaded, while this screen (which
+      // re-fetches on its own) already looked right. Caught by reading a
+      // screenshot: the two disagreed and only one of them was visible.
+      bookEpoch.bump();
     } catch (err) {
       profileError = String(err);
     } finally {
@@ -178,6 +186,9 @@
         book_id: book.id,
         multi_location_override: mode === "auto" ? null : mode === "on",
       });
+      // Same staleness fix as changeKind: this flag gates the sidebar's
+      // Locations entry too, once one exists.
+      bookEpoch.bump();
     } catch (err) {
       profileError = String(err);
     } finally {

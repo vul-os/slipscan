@@ -33,8 +33,11 @@ import { flushSync, mount, unmount, type Component } from "svelte";
 import App from "../App.svelte";
 import { mockApi } from "../lib/api/mock";
 import { firstRun, FIRST_RUN_KEY } from "../lib/onboarding.svelte";
+import { NAV_ITEMS } from "../lib/nav";
 import { router, ROUTES, type RouteId } from "../lib/router.svelte";
 import Budgets from "../routes/Budgets.svelte";
+import Catalogue from "../routes/Catalogue.svelte";
+import Contacts from "../routes/Contacts.svelte";
 import Dashboard from "../routes/Dashboard.svelte";
 import Household from "../routes/Household.svelte";
 import Ledger from "../routes/Ledger.svelte";
@@ -101,6 +104,33 @@ const CASES: Record<RouteId, RouteCase & { component: Component }> = {
       "Owns FNB Cheque",
       "Settle up · July 2026",
       "Share of category",
+    ],
+  },
+  // Contacts and Catalogue are business-only (`BookProfile.show_contacts` /
+  // `show_catalogue`), and the mock's one book is personal — the same book
+  // every other case in this table renders against. So the CASES anchors
+  // here are deliberately the *refusal* state, not a populated screen: this
+  // is what the mock exercises by default, and it is the property that
+  // matters most (the route refuses itself rather than merely hoping the
+  // sidebar hid its own link). The populated path — add a category, a
+  // product, a variant, a contact, edit its role, delete refusals — is
+  // covered against a business-book mock in contacts-catalogue.test.ts.
+  contacts: {
+    component: Contacts as Component,
+    heading: "Contacts",
+    anchors: [
+      "Contacts is for business books",
+      "no trading party to track",
+      "Open Settings",
+    ],
+  },
+  catalogue: {
+    component: Catalogue as Component,
+    heading: "Catalogue",
+    anchors: [
+      "Catalogue is for business books",
+      "nothing to sell or stock",
+      "Open Settings",
     ],
   },
   ledger: {
@@ -500,11 +530,19 @@ describe("app shell", () => {
       expect(fatal, `runtime errors in the shell: ${fatal.join(" | ")}`)
         .toEqual([]);
 
-      // Every registered route is reachable from the chrome, and the sidebar
-      // marks exactly one link as current.
+      // Every route the mock's book can actually show is reachable from the
+      // chrome, and the sidebar marks exactly one link as current. The mock's
+      // one book is personal, so `NAV_ITEMS` entries gated behind a
+      // `BookProfile` flag (Contacts, Catalogue — Sidebar.svelte filters on
+      // `item.requires`) are correctly absent here; ROUTES itself still names
+      // every route that exists, gated or not (pinned by the "covers every
+      // registered route" case above).
+      const visibleRoutes = NAV_ITEMS.filter((item) => !item.requires).map(
+        (item) => item.route,
+      );
       const links = [...target.querySelectorAll<HTMLAnchorElement>("nav a")];
       expect(links.map((a) => a.getAttribute("href"))).toEqual(
-        ROUTES.map((r) => `#/${r}`),
+        visibleRoutes.map((r) => `#/${r}`),
       );
       expect(
         links.filter((a) => a.getAttribute("aria-current") === "page").length,
@@ -515,7 +553,9 @@ describe("app shell", () => {
 
       // Click the real anchor: href → hashchange → router → keyed remount.
       // Exercises the whole navigation path, not just the router object.
-      const ledgerLink = links[ROUTES.indexOf("ledger")]!;
+      // Looked up by href rather than a ROUTES index — gating can leave
+      // fewer links in the rail than ROUTES has entries.
+      const ledgerLink = links.find((a) => a.getAttribute("href") === "#/ledger")!;
       ledgerLink.click();
       await settle(target);
 
@@ -526,7 +566,7 @@ describe("app shell", () => {
       // The dashboard's screen was swapped out, not stacked underneath.
       expect(text(target)).not.toContain("Net balance");
 
-      links[ROUTES.indexOf("dashboard")]!.click();
+      links.find((a) => a.getAttribute("href") === "#/dashboard")!.click();
       await settle(target);
       expect(text(target)).toContain("R 56,844.22");
       expect(fatal, `runtime errors after navigation: ${fatal.join(" | ")}`)

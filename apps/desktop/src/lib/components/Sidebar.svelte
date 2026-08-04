@@ -10,7 +10,7 @@
   import { apiStatus } from "../api/status.svelte";
   import { NAV_GROUPS } from "../nav";
   import { palette } from "../palette.svelte";
-  import type { Book, Health } from "../api/types";
+  import type { Book, BookProfile, Health } from "../api/types";
   import type { IconName } from "../icons";
   import Icon from "./Icon.svelte";
 
@@ -49,6 +49,39 @@
       .finally(() => (bookLoaded = true));
   });
   api.health().then((h) => (health = h));
+
+  /**
+   * This book's capability flags (Phase 6.0, `BookProfile`) — what a
+   * business-only destination like Contacts or Catalogue gates on. `null`
+   * while unknown (no book yet, or still loading), which the filter below
+   * treats the same as "hide" rather than guessing a book is business.
+   */
+  let profile = $state<BookProfile | null>(null);
+  $effect(() => {
+    const id = book?.id;
+    profile = null;
+    if (!id) return;
+    void api
+      .bookProfile({ book_id: id })
+      .then((p) => (profile = p))
+      .catch(() => (profile = null));
+  });
+
+  /**
+   * `NAV_GROUPS` filtered to what this book can actually show. A group left
+   * with zero visible items (the whole "Trade" group, on a personal book) is
+   * dropped rather than rendered as a bare heading over nothing.
+   */
+  const visibleGroups = $derived(
+    nav
+      .map((group) => ({
+        heading: group.heading,
+        items: group.items.filter(
+          (item) => !item.requires || profile?.[item.requires] === true,
+        ),
+      }))
+      .filter((group) => group.items.length > 0),
+  );
 
   // `?screenshot=1` (scripts/screenshot.mjs) hides the mock badge so docs
   // captures show the product, not the dev harness. Dev in a browser still
@@ -150,7 +183,7 @@
     class="flex-1 overflow-x-hidden overflow-y-auto px-2 rail:px-3"
     aria-label="Sections"
   >
-    {#each nav as group, gi (group.heading)}
+    {#each visibleGroups as group, gi (group.heading)}
       <!-- Separator + heading: the heading is the accessible group name in
            the expanded rail; collapsed, the hairline alone does the work. -->
       <div class={gi === 0 ? "" : "mt-2 border-t border-line pt-2"}>

@@ -14,6 +14,8 @@
   import Receipts from "./routes/Receipts.svelte";
   import Budgets from "./routes/Budgets.svelte";
   import Household from "./routes/Household.svelte";
+  import Contacts from "./routes/Contacts.svelte";
+  import Catalogue from "./routes/Catalogue.svelte";
   import Ledger from "./routes/Ledger.svelte";
   import Reconcile from "./routes/Reconcile.svelte";
   import Payments from "./routes/Payments.svelte";
@@ -27,6 +29,8 @@
     receipts: Receipts,
     budgets: Budgets,
     household: Household,
+    contacts: Contacts,
+    catalogue: Catalogue,
     ledger: Ledger,
     reconcile: Reconcile,
     payments: Payments,

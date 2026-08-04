@@ -11,6 +11,7 @@
  * (pinned by a test).
  */
 
+import type { BookProfile } from "./api/types";
 import type { IconName } from "./icons";
 import type { RouteId } from "./router.svelte";
 
@@ -25,6 +26,14 @@ export interface NavItem {
    * label. Search-only: never rendered, so they can be blunt.
    */
   keywords: string;
+  /**
+   * A `BookProfile` flag gating this destination — omitted for one every
+   * book shows. A personal book resolves every business-only flag to
+   * `false`, so the sidebar hides the entry (Sidebar.svelte) and the screen
+   * itself refuses the route when it is opened directly (by hash, or from
+   * the command palette) rather than through the rail.
+   */
+  requires?: keyof BookProfile;
 }
 
 export interface NavGroup {
@@ -33,9 +42,9 @@ export interface NavGroup {
 }
 
 /**
- * Eleven destinations is more than reads as one list, so the rail is
- * grouped: what the money did, what the books say, and what the machine is
- * set up with.
+ * More destinations than reads as one list, so the rail is grouped: what the
+ * money did, what the business trades, what the books say, and what the
+ * machine is set up with.
  */
 export const NAV_GROUPS: NavGroup[] = [
   {
@@ -75,6 +84,37 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: "wallet",
         key: "H",
         keywords: "members people who paid split share settle up",
+      },
+    ],
+  },
+  {
+    // Business-only destinations, gated by `BookProfile` — a personal book
+    // resolves every `requires` flag below to `false`, so this whole group
+    // renders with zero visible items and Sidebar.svelte drops it rather
+    // than showing an empty heading. Order within the group, across every
+    // agent adding to it: Contacts, Catalogue, Stock, Purchasing, Sales.
+    heading: "Trade",
+    items: [
+      {
+        route: "contacts",
+        label: "Contacts",
+        icon: "contacts",
+        key: "N",
+        keywords:
+          "customers suppliers parties company email phone address credit terms",
+        requires: "show_contacts",
+      },
+      {
+        route: "catalogue",
+        label: "Catalogue",
+        icon: "catalogue",
+        // Not "G": that is the jump chord's own trigger key, and pairing it
+        // with itself (press G, then G again) works mechanically but reads
+        // as a typo waiting to happen.
+        key: "U",
+        keywords:
+          "products variants sku price cost reorder point category attributes",
+        requires: "show_catalogue",
       },
     ],
   },

@@ -78,6 +78,12 @@ export const icons = {
   scan: '<path d="M3.5 8V5.5A2 2 0 0 1 5.5 3.5H8M16 3.5h2.5a2 2 0 0 1 2 2V8M20.5 16v2.5a2 2 0 0 1-2 2H16M8 20.5H5.5a2 2 0 0 1-2-2V16"/><path d="M3.5 12h17"/>',
   zap: '<path d="M13 2.5 4.5 13.5h6l-1 8 8.5-11h-6z"/>',
   copy: '<rect x="8.5" y="8.5" width="12" height="12" rx="1.5"/><path d="M15.5 8.5v-3A2 2 0 0 0 13.5 3.5h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/>',
+  /** Trade — contacts: a person, for customers and suppliers alike. */
+  contacts:
+    '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-4.1 3.1-6.5 7-6.5s7 2.4 7 6.5"/>',
+  /** Trade — catalogue: a price tag, for products and variants. */
+  catalogue:
+    '<path d="M20.5 13.4 13.4 20.5a2 2 0 0 1-2.8 0l-7.1-7.1a2 2 0 0 1-.6-1.4V5.5a2 2 0 0 1 2-2H11a2 2 0 0 1 1.4.6l7.1 7.1a2 2 0 0 1 0 2.8z"/><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"/>',
 } as const;
 
 export type IconName = keyof typeof icons;
