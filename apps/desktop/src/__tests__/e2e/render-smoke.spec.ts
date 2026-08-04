@@ -14,10 +14,10 @@
 // skeletons up forever, a route dropped from the router, money that stops
 // going through fmtMoney.
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 /** Mirrors ROUTES in src/lib/router.svelte.ts. */
-const ROUTES = [
+const ROUTES: Array<[route: string, anchor: string]> = [
   ["dashboard", "R 56,844.22"],
   ["transactions", "WOOLWORTHS 178 CLAREMONT"],
   ["receipts", "sixty60-slip.pdf"],
@@ -44,7 +44,7 @@ const ROUTES = [
 ];
 
 /** Headings, where they are not simply the route name title-cased. */
-const HEADINGS = { dashboard: null };
+const HEADINGS: Record<string, string | null> = { dashboard: null };
 
 /**
  * The mock dataset's transactions are dated July 2026, so the month-scoped
@@ -54,12 +54,15 @@ const HEADINGS = { dashboard: null };
 const FROZEN_NOW = new Date("2026-07-20T09:00:00Z");
 
 /** Collapse whitespace: Intl puts U+00A0 inside formatted money. */
-const flat = (s) => s.replace(/\s+/g, " ").trim();
+const flat = (s: string): string => s.replace(/\s+/g, " ").trim();
 
 /** Attach error collectors and return the arrays they fill. */
-function watchForErrors(page) {
-  const pageErrors = [];
-  const consoleErrors = [];
+function watchForErrors(page: Page): {
+  pageErrors: string[];
+  consoleErrors: string[];
+} {
+  const pageErrors: string[] = [];
+  const consoleErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
   page.on("console", (msg) => {
     if (msg.type() === "error") consoleErrors.push(msg.text());
@@ -68,7 +71,7 @@ function watchForErrors(page) {
 }
 
 /** Navigate and wait until every skeleton has been replaced by real data. */
-async function open(page, route) {
+async function open(page: Page, route: string): Promise<void> {
   await page.clock.setFixedTime(FROZEN_NOW);
   await page.goto(`/#/${route}`, { waitUntil: "domcontentloaded" });
   // Skeleton loaders mark themselves aria-busy (see Skeleton.svelte); the

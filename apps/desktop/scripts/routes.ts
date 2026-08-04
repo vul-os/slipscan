@@ -18,8 +18,8 @@ import { fileURLToPath } from "node:url";
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ROUTER = join(appDir, "src", "lib", "router.svelte.ts");
 
-/** @returns {string[]} every route id, in sidebar order. */
-export function readRoutes() {
+/** Every route id, in sidebar order. */
+export function readRoutes(): string[] {
   const text = readFileSync(ROUTER, "utf8");
   const block = text.match(/export const ROUTES = \[([\s\S]*?)\] as const;/);
   if (!block) {

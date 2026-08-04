@@ -10,14 +10,14 @@
 // No backend: outside Tauri the client serves every call from the in-memory
 // mock dataset, the same property the render-smoke spec relies on.
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 /** The `rail` breakpoint in app.css is 56.25rem = 900px. */
 const RAIL_BREAKPOINT = 900;
 
 const FROZEN_NOW = new Date("2026-07-20T09:00:00Z");
 
-async function open(page, route = "dashboard") {
+async function open(page: Page, route = "dashboard"): Promise<void> {
   await page.clock.setFixedTime(FROZEN_NOW);
   await page.goto(`/#/${route}`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(
@@ -170,16 +170,30 @@ test.describe("the rail collapses", () => {
   });
 });
 
+/** One sampled tab stop's focus-ring computed style, or the fields used to name it. */
+interface FocusStop {
+  id: string;
+  href: string | null;
+  name: string;
+  width: string;
+  style: string;
+  offset: string;
+  color: string;
+}
+
 test.describe("accessibility of the shell", () => {
   // The ring colour is the lime family, and it is a *different* lime per
   // theme (the raw accent is unreadable on white). Both are checked against
   // the token, not against "some outline exists".
-  const RING = { light: "rgb(92, 117, 0)", dark: "rgb(200, 255, 0)" };
+  const RING: Record<"light" | "dark", string> = {
+    light: "rgb(92, 117, 0)",
+    dark: "rgb(200, 255, 0)",
+  };
 
   // One test per theme, deliberately not a loop inside one test: a hash-only
   // `goto` does not reload the document, so a second pass would carry on
   // tabbing from wherever the first left off rather than starting over.
-  for (const scheme of ["light", "dark"]) {
+  for (const scheme of ["light", "dark"] as const) {
     test(`draws the branded focus ring on every shell control · ${scheme}`, async ({
       page,
     }) => {
@@ -194,34 +208,34 @@ test.describe("accessibility of the shell", () => {
       // Walk the real tab order rather than focusing elements by hand:
       // `:focus-visible` is a *keyboard* state, and the ring is only owed on
       // controls a keyboard actually reaches.
-      const stops = [];
+      const stops: FocusStop[] = [];
       for (let i = 0; i < 13; i++) {
         await page.keyboard.press("Tab");
-        stops.push(
-          await page.evaluate(async () => {
-            // Let the ring settle before sampling it. Controls carrying
-            // `transition-colors` transition `outline-color` as well, so an
-            // immediate read catches the start of that fade — which is
-            // `currentColor`, not the token. 200ms clears the 120ms
-            // `--dur-quick` this uses.
-            await new Promise((resolve) => setTimeout(resolve, 200));
-            const el = document.activeElement;
-            if (!el || el === document.body) return null;
-            const style = getComputedStyle(el);
-            return {
-              id: el.id,
-              href: el.getAttribute("href"),
-              name: (el.getAttribute("aria-label") ?? el.textContent ?? "")
-                .replace(/\s+/g, " ")
-                .trim()
-                .slice(0, 40),
-              width: style.outlineWidth,
-              style: style.outlineStyle,
-              offset: style.outlineOffset,
-              color: style.outlineColor,
-            };
-          }),
-        );
+        const stop = await page.evaluate<FocusStop | null>(async () => {
+          // Let the ring settle before sampling it. Controls carrying
+          // `transition-colors` transition `outline-color` as well, so an
+          // immediate read catches the start of that fade — which is
+          // `currentColor`, not the token. 200ms clears the 120ms
+          // `--dur-quick` this uses.
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          const el = document.activeElement;
+          if (!el || el === document.body) return null;
+          const style = getComputedStyle(el);
+          return {
+            id: el.id,
+            href: el.getAttribute("href"),
+            name: (el.getAttribute("aria-label") ?? el.textContent ?? "")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 40),
+            width: style.outlineWidth,
+            style: style.outlineStyle,
+            offset: style.outlineOffset,
+            color: style.outlineColor,
+          };
+        });
+        if (!stop) throw new Error(`tab stop ${i} landed on nothing focusable`);
+        stops.push(stop);
       }
 
       // Focus order: the escape hatch first, then the palette, then the
@@ -249,7 +263,7 @@ test.describe("accessibility of the shell", () => {
       // ring entirely by borrowing the text field's styling, and only a
       // check this wide would have caught it.
       for (const stop of stops) {
-        const where = stop.name || stop.href;
+        const where = stop.name || stop.href || "(unnamed stop)";
         expect(stop.style, where).toBe("solid");
         expect(stop.width, where).toBe("2px");
         expect(stop.offset, where).toBe("2px");
@@ -277,7 +291,7 @@ test.describe("accessibility of the shell", () => {
 
     // app.css collapses every animation to a single frame under reduce; the
     // scrim and the panel are no exception.
-    const durations = await page.evaluate(() =>
+    const durations = await page.evaluate<Array<string | null>>(() =>
       [".scrim", ".dialog-panel"].map((sel) => {
         const el = document.querySelector(sel);
         return el ? getComputedStyle(el).animationDuration : null;
@@ -285,7 +299,9 @@ test.describe("accessibility of the shell", () => {
     );
     for (const duration of durations) {
       // `0.01ms !important`, as the browser computes it — a single frame.
-      expect(Number.parseFloat(duration)).toBeLessThan(0.001);
+      // A missing element (duration === null) still has to fail this
+      // assertion rather than vanish from the loop.
+      expect(Number.parseFloat(String(duration))).toBeLessThan(0.001);
     }
   });
 

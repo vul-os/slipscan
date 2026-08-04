@@ -17,12 +17,27 @@
 // across the room, simulated. They are imported through the page so the test
 // and the app share one module instance, and therefore one dataset.
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 const FROZEN_NOW = new Date("2026-07-20T09:00:00Z");
 
+/** The shape `mockForeignInvite` / `mockForeignAcceptance` return — see src/lib/api/mock.ts. */
+interface MockPairingBlob {
+  blob: string;
+  keyname: string;
+}
+
+/**
+ * The mock module's shape, resolved through this file's own relative path
+ * (which tsc can follow) rather than the browser-root path the evaluate()
+ * calls below actually import at runtime ("/src/..." — how Vite serves the
+ * project root, which is not a path relative to this file and so is not
+ * something ordinary module resolution can find).
+ */
+type MockApi = typeof import("../../lib/api/mock");
+
 /** Open Settings and switch to the Devices tab. */
-async function openDevices(page) {
+async function openDevices(page: Page): Promise<Locator> {
   await page.clock.setFixedTime(FROZEN_NOW);
   await page.goto("/#/settings", { waitUntil: "domcontentloaded" });
   await page
@@ -38,25 +53,48 @@ async function openDevices(page) {
   return page.locator("main");
 }
 
+/**
+ * Both helpers below import the mock module *inside the browser*, by its
+ * browser-root path ("/src/..." — how Vite serves the project root), so the
+ * test and the app share one module instance and therefore one dataset (see
+ * the file banner). That path is not relative to this file, so ordinary
+ * module resolution can't type it; concatenating it rather than writing one
+ * string literal keeps tsc from trying (and failing) to statically resolve
+ * that runtime-only specifier itself, and the explicit cast to `MockApi`
+ * (resolved through this file's own relative path instead) gives the awaited
+ * result its real type regardless — nothing here falls back to `any`.
+ */
+const MOCK_MODULE_PATH = "/src/lib/api/mock" + ".ts";
+
 /** An invite as though another device minted it. */
-const foreignInvite = (page, label) =>
+const foreignInvite = (page: Page, label: string): Promise<MockPairingBlob> =>
   page.evaluate(
-    (l) =>
-      import("/src/lib/api/mock.ts").then((m) => m.mockForeignInvite(l)),
-    label,
+    ([path, l]) =>
+      (import(/* @vite-ignore */ path) as Promise<MockApi>).then((m) =>
+        m.mockForeignInvite(l),
+      ),
+    [MOCK_MODULE_PATH, label] as const,
   );
 
 /** The answer the other device would carry back to `blob`. */
-const foreignAcceptance = (page, blob) =>
+const foreignAcceptance = (
+  page: Page,
+  blob: string,
+): Promise<MockPairingBlob> =>
   page.evaluate(
-    (b) =>
-      import("/src/lib/api/mock.ts").then((m) => m.mockForeignAcceptance(b)),
-    blob,
+    ([path, b]) =>
+      (import(/* @vite-ignore */ path) as Promise<MockApi>).then((m) =>
+        m.mockForeignAcceptance(b),
+      ),
+    [MOCK_MODULE_PATH, blob] as const,
   );
 
-function watchForErrors(page) {
-  const pageErrors = [];
-  const consoleErrors = [];
+function watchForErrors(page: Page): {
+  pageErrors: string[];
+  consoleErrors: string[];
+} {
+  const pageErrors: string[] = [];
+  const consoleErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
   page.on("console", (msg) => {
     if (msg.type() === "error") consoleErrors.push(msg.text());
