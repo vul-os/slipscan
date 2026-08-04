@@ -135,6 +135,13 @@ jobs:
       - name: Screenshots mirrored to site and assets are in sync
         run: npm run screenshots:check
         working-directory: .
+      # brand/logo.svg and the wordmarks it sits alongside were hand-copied
+      # into assets/brand/, site/assets/brand/, apps/desktop/src/assets/ and
+      # apps/desktop/public/ with no sync step — five tracked copies with
+      # nothing keeping them byte-identical after the first commit.
+      - name: Brand assets mirrored from brand/ are in sync
+        run: npm run brand:check
+        working-directory: .
       # docs/parity.json enumerates the HTTP, IPC and client.ts surfaces, and
       # API.md quotes its counts as fact. Nothing checked either against the
       # code, so both drifted the moment anything shipped — Phase 6.5 landed 21

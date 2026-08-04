@@ -14,6 +14,8 @@
     "source:check": "node scripts/check-source-text.ts",
     "screenshots:sync": "node scripts/sync-screenshots.ts",
     "screenshots:check": "node scripts/sync-screenshots.ts --check",
+    "brand:sync": "node scripts/sync-brand.ts",
+    "brand:check": "node scripts/sync-brand.ts --check",
     "site:check": "node scripts/check-site.ts"
   },
   "engines": {
