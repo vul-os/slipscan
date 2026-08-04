@@ -39,6 +39,10 @@
       2,
       0
     ],
+    "close_period": [
+      0,
+      1
+    ],
     "coa_archive": [
       0,
       1
@@ -222,6 +226,10 @@
     "recon_confirm": [
       0,
       1
+    ],
+    "reopen_period": [
+      2,
+      4
     ],
     "sales_order_cancel": [
       0,

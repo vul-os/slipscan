@@ -667,6 +667,45 @@ export interface AgedReceivables {
 }
 
 // ---------------------------------------------------------------------------
+// period close — the ritual that turns a ledger into a book someone will
+// sign. `closePeriodCheck` previews (no mutation); `closePeriod` runs the
+// identical checks and, only if nothing hard-refuses, advances the book's
+// lock date; `reopenPeriod` is the deliberate, audited undo.
+// ---------------------------------------------------------------------------
+
+export interface ClosePeriodCurrencyBalance {
+  currency: string;
+  debit_minor: number;
+  credit_minor: number;
+}
+
+/** Mirrors core's `ClosePeriodReport` — identical shape from `closePeriodCheck`
+ * and `closePeriod`, differing only in `closed`. */
+export interface ClosePeriodReport {
+  book_id: string;
+  /** The date being sealed through (inclusive). */
+  to_date: string;
+  /** The book's lock date before this call, or `null` if never closed. */
+  previous_lock_date: string | null;
+  /** Per-currency debit/credit totals as of `to_date`. */
+  balance: ClosePeriodCurrencyBalance[];
+  balanced: boolean;
+  uncategorised_transaction_count: number;
+  unreconciled_statement_line_count: number;
+  draft_sales_order_count: number;
+  unpaid_invoice_due_count: number;
+  /** Non-empty means the close is refused; every reason named. */
+  blocking_reasons: string[];
+  /** Advisory — never blocks, always worth reading, present even on a
+   * successful close's own returned report. */
+  warnings: string[];
+  closeable: boolean;
+  /** `false` from `closePeriodCheck` (never mutates); `true` from
+   * `closePeriod` only once the lock date actually moved. */
+  closed: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // data folder (movable) — contract: "Data location & backup". One folder
 // holds everything durable; backup is the user's own cloud syncing it.
 // ---------------------------------------------------------------------------

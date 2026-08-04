@@ -20,6 +20,7 @@ import type {
   BudgetUpsert,
   BudgetWithSpend,
   Category,
+  ClosePeriodReport,
   CoaMapEntity,
   CoaMapEntry,
   Contact,
@@ -256,6 +257,35 @@ export const api = {
     call("book_set_lock_date", { query: q }, () =>
       mockApi.book_set_lock_date(q),
     ),
+
+  // -- period close: the ritual that turns a ledger into a book someone
+  // will sign. `closePeriodCheck` previews with no mutation; `closePeriod`
+  // runs the identical checks and locks on success; `reopenPeriod` is the
+  // deliberate, audited undo. --
+
+  /** Preview closing the period through `to_date` — no mutation. */
+  closePeriodCheck: (q: {
+    book_id: string;
+    to_date: string;
+  }): Promise<ClosePeriodReport> =>
+    call("close_period_check", { query: q }, () =>
+      mockApi.close_period_check(q),
+    ),
+
+  /** Close the period through `to_date`. Rejects (with every blocking
+   * reason in the error) rather than locking over a problem. */
+  closePeriod: (q: { book_id: string; to_date: string }): Promise<ClosePeriodReport> =>
+    call("close_period", { query: q }, () => mockApi.close_period(q)),
+
+  /** Reopen a closed period — a deliberate, audited act. `reason` is
+   * required; `to_date` reopens back to an earlier seal instead of
+   * clearing the lock entirely. */
+  reopenPeriod: (q: {
+    book_id: string;
+    reason: string;
+    to_date?: string | null;
+  }): Promise<Book> =>
+    call("reopen_period", { query: q }, () => mockApi.reopen_period(q)),
 
   // -- stock: the append-only movement ledger (Phase 6.3b). On-hand is
   // derived on every read; there is no "set level" call, on purpose. --

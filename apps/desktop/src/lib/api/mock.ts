@@ -17,6 +17,8 @@ import type {
   BudgetUpsert,
   BudgetWithSpend,
   Category,
+  ClosePeriodCurrencyBalance,
+  ClosePeriodReport,
   CoaMapEntity,
   CoaMapEntry,
   Contact,
@@ -2107,6 +2109,127 @@ function seededMonthTotals(month: string): {
 
 const clone = <T>(v: T): T => structuredClone(v);
 
+// ---------------------------------------------------------------------------
+// period close — mirrors core's `ClosePeriodReport` checks closely enough
+// for mock purposes: a single-currency (ZAR) balance-as-of-`to_date` check,
+// plus the four advisory counts, scoped to the period between whatever this
+// book was already locked through (`lockDates`) and `to_date`.
+// ---------------------------------------------------------------------------
+
+const dayAfter = (date: string): string => {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+};
+
+function buildCloseReport(book_id: string, to_date: string): ClosePeriodReport {
+  const b = books.find((x) => x.id === book_id);
+  if (!b) throw new Error(`book not found: ${book_id}`);
+  const previous_lock_date = lockDates.get(book_id) ?? null;
+
+  const blocking_reasons: string[] = [];
+  if (previous_lock_date && to_date <= previous_lock_date) {
+    blocking_reasons.push(
+      `book is already closed through ${previous_lock_date}; reopen the period first to ` +
+        "move the close date backward, or close through a later date",
+    );
+  }
+  const from_date =
+    previous_lock_date === null
+      ? "0001-01-01"
+      : to_date > previous_lock_date
+        ? dayAfter(previous_lock_date)
+        : to_date;
+
+  let debit_minor = 0;
+  let credit_minor = 0;
+  for (const je of journalEntries) {
+    if (je.book_id !== book_id || je.entry_date > to_date) continue;
+    for (const line of je.lines) {
+      debit_minor += line.debit_minor;
+      credit_minor += line.credit_minor;
+    }
+  }
+  const balanced = debit_minor === credit_minor;
+  const balance: ClosePeriodCurrencyBalance[] =
+    debit_minor === 0 && credit_minor === 0
+      ? []
+      : [{ currency: "ZAR", debit_minor, credit_minor }];
+  if (!balanced) {
+    blocking_reasons.push(
+      `trial balance does not balance as of ${to_date}: ZAR debit ${debit_minor} != ` +
+        `credit ${credit_minor}`,
+    );
+  }
+
+  const inRange = (date: string) => date >= from_date && date <= to_date;
+
+  const uncategorised_transaction_count = transactions.filter(
+    (t) =>
+      t.book_id === book_id &&
+      t.category_id === null &&
+      inRange(t.posted_at.slice(0, 10)),
+  ).length;
+
+  const reconciledTxnIds = new Set(
+    reconSuggestions.filter((r) => r.status === "confirmed").map((r) => r.transaction_id),
+  );
+  const unreconciled_statement_line_count = transactions.filter(
+    (t) =>
+      t.book_id === book_id &&
+      inRange(t.posted_at.slice(0, 10)) &&
+      !reconciledTxnIds.has(t.id),
+  ).length;
+
+  const draft_sales_order_count = salesOrders.filter(
+    (o) => o.book_id === book_id && o.status === "draft" && inRange(o.order_date),
+  ).length;
+
+  const unpaid_invoice_due_count = invoices.filter(
+    (inv) =>
+      inv.book_id === book_id &&
+      inRange(inv.due_date) &&
+      !invoicePayments.some((p) => p.invoice_id === inv.id),
+  ).length;
+
+  const warnings: string[] = [];
+  if (uncategorised_transaction_count > 0) {
+    warnings.push(
+      `${uncategorised_transaction_count} uncategorised transaction(s) in this period`,
+    );
+  }
+  if (unreconciled_statement_line_count > 0) {
+    warnings.push(
+      `${unreconciled_statement_line_count} unreconciled statement line(s) in this period`,
+    );
+  }
+  if (draft_sales_order_count > 0) {
+    warnings.push(`${draft_sales_order_count} draft sales order(s) dated in this period`);
+  }
+  if (unpaid_invoice_due_count > 0) {
+    warnings.push(
+      `${unpaid_invoice_due_count} invoice(s) due in this period with no payment ` +
+        "recorded against them",
+    );
+  }
+
+  return {
+    book_id,
+    to_date,
+    previous_lock_date,
+    balance,
+    balanced,
+    uncategorised_transaction_count,
+    unreconciled_statement_line_count,
+    draft_sales_order_count,
+    unpaid_invoice_due_count,
+    blocking_reasons,
+    warnings,
+    closeable: blocking_reasons.length === 0,
+    closed: false,
+  };
+}
+
 export const mockApi = {
   health: async (): Promise<Health> => ({
     status: "ok",
@@ -2352,6 +2475,47 @@ export const mockApi = {
     const b = books.find((x) => x.id === q.book_id);
     if (!b) throw new Error(`book not found: ${q.book_id}`);
     lockDates.set(q.book_id, q.lock_date ?? null);
+    return clone(b);
+  },
+
+  // -- period close: check (dry run, no mutation), run (locks on success),
+  // reopen (deliberate, reasoned undo). --
+
+  close_period_check: async (q: {
+    book_id: string;
+    to_date: string;
+  }): Promise<ClosePeriodReport> => clone(buildCloseReport(q.book_id, q.to_date)),
+
+  close_period: async (q: {
+    book_id: string;
+    to_date: string;
+  }): Promise<ClosePeriodReport> => {
+    const report = buildCloseReport(q.book_id, q.to_date);
+    if (!report.closeable) {
+      throw new Error(
+        `book is not closeable for this period: ${report.blocking_reasons.join("; ")}`,
+      );
+    }
+    lockDates.set(q.book_id, q.to_date);
+    return clone({ ...report, closed: true });
+  },
+
+  reopen_period: async (q: {
+    book_id: string;
+    reason: string;
+    to_date?: string | null;
+  }): Promise<Book> => {
+    const b = books.find((x) => x.id === q.book_id);
+    if (!b) throw new Error(`book not found: ${q.book_id}`);
+    const current = lockDates.get(q.book_id) ?? null;
+    if (!current) throw new Error("book is not closed; there is no period to reopen");
+    if (!q.reason.trim()) throw new Error("reopening a closed period needs a reason");
+    if (q.to_date != null && q.to_date >= current) {
+      throw new Error(
+        `reopening to ${q.to_date} does not move the lock date backward from ${current}`,
+      );
+    }
+    lockDates.set(q.book_id, q.to_date ?? null);
     return clone(b);
   },
 

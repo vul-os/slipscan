@@ -823,6 +823,81 @@ pub struct TaxPeriodSummary {
 pub type Vat201Summary = TaxPeriodSummary;
 
 // ---------------------------------------------------------------------------
+// Period close
+//
+// The ritual that turns a ledger into a book someone will sign:
+// `CoreService::close_period_check` previews it (read-only, mutates
+// nothing); `CoreService::close_period` runs the identical checks and, only
+// if nothing hard-refuses, advances `books.financial_lock_date` to
+// `to_date` in the same transaction. `CoreService::reopen_period` is the
+// deliberate, reasoned, audited undo.
+// ---------------------------------------------------------------------------
+
+/// One currency's debit/credit totals over every journal line posted on or
+/// before the close date — the close's own balance check. Every journal is
+/// individually balanced at post time (`post_journal_in_tx`), so `debit_minor
+/// != credit_minor` here can only mean something reached `journal_lines`
+/// outside the service layer: this is a data-integrity guard, not a business
+/// rule a real close is ever expected to trip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClosePeriodCurrencyBalance {
+    pub currency: String,
+    pub debit_minor: i64,
+    pub credit_minor: i64,
+}
+
+/// The result of checking (or performing) a period close.
+///
+/// `close_period_check` and `close_period` return the exact same shape,
+/// computed by the exact same checks, so a dry run and a real close can
+/// never disagree about what they found — only about whether `closed`
+/// ends up `true` and whether `books.financial_lock_date` actually moved.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClosePeriodReport {
+    pub book_id: String,
+    /// The date being sealed through (inclusive). Becomes the book's new
+    /// `financial_lock_date` when the close succeeds.
+    pub to_date: String,
+    /// The book's `financial_lock_date` before this call — `None` if the
+    /// book had never been closed. The advisory checks below are scoped to
+    /// the period this close newly covers: the day after this date (or the
+    /// beginning of the book, if `None`) through `to_date`.
+    pub previous_lock_date: Option<String>,
+    /// Per-currency debit/credit totals as of `to_date`. Empty for a book
+    /// with no postings yet — vacuously balanced.
+    pub balance: Vec<ClosePeriodCurrencyBalance>,
+    /// Whether every currency in `balance` has `debit_minor == credit_minor`.
+    pub balanced: bool,
+    /// Uncategorised (verified/pending) transactions dated in the newly
+    /// covered period.
+    pub uncategorised_transaction_count: i64,
+    /// Transactions in the period with no `auto`- or human-confirmed
+    /// reconciliation match — a `suggested` match still wants a human look,
+    /// same as no match at all.
+    pub unreconciled_statement_line_count: i64,
+    /// Draft sales orders dated in the period — still being edited, not
+    /// wrong, but worth a look before the period they belong to is sealed.
+    pub draft_sales_order_count: i64,
+    /// Invoices due in the period with zero payments recorded against them.
+    pub unpaid_invoice_due_count: i64,
+    /// Hard-refusal reasons. Non-empty means `close_period` will refuse
+    /// (`CoreError::CloseBlocked`) rather than move the lock date.
+    pub blocking_reasons: Vec<String>,
+    /// Advisory notes — never block a close, always worth reading. Present
+    /// on a successful close's own returned report too, not just the dry
+    /// run: closing does not make the messiness disappear, only seals the
+    /// period it was found in.
+    pub warnings: Vec<String>,
+    /// Whether this period *can* be closed (`blocking_reasons` is empty).
+    pub closeable: bool,
+    /// Whether the lock date was actually moved by this call. Always
+    /// `false` from `close_period_check`, which never mutates; `true` from
+    /// `close_period` only once it has committed the change — so the two
+    /// calls' output is never confused for one another after the fact.
+    pub closed: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Payments — watch codes, webhook endpoints, matches, deliveries
 // ---------------------------------------------------------------------------
 

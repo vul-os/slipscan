@@ -25,7 +25,7 @@
   ],
   "http": {
     "prefix": "/api/v1",
-    "count": 185,
+    "count": 188,
     "routes": [
       "account_create",
       "account_delete",
@@ -44,6 +44,8 @@
       "budget_upsert",
       "category_create",
       "category_tree",
+      "close_period",
+      "close_period_check",
       "coa_archive",
       "coa_create",
       "coa_list",
@@ -164,6 +166,7 @@
       "recon_confirm",
       "recon_suggest",
       "region_list",
+      "reopen_period",
       "report_aged_receivables",
       "report_balance_sheet",
       "report_income_statement",
@@ -222,7 +225,7 @@
     }
   },
   "ipc": {
-    "count": 174,
+    "count": 177,
     "commands": [
       "account_list",
       "book_create",
@@ -234,6 +237,8 @@
       "budget_list",
       "budget_upsert",
       "category_list",
+      "close_period",
+      "close_period_check",
       "coa_archive",
       "coa_create",
       "coa_map_set",
@@ -352,6 +357,7 @@
       "recon_confirm",
       "recon_suggest",
       "region_list",
+      "reopen_period",
       "report_aged_receivables",
       "report_balance_sheet",
       "report_income_expense",
@@ -401,7 +407,7 @@
     ]
   },
   "client": {
-    "count": 174,
+    "count": 177,
     "calls": [
       "account_list",
       "book_create",
@@ -413,6 +419,8 @@
       "budget_list",
       "budget_upsert",
       "category_list",
+      "close_period",
+      "close_period_check",
       "coa_archive",
       "coa_create",
       "coa_map_set",
@@ -531,6 +539,7 @@
       "recon_confirm",
       "recon_suggest",
       "region_list",
+      "reopen_period",
       "report_aged_receivables",
       "report_balance_sheet",
       "report_income_expense",

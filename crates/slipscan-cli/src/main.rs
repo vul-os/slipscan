@@ -19,15 +19,15 @@ use clap::{Parser, Subcommand, ValueEnum};
 use slipscan_core::datadir::{self, DataDirResolver, MoveStep};
 use slipscan_core::device::pairing::{KeynameCheck, DEFAULT_INVITE_TTL_SECONDS};
 use slipscan_core::domain::{
-    Account, Book, BookKind, CoaKind, CoaMapEntity, Contact, ContactPatch, ContactRole,
-    DocumentSource, Location, LocationKind, LocationPatch, Member, MemberPatch, NewBook,
-    NewCoaAccount, NewContact, NewInvoice, NewInvoiceItemInput, NewInvoicePayment, NewLocation,
-    NewMember, NewPayEndpoint, NewPayWatch, NewPoReceipt, NewProduct, NewProductCategory,
-    NewProductVariant, NewPurchaseOrder, NewPurchaseOrderItem, NewSalesOrder, NewSalesOrderItem,
-    NewStockMovement, PayDeliveryState, PayEndpointWithSecret, ProductPatch, ProductVariant,
-    ProductVariantPatch, PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus,
-    SalesOrderItemPatch, SalesOrderPatch, SplitShare, StockMovementKind, TransactionFilter,
-    TransactionSource,
+    Account, Book, BookKind, ClosePeriodReport, CoaKind, CoaMapEntity, Contact, ContactPatch,
+    ContactRole, DocumentSource, Location, LocationKind, LocationPatch, Member, MemberPatch,
+    NewBook, NewCoaAccount, NewContact, NewInvoice, NewInvoiceItemInput, NewInvoicePayment,
+    NewLocation, NewMember, NewPayEndpoint, NewPayWatch, NewPoReceipt, NewProduct,
+    NewProductCategory, NewProductVariant, NewPurchaseOrder, NewPurchaseOrderItem, NewSalesOrder,
+    NewSalesOrderItem, NewStockMovement, PayDeliveryState, PayEndpointWithSecret, ProductPatch,
+    ProductVariant, ProductVariantPatch, PurchaseOrderItemPatch, PurchaseOrderPatch,
+    PurchaseOrderStatus, SalesOrderItemPatch, SalesOrderPatch, SplitShare, StockMovementKind,
+    TransactionFilter, TransactionSource,
 };
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
@@ -382,6 +382,14 @@ enum Command {
         #[command(subcommand)]
         action: BookAction,
     },
+    /// Period close: the ritual that turns a ledger into a book someone
+    /// will sign. `check` previews without mutating; `run` locks on
+    /// success and refuses with reasons otherwise; `reopen` is the
+    /// deliberate, audited undo.
+    Close {
+        #[command(subcommand)]
+        action: CloseAction,
+    },
     /// Locations (branches/warehouses/sites) within a book (Phase 6.1).
     Location {
         #[command(subcommand)]
@@ -631,6 +639,45 @@ enum BookAction {
     LockDate {
         /// YYYY-MM-DD. Omit to clear the lock date entirely.
         date: Option<String>,
+    },
+}
+
+/// Period close (see `CoreService::close_period_check`/`close_period`/
+/// `reopen_period`): the same checks whether previewing or actually
+/// closing — a trial-balance-must-balance hard refusal, plus advisory
+/// warnings (uncategorised transactions, unreconciled statement lines,
+/// draft sales orders, invoices due with nothing paid) that are always
+/// reported and never block.
+#[derive(Debug, Subcommand)]
+enum CloseAction {
+    /// Preview closing the period through `to` (inclusive) — every check
+    /// `run` performs, with no mutation whatsoever.
+    Check {
+        /// YYYY-MM-DD, inclusive — the date closing would seal through.
+        to: String,
+    },
+    /// Close the period through `to` (inclusive). Advances the book's
+    /// financial lock date on success; refuses, naming every reason,
+    /// when the trial balance does not balance or the range is already
+    /// closed. A close that succeeds still prints every advisory warning
+    /// it found.
+    Run {
+        /// YYYY-MM-DD, inclusive.
+        to: String,
+    },
+    /// Reopen a closed period — a deliberate, audited act, never a side
+    /// effect. Requires a reason.
+    Reopen {
+        /// Why this period is being reopened (required — the control that
+        /// stops a closed period being reopened by accident).
+        #[arg(long)]
+        reason: String,
+        /// Reopen back to this date instead of clearing the lock
+        /// entirely — must be strictly before the current lock date (a
+        /// partial reopen that leaves everything up to and including it
+        /// still closed).
+        #[arg(long)]
+        to: Option<String>,
     },
 }
 
@@ -2080,6 +2127,31 @@ fn emit<T: serde::Serialize>(
     Ok(())
 }
 
+/// Human-readable rendering of a [`ClosePeriodReport`] — shared by `close
+/// check` and `close run`, since both return the identical shape and differ
+/// only in whether `closed` ended up `true`.
+fn print_close_report(report: &ClosePeriodReport) {
+    if report.closed {
+        println!(
+            "Closed through {} — postings on or before it are now refused.",
+            report.to_date
+        );
+    } else if report.closeable {
+        println!("Period through {} is closeable.", report.to_date);
+    } else {
+        println!("Period through {} is NOT closeable:", report.to_date);
+        for reason in &report.blocking_reasons {
+            println!("  - {reason}");
+        }
+    }
+    if !report.warnings.is_empty() {
+        println!("Warnings:");
+        for warning in &report.warnings {
+            println!("  - {warning}");
+        }
+    }
+}
+
 /// Minor units → "1234.56" (sign-safe).
 fn fmt_minor(minor: i64) -> String {
     let sign = if minor < 0 { "-" } else { "" };
@@ -2787,6 +2859,28 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             println!("Lock date set to {d} — journals on or before it are refused")
                         }
                         None => println!("Lock date cleared"),
+                    })
+                }
+            }
+        }
+
+        Command::Close { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                CloseAction::Check { to } => {
+                    let report = svc.close_period_check(&book.id, to)?;
+                    emit(cli.json, &report, || print_close_report(&report))
+                }
+                CloseAction::Run { to } => {
+                    let report = svc.close_period(&book.id, to)?;
+                    emit(cli.json, &report, || print_close_report(&report))
+                }
+                CloseAction::Reopen { reason, to } => {
+                    let updated = svc.reopen_period(&book.id, to.as_deref(), reason)?;
+                    emit(cli.json, &updated, || match &updated.financial_lock_date {
+                        Some(d) => println!("Reopened — book is now locked through {d}"),
+                        None => println!("Reopened — book is fully unlocked"),
                     })
                 }
             }

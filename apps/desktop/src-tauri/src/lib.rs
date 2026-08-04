@@ -92,6 +92,12 @@ pub fn run() {
             commands::journal_generate_for_document,
             commands::journal_reverse,
             commands::book_set_lock_date,
+            // Period close: the ritual that turns a ledger into a book
+            // someone will sign — check (dry run), run (locks on success),
+            // reopen (deliberate, audited undo).
+            commands::close_period_check,
+            commands::close_period,
+            commands::reopen_period,
             // Stock (Phase 6.3b). On-hand is derived, never stored — there
             // is no "set level" command and there never will be.
             commands::stock_movement_record,

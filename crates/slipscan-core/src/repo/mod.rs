@@ -10,6 +10,13 @@ pub mod book;
 pub mod budget;
 pub mod catalogue;
 pub mod category;
+/// Period close: the read-only checks `CoreService::close_period_check` /
+/// `close_period` run — trial balance as of a date, plus the four advisory
+/// counts (uncategorised transactions, unreconciled statement lines, draft
+/// sales orders, unpaid invoices due). Its own module because it reads
+/// across `journals`, `transactions`, `recon_matches`, `sales_orders` and
+/// `invoices` for one purpose, rather than belonging to any one of them.
+pub mod close;
 pub mod contact;
 pub mod document;
 pub mod ledger;

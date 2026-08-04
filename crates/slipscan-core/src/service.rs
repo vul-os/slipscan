@@ -19,7 +19,7 @@ use crate::secrets::SecretString;
 use crate::secrets::{KeyringSecretStore, SecretStore};
 use crate::slip::SlipPayload;
 use crate::util::{
-    days_between, merchant_key_from_description, merchant_similarity, new_id,
+    day_after, days_between, merchant_key_from_description, merchant_similarity, new_id,
     normalize_currency_code, normalize_merchant, now_iso, parse_date, parse_date_range,
     transaction_dedupe_hash,
 };
@@ -4531,6 +4531,232 @@ impl CoreService {
             "lock_date",
             Some(serde_json::to_string(&before)?),
             Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    // -----------------------------------------------------------------------
+    // Period close — the ritual that turns a ledger into a book someone will
+    // sign. See `domain::ClosePeriodReport`'s own header for the shape.
+    // -----------------------------------------------------------------------
+
+    /// Build a [`ClosePeriodReport`] for closing `book_id` through `to_date`
+    /// (inclusive) — every check `close_period_check`/`close_period` run.
+    /// Read-only: `closed` is always `false` here, and nothing here writes.
+    fn build_close_report(&self, book_id: &str, to_date: &str) -> CoreResult<ClosePeriodReport> {
+        let book = self.book_get(book_id)?;
+        parse_date(to_date)?;
+
+        let previous_lock_date = book.financial_lock_date.clone();
+        let mut blocking_reasons = Vec::new();
+
+        if let Some(prev) = previous_lock_date.as_deref() {
+            if to_date <= prev {
+                blocking_reasons.push(format!(
+                    "book is already closed through {prev}; reopen the period first to move \
+                     the close date backward, or close through a later date"
+                ));
+            }
+        }
+
+        // The period this close newly covers: the day after whatever was
+        // already sealed (or the beginning of the book, for a book that has
+        // never been closed), through `to_date`. When `to_date` does not
+        // actually advance the lock, the block above already names the real
+        // problem — `from_date` collapses to `to_date` so the range-scoped
+        // counts below stay well-formed (never inverted) rather than
+        // meaningful.
+        let from_date = match previous_lock_date.as_deref() {
+            Some(prev) if to_date > prev => day_after(prev)?,
+            Some(_) => to_date.to_string(),
+            None => "0001-01-01".to_string(),
+        };
+
+        // Hard refusal: every posted journal balances on its own
+        // (`post_journal_in_tx`), so this failing at all means something
+        // reached `journal_lines` outside the service layer — a
+        // data-integrity guard, not a business rule a real close is
+        // expected to trip.
+        let balance = repo::close::balance_as_of(self.conn(), book_id, to_date)?;
+        let balanced = balance.iter().all(|b| b.debit_minor == b.credit_minor);
+        if !balanced {
+            let detail = balance
+                .iter()
+                .filter(|b| b.debit_minor != b.credit_minor)
+                .map(|b| {
+                    format!(
+                        "{} debit {} != credit {}",
+                        b.currency, b.debit_minor, b.credit_minor
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            blocking_reasons.push(format!(
+                "trial balance does not balance as of {to_date}: {detail}"
+            ));
+        }
+
+        // Advisory: things worth a look, never a reason to refuse. See this
+        // module's doc comment on `ClosePeriodReport` and the report shipped
+        // alongside this feature for why none of these block.
+        let uncategorised_transaction_count =
+            repo::close::uncategorised_count(self.conn(), book_id, &from_date, to_date)?;
+        let unreconciled_statement_line_count =
+            repo::close::unreconciled_count(self.conn(), book_id, &from_date, to_date)?;
+        let draft_sales_order_count =
+            repo::close::draft_sales_order_count(self.conn(), book_id, &from_date, to_date)?;
+        let unpaid_invoice_due_count =
+            repo::close::unpaid_invoice_due_count(self.conn(), book_id, &from_date, to_date)?;
+
+        let mut warnings = Vec::new();
+        if uncategorised_transaction_count > 0 {
+            warnings.push(format!(
+                "{uncategorised_transaction_count} uncategorised transaction(s) in this period"
+            ));
+        }
+        if unreconciled_statement_line_count > 0 {
+            warnings.push(format!(
+                "{unreconciled_statement_line_count} unreconciled statement line(s) in this period"
+            ));
+        }
+        if draft_sales_order_count > 0 {
+            warnings.push(format!(
+                "{draft_sales_order_count} draft sales order(s) dated in this period"
+            ));
+        }
+        if unpaid_invoice_due_count > 0 {
+            warnings.push(format!(
+                "{unpaid_invoice_due_count} invoice(s) due in this period with no payment \
+                 recorded against them"
+            ));
+        }
+
+        let closeable = blocking_reasons.is_empty();
+        Ok(ClosePeriodReport {
+            book_id: book_id.to_string(),
+            to_date: to_date.to_string(),
+            previous_lock_date,
+            balance,
+            balanced,
+            uncategorised_transaction_count,
+            unreconciled_statement_line_count,
+            draft_sales_order_count,
+            unpaid_invoice_due_count,
+            blocking_reasons,
+            warnings,
+            closeable,
+            closed: false,
+        })
+    }
+
+    /// Preview closing `book_id` through `to_date` (inclusive): every check
+    /// [`Self::close_period`] would run, with **no mutation whatsoever** —
+    /// `financial_lock_date` is left exactly as it was, whatever the report
+    /// says. "What would closing this period tell me?", answerable any
+    /// number of times.
+    pub fn close_period_check(
+        &self,
+        book_id: &str,
+        to_date: &str,
+    ) -> CoreResult<ClosePeriodReport> {
+        self.build_close_report(book_id, to_date)
+    }
+
+    /// Close the period through `to_date` (inclusive): run the same checks
+    /// as [`Self::close_period_check`], and only if nothing hard-refuses,
+    /// advance the book's `financial_lock_date` to `to_date` in the same
+    /// transaction — postings on or before it are refused from then on
+    /// (`post_journal_in_tx`). Refuses with [`CoreError::CloseBlocked`],
+    /// naming every reason, rather than locking over a problem. A close
+    /// that succeeds still returns every advisory warning it found — closing
+    /// does not make the messiness disappear, only seals the period it was
+    /// found in.
+    ///
+    /// Closing an already-closed range (`to_date` at or before the current
+    /// lock date) is one of those blocking reasons, not a silent no-op or a
+    /// second identical audit entry: reopen the period first
+    /// ([`Self::reopen_period`]) if the close date genuinely needs to move.
+    pub fn close_period(&self, book_id: &str, to_date: &str) -> CoreResult<ClosePeriodReport> {
+        let report = self.build_close_report(book_id, to_date)?;
+        if !report.closeable {
+            return Err(CoreError::CloseBlocked {
+                reasons: report.blocking_reasons,
+            });
+        }
+
+        let before = self.book_get(book_id)?;
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::book::set_lock_date(&tx, book_id, Some(to_date), &now)?;
+        let closed_report = ClosePeriodReport {
+            closed: true,
+            ..report
+        };
+        self.emit_audit(
+            &tx,
+            Some(book_id),
+            "book",
+            Some(book_id),
+            "close",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&closed_report)?),
+        )?;
+        tx.commit()?;
+        Ok(closed_report)
+    }
+
+    /// Reopen a closed period: a deliberate, reasoned, audited act — never a
+    /// side effect of anything else. `reason` is required (non-empty once
+    /// trimmed): the control that stops a closed period being reopened by
+    /// accident, the same posture `financial_lock_date` itself already takes
+    /// on posting.
+    ///
+    /// `to_date` moves the lock date back to an earlier seal (`Some`, which
+    /// must sit strictly before the current lock date — a partial reopen
+    /// that leaves everything up to and including it still closed) or clears
+    /// it entirely (`None`, a full reopen). Refuses with
+    /// [`CoreError::NotClosed`] if the book is not currently closed at all —
+    /// there is nothing to reopen.
+    pub fn reopen_period(
+        &self,
+        book_id: &str,
+        to_date: Option<&str>,
+        reason: &str,
+    ) -> CoreResult<Book> {
+        let before = self.book_get(book_id)?;
+        let Some(current_lock) = before.financial_lock_date.as_deref() else {
+            return Err(CoreError::NotClosed);
+        };
+        if reason.trim().is_empty() {
+            return Err(CoreError::Validation(
+                "reopening a closed period needs a reason".into(),
+            ));
+        }
+        if let Some(date) = to_date {
+            parse_date(date)?;
+            if date >= current_lock {
+                return Err(CoreError::Validation(format!(
+                    "reopening to {date} does not move the lock date backward from {current_lock}"
+                )));
+            }
+        }
+
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::book::set_lock_date(&tx, book_id, to_date, &now)?;
+        let mut after = before.clone();
+        after.financial_lock_date = to_date.map(str::to_string);
+        after.updated_at = now.clone();
+        let audit_after = serde_json::json!({ "book": after, "reason": reason });
+        self.emit_audit(
+            &tx,
+            Some(book_id),
+            "book",
+            Some(book_id),
+            "reopen",
+            Some(serde_json::to_string(&before)?),
+            Some(audit_after.to_string()),
         )?;
         tx.commit()?;
         Ok(after)
@@ -11273,6 +11499,410 @@ mod tests {
             svc.book_set_lock_date(&book.id, Some("June 2026")),
             Err(CoreError::Validation(_))
         ));
+    }
+
+    // -- period close ---------------------------------------------------
+
+    #[test]
+    fn close_period_locks_a_clean_period_and_then_refuses_posting_into_it() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        svc.journal_post(manual(
+            &book,
+            "2026-07-10",
+            vec![jl(&coa[0], 1_000, 0), jl(&coa[1], 0, 1_000)],
+        ))
+        .unwrap();
+
+        let report = svc.close_period(&book.id, "2026-07-31").unwrap();
+        assert!(report.closed);
+        assert!(report.closeable);
+        assert!(
+            report.blocking_reasons.is_empty(),
+            "{:?}",
+            report.blocking_reasons
+        );
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        assert!(report.balanced);
+
+        let after = svc.book_get(&book.id).unwrap();
+        assert_eq!(after.financial_lock_date.as_deref(), Some("2026-07-31"));
+
+        // Posting on/before the new lock date is refused, exactly like
+        // `book_set_lock_date` already guarantees.
+        assert!(matches!(
+            svc.journal_post(manual(
+                &book,
+                "2026-07-31",
+                vec![jl(&coa[0], 100, 0), jl(&coa[1], 0, 100)],
+            )),
+            Err(CoreError::Validation(_))
+        ));
+        svc.journal_post(manual(
+            &book,
+            "2026-08-01",
+            vec![jl(&coa[0], 100, 0), jl(&coa[1], 0, 100)],
+        ))
+        .unwrap();
+
+        let audit = svc.audit_list(Some(&book.id), 50).unwrap();
+        assert!(
+            audit
+                .iter()
+                .any(|a| a.entity_type == "book" && a.action == "close"),
+            "closing must be audited"
+        );
+    }
+
+    #[test]
+    fn close_period_check_matches_close_period_and_mutates_nothing() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        svc.journal_post(manual(
+            &book,
+            "2026-07-10",
+            vec![jl(&coa[0], 1_000, 0), jl(&coa[1], 0, 1_000)],
+        ))
+        .unwrap();
+
+        let dry = svc.close_period_check(&book.id, "2026-07-31").unwrap();
+        assert!(!dry.closed);
+        assert!(dry.closeable);
+        assert_eq!(
+            svc.book_get(&book.id).unwrap().financial_lock_date,
+            None,
+            "a dry run must not lock anything"
+        );
+
+        // Idempotent: asking twice gives the identical report.
+        let dry_again = svc.close_period_check(&book.id, "2026-07-31").unwrap();
+        assert_eq!(dry, dry_again);
+        assert_eq!(
+            svc.book_get(&book.id).unwrap().financial_lock_date,
+            None,
+            "asking twice still must not lock anything"
+        );
+
+        // The real close reports the identical checks, differing only in
+        // `closed`.
+        let real = svc.close_period(&book.id, "2026-07-31").unwrap();
+        assert_eq!(real.book_id, dry.book_id);
+        assert_eq!(real.to_date, dry.to_date);
+        assert_eq!(real.previous_lock_date, dry.previous_lock_date);
+        assert_eq!(real.balance, dry.balance);
+        assert_eq!(real.balanced, dry.balanced);
+        assert_eq!(real.warnings, dry.warnings);
+        assert_eq!(real.blocking_reasons, dry.blocking_reasons);
+        assert_eq!(real.closeable, dry.closeable);
+        assert!(real.closed);
+        assert!(!dry.closed);
+    }
+
+    #[test]
+    fn close_period_refuses_when_the_trial_balance_is_broken() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+
+        // A raw, unbalanced journal line — the one thing `post_journal_in_tx`
+        // makes impossible through the service layer. Written directly to
+        // prove the close's own balance check actually runs the query rather
+        // than trusting the invariant blindly.
+        let now = now_iso();
+        {
+            let conn = svc.conn_for_test();
+            conn.execute(
+                "INSERT INTO journals (id, book_id, posted_date, narrative, source_type, created_at)
+                 VALUES ('j-broken', ?1, '2026-07-10', 'Corrupted', 'manual', ?2)",
+                rusqlite::params![book.id, now],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO journal_lines
+                     (id, journal_id, book_id, coa_id, debit_minor, credit_minor, currency,
+                      line_order, created_at)
+                 VALUES ('jl-broken', 'j-broken', ?1, ?2, 500, 0, 'ZAR', 0, ?3)",
+                rusqlite::params![book.id, coa[0].id, now],
+            )
+            .unwrap();
+        }
+
+        let report = svc.close_period_check(&book.id, "2026-07-31").unwrap();
+        assert!(!report.balanced);
+        assert!(!report.closeable);
+        assert!(
+            report
+                .blocking_reasons
+                .iter()
+                .any(|r| r.contains("ZAR") && r.contains("500")),
+            "the imbalance must be named: {:?}",
+            report.blocking_reasons
+        );
+
+        let err = svc.close_period(&book.id, "2026-07-31").unwrap_err();
+        match err {
+            CoreError::CloseBlocked { reasons } => {
+                assert!(
+                    reasons.iter().any(|r| r.contains("does not balance")),
+                    "{reasons:?}"
+                );
+            }
+            other => panic!("expected CloseBlocked, got {other:?}"),
+        }
+        assert_eq!(
+            svc.book_get(&book.id).unwrap().financial_lock_date,
+            None,
+            "a refused close must not lock anything"
+        );
+    }
+
+    #[test]
+    fn close_period_reports_advisory_warnings_only_when_their_condition_holds() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let category = make_category(&svc, &book, "Groceries");
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+
+        let new_txn =
+            |posted_date: &str, description: &str, category_id: Option<&str>| NewTransaction {
+                book_id: book.id.clone(),
+                account_id: account.id.clone(),
+                source: TransactionSource::Manual,
+                provider_txn_id: None,
+                posted_date: posted_date.into(),
+                amount_minor: -5_000,
+                currency: "ZAR".into(),
+                merchant: None,
+                description: Some(description.into()),
+                notes: None,
+                category_id: category_id.map(str::to_string),
+                document_id: None,
+                dedupe_occurrence: 0,
+            };
+        let dirty_txn = svc
+            .transaction_create(new_txn("2026-07-10", "Uncategorised spend", None))
+            .unwrap();
+        let clean_txn = svc
+            .transaction_create(new_txn(
+                "2026-07-11",
+                "Categorised and reconciled",
+                Some(&category.id),
+            ))
+            .unwrap();
+        assert_eq!(clean_txn.category_id.as_deref(), Some(category.id.as_str()));
+
+        let confirm_recon = |txn_id: &str| {
+            svc.conn_for_test()
+                .execute(
+                    "INSERT INTO recon_matches
+                         (id, book_id, transaction_id, document_id, journal_id, state,
+                          confidence, amount_delta_minor, date_delta_days, merchant_score,
+                          created_at, updated_at)
+                     VALUES (?1, ?2, ?3, NULL, NULL, 'confirmed', 1.0, 0, 0, 0.0, ?4, ?4)",
+                    rusqlite::params![new_id(), book.id, txn_id, now_iso()],
+                )
+                .unwrap();
+        };
+        confirm_recon(&clean_txn.id);
+
+        let draft_order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: None,
+                order_date: Some("2026-07-05".into()),
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        assert_eq!(draft_order.status, SalesOrderStatus::Draft);
+
+        let invoice = svc
+            .invoice_issue(NewInvoice {
+                book_id: book.id.clone(),
+                contact_id: Some(contact.id.clone()),
+                sales_order_id: None,
+                series: None,
+                issue_date: Some("2026-07-01".into()),
+                due_date: "2026-07-20".into(),
+                currency: None,
+                notes: None,
+                items: vec![NewInvoiceItemInput {
+                    variant_id: None,
+                    description: "Consulting".into(),
+                    quantity: 1,
+                    unit_price_minor: 10_000,
+                    tax_rate_bps: None,
+                }],
+            })
+            .unwrap();
+
+        let dirty = svc.close_period_check(&book.id, "2026-07-31").unwrap();
+        assert_eq!(dirty.uncategorised_transaction_count, 1);
+        assert_eq!(dirty.unreconciled_statement_line_count, 1);
+        assert_eq!(dirty.draft_sales_order_count, 1);
+        assert_eq!(dirty.unpaid_invoice_due_count, 1);
+        assert_eq!(dirty.warnings.len(), 4, "{:?}", dirty.warnings);
+        // None of the four block — no chart of accounts means no journals
+        // were ever postable, so the balance is vacuously clean and the
+        // period is still closeable despite every warning firing.
+        assert!(dirty.closeable, "{:?}", dirty.blocking_reasons);
+
+        // Resolve every condition in turn.
+        svc.transaction_categorize(&dirty_txn.id, &category.id)
+            .unwrap();
+        confirm_recon(&dirty_txn.id);
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: draft_order.id.clone(),
+            variant_id: None,
+            description: Some("Consulting".into()),
+            quantity: 1,
+            unit_price_minor: Some(1_000),
+            tax_rate_bps: None,
+        })
+        .unwrap();
+        svc.sales_order_confirm(&draft_order.id).unwrap();
+        svc.invoice_payment_record(NewInvoicePayment {
+            invoice_id: invoice.id.clone(),
+            amount_minor: 10_000,
+            paid_at: Some("2026-07-25".into()),
+            method: None,
+            note: None,
+        })
+        .unwrap();
+
+        let clean = svc.close_period_check(&book.id, "2026-07-31").unwrap();
+        assert_eq!(clean.uncategorised_transaction_count, 0);
+        assert_eq!(clean.unreconciled_statement_line_count, 0);
+        assert_eq!(clean.draft_sales_order_count, 0);
+        assert_eq!(clean.unpaid_invoice_due_count, 0);
+        assert!(clean.warnings.is_empty(), "{:?}", clean.warnings);
+        assert!(clean.closeable);
+    }
+
+    #[test]
+    fn closing_an_already_closed_range_is_refused_not_silent() {
+        let svc = svc();
+        let book = make_book(&svc);
+        svc.coa_seed(&book.id).unwrap();
+
+        let first = svc.close_period(&book.id, "2026-06-30").unwrap();
+        assert!(first.closed);
+
+        // The identical range again.
+        let err = svc.close_period(&book.id, "2026-06-30").unwrap_err();
+        assert!(matches!(err, CoreError::CloseBlocked { .. }), "{err}");
+        // An earlier range too.
+        let err2 = svc.close_period(&book.id, "2026-05-31").unwrap_err();
+        assert!(matches!(err2, CoreError::CloseBlocked { .. }), "{err2}");
+
+        assert_eq!(
+            svc.book_get(&book.id)
+                .unwrap()
+                .financial_lock_date
+                .as_deref(),
+            Some("2026-06-30"),
+            "a refused re-close must not touch the lock date"
+        );
+
+        // Closing further forward still works — this was never a "you can
+        // only close once" refusal, only a "you cannot close backward or
+        // re-close the same range" one.
+        let second = svc.close_period(&book.id, "2026-07-31").unwrap();
+        assert!(second.closed);
+        assert_eq!(
+            svc.book_get(&book.id)
+                .unwrap()
+                .financial_lock_date
+                .as_deref(),
+            Some("2026-07-31")
+        );
+    }
+
+    #[test]
+    fn reopen_period_restores_postability_and_is_audited() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        svc.close_period(&book.id, "2026-06-30").unwrap();
+
+        assert!(matches!(
+            svc.journal_post(manual(
+                &book,
+                "2026-06-15",
+                vec![jl(&coa[0], 100, 0), jl(&coa[1], 0, 100)],
+            )),
+            Err(CoreError::Validation(_))
+        ));
+
+        let reopened = svc
+            .reopen_period(&book.id, None, "found a miscoded expense")
+            .unwrap();
+        assert_eq!(reopened.financial_lock_date, None);
+
+        svc.journal_post(manual(
+            &book,
+            "2026-06-15",
+            vec![jl(&coa[0], 100, 0), jl(&coa[1], 0, 100)],
+        ))
+        .unwrap();
+
+        let audit = svc.audit_list(Some(&book.id), 50).unwrap();
+        let entry = audit
+            .iter()
+            .find(|a| a.entity_type == "book" && a.action == "reopen")
+            .expect("reopening must be audited");
+        assert!(entry
+            .after_json
+            .as_deref()
+            .unwrap()
+            .contains("found a miscoded expense"));
+        assert!(entry.before_json.as_deref().unwrap().contains("2026-06-30"));
+    }
+
+    #[test]
+    fn reopen_period_requires_a_reason_and_a_closed_book() {
+        let svc = svc();
+        let book = make_book(&svc);
+        svc.coa_seed(&book.id).unwrap();
+
+        assert!(matches!(
+            svc.reopen_period(&book.id, None, "because"),
+            Err(CoreError::NotClosed)
+        ));
+
+        svc.close_period(&book.id, "2026-06-30").unwrap();
+
+        assert!(matches!(
+            svc.reopen_period(&book.id, None, "   "),
+            Err(CoreError::Validation(_))
+        ));
+        assert_eq!(
+            svc.book_get(&book.id)
+                .unwrap()
+                .financial_lock_date
+                .as_deref(),
+            Some("2026-06-30"),
+            "a refused reopen must not touch the lock date"
+        );
+
+        // A partial reopen must move strictly backward.
+        assert!(matches!(
+            svc.reopen_period(&book.id, Some("2026-06-30"), "no-op"),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.reopen_period(&book.id, Some("2026-07-15"), "forward"),
+            Err(CoreError::Validation(_))
+        ));
+
+        let partial = svc
+            .reopen_period(&book.id, Some("2026-05-31"), "reopen June only")
+            .unwrap();
+        assert_eq!(partial.financial_lock_date.as_deref(), Some("2026-05-31"));
     }
 
     #[test]

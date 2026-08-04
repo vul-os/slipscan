@@ -7,7 +7,7 @@
     "cannot land its service layer and quietly skip its surface. Shrinking it is the",
     "work; re-record with --write when you do."
   ],
-  "total": 167,
+  "total": 170,
   "unreachable": 4,
   "methods": [
     "new",

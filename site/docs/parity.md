@@ -165,9 +165,19 @@ but it is real, and leaving it out would misrepresent the codebase in the other 
   ([`desktop/src-tauri/src/lib.rs`](apps/desktop/src-tauri/src/lib.rs) registers neither; see also
   `missing_from_ipc` in [`docs/parity.json`](docs/parity.json)), so the desktop Reports screen
   carries spending, income vs expense, tax and trial balance only.
-- Period locking — `book_set_lock_date` in
-  [`core/src/service.rs`](crates/slipscan-core/src/service.rs) — and an append-only audit log in
-  [`core/src/repo/audit.rs`](crates/slipscan-core/src/repo/audit.rs).
+- Period close — `close_period_check` / `close_period` / `reopen_period` in
+  [`core/src/service.rs`](crates/slipscan-core/src/service.rs), on all three surfaces
+  (`slipscan close check|run|reopen`). A close refuses (naming every reason) rather than locking
+  over a problem: the trial balance must balance as of the close date, and re-closing an
+  already-closed range is refused rather than a silent no-op. Uncategorised transactions,
+  unreconciled statement lines, draft sales orders and invoices due with nothing paid are
+  advisory — reported on every close, never blocking it, because none of them make the books
+  *wrong*. `close_period_check` previews with no mutation; `book_set_lock_date` still exists for
+  setting the lock date directly with no checks at all. Reopening is a deliberate, reasoned act
+  (`reason` required) audited under its own action, distinct from an ordinary lock-date change —
+  backed by the append-only audit log in
+  [`core/src/repo/audit.rs`](crates/slipscan-core/src/repo/audit.rs). **Not built:** no desktop
+  screen yet, and no `period_closes` history table — the close's own report is the audit record.
 
 ---
 
