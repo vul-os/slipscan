@@ -32,6 +32,68 @@ async function poWithLine() {
 }
 
 describe("purchasing mock rules match core", () => {
+  it("refuses to order from a customer-only contact", async () => {
+    const book = "book-po-roles";
+    const customer = await mockApi.contact_add({
+      book_id: book,
+      role: "customer",
+      name: "Buyer only",
+    });
+    const both = await mockApi.contact_add({
+      book_id: book,
+      role: "both",
+      name: "Trades both ways",
+    });
+
+    // One contacts table holds both sides of trade, so this is a slip no
+    // foreign key can catch — core checks the role and so does the mock.
+    await expect(
+      mockApi.po_create({
+        book_id: book,
+        supplier_id: customer.id,
+        location_id: "loc-1",
+        po_number: "PO-ROLE-1",
+        order_date: "2026-01-05",
+        currency: "ZAR",
+      }),
+    ).rejects.toThrow(/not marked as a supplier/);
+
+    // `both` is a supplier as far as purchasing is concerned.
+    const ok = await mockApi.po_create({
+      book_id: book,
+      supplier_id: both.id,
+      location_id: "loc-1",
+      po_number: "PO-ROLE-2",
+      order_date: "2026-01-05",
+      currency: "ZAR",
+    });
+    expect(ok.supplier_id).toBe(both.id);
+  });
+
+  it("refuses negative tax, and refuses adding a line to a cancelled order", async () => {
+    await expect(
+      mockApi.po_create({
+        book_id: BOOK,
+        supplier_id: "supplier-1",
+        location_id: "loc-1",
+        po_number: "PO-TAX",
+        order_date: "2026-01-05",
+        currency: "ZAR",
+        tax_minor: -1,
+      }),
+    ).rejects.toThrow(/tax must not be negative/);
+
+    const { po } = await poWithLine();
+    await mockApi.po_set_status({ po_id: po.id, status: "cancelled" });
+    await expect(
+      mockApi.po_item_add({
+        purchase_order_id: po.id,
+        variant_id: "variant-1",
+        qty_ordered: 1,
+      }),
+    ).rejects.toThrow(/cancelled purchase order/);
+  });
+
   it("refuses to edit a line once the order is cancelled", async () => {
     const { po, item } = await poWithLine();
     // Editable while it is still open.

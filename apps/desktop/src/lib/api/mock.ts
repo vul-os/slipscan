@@ -249,6 +249,18 @@ function requireVariant(id: string): ProductVariant {
   return v;
 }
 
+/** One contacts table holds both sides of trade, so ordering from a
+ * customer-only contact is a slip no foreign key can catch — core checks the
+ * role explicitly and so does this. Unknown ids are left to the caller's own
+ * lookup, exactly as the mock's other cross-entity checks are. */
+function requireSupplierRole(contactId: string): void {
+  const c = contacts.find((x) => x.id === contactId);
+  if (c && c.role === "customer")
+    throw new Error(
+      "contact is not marked as a supplier (role customer) — set its role to supplier or both",
+    );
+}
+
 function requireContact(contactId: string): Contact {
   const c = contacts.find((x) => x.id === contactId);
   if (!c) throw new Error(`no contact with id ${contactId}`);
@@ -2792,6 +2804,13 @@ export const mockApi = {
       )
     )
       throw new Error(`a purchase order numbered "${poNumber}" already exists in this book`);
+    // Core refuses both of these and the mock did not. The role check is the
+    // one worth having: ordering from a contact marked customer-only is a
+    // data-entry slip the schema cannot catch, because one contacts table
+    // holds both sides of trade.
+    requireSupplierRole(q.supplier_id);
+    if ((q.tax_minor ?? 0) < 0)
+      throw new Error("purchase order tax must not be negative");
     const now = new Date().toISOString();
     const taxMinor = q.tax_minor ?? 0;
     const created: PurchaseOrder = {
@@ -2883,9 +2902,13 @@ export const mockApi = {
 
   po_item_add: async (q: NewPurchaseOrderItem): Promise<PurchaseOrderItem> => {
     const po = requirePo(q.purchase_order_id);
+    if (po.status === "cancelled")
+      throw new Error("cannot add a line to a cancelled purchase order");
     if (q.qty_ordered <= 0)
       throw new Error("purchase order line quantity must be positive");
     const unitPriceMinor = q.unit_price_minor ?? 0;
+    if (unitPriceMinor < 0)
+      throw new Error("purchase order line unit price must not be negative");
     const now = new Date().toISOString();
     const created: PurchaseOrderItem = {
       id: id("poi0"),
