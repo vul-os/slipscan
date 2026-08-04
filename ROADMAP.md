@@ -312,17 +312,16 @@ These were settled rather than escalated, and are recorded here so the reasoning
       `journal_generate_for_po_receipt`-style public function to call again by hand; and a leg whose
       required accounts are only *partly* seeded (e.g. Inventory/COGS present, Revenue/AR absent)
       posts nothing for that leg specifically rather than erroring, which is untested beyond what
-      the code review here states. **One real gap, stated plainly rather than glossed over:**
-      `invoice_issue` itself never posts — only `sales_order_confirm` posts the revenue/AR/VAT leg.
-      An order-linked invoice is fine (AR was already debited at confirm, so `invoice_payment_record`'s
-      credit to AR clears a real debit); a **standalone** invoice (`sales_order_id: None` — a
-      retainer, a one-off bill with no order behind it) never gets a revenue/AR journal at all, so
-      recording a payment against one credits AR with nothing behind it to clear, pushing that
-      account internally negative. The task brief names exactly three posting call sites
-      (`po_receive`, `sales_order_confirm`, `invoice_payment_record`) and this follows that
-      literally rather than inventing a fourth (`invoice_issue`) not asked for — but it is a real
-      correctness gap for the standalone-invoice path, not a cosmetic one, and the next person
-      touching this should close it before standalone invoicing is trusted with a seeded CoA)*
+      the code review here states. **Revenue is recognised exactly once per sale, on the path that matches how it
+      happened:** at `sales_order_confirm` for an order-backed sale, and at `invoice_issue` for a
+      standalone invoice (`sales_order_id: None` — a retainer, a one-off bill with no order behind
+      it). Both call one shared `post_revenue_ar_journal`, so the two can never drift apart by a
+      cent. The first cut of 6.6 posted only at confirm — following a brief that named three call
+      sites and did not think about the fourth — which left `invoice_payment_record` crediting an
+      accounts-receivable balance nothing had ever debited, driving that account negative by exactly
+      what was collected. Every journal still balanced, so no trial balance could show it; it is
+      covered now by tests from both sides (a standalone invoice clears AR to zero when paid, and an
+      order-backed invoice does not debit AR twice))*
 - [ ] **6.7 Sync transport.** FlowStock shipped the one thing [docs/NODES.md](docs/NODES.md) still
       lists as missing: a working authenticated transport — three HTTP endpoints
       (`/sync/vector`, `/sync/pull`, `/sync/ops`) plus folder/USB replication for sites with no

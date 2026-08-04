@@ -10,7 +10,8 @@ says what is *planned*, which is a different question from what is *there*. Phas
 link here instead of promising, and what they still owe is an issue per gap plus something that
 re-scores this document without a human doing it.
 
-**Scored 2026-07-29, re-scored 2026-08-03 against the working tree after ROADMAP Phase 6.1–6.5.** 24 capabilities:
+**Scored 2026-07-29, re-scored 2026-08-03 after ROADMAP Phase 6.1–6.5, re-scored again 2026-08-04
+after ROADMAP Phase 6.6 (migration `0016_ledger_trade`).** 24 capabilities:
 
 | | Built | Partial | Not built |
 |---|---:|---:|---:|
@@ -60,11 +61,16 @@ it is recorded here rather than done.
 
 The rest is still missing outright: quotes, credit notes, fixed assets, payroll and tracking
 categories do not exist in any form, and the *payable* half of bills is unbuilt, so aged payables
-cannot exist either. And the one that matters most — **nothing an invoice or a goods receipt does
-reaches the ledger**. A confirmed sale moves stock but posts no revenue, VAT or cost-of-goods-sold,
-and a receipt debits no inventory asset. Until ROADMAP 6.6 lands, SlipScan is an
-inventory-and-invoicing app sharing a binary with an accounting app, which is precisely the outcome
-that fold exists to avoid.
+cannot exist either. **The one that mattered most is now closed**: a goods receipt debits
+inventory-asset and credits accounts-payable, and a confirmed sale posts cost-of-goods-sold,
+revenue and VAT — ROADMAP 6.6, migration `0016_ledger_trade`. SlipScan is no longer an
+inventory-and-invoicing app sharing a binary with an accounting app; it is one accounting app whose
+ledger a trade actually reaches. Revenue is recognised exactly once per sale, and on the path that
+matches how the sale happened: at **confirm** for an order-backed sale, and at **issue** for a
+standalone invoice that has no order behind it. Getting that wrong in either direction is silent —
+recognising at neither left `invoice_payment_record` crediting an accounts-receivable balance
+nothing had ever debited, and recognising at both would double the sale — and in neither case does
+a trial balance show it, because every individual journal still balances.
 
 **On the Vault22 / 22seven axis it is much closer.** The core loop — accounts, transactions in,
 automatic categorisation that learns from your corrections, budgets, household attribution — is
@@ -101,9 +107,9 @@ them stops resolving. Paths are shortened for width: **`core/`** = `crates/slips
 
 | Capability | Status | Evidence | What's missing |
 |---|---|---|---|
-| **Invoicing** | **Built** | `invoices` / `invoice_items` / `invoice_payments` (migration `0014_sales`), issued through `CoreService::invoice_issue` with gapless per-book numbering, and reachable over HTTP, the CLI and desktop IPC | An issued invoice is immutable by trigger, so correcting one needs a credit note — **not built**, along with voiding, quotes, repeating invoices, partial fulfilment, per-line currency, and any posting to `journals` (that is ROADMAP 6.6). Multi-device numbering is unsolved: two offline devices would both mint the same number, caught loudly by `UNIQUE (book_id, series, number)` rather than silently. No desktop screen yet (6.9). A contact can now be created on every surface, so a standalone invoice **is** exercisable end to end; a stock-tracked line still is not, because **no surface can create a product variant** (the catalogue is 1-of-16 reachable — see `npm run reachable:check`). |
+| **Invoicing** | **Built** | `invoices` / `invoice_items` / `invoice_payments` (migration `0014_sales`), issued through `CoreService::invoice_issue` with gapless per-book numbering, and reachable over HTTP, the CLI and desktop IPC. Since ROADMAP 6.6, `invoice_payment_record` posts **DR** bank / **CR** accounts-receivable in the same transaction as the payment fact (migration `0016_ledger_trade`) | An issued invoice is immutable by trigger, so correcting one needs a credit note — **not built**, along with voiding, quotes, repeating invoices, partial fulfilment, and per-line currency. Multi-device numbering is unsolved: two offline devices would both mint the same number, caught loudly by `UNIQUE (book_id, series, number)` rather than silently. No desktop screen yet (6.9). A contact can now be created on every surface, so a standalone invoice **is** exercisable end to end; a stock-tracked line still is not, because **no surface can create a product variant** (the catalogue is 1-of-16 reachable — see `npm run reachable:check`). |
 | **Quotes / estimates** | **Not built** | — | Everything, and it is blocked behind invoicing, which a quote converts into. |
-| **Bills / accounts payable** | **Partial** | `purchase_orders` / `purchase_order_items` / `po_receipts` (migration `0013_purchasing`) give the ordering and receiving half, with receipts insert-only so partial deliveries merge by union | The **payable** half is missing: no bill entity distinct from the order, no supplier payment or paid/unpaid state (a PO is only `draft`/`ordered`/`cancelled`), no due dates, no supplier balances, no payment run, and nothing posts to the Accounts Payable CoA line. |
+| **Bills / accounts payable** | **Partial** | `purchase_orders` / `purchase_order_items` / `po_receipts` (migration `0013_purchasing`) give the ordering and receiving half, with receipts insert-only so partial deliveries merge by union. Since ROADMAP 6.6, `po_receive` posts **DR** inventory-asset / **CR** accounts-payable in the same transaction as the receipt (migration `0016_ledger_trade`), so the AP control account now actually moves | The **payable** half is still missing beyond the control-account posting: no bill entity distinct from the order, no supplier payment or paid/unpaid state (a PO is only `draft`/`ordered`/`cancelled`), no due dates, no supplier balances, and no payment run — a receipt credits Accounts Payable but nothing ever debits it back down again. |
 | **Contacts (customers & suppliers)** | **Built** | One `contacts` table (migration `0010_contacts`) with a `role`, deliberately not split into `customers`/`suppliers` because a real party is often both; referenced by `sales_orders`, `invoices` and `purchase_orders` with `ON DELETE RESTRICT` so trade history cannot be deleted out from under itself. Reachable on **all four surfaces** — CLI `slipscan contact`, HTTP, desktop IPC and a `client.ts` wrapper — which it was not until 2026-08-03: the model shipped with Phase 6.2 and only a read-only list was routed, so nothing could create the `contact_id` an invoice requires | No merge/dedupe of contacts, no statement, and no per-contact balance beyond aged receivables. Tax numbers, addresses and credit limits are stored and nothing consumes them yet. |
 | **Aged receivables / payables** | **Partial** | `report_aged_receivables` (migration `0014_sales`) buckets every outstanding invoice by age per contact, backed by the `invoices (book_id, due_date)` index | **Receivables only.** Aged *payables* needs the bill/payment half of purchasing, which is not built — see that row. No statement rendering or emailing. |
 | **Fixed-asset register** | **Not built** | `Accumulated Depreciation` and `Depreciation` are chart-of-accounts seed lines in [`core/src/region.rs`](crates/slipscan-core/src/region.rs) and nothing more | No asset records, cost/life/method, depreciation run, or disposal. You can hand-post a depreciation journal; nothing computes one. |

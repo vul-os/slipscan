@@ -3706,9 +3706,11 @@ impl CoreService {
             created_at: now.clone(),
         };
         repo::sales::invoice_insert(&tx, &invoice)?;
+        let mut posted_lines: Vec<(i64, i64, i64)> = Vec::new();
         for (line_order, (variant_id, description, quantity, unit_price_minor, tax_rate_bps)) in
             lines.into_iter().enumerate()
         {
+            posted_lines.push((quantity, unit_price_minor, tax_rate_bps));
             let item = InvoiceItem {
                 id: new_id(),
                 invoice_id: invoice.id.clone(),
@@ -3722,6 +3724,31 @@ impl CoreService {
                 created_at: now.clone(),
             };
             repo::sales::invoice_item_insert(&tx, &item)?;
+        }
+        // **Revenue recognition happens exactly once per sale.** An
+        // order-backed invoice has already had accounts-receivable debited and
+        // revenue credited by `sales_order_confirm`, so posting again here
+        // would double-count it. A *standalone* invoice has no order behind
+        // it, and nothing else will ever post it — so it is recognised here,
+        // at issue.
+        //
+        // Without this, `invoice_payment_record` credited accounts-receivable
+        // for a standalone invoice that nothing had ever debited, driving that
+        // account negative by exactly the amount collected. The books balanced
+        // (every journal balances on its own) and were still wrong, which is
+        // the kind of wrong a trial balance cannot show you.
+        if invoice.sales_order_id.is_none() {
+            self.post_revenue_ar_journal(
+                &tx,
+                &book,
+                &invoice.currency,
+                &posted_lines,
+                &invoice.issue_date,
+                &format!("Invoice {}-{}", invoice.series, invoice.number),
+                &invoice.id,
+                JournalSourceType::SalesRevenue,
+                &invoice.id,
+            )?;
         }
         self.emit_audit(
             &tx,
@@ -5152,96 +5179,144 @@ impl CoreService {
         };
 
         // -- revenue / AR / VAT leg ----------------------------------------
-        // Grouped by tax_rate_bps, exactly like journal_generate_for_document
-        // groups a slip's VAT groups — a mixed-rate order still balances one
-        // rate at a time and each VAT line can carry the matching VatRate id.
+        let revenue_journal = self.post_revenue_ar_journal(
+            tx,
+            book,
+            &currency,
+            &items
+                .iter()
+                .map(|i| (i.quantity, i.unit_price_minor, i.tax_rate_bps))
+                .collect::<Vec<_>>(),
+            &order.order_date,
+            &format!("Sale: order #{}", order.number),
+            &order.id,
+            JournalSourceType::SalesRevenue,
+            &order.id,
+        )?;
+
+        Ok((cost_journal, revenue_journal))
+    }
+
+    /// **DR** accounts-receivable, **CR** revenue (net) and VAT output, from
+    /// any set of `(quantity, unit_price_minor, tax_rate_bps)` lines.
+    ///
+    /// Shared deliberately by the two places revenue is recognised, because
+    /// they must agree to the cent and because recognising it in only one of
+    /// them was a real bug: revenue lands at **confirm** for an order-backed
+    /// sale, and at **issue** for a standalone invoice that has no order
+    /// behind it. Posting at both for the same sale would double-count, and
+    /// posting at neither — which is what happened for standalone invoices
+    /// before this existed — left `invoice_payment_record` crediting an
+    /// accounts-receivable balance nothing had ever debited, quietly driving
+    /// that account negative.
+    ///
+    /// Grouped by `tax_rate_bps` so a mixed-rate document still balances one
+    /// rate at a time and each VAT line carries the matching `VatRate` id,
+    /// exactly as `journal_generate_for_document` groups a slip's VAT.
+    /// Returns `None` — never an error — when the book has no chart of
+    /// accounts to post into, or when there is nothing to post.
+    #[allow(clippy::too_many_arguments)]
+    fn post_revenue_ar_journal(
+        &self,
+        tx: &Connection,
+        book: &Book,
+        currency: &str,
+        lines_in: &[(i64, i64, i64)],
+        posted_date: &str,
+        narrative: &str,
+        reference: &str,
+        source_type: JournalSourceType,
+        source_id: &str,
+    ) -> CoreResult<Option<PostedJournal>> {
         let mut groups: std::collections::BTreeMap<i64, (i64, i64)> =
             std::collections::BTreeMap::new();
-        for item in items {
-            let net = item.quantity * item.unit_price_minor;
-            let vat = vat_on_net(net, item.tax_rate_bps);
-            let g = groups.entry(item.tax_rate_bps).or_insert((0, 0));
+        for (quantity, unit_price_minor, tax_rate_bps) in lines_in {
+            let net = quantity * unit_price_minor;
+            let vat = vat_on_net(net, *tax_rate_bps);
+            let g = groups.entry(*tax_rate_bps).or_insert((0, 0));
             g.0 += net;
             g.1 += vat;
         }
         let total_net: i64 = groups.values().map(|(n, _)| *n).sum();
         let total_vat: i64 = groups.values().map(|(_, v)| *v).sum();
         let gross = total_net + total_vat;
-        let revenue_journal = if gross != 0 {
-            let ar = self.coa_by_code_opt(tx, &book.id, COA_CODE_AR)?;
-            let revenue = self.coa_by_code_opt(tx, &book.id, COA_CODE_REVENUE)?;
-            let need_vat_control = total_vat != 0;
-            let vat_control = if need_vat_control {
-                self.coa_by_code_opt(tx, &book.id, COA_CODE_VAT_OUTPUT)?
-            } else {
-                None
-            };
-            match (ar, revenue) {
-                (Some(ar), Some(revenue)) if !need_vat_control || vat_control.is_some() => {
-                    let rates = repo::ledger::list_vat_rates(tx, &book.id)?;
-                    let rate_for = |bps: i64| -> Option<&VatRate> {
-                        if bps <= 0 {
-                            return None;
-                        }
-                        rates
-                            .iter()
-                            .filter(|r| r.is_active && r.rate_bps == bps)
-                            .min_by_key(|r| (r.code == "EXE", r.code.clone()))
-                    };
-                    let mut lines = vec![NewJournalLine {
-                        coa_id: ar.id.clone(),
-                        debit_minor: gross,
-                        credit_minor: 0,
-                        currency: currency.clone(),
-                        description: Some(format!("Sale: order #{}", order.number)),
-                        vat_rate_id: None,
-                        vat_role: None,
-                    }];
-                    for (bps, (net, vat)) in &groups {
-                        if *net != 0 {
-                            lines.push(NewJournalLine {
-                                coa_id: revenue.id.clone(),
-                                debit_minor: 0,
-                                credit_minor: *net,
-                                currency: currency.clone(),
-                                description: None,
-                                vat_rate_id: rate_for(*bps).map(|r| r.id.clone()),
-                                vat_role: Some(VatRole::OutputBase),
-                            });
-                        }
-                        if *vat != 0 {
-                            let vat_control = vat_control
-                                .as_ref()
-                                .expect("need_vat_control guaranteed Some above");
-                            lines.push(NewJournalLine {
-                                coa_id: vat_control.id.clone(),
-                                debit_minor: 0,
-                                credit_minor: *vat,
-                                currency: currency.clone(),
-                                description: None,
-                                vat_rate_id: rate_for(*bps).map(|r| r.id.clone()),
-                                vat_role: Some(VatRole::OutputVat),
-                            });
-                        }
-                    }
-                    let new = NewJournal {
-                        book_id: book.id.clone(),
-                        posted_date: order.order_date.clone(),
-                        narrative: Some(format!("Sale: order #{}", order.number)),
-                        reference: Some(order.id.clone()),
-                        source_type: JournalSourceType::SalesRevenue,
-                        source_id: Some(order.id.clone()),
-                        lines,
-                    };
-                    Some(self.post_journal_in_tx(tx, book, new, None)?)
-                }
-                _ => None,
-            }
+        if gross == 0 {
+            return Ok(None);
+        }
+
+        let ar = self.coa_by_code_opt(tx, &book.id, COA_CODE_AR)?;
+        let revenue = self.coa_by_code_opt(tx, &book.id, COA_CODE_REVENUE)?;
+        let need_vat_control = total_vat != 0;
+        let vat_control = if need_vat_control {
+            self.coa_by_code_opt(tx, &book.id, COA_CODE_VAT_OUTPUT)?
         } else {
             None
         };
+        let (ar, revenue) = match (ar, revenue) {
+            (Some(ar), Some(revenue)) if !need_vat_control || vat_control.is_some() => {
+                (ar, revenue)
+            }
+            _ => return Ok(None),
+        };
 
-        Ok((cost_journal, revenue_journal))
+        let rates = repo::ledger::list_vat_rates(tx, &book.id)?;
+        let rate_for = |bps: i64| -> Option<&VatRate> {
+            if bps <= 0 {
+                return None;
+            }
+            rates
+                .iter()
+                .filter(|r| r.is_active && r.rate_bps == bps)
+                .min_by_key(|r| (r.code == "EXE", r.code.clone()))
+        };
+
+        let mut lines = vec![NewJournalLine {
+            coa_id: ar.id.clone(),
+            debit_minor: gross,
+            credit_minor: 0,
+            currency: currency.to_string(),
+            description: Some(narrative.to_string()),
+            vat_rate_id: None,
+            vat_role: None,
+        }];
+        for (bps, (net, vat)) in &groups {
+            if *net != 0 {
+                lines.push(NewJournalLine {
+                    coa_id: revenue.id.clone(),
+                    debit_minor: 0,
+                    credit_minor: *net,
+                    currency: currency.to_string(),
+                    description: None,
+                    vat_rate_id: rate_for(*bps).map(|r| r.id.clone()),
+                    vat_role: Some(VatRole::OutputBase),
+                });
+            }
+            if *vat != 0 {
+                let vat_control = vat_control
+                    .as_ref()
+                    .expect("need_vat_control guaranteed Some above");
+                lines.push(NewJournalLine {
+                    coa_id: vat_control.id.clone(),
+                    debit_minor: 0,
+                    credit_minor: *vat,
+                    currency: currency.to_string(),
+                    description: None,
+                    vat_rate_id: rate_for(*bps).map(|r| r.id.clone()),
+                    vat_role: Some(VatRole::OutputVat),
+                });
+            }
+        }
+
+        let new = NewJournal {
+            book_id: book.id.clone(),
+            posted_date: posted_date.to_string(),
+            narrative: Some(narrative.to_string()),
+            reference: Some(reference.to_string()),
+            source_type,
+            source_id: Some(source_id.to_string()),
+            lines,
+        };
+        Ok(Some(self.post_journal_in_tx(tx, book, new, None)?))
     }
 
     /// Reverse whichever of a confirmed order's two posted journals
@@ -9712,6 +9787,93 @@ mod tests {
 
     /// **invoice_payment_record posts DR bank / CR accounts-receivable, for
     /// both a part payment and the balancing full payment.**
+    /// **Revenue is recognised exactly once per sale, and a standalone
+    /// invoice is the case that was missing it.**
+    ///
+    /// `sales_order_confirm` debits accounts-receivable for an order-backed
+    /// sale. An invoice with no order behind it had nothing post that debit,
+    /// so `invoice_payment_record` credited accounts-receivable for money
+    /// nothing had ever put there — driving the account negative by exactly
+    /// what was collected. Every individual journal still balanced, so a
+    /// trial balance could not show it.
+    #[test]
+    fn a_standalone_invoice_recognises_revenue_so_payment_clears_it_to_zero() {
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let contact = make_contact(&svc, &book, "Acme Retail");
+        let ar = by_code(&coa, "1100");
+        let revenue = by_code(&coa, "4000");
+
+        let invoice = svc
+            .invoice_issue(NewInvoice {
+                book_id: book.id.clone(),
+                contact_id: Some(contact.id.clone()),
+                sales_order_id: None,
+                series: None,
+                issue_date: None,
+                due_date: "2026-12-31".into(),
+                currency: Some("ZAR".into()),
+                notes: None,
+                items: vec![NewInvoiceItemInput {
+                    variant_id: None,
+                    description: "Retainer".into(),
+                    quantity: 1,
+                    unit_price_minor: 10_000,
+                    tax_rate_bps: Some(0),
+                }],
+            })
+            .unwrap();
+
+        // Issuing recognises the revenue.
+        let journals = all_journals(&svc, &book.id);
+        let issued = find_journal(&journals, JournalSourceType::SalesRevenue, &invoice.id)
+            .expect("a standalone invoice must recognise its revenue at issue");
+        assert_journal_balances(issued);
+        assert_eq!(
+            issued
+                .lines
+                .iter()
+                .find(|l| l.coa_id == ar.id)
+                .unwrap()
+                .debit_minor,
+            10_000,
+            "accounts-receivable must be debited by the invoice gross"
+        );
+        assert_eq!(
+            issued
+                .lines
+                .iter()
+                .find(|l| l.coa_id == revenue.id)
+                .unwrap()
+                .credit_minor,
+            10_000
+        );
+
+        // Paying it clears accounts-receivable back to zero — the property
+        // that was false before, and the reason this matters.
+        svc.invoice_payment_record(NewInvoicePayment {
+            invoice_id: invoice.id.clone(),
+            amount_minor: 10_000,
+            paid_at: None,
+            method: Some("eft".into()),
+            note: None,
+        })
+        .unwrap();
+
+        let net_ar: i64 = all_journals(&svc, &book.id)
+            .iter()
+            .flat_map(|j| j.lines.iter())
+            .filter(|l| l.coa_id == ar.id)
+            .map(|l| l.debit_minor - l.credit_minor)
+            .sum();
+        assert_eq!(
+            net_ar, 0,
+            "a fully paid standalone invoice must leave accounts-receivable flat, \
+             not negative by the amount collected"
+        );
+    }
+
     #[test]
     fn invoice_payment_record_posts_bank_and_ar_for_part_and_full_payment() {
         let svc = svc();
@@ -10028,6 +10190,81 @@ mod tests {
     /// business book that never ran `coa_seed`, must both still let a trade
     /// through — the trade succeeds and simply posts nothing, which is a
     /// deliberate behaviour this test pins down rather than an accident.
+    /// The other half of "exactly once": an invoice raised FROM a confirmed
+    /// order must not recognise the revenue a second time. `sales_order_confirm`
+    /// already debited accounts-receivable; posting again at issue would
+    /// double the sale.
+    #[test]
+    fn an_order_backed_invoice_does_not_recognise_revenue_twice() {
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let ar = by_code(&coa, "1100");
+        let revenue = by_code(&coa, "4000");
+        let contact = make_contact(&svc, &book, "Acme Retail");
+
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: None,
+                order_date: None,
+                currency: Some("ZAR".into()),
+                notes: None,
+            })
+            .unwrap();
+        svc.sales_order_item_add(NewSalesOrderItem {
+            sales_order_id: order.id.clone(),
+            variant_id: None,
+            description: Some("Consulting".into()),
+            quantity: 1,
+            unit_price_minor: Some(10_000),
+            tax_rate_bps: Some(0),
+        })
+        .unwrap();
+        svc.sales_order_confirm(&order.id).unwrap();
+
+        let ar_after_confirm: i64 = all_journals(&svc, &book.id)
+            .iter()
+            .flat_map(|j| j.lines.iter())
+            .filter(|l| l.coa_id == ar.id)
+            .map(|l| l.debit_minor - l.credit_minor)
+            .sum();
+        assert_eq!(ar_after_confirm, 10_000, "confirm recognises the sale");
+
+        svc.invoice_issue(NewInvoice {
+            book_id: book.id.clone(),
+            contact_id: None,
+            sales_order_id: Some(order.id.clone()),
+            series: None,
+            issue_date: None,
+            due_date: "2026-12-31".into(),
+            currency: None,
+            notes: None,
+            items: vec![],
+        })
+        .unwrap();
+
+        let sum_for = |coa_id: &str| -> i64 {
+            all_journals(&svc, &book.id)
+                .iter()
+                .flat_map(|j| j.lines.iter())
+                .filter(|l| l.coa_id == coa_id)
+                .map(|l| l.debit_minor - l.credit_minor)
+                .sum()
+        };
+        assert_eq!(
+            sum_for(&ar.id),
+            10_000,
+            "issuing an invoice from a confirmed order must not debit AR again"
+        );
+        assert_eq!(
+            sum_for(&revenue.id),
+            -10_000,
+            "nor credit revenue again — the sale happened once"
+        );
+    }
+
     #[test]
     fn trade_posts_nothing_when_the_book_has_no_chart_of_accounts() {
         let svc = svc();

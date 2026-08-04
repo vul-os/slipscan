@@ -275,11 +275,53 @@ These were settled rather than escalated, and are recorded here so the reasoning
       6.6), and no desktop screen calls any of it yet (6.9) — the 21 IPC commands and their
       `client.ts` wrappers are wired ahead of it, and `npm run parity:check` now fails CI if a
       registered command ever loses its wrapper again)*
-- [ ] **6.6 Stock posts to the ledger.** The keystone, and the one piece neither codebase had: a
+- [x] **6.6 Stock posts to the ledger.** The keystone, and the one piece neither codebase had: a
       goods receipt debits inventory-asset and credits accounts-payable; a confirmed sale posts
       revenue, VAT and cost-of-goods-sold against the existing chart of accounts and `journals` /
-      `journal_lines`. Until this lands, Phase 6 is an inventory app sharing a binary with an
-      accounting app — which is the thing this fold exists to avoid
+      `journal_lines` *(shipped, migration `0016_ledger_trade` (the one schema change needed — it
+      only widens `journals.source_type`'s CHECK to add `po_receipt`/`sales_cogs`/`sales_revenue`/
+      `invoice_payment`, a table rebuild since SQLite has no `ALTER TABLE ADD CONSTRAINT`).
+      `CoreService::po_receive`/`sales_order_confirm`/`sales_order_cancel`/`invoice_payment_record`
+      each post their journal(s) in the *same* SQLite transaction as the trade fact itself — the
+      "one code path, one transaction, or none of it lands" discipline migration `0013_purchasing`
+      already documents for a receipt and its stock movement, extended to the journal. A confirmed
+      sale posts **two** journals sharing one `source_id` (`SalesCogs`, `SalesRevenue`), not one
+      four-line entry, so either leg can be reversed and re-derived independently; `sales_order_cancel`
+      reverses whichever are still net-live via the existing `journal_reverse` machinery (dated at
+      cancellation, not at the original confirm, so a book locked after the sale was confirmed can
+      still cancel it). Idempotence and the lock-date refusal are both the pre-existing
+      `post_journal_in_tx` guarantees (one net-live journal per `(source_type, source_id)`; no
+      posting on or before `financial_lock_date`), reused rather than reimplemented, and a refusal
+      rolls back the *whole* trade action, not just the journal. A personal book, or a business book
+      that never ran `coa_seed`, resolves every required account to `None` and posts nothing — the
+      trade still succeeds — proven directly rather than assumed. VAT on the revenue leg is
+      `crate::vat::vat_on_net` (round-half-away-from-zero), the identical rule
+      `repo::sales::order_totals` already uses, so the journal's tax total never drifts from the
+      total a person already sees on the order; tested at a rounding boundary (333 minor units at
+      15% → 50, not 49 or 51). Ten new tests in `service.rs`, all against a real in-memory SQLite
+      `CoreService` — receipt, confirm, VAT boundary, part/full payment, cancel-to-net-zero,
+      idempotence, both lock-date paths, no-CoA gracefulness (personal and unseeded-business), and
+      the full receive-then-sell round trip proving the trial balance and the inventory account
+      balance both land exactly right.
+      **Not built, named rather than implied:** no per-line COGS/revenue detail — each leg is one
+      journal aggregating every line, not one line-item pair per order line; no `coa_map` override
+      for a supplier/customer/variant (`CoaMapEntity` still only covers `account`/`category`, so
+      every trade account resolves by seed code alone, same as before this stage — see
+      `coa_by_code_opt`'s own doc comment); no manual "regenerate this trade's journal" entry point
+      on any surface — posting is automatic and embedded, there is no
+      `journal_generate_for_po_receipt`-style public function to call again by hand; and a leg whose
+      required accounts are only *partly* seeded (e.g. Inventory/COGS present, Revenue/AR absent)
+      posts nothing for that leg specifically rather than erroring, which is untested beyond what
+      the code review here states. **Revenue is recognised exactly once per sale, on the path that matches how it
+      happened:** at `sales_order_confirm` for an order-backed sale, and at `invoice_issue` for a
+      standalone invoice (`sales_order_id: None` — a retainer, a one-off bill with no order behind
+      it). Both call one shared `post_revenue_ar_journal`, so the two can never drift apart by a
+      cent. The first cut of 6.6 posted only at confirm — following a brief that named three call
+      sites and did not think about the fourth — which left `invoice_payment_record` crediting an
+      accounts-receivable balance nothing had ever debited, driving that account negative by exactly
+      what was collected. Every journal still balanced, so no trial balance could show it; it is
+      covered now by tests from both sides (a standalone invoice clears AR to zero when paid, and an
+      order-backed invoice does not debit AR twice))*
 - [ ] **6.7 Sync transport.** FlowStock shipped the one thing [docs/NODES.md](docs/NODES.md) still
       lists as missing: a working authenticated transport — three HTTP endpoints
       (`/sync/vector`, `/sync/pull`, `/sync/ops`) plus folder/USB replication for sites with no
