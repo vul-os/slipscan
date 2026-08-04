@@ -198,16 +198,23 @@ enum ListTarget {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ReportKind {
-    /// Trial balance.
+    /// Trial balance. No period — every posted journal line, to date.
     Tb,
-    /// Profit & loss.
+    /// Profit & loss (income statement) over `--from`/`--to`, inclusive.
+    /// Defaults to the start of the current calendar year through today.
     Pl,
-    /// Balance sheet.
+    /// Balance sheet as of `--as-of` (defaults to today).
     Bs,
-    /// Tax-period summary (named by your region profile — e.g. VAT201 in
-    /// South Africa). `vat` is accepted as an alias for compatibility.
+    /// Tax-period summary over `--from`/`--to`, inclusive (named by your
+    /// region profile — e.g. VAT201 in South Africa). Defaults to the start
+    /// of the current calendar year through today. `vat` is accepted as an
+    /// alias for compatibility.
     #[value(alias = "vat")]
     Tax,
+    /// Spending by calendar month and category over `--from`/`--to`,
+    /// inclusive. Defaults to the start of the current calendar year
+    /// through today.
+    Spending,
     /// Per-member expense + contribution rollup (household attribution).
     /// Needs `--from`/`--to`.
     Members,
@@ -319,21 +326,35 @@ enum Command {
         action: ReconAction,
     },
     /// Reports: trial balance, profit & loss, balance sheet, tax summary,
-    /// per-member expense/contribution, settle-up.
+    /// spending by month, per-member expense/contribution, settle-up.
+    ///
+    /// `pl`, `tax` and `spending` all take an inclusive `--from`/`--to`
+    /// range; the printed (and JSON) output always states the exact period
+    /// it covers, so a report is never ambiguous about its dates even when
+    /// they were defaulted rather than typed. `bs` takes `--as-of` instead —
+    /// a balance sheet is a snapshot, not a range.
     Report {
         #[arg(value_enum)]
         kind: ReportKind,
         /// CSV output (trial balance only).
         #[arg(long)]
         csv: bool,
-        /// Start date (YYYY-MM-DD), inclusive — required for `members` and
-        /// `settle-up`; every other report kind ignores it.
+        /// Start date (YYYY-MM-DD), inclusive. Required for `members` and
+        /// `settle-up`. For `pl`, `tax` and `spending`, defaults to the
+        /// start of the current calendar year when omitted. Ignored by `tb`,
+        /// `bs` and `aged-receivables`.
         #[arg(long)]
         from: Option<String>,
-        /// End date (YYYY-MM-DD), inclusive — required for `members` and
-        /// `settle-up`.
+        /// End date (YYYY-MM-DD), inclusive. Required for `members` and
+        /// `settle-up`. For `pl`, `tax` and `spending`, defaults to today
+        /// when omitted. Also sets aged-receivables' "as of" (default:
+        /// today); ignored by `tb` and `bs`.
         #[arg(long)]
         to: Option<String>,
+        /// As-of date (YYYY-MM-DD) for `bs` (balance sheet) — defaults to
+        /// today. Ignored by every other report kind.
+        #[arg(long)]
+        as_of: Option<String>,
     },
     /// Exchange rates via your configured OpenRate endpoint (opt-in: with no
     /// URL configured, SlipScan makes zero FX network calls).
@@ -1973,6 +1994,26 @@ fn require_range<'a>(
         (Some(f), Some(t)) => Ok((f, t)),
         _ => bail!("this report needs --from and --to (YYYY-MM-DD, inclusive date range)"),
     }
+}
+
+/// Default report period for `pl`, `tax` and `spending` when `--from`/`--to`
+/// are not given: the start of the calendar year `--to` falls in, through
+/// `--to` itself (today, if `--to` is also omitted).
+///
+/// SlipScan has no fiscal-year concept on a book — region profiles disagree
+/// on when one starts, so a calendar-year default is the least surprising
+/// choice rather than a wrong guess dressed up as a "financial year". Every
+/// caller of this prints the resolved `(from, to)` in its output (and it is
+/// always in the JSON body too), so a report is never ambiguous about its
+/// period even when the dates were defaulted rather than typed.
+fn default_range(from: Option<&str>, to: Option<&str>) -> (String, String) {
+    let to = to
+        .map(str::to_string)
+        .unwrap_or_else(slipscan_core::util::today);
+    let from = from
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{}-01-01", &to[..4]));
+    (from, to)
 }
 
 /// Turn the CLI's `--expect-keyname` / `--unverified` pair into the core's
@@ -4342,6 +4383,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             csv,
             ref from,
             ref to,
+            ref as_of,
         } => {
             let svc = open_service(&env.db)?;
             let book = resolve_book(&svc, cli.book.as_deref())?;
@@ -4381,9 +4423,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     })
                 }
                 ReportKind::Pl => {
-                    let pl = ops::report_profit_loss(&svc, &book.id)?;
+                    let (from, to) = default_range(from.as_deref(), to.as_deref());
+                    let pl = svc.report_income_statement(&book.id, &from, &to)?;
                     emit(cli.json, &pl, || {
-                        println!("Profit & loss — {}", book.name);
+                        println!("Income statement — {} ({from}..{to})", book.name);
                         for r in &pl.income {
                             println!(
                                 "income\t{}\t{}\t{}",
@@ -4406,9 +4449,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     })
                 }
                 ReportKind::Bs => {
-                    let bs = ops::report_balance_sheet(&svc, &book.id)?;
+                    let as_of_date = as_of.clone().unwrap_or_else(slipscan_core::util::today);
+                    let bs = svc.report_balance_sheet(&book.id, &as_of_date)?;
                     emit(cli.json, &bs, || {
-                        println!("Balance sheet — {}", book.name);
+                        println!("Balance sheet — {} (as of {as_of_date})", book.name);
                         for (section, rows) in [
                             ("asset", &bs.assets),
                             ("liability", &bs.liabilities),
@@ -4425,33 +4469,80 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         }
                         println!("Assets\t{}", fmt_minor(bs.assets_total_minor));
                         println!("Liabilities\t{}", fmt_minor(bs.liabilities_total_minor));
+                        // `equity_total_minor` already folds in retained
+                        // earnings (core's doc comment on `BalanceSheet`), so
+                        // assets == liabilities + equity is the balance check.
                         println!("Equity\t{}", fmt_minor(bs.equity_total_minor));
                         println!(
                             "Retained earnings\t{}",
                             fmt_minor(bs.retained_earnings_minor)
                         );
-                        println!("Balanced\t{}", bs.balanced);
+                        println!(
+                            "Balanced\t{}",
+                            bs.assets_total_minor
+                                == bs.liabilities_total_minor + bs.equity_total_minor
+                        );
                     })
                 }
                 ReportKind::Tax => {
-                    let tax = ops::report_tax(&svc, &book.id)?;
+                    let (from, to) = default_range(from.as_deref(), to.as_deref());
+                    let tax = svc.report_tax_summary(&book.id, &from, &to)?;
                     emit(cli.json, &tax, || {
                         // The report is named by the book's region profile
                         // ("VAT201" in South Africa, "Tax summary" generically).
-                        println!("{} — {}", tax.report_name, book.name);
-                        for r in &tax.rates {
-                            println!("rate\t{}\t{}\t{} bps", r.code, r.name, r.rate_bps);
-                        }
-                        for a in &tax.accounts {
+                        println!("{} — {} ({from}..{to})", tax.report_name, book.name);
+                        for r in &tax.rows {
                             println!(
-                                "account\t{}\t{}\t{}\t{}",
-                                a.code,
-                                a.name,
-                                fmt_minor(a.debit_minor),
-                                fmt_minor(a.credit_minor)
+                                "rate\t{}\t{}\t{} bps\toutput {}\tinput {}",
+                                r.code,
+                                r.name,
+                                r.rate_bps,
+                                fmt_minor(r.output_vat_minor),
+                                fmt_minor(r.input_vat_minor)
                             );
                         }
-                        println!("Net tax position\t{}", fmt_minor(tax.net_minor));
+                        println!(
+                            "{}\t{}",
+                            tax.labels.standard_rated_supplies,
+                            fmt_minor(tax.standard_rated_supplies_minor)
+                        );
+                        println!(
+                            "{}\t{}",
+                            tax.labels.zero_rated_supplies,
+                            fmt_minor(tax.zero_rated_supplies_minor)
+                        );
+                        println!(
+                            "{}\t{}",
+                            tax.labels.exempt_supplies,
+                            fmt_minor(tax.exempt_supplies_minor)
+                        );
+                        println!(
+                            "{}\t{}",
+                            tax.labels.output_tax,
+                            fmt_minor(tax.output_vat_minor)
+                        );
+                        println!(
+                            "{}\t{}",
+                            tax.labels.input_tax,
+                            fmt_minor(tax.input_vat_minor)
+                        );
+                        println!("{}\t{}", tax.labels.net_tax, fmt_minor(tax.net_vat_minor));
+                    })
+                }
+                ReportKind::Spending => {
+                    let (from, to) = default_range(from.as_deref(), to.as_deref());
+                    let rows = svc.report_spending_by_month(&book.id, &from, &to)?;
+                    emit(cli.json, &rows, || {
+                        println!("Spending by month — {} ({from}..{to})", book.name);
+                        for r in &rows {
+                            println!(
+                                "{}\t{}\t{}\t{}",
+                                r.month,
+                                r.category_name,
+                                r.currency,
+                                fmt_minor(r.total_minor)
+                            );
+                        }
                     })
                 }
                 ReportKind::Members => {
@@ -6202,6 +6293,7 @@ mod tests {
             ("tax", ReportKind::Tax),
             // Old name kept as an alias: `report vat` still works.
             ("vat", ReportKind::Tax),
+            ("spending", ReportKind::Spending),
         ] {
             let cli = Cli::try_parse_from(["slipscan", "report", arg]).unwrap();
             match cli.command {
@@ -6212,6 +6304,7 @@ mod tests {
                             | (ReportKind::Pl, ReportKind::Pl)
                             | (ReportKind::Bs, ReportKind::Bs)
                             | (ReportKind::Tax, ReportKind::Tax)
+                            | (ReportKind::Spending, ReportKind::Spending)
                     ));
                     assert!(!csv);
                 }
@@ -6220,6 +6313,211 @@ mod tests {
         }
         let cli = Cli::try_parse_from(["slipscan", "report", "tb", "--csv"]).unwrap();
         assert!(matches!(cli.command, Command::Report { csv: true, .. }));
+    }
+
+    /// `--as-of` is `bs`'s own flag (a balance sheet is a snapshot, not a
+    /// range) and is independent of `--from`/`--to`.
+    #[test]
+    fn parses_report_balance_sheet_as_of() {
+        let cli =
+            Cli::try_parse_from(["slipscan", "report", "bs", "--as-of", "2026-06-30"]).unwrap();
+        match cli.command {
+            Command::Report {
+                kind: ReportKind::Bs,
+                as_of,
+                from,
+                to,
+                ..
+            } => {
+                assert_eq!(as_of.as_deref(), Some("2026-06-30"));
+                assert_eq!(from, None);
+                assert_eq!(to, None);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // Omitted entirely: the command still parses, and the default (today)
+        // is resolved at run time, not by clap.
+        assert!(matches!(
+            Cli::try_parse_from(["slipscan", "report", "bs"])
+                .unwrap()
+                .command,
+            Command::Report {
+                kind: ReportKind::Bs,
+                as_of: None,
+                ..
+            }
+        ));
+    }
+
+    /// End-to-end, against a real on-disk SQLite database: `report pl`,
+    /// `report bs` and `report tax` each scope to the period the flags name,
+    /// not to the whole book's history — the ALL-TIME duplicates these used
+    /// to call (`ops::report_profit_loss` etc.) are gone, and this is the
+    /// regression test that they stay gone. Journals on both sides of the
+    /// period boundary, so a report that silently ignored `--from`/`--to`
+    /// would show up as a wrong total, not just a non-zero exit code.
+    #[test]
+    fn report_pl_bs_tax_spending_scope_to_a_period_end_to_end() {
+        use slipscan_core::domain::{JournalSourceType, NewJournal, NewJournalLine, VatRole};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("periods.sqlite");
+        let db_arg = db.to_str().unwrap().to_string();
+        let run_cli = |args: &[&str]| {
+            let mut argv = vec!["slipscan", "--db", &db_arg, "--json"];
+            argv.extend_from_slice(args);
+            run(Cli::try_parse_from(argv).unwrap())
+        };
+        run_cli(&[
+            "init",
+            "--name",
+            "Biz",
+            "--kind",
+            "business",
+            "--region",
+            "za",
+            "--seed-coa",
+        ])
+        .unwrap();
+
+        let svc = CoreService::open(&db).unwrap();
+        let book = svc.book_list().unwrap().remove(0);
+        let coa = svc.coa_list(&book.id).unwrap();
+        let acct = |code: &str| coa.iter().find(|a| a.code == code).unwrap().id.clone();
+        let (bank, sales, vat_out, expense) =
+            (acct("1000"), acct("4000"), acct("2100"), acct("6100"));
+        let std_rate = svc
+            .vat_rate_list(&book.id)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.code == "STD")
+            .unwrap()
+            .id;
+        let line =
+            |coa_id: String, debit: i64, credit: i64, role: Option<VatRole>| NewJournalLine {
+                coa_id,
+                debit_minor: debit,
+                credit_minor: credit,
+                currency: "ZAR".into(),
+                description: None,
+                vat_rate_id: role.as_ref().map(|_| std_rate.clone()),
+                vat_role: role,
+            };
+        let post = |date: &str, lines: Vec<NewJournalLine>| {
+            svc.journal_post(NewJournal {
+                book_id: book.id.clone(),
+                posted_date: date.into(),
+                narrative: Some("test".into()),
+                reference: None,
+                source_type: JournalSourceType::Manual,
+                source_id: None,
+                lines,
+            })
+            .unwrap()
+        };
+        // Inside July: a cash sale with output VAT.
+        post(
+            "2026-07-15",
+            vec![
+                line(bank.clone(), 11_500, 0, None),
+                line(sales, 0, 10_000, Some(VatRole::OutputBase)),
+                line(vat_out, 0, 1_500, Some(VatRole::OutputVat)),
+            ],
+        );
+        // On the boundary (2026-07-31): must count as IN a July report.
+        post(
+            "2026-07-31",
+            vec![
+                line(expense.clone(), 2_000, 0, None),
+                line(bank.clone(), 0, 2_000, None),
+            ],
+        );
+        // Outside the period (August): must never leak into July's figures.
+        post(
+            "2026-08-01",
+            vec![line(expense, 99_999, 0, None), line(bank, 0, 99_999, None)],
+        );
+        drop(svc);
+
+        // -- pl: narrow range excludes August, includes the boundary day ---
+        run_cli(&["report", "pl", "--from", "2026-07-01", "--to", "2026-07-31"]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        let pl = svc
+            .report_income_statement(&book.id, "2026-07-01", "2026-07-31")
+            .unwrap();
+        assert_eq!(pl.income_total_minor, 10_000);
+        assert_eq!(
+            pl.expense_total_minor, 2_000,
+            "to_date must be inclusive of the 07-31 expense"
+        );
+        drop(svc);
+
+        // An inverted range is refused by the CLI too, via the same core
+        // validation every surface shares — not just answered empty.
+        let err = run_cli(&["report", "pl", "--from", "2026-07-31", "--to", "2026-07-01"])
+            .unwrap_err()
+            .to_string();
+        assert!(!err.is_empty());
+
+        // -- bs: as-of an early date differs from as-of a late date --------
+        run_cli(&["report", "bs", "--as-of", "2026-07-20"]).unwrap();
+        run_cli(&["report", "bs", "--as-of", "2026-07-31"]).unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        let bs_before = svc.report_balance_sheet(&book.id, "2026-07-20").unwrap();
+        let bs_after = svc.report_balance_sheet(&book.id, "2026-07-31").unwrap();
+        assert_ne!(bs_before.assets_total_minor, bs_after.assets_total_minor);
+        assert_eq!(bs_after.assets_total_minor, 9_500);
+        drop(svc);
+
+        // Omitting --as-of defaults to today rather than erroring.
+        run_cli(&["report", "bs"]).unwrap();
+
+        // -- tax: matches only the period's journals ------------------------
+        run_cli(&[
+            "report",
+            "tax",
+            "--from",
+            "2026-07-01",
+            "--to",
+            "2026-07-31",
+        ])
+        .unwrap();
+        let svc = CoreService::open(&db).unwrap();
+        let tax = svc
+            .report_tax_summary(&book.id, "2026-07-01", "2026-07-31")
+            .unwrap();
+        assert_eq!(tax.report_name, "VAT201");
+        assert_eq!(tax.output_vat_minor, 1_500);
+        let tax_august = svc
+            .report_tax_summary(&book.id, "2026-08-01", "2026-08-31")
+            .unwrap();
+        assert_eq!(
+            tax_august.output_vat_minor, 0,
+            "July's VAT must not leak into an August-only report"
+        );
+        drop(svc);
+
+        // `vat` is still accepted as an alias for `tax` on the CLI.
+        run_cli(&[
+            "report",
+            "vat",
+            "--from",
+            "2026-07-01",
+            "--to",
+            "2026-07-31",
+        ])
+        .unwrap();
+
+        // -- spending: newly reachable from the CLI, scoped the same way ----
+        run_cli(&[
+            "report",
+            "spending",
+            "--from",
+            "2026-07-01",
+            "--to",
+            "2026-08-31",
+        ])
+        .unwrap();
     }
 
     #[test]

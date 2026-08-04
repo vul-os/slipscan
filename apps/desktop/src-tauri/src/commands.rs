@@ -24,7 +24,7 @@ use slipscan_core::domain::{
 };
 use slipscan_core::profile::BookProfile;
 use slipscan_core::secrets::{SecretStore, SecretString, Vault};
-use slipscan_core::util::{new_id, now_iso};
+use slipscan_core::util::{new_id, now_iso, today};
 use slipscan_core::CoreService;
 
 use crate::dto::{self, *};
@@ -1988,30 +1988,20 @@ pub async fn report_income_expense(
     })
 }
 
-#[derive(serde::Deserialize)]
-pub struct VatSummaryQuery {
-    pub book_id: String,
-    /// Calendar month, `YYYY-MM`.
-    pub period: String,
-}
-
 #[tauri::command]
 pub async fn report_vat_summary(
     state: State<'_, AppState>,
-    query: VatSummaryQuery,
+    query: MemberReportQuery,
 ) -> Result<VatSummaryDto, String> {
     let service = state.service()?;
     let book = book_by_id(&service, &query.book_id)?;
     let summary = service
-        .report_tax_summary(
-            &query.book_id,
-            &format!("{}-01", query.period),
-            &format!("{}-31", query.period),
-        )
+        .report_tax_summary(&query.book_id, &query.from, &query.to)
         .map_err(err)?;
     Ok(VatSummaryDto {
         book_id: query.book_id.clone(),
-        period: query.period.clone(),
+        from: query.from.clone(),
+        to: query.to.clone(),
         currency: book.currency,
         // Report name + box labels come from the book's region profile
         // ("VAT201" for za, "Tax summary" generically) — never hardcoded.
@@ -2021,6 +2011,34 @@ pub async fn report_vat_summary(
         input_vat_minor: summary.input_vat_minor,
         net_vat_minor: summary.net_vat_minor,
     })
+}
+
+/// Income statement (profit & loss) over an inclusive posted-date range —
+/// core's own `report_income_statement`, passed straight through with no
+/// DTO reshaping (its shape is already what the UI needs: per-account rows,
+/// totals, and the exact period they cover).
+#[tauri::command]
+pub async fn report_income_statement(
+    state: State<'_, AppState>,
+    query: MemberReportQuery,
+) -> Result<core::IncomeStatement, String> {
+    state
+        .service()?
+        .report_income_statement(&query.book_id, &query.from, &query.to)
+        .map_err(err)
+}
+
+/// Balance sheet as of a date — `as_of` defaults to today when omitted.
+#[tauri::command]
+pub async fn report_balance_sheet(
+    state: State<'_, AppState>,
+    query: AsOfQuery,
+) -> Result<core::BalanceSheet, String> {
+    let service = state.service()?;
+    let as_of = query.as_of.unwrap_or_else(today);
+    service
+        .report_balance_sheet(&query.book_id, &as_of)
+        .map_err(err)
 }
 
 #[tauri::command]

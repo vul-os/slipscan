@@ -36,7 +36,9 @@ import type {
   FxQuote,
   FxStatus,
   Health,
+  BalanceSheet,
   IncomeExpenseReport,
+  IncomeStatement,
   InstalledPackInfo,
   Invoice,
   InvoiceItem,
@@ -805,9 +807,27 @@ export const api = {
       mockApi.report_income_expense(q),
     ),
 
+  reportIncomeStatement: (q: {
+    book_id: string;
+    from: string;
+    to: string;
+  }): Promise<IncomeStatement> =>
+    call("report_income_statement", { query: q }, () =>
+      mockApi.report_income_statement(q),
+    ),
+
+  reportBalanceSheet: (q: {
+    book_id: string;
+    as_of?: string;
+  }): Promise<BalanceSheet> =>
+    call("report_balance_sheet", { query: q }, () =>
+      mockApi.report_balance_sheet(q),
+    ),
+
   reportVatSummary: (q: {
     book_id: string;
-    period: string;
+    from: string;
+    to: string;
   }): Promise<VatSummary> =>
     call("report_vat_summary", { query: q }, () =>
       mockApi.report_vat_summary(q),

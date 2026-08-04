@@ -24,8 +24,10 @@
   import { csvMoney, downloadCsv, toCsv } from "../lib/csv";
   import { datePresets, type DateRange } from "../lib/daterange";
   import type {
+    BalanceSheet,
     Book,
     FxStatus,
+    IncomeStatement,
     MemberCategoryRow,
     MemberSettleRow,
     SpendingReport,
@@ -49,24 +51,40 @@
   async function load() {
     const book = requireBook(await api.bookList());
     const { from, to } = range;
-    const [spending, incomeExpense, vat, members, settleUp, memberCategory, fx] =
-      await Promise.all([
-        api.reportSpending({ book_id: book.id, from, to }),
-        api.reportIncomeExpense({ book_id: book.id }),
-        // The tax period is a calendar month; the range's end month is the
-        // one being reported on.
-        api.reportVatSummary({ book_id: book.id, period: to.slice(0, 7) }),
-        api.memberList({ book_id: book.id }),
-        api.reportSettleUp({ book_id: book.id, from, to }),
-        api.reportMemberCategory({ book_id: book.id, from, to }),
-        // FX is opt-in and its service may not be wired at all. A missing
-        // rate cache must not take the whole reports screen down with it.
-        api.fxStatus().catch((): FxStatus | null => null),
-      ]);
+    const [
+      spending,
+      incomeExpense,
+      incomeStatement,
+      balanceSheet,
+      vat,
+      members,
+      settleUp,
+      memberCategory,
+      fx,
+    ] = await Promise.all([
+      api.reportSpending({ book_id: book.id, from, to }),
+      api.reportIncomeExpense({ book_id: book.id }),
+      // Account-level P&L, scoped to exactly the picked range — unlike the
+      // trend chart above, which is deliberately NOT scoped by it.
+      api.reportIncomeStatement({ book_id: book.id, from, to }),
+      // A snapshot as of the end of the picked range.
+      api.reportBalanceSheet({ book_id: book.id, as_of: to }),
+      // Same range as everything else on this screen — no more synthesizing
+      // a calendar month's end from `{period}-31` (wrong for Feb/Apr/Jun/…).
+      api.reportVatSummary({ book_id: book.id, from, to }),
+      api.memberList({ book_id: book.id }),
+      api.reportSettleUp({ book_id: book.id, from, to }),
+      api.reportMemberCategory({ book_id: book.id, from, to }),
+      // FX is opt-in and its service may not be wired at all. A missing
+      // rate cache must not take the whole reports screen down with it.
+      api.fxStatus().catch((): FxStatus | null => null),
+    ]);
     return {
       book,
       spending,
       incomeExpense,
+      incomeStatement,
+      balanceSheet,
       vat,
       members,
       settleUp,
@@ -278,7 +296,81 @@
       ],
     );
     const slug = vat.report_name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    downloadCsv(`${slug}-${book.slug}-${vat.period}.csv`, csv);
+    downloadCsv(`${slug}-${book.slug}-${vat.from}_${vat.to}.csv`, csv);
+  }
+
+  function exportIncomeStatement(book: Book, pl: IncomeStatement) {
+    exportError = null;
+    const csv = toCsv(
+      ["section", "code", "account", "amount", "currency"],
+      [
+        ...pl.income.map((r) => [
+          "income",
+          r.code,
+          r.name,
+          csvMoney(r.amount_minor, pl.currency),
+          pl.currency,
+        ]),
+        ...pl.expenses.map((r) => [
+          "expense",
+          r.code,
+          r.name,
+          csvMoney(r.amount_minor, pl.currency),
+          pl.currency,
+        ]),
+        ["", "", "Income total", csvMoney(pl.income_total_minor, pl.currency), pl.currency],
+        ["", "", "Expense total", csvMoney(pl.expense_total_minor, pl.currency), pl.currency],
+        ["", "", "Net profit", csvMoney(pl.net_profit_minor, pl.currency), pl.currency],
+      ],
+    );
+    downloadCsv(`income-statement-${book.slug}-${pl.from_date}_${pl.to_date}.csv`, csv);
+  }
+
+  function exportBalanceSheet(book: Book, bs: BalanceSheet) {
+    exportError = null;
+    const csv = toCsv(
+      ["section", "code", "account", "amount", "currency"],
+      [
+        ...bs.assets.map((r) => [
+          "asset",
+          r.code,
+          r.name,
+          csvMoney(r.amount_minor, bs.currency),
+          bs.currency,
+        ]),
+        ...bs.liabilities.map((r) => [
+          "liability",
+          r.code,
+          r.name,
+          csvMoney(r.amount_minor, bs.currency),
+          bs.currency,
+        ]),
+        ...bs.equity.map((r) => [
+          "equity",
+          r.code,
+          r.name,
+          csvMoney(r.amount_minor, bs.currency),
+          bs.currency,
+        ]),
+        [
+          "",
+          "",
+          "Retained earnings",
+          csvMoney(bs.retained_earnings_minor, bs.currency),
+          bs.currency,
+        ],
+        ["", "", "Assets total", csvMoney(bs.assets_total_minor, bs.currency), bs.currency],
+        [
+          "",
+          "",
+          "Liabilities total",
+          csvMoney(bs.liabilities_total_minor, bs.currency),
+          bs.currency,
+        ],
+        ["", "", "Equity total", csvMoney(bs.equity_total_minor, bs.currency), bs.currency],
+      ],
+    );
+    downloadCsv(`balance-sheet-${book.slug}-as-of-${bs.as_of_date}.csv`, csv);
   }
 </script>
 
@@ -505,12 +597,117 @@
       {/if}
     </section>
 
+    <!-- profit & loss (income statement): account-level, scoped to the
+         period picked above — the ALL-TIME duplicate this used to be
+         computed from is gone; this is core's own report_income_statement -->
+    <section class="card p-4">
+      <header class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 class="text-[13px] font-semibold">
+          Profit &amp; loss <span class="font-normal text-t3">· {rangeLabel}</span>
+        </h2>
+        <button
+          class="btn btn-ghost h-6 px-1.5 text-[11.5px] text-t3"
+          onclick={() => exportIncomeStatement(d.book, d.incomeStatement)}
+        >
+          <Icon name="download" size={12} />
+          CSV export
+        </button>
+      </header>
+      {#if d.incomeStatement.income.length === 0 && d.incomeStatement.expenses.length === 0}
+        <EmptyState
+          icon="reports"
+          title="No posted journals in this period"
+          body="Income and expense accounts with activity in this period will list here."
+        />
+      {:else}
+        <dl class="divide-y divide-line text-[12.5px]">
+          {#each d.incomeStatement.income as r (r.coa_id)}
+            <div class="flex items-center justify-between gap-3 py-1.5">
+              <dt class="text-t2">{r.name}</dt>
+              <dd class="num">{fmtMoney(r.amount_minor, d.incomeStatement.currency)}</dd>
+            </div>
+          {/each}
+          <div class="flex items-center justify-between gap-3 py-1.5 font-medium">
+            <dt>Income total</dt>
+            <dd class="num">
+              {fmtMoney(d.incomeStatement.income_total_minor, d.incomeStatement.currency)}
+            </dd>
+          </div>
+          {#each d.incomeStatement.expenses as r (r.coa_id)}
+            <div class="flex items-center justify-between gap-3 py-1.5">
+              <dt class="text-t2">{r.name}</dt>
+              <dd class="num">{fmtMoney(r.amount_minor, d.incomeStatement.currency)}</dd>
+            </div>
+          {/each}
+          <div class="flex items-center justify-between gap-3 py-1.5 font-medium">
+            <dt>Expense total</dt>
+            <dd class="num">
+              {fmtMoney(d.incomeStatement.expense_total_minor, d.incomeStatement.currency)}
+            </dd>
+          </div>
+          <div class="flex items-center justify-between gap-3 py-2 font-semibold">
+            <dt>Net profit</dt>
+            <dd class="num">
+              {fmtMoney(d.incomeStatement.net_profit_minor, d.incomeStatement.currency)}
+            </dd>
+          </div>
+        </dl>
+      {/if}
+    </section>
+
+    <!-- balance sheet: a snapshot as of the end of the period picked above —
+         core's report_balance_sheet, no longer an all-time-derived figure -->
+    <section class="card p-4">
+      <header class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 class="text-[13px] font-semibold">
+          Balance sheet
+          <span class="font-normal text-t3">· as of {dayLabel(d.balanceSheet.as_of_date)}</span>
+        </h2>
+        <button
+          class="btn btn-ghost h-6 px-1.5 text-[11.5px] text-t3"
+          onclick={() => exportBalanceSheet(d.book, d.balanceSheet)}
+        >
+          <Icon name="download" size={12} />
+          CSV export
+        </button>
+      </header>
+      <dl class="divide-y divide-line text-[12.5px]">
+        <div class="flex items-center justify-between gap-3 py-2">
+          <dt class="text-t2">Assets</dt>
+          <dd class="num">{fmtMoney(d.balanceSheet.assets_total_minor, d.balanceSheet.currency)}</dd>
+        </div>
+        <div class="flex items-center justify-between gap-3 py-2">
+          <dt class="text-t2">Liabilities</dt>
+          <dd class="num"
+            >{fmtMoney(d.balanceSheet.liabilities_total_minor, d.balanceSheet.currency)}</dd
+          >
+        </div>
+        <div class="flex items-center justify-between gap-3 py-2">
+          <dt class="text-t2">Equity (incl. retained earnings)</dt>
+          <dd class="num">{fmtMoney(d.balanceSheet.equity_total_minor, d.balanceSheet.currency)}</dd>
+        </div>
+        <div class="flex items-center justify-between gap-3 py-2 font-semibold">
+          <dt>Balanced</dt>
+          <dd class="num">
+            {d.balanceSheet.assets_total_minor ===
+            d.balanceSheet.liabilities_total_minor + d.balanceSheet.equity_total_minor
+              ? "yes"
+              : "no"}
+          </dd>
+        </div>
+      </dl>
+      <p class="mt-3 text-[11px] leading-relaxed text-t3">
+        A snapshot, not a range — every account's balance as of the end date of the
+        period above. Change the period to see the balance sheet on an earlier day.
+      </p>
+    </section>
+
     <!-- tax-period summary (named by the book's region profile) -->
     <section class="card p-4">
       <header class="mb-3 flex flex-wrap items-baseline justify-between gap-2">
         <h2 class="text-[13px] font-semibold">
           {d.vat.report_name}
-          <span class="font-normal text-t3">· {fmtMonth(d.vat.period)}</span>
+          <span class="font-normal text-t3">· {rangeLabel}</span>
         </h2>
         <button
           class="btn btn-ghost h-6 px-1.5 text-[11.5px] text-t3"
@@ -538,8 +735,8 @@
       </dl>
       <p class="mt-3 text-[11px] leading-relaxed text-t3">
         The report's name and every box label above come from this book's region
-        profile ({d.book.region_name}) — {d.vat.labels.net_tax}. The period is a
-        calendar month and follows the end of the range above.
+        profile ({d.book.region_name}) — {d.vat.labels.net_tax}. The period is the
+        exact range picked above.
       </p>
     </section>
 
@@ -753,8 +950,20 @@
           skip: false,
         },
         {
+          label: "Profit & loss (CSV)",
+          desc: rangeLabel,
+          run: () => exportIncomeStatement(d.book, d.incomeStatement),
+          skip: false,
+        },
+        {
+          label: "Balance sheet (CSV)",
+          desc: `As of ${dayLabel(d.balanceSheet.as_of_date)}`,
+          run: () => exportBalanceSheet(d.book, d.balanceSheet),
+          skip: false,
+        },
+        {
           label: `${d.vat.report_name} (CSV)`,
-          desc: fmtMonth(d.vat.period),
+          desc: rangeLabel,
           run: () => exportTax(d.book, d.vat),
           skip: false,
         },

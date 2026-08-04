@@ -201,6 +201,8 @@ pub fn run() {
             commands::recon_confirm,
             commands::report_spending,
             commands::report_income_expense,
+            commands::report_income_statement,
+            commands::report_balance_sheet,
             commands::report_vat_summary,
             commands::report_trial_balance,
             commands::region_list,

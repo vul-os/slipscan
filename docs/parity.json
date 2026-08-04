@@ -25,7 +25,7 @@
   ],
   "http": {
     "prefix": "/api/v1",
-    "count": 183,
+    "count": 185,
     "routes": [
       "account_create",
       "account_delete",
@@ -166,12 +166,14 @@
       "region_list",
       "report_aged_receivables",
       "report_balance_sheet",
+      "report_income_statement",
       "report_member_category",
       "report_member_contribution",
       "report_member_expense",
       "report_profit_loss",
       "report_settle_up",
       "report_spending",
+      "report_spending_by_month",
       "report_tax",
       "report_trial_balance",
       "report_vat",
@@ -215,11 +217,12 @@
       "health"
     ],
     "aliases": {
-      "report_vat": "report_tax"
+      "report_vat": "report_tax",
+      "report_profit_loss": "report_income_statement"
     }
   },
   "ipc": {
-    "count": 172,
+    "count": 174,
     "commands": [
       "account_list",
       "book_create",
@@ -350,7 +353,9 @@
       "recon_suggest",
       "region_list",
       "report_aged_receivables",
+      "report_balance_sheet",
       "report_income_expense",
+      "report_income_statement",
       "report_member_category",
       "report_member_contribution",
       "report_member_expense",
@@ -396,7 +401,7 @@
     ]
   },
   "client": {
-    "count": 172,
+    "count": 174,
     "calls": [
       "account_list",
       "book_create",
@@ -527,7 +532,9 @@
       "recon_suggest",
       "region_list",
       "report_aged_receivables",
+      "report_balance_sheet",
       "report_income_expense",
+      "report_income_statement",
       "report_member_category",
       "report_member_contribution",
       "report_member_expense",
@@ -578,7 +585,7 @@
     "category_list": "category_tree"
   },
   "missing_from_ipc": {
-    "count": 20,
+    "count": 19,
     "operations": [
       "account_create",
       "account_delete",
@@ -596,8 +603,7 @@
       "location_get",
       "member_get",
       "pack_source_publish",
-      "report_balance_sheet",
-      "report_profit_loss",
+      "report_spending_by_month",
       "transaction_create",
       "transaction_get"
     ]

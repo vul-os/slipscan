@@ -8,12 +8,9 @@
     "work; re-record with --write when you do."
   ],
   "total": 167,
-  "unreachable": 7,
+  "unreachable": 4,
   "methods": [
     "new",
-    "report_balance_sheet",
-    "report_income_statement",
-    "report_spending_by_month",
     "report_vat201",
     "set_read_only",
     "vault_list"

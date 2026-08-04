@@ -412,6 +412,15 @@ pub struct MemberReportQuery {
     pub to: String,
 }
 
+/// `report_balance_sheet`'s request — `as_of` defaults to today (UTC) when
+/// omitted, the same default `networth_capture` and the HTTP API use.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AsOfQuery {
+    pub book_id: String,
+    #[serde(default)]
+    pub as_of: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // category
 // ---------------------------------------------------------------------------
@@ -850,7 +859,13 @@ pub struct IncomeExpenseReportDto {
 #[derive(Debug, Clone, Serialize)]
 pub struct VatSummaryDto {
     pub book_id: String,
-    pub period: String,
+    /// Inclusive posted-date range this summary covers. Used to be a
+    /// calendar-month `period` with the range end synthesized as
+    /// `{period}-31` — wrong for any month with fewer than 31 days — now the
+    /// caller states the exact range it wants, same as every other period
+    /// report.
+    pub from: String,
+    pub to: String,
     pub currency: String,
     /// Region-profile display name for this report ("VAT201" for za,
     /// "Tax summary" generically) — the UI never hardcodes it.

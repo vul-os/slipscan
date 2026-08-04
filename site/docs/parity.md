@@ -35,28 +35,50 @@ order, catalogue line priced from the variant, confirm, stock movement written.
 
 Stock was the last of the three and is closed too: on-hand can be read, a movement recorded, and
 stock transferred between locations, on every surface. `npm run reachable:check` keeps the count
-honest — **14 of 167 core operations reachable from nothing, down from 42**, and none of the
-fourteen belongs to Phase 6. What remains is older accounting-side work, and it is not trivial: no
-surface could create or archive a chart-of-accounts entry, map an entity to one, generate a journal
-from a document or a transaction, reverse a posted journal, or set the book's financial lock date.
-All of those are now on the HTTP API, the desktop IPC layer and the CLI (`slipscan coa`, `slipscan
-journal`, `slipscan book lock-date`).
+honest — **4 of 167 core operations reachable from nothing, down from 42** (down from 14 as of this
+write-up: `report_income_statement`, `report_balance_sheet` and `report_spending_by_month` were
+three of the fourteen, and are the subject of the reports section just below). What remains is
+older accounting-side work, and it is not trivial: no surface could create or archive a
+chart-of-accounts entry, map an entity to one, generate a journal from a document or a transaction,
+reverse a posted journal, or set the book's financial lock date. All of those are now on the HTTP
+API, the desktop IPC layer and the CLI (`slipscan coa`, `slipscan journal`, `slipscan book
+lock-date`).
 
-**The reports are the sharpest of these, and they need a decision rather than a patch.** SlipScan
-carries *two* implementations of the same reports over the same tables (`chart_of_accounts` +
-`journal_lines` + `journals`), and the pair that ships is the weaker one:
+**The reports are no longer duplicated.** SlipScan used to carry *two* implementations of the same
+reports over the same tables (`chart_of_accounts` + `journal_lines` + `journals`), and the pair that
+shipped was the weaker one — an all-time P&L with no period, a balance sheet with no as-of date, a
+tax summary computed by scanning account names for the word "VAT" instead of using the region
+profile's own tax-role data:
 
-| | core (unreachable) | `slipscan-server::ops` (routed) |
+| | core (was unreachable) | `slipscan-server::ops` (was routed) |
 |---|---|---|
-| P&L | `report_income_statement(book, from, to)` — **date-ranged** | `report_profit_loss(book)` — **all time, no period** |
-| Balance sheet | `report_balance_sheet(book, as_of)` — **as at a date** | `report_balance_sheet(book)` — **no as-of date** |
-| Tax | `report_vat201(book, from, to)` | `report_tax(book)` / `report_vat(book)` |
+| P&L | `report_income_statement(book, from, to)` — **date-ranged** | ~~`report_profit_loss(book)` — all time, no period~~ **removed** |
+| Balance sheet | `report_balance_sheet(book, as_of)` — **as at a date** | ~~`report_balance_sheet(book)` — no as-of date~~ **removed** |
+| Tax | `report_tax_summary(book, from, to)` (`report_vat201` is now a deprecated alias of it) | ~~`report_tax(book)` / `report_vat(book)`~~ **removed** |
 
-A profit-and-loss statement without a period and a balance sheet without an as-of date are not
-weaker versions of those reports; they are different things. The date-aware implementations exist,
-are tested, and are called by nothing. They also return *different types* — `domain::BalanceSheet`
-against `ops::BalanceSheet` — so consolidating is a breaking API change, not a cleanup, which is why
-it is recorded here rather than done.
+A profit-and-loss statement without a period and a balance sheet without an as-of date were not
+weaker versions of those reports; they were different things — you could not close a month, produce
+a VAT return for a filing period, or compare quarters. That is fixed now: `ops.rs`'s three
+all-time/no-period functions and their bespoke `ProfitAndLoss`/`BalanceSheet`/`TaxReport` types are
+deleted (they were also a second, less-tested implementation — the tax figure came from matching
+account *names* against the well-known control-account codes, a heuristic core's date-aware
+`report_tax_summary` never needed because it reads `journal_lines.vat_role` directly). Every
+surface — HTTP, the desktop app, the CLI — now calls core's date-aware methods directly, so there is
+exactly one accounting engine and one set of numbers.
+
+What this looked like landing: the HTTP routes keep their established names where one already
+existed (`/report_tax`, `/report_balance_sheet`) but now require the date parameters core always
+needed (`from_date`/`to_date`, or `as_of_date` for the balance sheet, defaulting to today when
+omitted); `/report_profit_loss` is kept as a compatibility alias for the new canonical
+`/report_income_statement`, the same pattern `/report_vat` already used for `/report_tax`.
+`report_spending_by_month` — the fourth core report that had never been routed at all — got a route
+too. The CLI's `report pl`/`bs`/`tax`/`spending` subcommands gained `--from`/`--to`/`--as-of` (a
+calendar-year default when omitted, always echoed in the output so a report is never ambiguous
+about its own period), and the desktop gained `report_income_statement` and `report_balance_sheet`
+IPC commands plus real Profit & loss and Balance sheet cards on the Reports screen, driven by the
+same period picker that already scoped spending and the household reports. `report_vat_summary`
+(desktop) also stopped synthesizing a tax period's end as `{month}-31` — wrong for February, April,
+June, September and November — in favor of taking the real `from`/`to` range.
 
 The rest is still missing outright: quotes, credit notes, fixed assets, payroll and tracking
 categories do not exist in any form, and the *payable* half of bills is unbuilt, so aged payables
@@ -181,8 +203,11 @@ Ordered by how far the gap sits from the claim on the front page, not by effort.
    needs the aggregation and privacy code, which does not exist.
 8. **Fixed assets, payroll-lite, tracking categories, repeating transactions, goals, fee tracking** —
    each a self-contained feature with no groundwork laid.
-9. **Surface parity** — statement CSV import, bank-alert parsing, and the P&L and balance-sheet
-   reports exist on one surface only. See [docs/API.md](docs/API.md) and
+9. **Surface parity** — statement CSV import and bank-alert parsing exist on one surface only.
+   ~~The P&L and balance-sheet reports exist on one surface only~~ — **closed 2026-08-04**: both are
+   now the date-aware core reports (`report_income_statement`/`report_balance_sheet`), reachable
+   from HTTP, the CLI (`slipscan report pl`/`bs`) and the desktop, in place of the all-time
+   duplicates that used to be the only routed version. See [docs/API.md](docs/API.md) and
    [`docs/parity.json`](docs/parity.json) for the operation-level transport gaps.
 
 ## How this was measured
