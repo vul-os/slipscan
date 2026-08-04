@@ -2579,6 +2579,13 @@ export const mockApi = {
     const product = requireProduct(q.product_id);
     const sku = q.sku.trim();
     if (!sku) throw new Error("variant SKU must not be empty");
+    if (!q.name.trim()) throw new Error("variant name must not be empty");
+    if ((q.price_minor ?? 0) < 0)
+      throw new Error("variant price must not be negative");
+    if ((q.cost_price_minor ?? 0) < 0)
+      throw new Error("variant cost price must not be negative");
+    if ((q.reorder_point ?? 0) < 0)
+      throw new Error("variant reorder point must not be negative");
     if (
       productVariants.some(
         (v) => v.book_id === product.book_id && v.sku === sku,
@@ -2632,10 +2639,26 @@ export const mockApi = {
         throw new Error(`a variant with SKU "${sku}" already exists in this book`);
       v.sku = sku;
     }
-    if (q.name !== undefined) v.name = q.name.trim();
-    if (q.price_minor !== undefined) v.price_minor = q.price_minor;
-    if (q.cost_price_minor !== undefined) v.cost_price_minor = q.cost_price_minor;
-    if (q.reorder_point !== undefined) v.reorder_point = q.reorder_point;
+    if (q.name !== undefined) {
+      const name = q.name.trim();
+      if (!name) throw new Error("variant name must not be empty");
+      v.name = name;
+    }
+    if (q.price_minor !== undefined) {
+      if (q.price_minor < 0)
+        throw new Error("variant price must not be negative");
+      v.price_minor = q.price_minor;
+    }
+    if (q.cost_price_minor !== undefined) {
+      if (q.cost_price_minor < 0)
+        throw new Error("variant cost price must not be negative");
+      v.cost_price_minor = q.cost_price_minor;
+    }
+    if (q.reorder_point !== undefined) {
+      if (q.reorder_point < 0)
+        throw new Error("variant reorder point must not be negative");
+      v.reorder_point = q.reorder_point;
+    }
     if (q.attributes !== undefined) v.attributes = q.attributes ?? null;
     v.updated_at = new Date().toISOString();
     return clone(v);
@@ -3058,6 +3081,9 @@ export const mockApi = {
     q: SalesOrderUpdateRequest,
   ): Promise<SalesOrder> => {
     const order = requireOrder(q.id);
+    // Core refuses this and the mock did not: once an order is confirmed it
+    // has moved stock, so its header is no longer a draft to edit.
+    requireDraft(order, "edited");
     // `null` clears, an absent key leaves alone — the same three states the
     // core patch structs spell out. See types.ts.
     if (q.location_id !== undefined) order.location_id = q.location_id;
@@ -3124,14 +3150,29 @@ export const mockApi = {
     const item = salesOrderItems.find((i) => i.id === q.id);
     if (!item) throw new Error(`no sales order line with id ${q.id}`);
     requireDraft(requireOrder(item.sales_order_id), "changed");
-    if (q.description !== undefined) item.description = q.description;
+    if (q.description !== undefined) {
+      const description = q.description.trim();
+      if (!description)
+        throw new Error("sales order line description must not be empty");
+      item.description = description;
+    }
     if (q.quantity !== undefined) {
-      if (q.quantity <= 0) throw new Error("quantity must be greater than zero");
+      if (q.quantity <= 0)
+        throw new Error("sales order line quantity must be positive");
       item.quantity = q.quantity;
     }
-    if (q.unit_price_minor !== undefined)
+    if (q.unit_price_minor !== undefined) {
+      if (q.unit_price_minor < 0)
+        throw new Error("sales order line unit price must not be negative");
       item.unit_price_minor = q.unit_price_minor;
-    if (q.tax_rate_bps !== undefined) item.tax_rate_bps = q.tax_rate_bps;
+    }
+    if (q.tax_rate_bps !== undefined) {
+      if (q.tax_rate_bps < 0 || q.tax_rate_bps > 10_000)
+        throw new Error(
+          "sales order line tax rate must be between 0 and 10000 basis points",
+        );
+      item.tax_rate_bps = q.tax_rate_bps;
+    }
     item.updated_at = new Date().toISOString();
     return clone(item);
   },

@@ -80,6 +80,50 @@ describe("sales order mock", () => {
     expect(after.tax_minor).toBe(450);
   });
 
+  it("refuses to edit the ORDER HEADER once it is no longer a draft", async () => {
+    const order = await draftWithLine();
+    // Editable while draft.
+    const edited = await mockApi.sales_order_update({
+      id: order.id,
+      notes: "before",
+    });
+    expect(edited.notes).toBe("before");
+
+    await mockApi.sales_order_confirm({ id: order.id });
+    await expect(
+      mockApi.sales_order_update({ id: order.id, notes: "after" }),
+    ).rejects.toThrow(/confirmed order cannot be edited/);
+    // And nothing was applied on the way to refusing.
+    expect((await mockApi.sales_order_get({ id: order.id })).notes).toBe("before");
+  });
+
+  it("validates a line edit the way core does, not just its quantity", async () => {
+    const order = await draftWithLine();
+    const [line] = await mockApi.sales_order_items_list({
+      sales_order_id: order.id,
+    });
+
+    await expect(
+      mockApi.sales_order_item_update({ id: line.id, description: "  " }),
+    ).rejects.toThrow(/description must not be empty/);
+    await expect(
+      mockApi.sales_order_item_update({ id: line.id, unit_price_minor: -1 }),
+    ).rejects.toThrow(/must not be negative/);
+    await expect(
+      mockApi.sales_order_item_update({ id: line.id, tax_rate_bps: 10_001 }),
+    ).rejects.toThrow(/basis points/);
+    await expect(
+      mockApi.sales_order_item_update({ id: line.id, quantity: 0 }),
+    ).rejects.toThrow(/quantity must be positive/);
+
+    // A refused edit leaves the line alone.
+    const [after] = await mockApi.sales_order_items_list({
+      sales_order_id: order.id,
+    });
+    expect(after.description).toBe(line.description);
+    expect(after.unit_price_minor).toBe(line.unit_price_minor);
+  });
+
   it("refuses to edit, delete or confirm anything that is no longer a draft", async () => {
     const order = await draftWithLine();
     await mockApi.sales_order_confirm({ id: order.id });

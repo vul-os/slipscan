@@ -112,6 +112,49 @@ describe("stock mock guards match core", () => {
   });
 });
 
+describe("variant field validation matches core", () => {
+  it("refuses an empty name and negative price, cost or reorder point", async () => {
+    const product = await mockApi.product_create({ book_id: BOOK, name: "P-valid" });
+    const base = { product_id: product.id, currency: "ZAR" };
+
+    await expect(
+      mockApi.product_variant_add({ ...base, sku: "V1", name: "  " }),
+    ).rejects.toThrow(/name must not be empty/);
+    await expect(
+      mockApi.product_variant_add({ ...base, sku: "V1", name: "V", price_minor: -1 }),
+    ).rejects.toThrow(/price must not be negative/);
+    await expect(
+      mockApi.product_variant_add({
+        ...base, sku: "V1", name: "V", cost_price_minor: -1,
+      }),
+    ).rejects.toThrow(/cost price must not be negative/);
+    await expect(
+      mockApi.product_variant_add({ ...base, sku: "V1", name: "V", reorder_point: -1 }),
+    ).rejects.toThrow(/reorder point must not be negative/);
+
+    // Zero is fine for all three.
+    const ok = await mockApi.product_variant_add({
+      ...base, sku: "V-OK", name: "V", price_minor: 0, cost_price_minor: 0, reorder_point: 0,
+    });
+    expect(ok.reorder_point).toBe(0);
+
+    // And the same rules on update, without half-applying a refused one.
+    for (const [patch, pattern] of [
+      [{ price_minor: -5 }, /price must not be negative/],
+      [{ cost_price_minor: -5 }, /cost price must not be negative/],
+      [{ reorder_point: -5 }, /reorder point must not be negative/],
+      [{ name: "   " }, /name must not be empty/],
+    ] as const) {
+      await expect(
+        mockApi.product_variant_update({ id: ok.id, ...patch }),
+      ).rejects.toThrow(pattern);
+    }
+    const unchanged = await mockApi.product_variant_get({ id: ok.id });
+    expect(unchanged.price_minor).toBe(0);
+    expect(unchanged.reorder_point).toBe(0);
+  });
+});
+
 describe("catalogue mock delete rules", () => {
   it("deleting a product CASCADES to its variants when none has been traded", async () => {
     const { product, variant } = await productWithVariant("CASCADE-1");

@@ -209,7 +209,7 @@
     ],
     "product_variant_add": [
       5,
-      2
+      6
     ],
     "product_variant_delete": [
       0,
@@ -217,7 +217,7 @@
     ],
     "product_variant_update": [
       5,
-      2
+      6
     ],
     "recon_confirm": [
       0,
@@ -249,7 +249,7 @@
     ],
     "sales_order_item_update": [
       5,
-      2
+      5
     ],
     "sales_order_mark_paid": [
       0,
