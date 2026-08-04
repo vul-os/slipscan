@@ -200,6 +200,77 @@ describe("invoice mock", () => {
     );
   });
 
+  /** Core carries eleven guards on `invoice_issue`; the mock had two. These
+   * are the ones it can actually model — found by `npm run mock-guards:check`
+   * flagging the gap, not by either side being tested alone. */
+  it("refuses to invoice a draft order, a backwards due date, or a bad line", async () => {
+    const draft = await mockApi.sales_order_create({
+      book_id: BOOK,
+      contact_id: CONTACT,
+    });
+    await mockApi.sales_order_item_add({
+      sales_order_id: draft.id,
+      description: "Work",
+      quantity: 1,
+      unit_price_minor: 100,
+    });
+    // An invoice is a fact about a sale that happened; a draft has not.
+    await expect(
+      mockApi.invoice_issue({
+        book_id: BOOK,
+        sales_order_id: draft.id,
+        due_date: "2026-12-31",
+      }),
+    ).rejects.toThrow(/not confirmed or paid/);
+
+    // Confirm it and the same call succeeds.
+    await mockApi.sales_order_confirm({ id: draft.id });
+    const ok = await mockApi.invoice_issue({
+      book_id: BOOK,
+      sales_order_id: draft.id,
+      due_date: "2026-12-31",
+    });
+    expect(ok.number).toBeGreaterThan(0);
+
+    await expect(
+      mockApi.invoice_issue({
+        book_id: BOOK,
+        contact_id: CONTACT,
+        issue_date: "2026-06-01",
+        due_date: "2026-05-01",
+        items: [{ description: "x", quantity: 1, unit_price_minor: 1 }],
+      }),
+    ).rejects.toThrow(/due date must not be before/);
+
+    await expect(
+      mockApi.invoice_issue({
+        book_id: BOOK,
+        contact_id: CONTACT,
+        due_date: "2026-12-31",
+        series: "   ",
+        items: [{ description: "x", quantity: 1, unit_price_minor: 1 }],
+      }),
+    ).rejects.toThrow(/series must not be empty/);
+
+    for (const [bad, pattern] of [
+      [{ description: "x", quantity: 0, unit_price_minor: 1 }, /quantity must be positive/],
+      [{ description: "x", quantity: 1, unit_price_minor: -1 }, /must not be negative/],
+      [
+        { description: "x", quantity: 1, unit_price_minor: 1, tax_rate_bps: 10_001 },
+        /basis points/,
+      ],
+    ] as const) {
+      await expect(
+        mockApi.invoice_issue({
+          book_id: BOOK,
+          contact_id: CONTACT,
+          due_date: "2026-12-31",
+          items: [bad],
+        }),
+      ).rejects.toThrow(pattern);
+    }
+  });
+
   it("refuses to issue an invoice with nothing on it", async () => {
     await expect(
       mockApi.invoice_issue({ book_id: BOOK, contact_id: CONTACT, due_date: "2026-12-31" }),
@@ -250,12 +321,14 @@ describe("invoice mock", () => {
     const overdue = await mockApi.invoice_issue({
       book_id: book,
       contact_id: "c-late",
+      issue_date: "2025-12-01",
       due_date: "2026-01-01",
       items: [{ description: "Old", quantity: 1, unit_price_minor: 5_000 }],
     });
     const notYetDue = await mockApi.invoice_issue({
       book_id: book,
       contact_id: "c-current",
+      issue_date: "2026-01-15",
       due_date: "2026-06-30",
       items: [{ description: "New", quantity: 1, unit_price_minor: 2_000 }],
     });

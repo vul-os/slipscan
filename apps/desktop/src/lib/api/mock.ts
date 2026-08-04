@@ -3192,11 +3192,21 @@ export const mockApi = {
 
   invoice_issue: async (q: NewInvoice): Promise<Invoice> => {
     const now = new Date().toISOString();
-    const series = q.series ?? "invoice";
+    const series = (q.series ?? "invoice").trim();
+    if (!series) throw new Error("invoice numbering series must not be empty");
+    const issueDate = q.issue_date ?? now.slice(0, 10);
+    if (q.due_date < issueDate)
+      throw new Error("invoice due date must not be before its issue date");
     let contactId = q.contact_id ?? null;
     let lines = q.items ?? [];
     if (q.sales_order_id) {
       const order = requireOrder(q.sales_order_id);
+      // An invoice is a fact about a sale that happened. A draft order has
+      // not happened yet, and a cancelled one did not.
+      if (order.status !== "confirmed" && order.status !== "paid")
+        throw new Error(
+          "cannot issue an invoice from a sales order that is not confirmed or paid",
+        );
       contactId = contactId ?? order.contact_id;
       if (lines.length === 0)
         lines = salesOrderItems
@@ -3212,6 +3222,17 @@ export const mockApi = {
     if (!contactId)
       throw new Error("an invoice needs a contact, or an order that has one");
     if (lines.length === 0) throw new Error("an invoice needs at least one line");
+    for (const line of lines) {
+      if (line.quantity <= 0)
+        throw new Error("invoice line quantity must be positive");
+      if (line.unit_price_minor < 0)
+        throw new Error("invoice line unit price must not be negative");
+      const bps = line.tax_rate_bps ?? 0;
+      if (bps < 0 || bps > 10_000)
+        throw new Error(
+          "invoice line tax rate must be between 0 and 10000 basis points",
+        );
+    }
     const created: Invoice = {
       id: id("inv0"),
       book_id: q.book_id,
@@ -3219,7 +3240,7 @@ export const mockApi = {
       sales_order_id: q.sales_order_id ?? null,
       series,
       number: nextNumber(q.book_id, series),
-      issue_date: q.issue_date ?? now.slice(0, 10),
+      issue_date: issueDate,
       due_date: q.due_date,
       currency: q.currency ?? book.currency,
       notes: q.notes?.trim() || null,

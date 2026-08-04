@@ -24,6 +24,14 @@
 // the mock implements, this fails and names it, and somebody goes and looks.
 // That is the trigger that was missing.
 //
+// A KNOWN BLIND SPOT, stated so the numbers are not over-read: the mock throws
+// from shared helpers too (`requireDraft`, `requireOrder`, `requireVariant`),
+// and a per-operation count cannot see those. So a row where the mock's number
+// is lower is a prompt to go and read, not proof of a missing guard — several
+// are helpers doing the work. Reading the flagged rows is exactly how the
+// invoice_issue gap was found; treating the number as a verdict would have
+// produced a pile of phantom fixes instead.
+//
 // Usage:
 //   node scripts/check-mock-guards.mjs           fail on drift
 //   node scripts/check-mock-guards.mjs --list    print the comparison table
