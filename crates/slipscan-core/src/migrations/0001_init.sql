@@ -477,11 +477,24 @@ CREATE TABLE journals (
     posted_date TEXT NOT NULL,
     narrative   TEXT,
     reference   TEXT,
+    -- Four of these sources are posted automatically by Phase 6.6's trade
+    -- postings (`post_po_receipt_journal`, `post_sales_confirm_journals`,
+    -- `reverse_sales_confirm_journals`, `post_invoice_payment_journal`).
+    -- `post_journal_in_tx` keeps one net-live generated journal per
+    -- (source_type, source_id), so receiving/confirming/paying the same id
+    -- twice cannot double-post. A confirmed sale is deliberately two
+    -- journals sharing one source_id — the cost/inventory leg and the
+    -- revenue/AR/VAT leg — so a cancellation can reverse either on its own,
+    -- and so a book seeded with only one side still gets a coherent posting.
     source_type TEXT NOT NULL DEFAULT 'manual'
-        CHECK (source_type IN ('manual', 'transaction', 'document', 'opening_balance')),
+        CHECK (source_type IN (
+            'manual', 'transaction', 'document', 'opening_balance',
+            'po_receipt', 'sales_cogs', 'sales_revenue', 'invoice_payment'
+        )),
     source_id   TEXT,
-    created_at  TEXT NOT NULL
-, reversal_of TEXT REFERENCES journals (id));
+    created_at  TEXT NOT NULL,
+    reversal_of TEXT REFERENCES journals (id)
+);
 
 CREATE INDEX journals_book_date_idx ON journals (book_id, posted_date DESC);
 CREATE UNIQUE INDEX journals_reversal_of_unique

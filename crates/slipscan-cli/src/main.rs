@@ -1485,12 +1485,49 @@ enum MemberAction {
     },
     /// Remove a member. Refused when they carry any attribution or split
     /// unless --reassign names another member to move it onto first.
+    /// **Also refused, unconditionally, for a principal** — see `revoke`.
     Remove {
         /// Member id.
         id: String,
         /// Move the member's attributions/splits onto this member id first.
         #[arg(long)]
         reassign: Option<String>,
+    },
+    /// Revoke a person: status -> revoked, and every device still paired to
+    /// them is revoked too. The only removal path for a principal
+    /// (docs/ROLES.md "members become principals"). Idempotent.
+    Revoke {
+        /// Member id.
+        id: String,
+    },
+    /// Grant a named operation to a member. Their first grant makes them a
+    /// principal. **Data only — nothing in SlipScan enforces this yet**;
+    /// the enforcement boundary (HTTP/IPC) is not built.
+    CapabilityGrant {
+        /// Member id.
+        id: String,
+        /// Operation name, e.g. `transaction_categorize`. Free-form today —
+        /// nothing validates it against the command/route registry yet.
+        operation: String,
+    },
+    /// Revoke a previously granted operation from a member. Does not clear
+    /// their `principal` flag — see `member revoke` for the actual exit.
+    CapabilityRevoke {
+        /// Member id.
+        id: String,
+        operation: String,
+    },
+    /// List a member's granted operations.
+    Capabilities {
+        /// Member id.
+        id: String,
+    },
+    /// Query whether a member currently holds an operation (active,
+    /// principal, and granted). A read only — nothing enforces this yet.
+    IsPermitted {
+        /// Member id.
+        id: String,
+        operation: String,
     },
 }
 
@@ -4171,6 +4208,54 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                  {target}."
                             ),
                             None => println!("Removed member {id}."),
+                        },
+                    )
+                }
+                MemberAction::Revoke { id } => {
+                    let member = svc.member_revoke(id)?;
+                    emit(cli.json, &member, || {
+                        println!(
+                            "Revoked {} ({}) — their paired devices are revoked too.",
+                            member.label, member.id
+                        );
+                    })
+                }
+                MemberAction::CapabilityGrant { id, operation } => {
+                    let capability = svc.member_capability_grant(id, operation)?;
+                    emit(cli.json, &capability, || {
+                        println!("Granted {} to member {id}.", capability.operation);
+                    })
+                }
+                MemberAction::CapabilityRevoke { id, operation } => {
+                    svc.member_capability_revoke(id, operation)?;
+                    emit(
+                        cli.json,
+                        &serde_json::json!({ "member_id": id, "operation": operation }),
+                        || println!("Revoked {operation} from member {id}."),
+                    )
+                }
+                MemberAction::Capabilities { id } => {
+                    let capabilities = svc.member_capabilities_list(id)?;
+                    emit(cli.json, &capabilities, || {
+                        if capabilities.is_empty() {
+                            println!("Member {id} holds no capabilities.");
+                        }
+                        for cap in &capabilities {
+                            println!("{}\t{}", cap.operation, cap.granted_at);
+                        }
+                    })
+                }
+                MemberAction::IsPermitted { id, operation } => {
+                    let permitted = svc.member_is_permitted(id, operation)?;
+                    emit(
+                        cli.json,
+                        &serde_json::json!({ "permitted": permitted }),
+                        || {
+                            if permitted {
+                                println!("Member {id} may {operation}.");
+                            } else {
+                                println!("Member {id} may NOT {operation}.");
+                            }
                         },
                     )
                 }

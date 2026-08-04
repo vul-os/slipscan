@@ -6,8 +6,9 @@
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
-use crate::domain::{Member, SplitShare, TransactionSplit};
+use crate::domain::{Member, MemberCapability, SplitShare, TransactionSplit};
 use crate::error::CoreResult;
+use crate::repo::col_enum;
 use crate::util::new_id;
 
 fn map_member(row: &Row<'_>) -> rusqlite::Result<Member> {
@@ -20,6 +21,20 @@ fn map_member(row: &Row<'_>) -> rusqlite::Result<Member> {
         default_account_id: row.get("default_account_id")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        status: col_enum(row, "status")?,
+        revoked_at: row.get("revoked_at")?,
+        attributable: row.get("attributable")?,
+        principal: row.get("principal")?,
+    })
+}
+
+fn map_capability(row: &Row<'_>) -> rusqlite::Result<MemberCapability> {
+    Ok(MemberCapability {
+        id: row.get("id")?,
+        book_id: row.get("book_id")?,
+        member_id: row.get("member_id")?,
+        operation: row.get("operation")?,
+        granted_at: row.get("granted_at")?,
     })
 }
 
@@ -183,6 +198,79 @@ pub fn reassign_attributions(conn: &Connection, from_id: &str, to_id: &str) -> C
         }
     }
     Ok(())
+}
+
+/// Tombstone a member: `status = 'revoked'`, `revoked_at` stamped. Never
+/// reversed — there is no un-revoke function, matching `device_peers`.
+pub fn revoke(conn: &Connection, id: &str, revoked_at: &str) -> CoreResult<()> {
+    conn.execute(
+        "UPDATE members SET status = 'revoked', revoked_at = ?2 WHERE id = ?1",
+        params![id, revoked_at],
+    )?;
+    Ok(())
+}
+
+/// Flip `principal` to true. Monotonic by construction: this only ever sets
+/// the flag, never clears it, and the service layer only calls it when the
+/// flag is not already set (`member_capability_grant`, on a member's first
+/// granted operation).
+pub fn set_principal(conn: &Connection, id: &str) -> CoreResult<()> {
+    conn.execute(
+        "UPDATE members SET principal = 1 WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Capabilities
+// ---------------------------------------------------------------------------
+
+pub fn capability_insert(conn: &Connection, capability: &MemberCapability) -> CoreResult<()> {
+    conn.execute(
+        "INSERT INTO member_capabilities (id, book_id, member_id, operation, granted_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            capability.id,
+            capability.book_id,
+            capability.member_id,
+            capability.operation,
+            capability.granted_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn capability_get(
+    conn: &Connection,
+    member_id: &str,
+    operation: &str,
+) -> CoreResult<Option<MemberCapability>> {
+    Ok(conn
+        .query_row(
+            "SELECT * FROM member_capabilities WHERE member_id = ?1 AND operation = ?2",
+            params![member_id, operation],
+            map_capability,
+        )
+        .optional()?)
+}
+
+pub fn capability_delete(conn: &Connection, member_id: &str, operation: &str) -> CoreResult<()> {
+    conn.execute(
+        "DELETE FROM member_capabilities WHERE member_id = ?1 AND operation = ?2",
+        params![member_id, operation],
+    )?;
+    Ok(())
+}
+
+pub fn capabilities_list(conn: &Connection, member_id: &str) -> CoreResult<Vec<MemberCapability>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM member_capabilities WHERE member_id = ?1 ORDER BY granted_at, id",
+    )?;
+    let rows = stmt
+        .query_map(params![member_id], map_capability)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 // ---------------------------------------------------------------------------

@@ -46,7 +46,7 @@
 --                   merchant_mappings, budgets, chart_of_accounts, vat_rates,
 --                   journals (insert only), journal_lines (insert only)
 --   migration 0002  coa_map
---   migration 0006  members, transaction_splits
+--   migration 0006  members, transaction_splits, member_capabilities
 --   migration 0009  locations
 --   migration 0010  contacts
 --   migration 0011  product_categories, products, product_variants

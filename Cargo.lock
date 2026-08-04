@@ -2890,6 +2890,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "slipscan-core",
+ "slipscan-ingest",
  "slipscan-packs",
  "tempfile",
  "thiserror 2.0.18",

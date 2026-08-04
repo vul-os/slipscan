@@ -1,11 +1,15 @@
 # Roles, people, and encryption at rest
 
-> **Nothing in this chapter is built.** It is a design, written down before
-> any code, because the decisions it records are the kind that are expensive
-> to reverse once devices hold keys and books hold rows. Every "is" below
-> should be read as "will be". The one factual claim about today's tree is in
-> [What exists today](#what-exists-today), and it is that authority does not
-> exist.
+> **Most of this chapter is still a design, not a build.** It was written
+> down before any code, because the decisions it records are the kind that
+> are expensive to reverse once devices hold keys and books hold rows. Every
+> "is" below should be read as "will be" — **except** the data model and
+> lifecycle described in [What is built now](#what-is-built-now), which
+> landed first because everything else here is cheaper to get right once it
+> exists and expensive to retrofit once staff rows are live. That section is
+> the one part of this chapter that is a factual claim about today's tree
+> rather than a plan. Nothing past it is built: no enforcement, no
+> encryption at rest, no thin mobile client.
 
 ## What exists today
 
@@ -18,16 +22,63 @@ the tree of a person who may do *some* things:
 - **The HTTP server has one bearer token** (`server.auth_token_sha256`),
   generated on first run. One token, all 188 routes. There is no second token
   and no notion of a token that can do less.
-- **`members`** carries `label`, `initial`, `colour` and
-  `default_account_id`. It answers *whose spend is this*. It holds no
-  credential and confers no authority.
+- **`members`** now carries `status`/`revoked_at`/`attributable`/`principal`
+  and a capability set (see [What is built now](#what-is-built-now)) — but
+  nothing anywhere reads any of it to allow or refuse an operation. It still
+  answers *whose spend is this* exactly as before, and now also records *who
+  may act*, without yet being consulted for it.
 - **`device_peers`** pins peer devices trust-on-first-use, with `revoked_at`
   as a tombstone so a revoked key cannot silently re-pair. It was built for
-  *your own devices* — a laptop and a phone belonging to one person.
+  *your own devices* — a laptop and a phone belonging to one person —  and
+  now carries a nullable `member_id` for the staff case, though nothing pairs
+  a device to a named principal yet.
 
-That last point is the gap. A household has members; a branch has staff, and
-staff leave. Revocation cannot stay "delete the peer row" once the peer is a
-person who was paid to be there.
+The gap this chapter exists to close is enforcement, not data: a household
+has members; a branch has staff, and staff leave; revocation cannot stay
+"delete the peer row" once the peer is a person who was paid to be there —
+and now the schema can say who a principal is and what they were granted, but
+no code path anywhere checks it before letting an operation through.
+
+## What is built now
+
+`crates/slipscan-core` and `crates/slipscan-cli` — the data model and
+lifecycle only, none of the enforcement:
+
+- **Schema** (migration `0006_members`): `members.status` (`'active'` /
+  `'revoked'`, tombstoned via `revoked_at`, never un-revoked),
+  `members.attributable` and `members.principal` (see the flag table
+  below — `principal` is monotonic, set once and never cleared), the
+  `members_active_label_idx` partial unique index replacing
+  `UNIQUE (book_id, label)`, and a new `member_capabilities` table (one row
+  per granted named operation, `UNIQUE (member_id, operation)`). Migration
+  `0007_devices` adds a nullable `device_peers.member_id`, never replicated
+  (a device pairing is still local-only, same as every other row in that
+  table).
+- **Service layer** (`crates/slipscan-core/src/service.rs`):
+  `member_revoke` (tombstones the member and cascades to revoke every
+  device peer still linked to them, atomically), `member_capability_grant` /
+  `member_capability_revoke` / `member_capabilities_list`, and
+  `member_is_permitted` — a **read-only query** ("is this member currently
+  active, a principal, and holding this operation"), consulted by nothing.
+  `member_remove` now additionally refuses any member that is or ever was a
+  `principal`, unconditionally — no reassignment target lifts it; revocation
+  is the only exit, exactly as the section below describes.
+- **CLI**: `member revoke`, `member capability-grant`,
+  `member capability-revoke`, `member capabilities`, `member is-permitted`.
+- **Sync**: `member_capabilities` replicates LWW, on the same list `members`
+  is already on (`slipscan-sync`'s `LWW_TABLES`) — grants/revokes made from
+  one of an owner's own devices need to reach their other devices, the same
+  as a label edit does. `device_peers` stays off both sync lists entirely,
+  unchanged: a device pin, and now a device-to-member link, is exactly the
+  kind of local opinion migration `0008`'s header says must not replicate.
+
+**What this is not.** No capability check gates anything in `CoreService`,
+the CLI, the HTTP server, or the desktop app — every operation still runs
+for anyone who can reach it, exactly as before this landed. There is no
+pairing flow that sets `device_peers.member_id`; the column exists so
+`member_revoke` has somewhere to look, and the tests that exercise the
+cascade seed it directly. HTTP/IPC enforcement, encryption at rest, and the
+thin mobile client below are all still design, not code.
 
 ## The decisions
 
@@ -123,17 +174,19 @@ stays deferred rather than answered wrongly.
 What it costs: every screen has to be rebuilt for touch, and roles must land
 first, because today the only credential is a token that can do everything.
 
-### Two things `members` gets wrong for staff, and must change first
+### Two things `members` got wrong for staff, and changed first
 
-Both are cheap now and expensive later. Nothing has shipped, so the baseline
-schema can still move.
+Both landed in migration `0006_members`/`service.rs` (see
+[What is built now](#what-is-built-now)) precisely because they were cheap
+before anything else in this chapter and would only get more expensive the
+longer real member rows existed.
 
-**`UNIQUE (book_id, label)` cannot survive turnover.** Revocation retains the
-row, because audit history points at it. So a departed *Sam Patel* occupies
-the label *Sam Patel* permanently, and the next Sam Patel cannot be added at
-all. A household never meets this — nobody cycles through household members.
-A branch meets it the first time someone is replaced, which is the case this
-phase exists for. The constraint has to become a partial unique index over
+**`UNIQUE (book_id, label)` could not survive turnover.** Revocation retains
+the row, because audit history points at it. So a departed *Sam Patel* would
+occupy the label *Sam Patel* permanently, and the next Sam Patel could not be
+added at all. A household never meets this — nobody cycles through household
+members. A branch meets it the first time someone is replaced, which is the
+case this phase exists for. The constraint is now a partial unique index over
 active rows only, so a revoked person keeps their name in the history and
 releases it for the living:
 
@@ -142,26 +195,29 @@ CREATE UNIQUE INDEX members_active_label_idx
     ON members (book_id, label) WHERE status = 'active';
 ```
 
-**`member_remove` guards the wrong axis for a principal.** It refuses to
+**`member_remove` guarded the wrong axis for a principal.** It refused to
 remove a member with attributed transactions or splits — money history. It
-knows nothing about authority history. A till operator plausibly has *zero*
+knew nothing about authority history. A till operator plausibly has *zero*
 attributed transactions, because they operate the till rather than incurring
-household spend, so they pass the check and can be deleted outright, orphaning
-whatever the oplog signed under their id. `member_remove` must also refuse any
-member that is or ever was a `principal`. For those, revocation is the only
-exit, exactly as it already is for a peer key.
+household spend, so they would pass the check and be deleted outright,
+orphaning whatever the oplog signed under their id. `member_remove` now also
+refuses, unconditionally, any member that is or ever was a `principal` — no
+`reassign_to` lifts it, because there is nothing to reassign an *identity*
+onto. For those, revocation (`member_revoke`) is the only exit, exactly as it
+already is for a peer key.
 
 ## Open questions
 
 These are genuinely undecided. They are listed rather than guessed.
 
-**`members` is per-book.** The table is `UNIQUE (book_id, label)` with
-`book_id NOT NULL`, so one human working across two books is two rows — and
-once `device_peers.member_id` exists, a device is bound to one book's member.
-For a household that is irrelevant. For a business running separate books it
-means pairing a device per book. Deciding this after devices reference
-`member_id` is a migration with live keys in it, so it should be decided
-first.
+**`members` is per-book.** The table has `book_id NOT NULL` and a unique
+label per book (now `members_active_label_idx`, scoped to active rows — see
+[What is built now](#what-is-built-now)), so one human working across two
+books is two rows — and now that `device_peers.member_id` exists, a device
+is bound to one book's member. For a household that is irrelevant. For a
+business running separate books it means pairing a device per book. Deciding
+this now that devices reference `member_id` is a migration with live keys in
+it, so it should be decided first.
 
 **Recovery.** Encrypt the book and a lost key means the book is gone — not
 degraded, gone. The groundwork exists (the vault, the key-name words, the
@@ -183,9 +239,14 @@ stops working — but a device that once held a key does not.
 
 ## What this does not claim
 
+- **It does not enforce anything yet.** `member_capabilities` and
+  `member_is_permitted` exist; nothing in `CoreService`, the CLI, the HTTP
+  server, or the desktop app consults them before letting an operation
+  through. The enforcement boundary is HTTP/IPC, and that layer is not
+  built — see [What is built now](#what-is-built-now).
 - It does not make a SlipScan book safe from someone who holds an owner's
   key. Nothing here attempts that.
 - It does not survive a compromised host. A key in use is a key in memory.
 - It does not add accounts, a login server, or any identity SlipScan resolves
-  on your behalf. People are rows in your book; capabilities are enforced by
-  your box.
+  on your behalf. People are rows in your book; capabilities will be
+  enforced by your box, once that boundary exists.

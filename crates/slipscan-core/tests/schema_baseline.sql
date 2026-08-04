@@ -44,6 +44,9 @@ CREATE INDEX contacts_book_idx ON contacts (book_id);
 -- index contacts_book_role_idx
 CREATE INDEX contacts_book_role_idx ON contacts (book_id, role);
 
+-- index device_peers_member_idx
+CREATE INDEX device_peers_member_idx ON device_peers (member_id);
+
 -- index document_extractions_current_unique
 CREATE UNIQUE INDEX document_extractions_current_unique
     ON document_extractions (document_id) WHERE is_current = 1;
@@ -121,6 +124,16 @@ CREATE UNIQUE INDEX locations_book_code_unique
 
 -- index locations_book_idx
 CREATE INDEX locations_book_idx ON locations (book_id);
+
+-- index member_capabilities_book_idx
+CREATE INDEX member_capabilities_book_idx ON member_capabilities (book_id);
+
+-- index member_capabilities_member_idx
+CREATE INDEX member_capabilities_member_idx ON member_capabilities (member_id);
+
+-- index members_active_label_idx
+CREATE UNIQUE INDEX members_active_label_idx
+    ON members (book_id, label) WHERE status = 'active';
 
 -- index members_book_idx
 CREATE INDEX members_book_idx ON members (book_id);
@@ -307,10 +320,13 @@ CREATE INDEX sales_orders_location_idx
 -- index sqlite_autoindex_locations_2
 ;
 
--- index sqlite_autoindex_members_1
+-- index sqlite_autoindex_member_capabilities_1
 ;
 
--- index sqlite_autoindex_members_2
+-- index sqlite_autoindex_member_capabilities_2
+;
+
+-- index sqlite_autoindex_members_1
 ;
 
 -- index sqlite_autoindex_merchant_mappings_1
@@ -651,7 +667,8 @@ CREATE TABLE device_peers (
     revoked_at   TEXT,
     -- Reserved for the transport phase. Always NULL today: nothing connects
     -- to anything, so nothing is ever "seen".
-    last_seen_at TEXT
+    last_seen_at TEXT,
+    member_id    TEXT REFERENCES members (id) ON DELETE SET NULL
 );
 
 -- table document_extractions
@@ -783,12 +800,21 @@ CREATE TABLE journal_lines (
 );
 
 -- table journals
-CREATE TABLE "journals" (
+CREATE TABLE journals (
     id          TEXT PRIMARY KEY,
     book_id     TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     posted_date TEXT NOT NULL,
     narrative   TEXT,
     reference   TEXT,
+    -- Four of these sources are posted automatically by Phase 6.6's trade
+    -- postings (`post_po_receipt_journal`, `post_sales_confirm_journals`,
+    -- `reverse_sales_confirm_journals`, `post_invoice_payment_journal`).
+    -- `post_journal_in_tx` keeps one net-live generated journal per
+    -- (source_type, source_id), so receiving/confirming/paying the same id
+    -- twice cannot double-post. A confirmed sale is deliberately two
+    -- journals sharing one source_id — the cost/inventory leg and the
+    -- revenue/AR/VAT leg — so a cancellation can reverse either on its own,
+    -- and so a book seeded with only one side still gets a coherent posting.
     source_type TEXT NOT NULL DEFAULT 'manual'
         CHECK (source_type IN (
             'manual', 'transaction', 'document', 'opening_balance',
@@ -817,6 +843,22 @@ CREATE TABLE locations (
     UNIQUE (book_id, name)
 );
 
+-- table member_capabilities
+CREATE TABLE member_capabilities (
+    id         TEXT PRIMARY KEY,
+    book_id    TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    -- CASCADE, not RESTRICT: `member_remove`'s own principal guard is what
+    -- actually stops a capability-holder from being deleted (a member with
+    -- any capability row is `principal`, and `member_remove` refuses any
+    -- member that is or ever was one — see `service.rs`). This FK exists
+    -- for the ordinary non-principal case, where it can never fire, and as
+    -- a second line of defence rather than a first.
+    member_id  TEXT NOT NULL REFERENCES members (id) ON DELETE CASCADE,
+    operation  TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    UNIQUE (member_id, operation)
+);
+
 -- table members
 CREATE TABLE members (
     id                 TEXT PRIMARY KEY,
@@ -829,7 +871,21 @@ CREATE TABLE members (
     default_account_id TEXT REFERENCES accounts (id) ON DELETE SET NULL,
     created_at         TEXT NOT NULL,
     updated_at         TEXT NOT NULL,
-    UNIQUE (book_id, label)
+    -- Tombstone, exactly like `device_peers.revoked_at`: a revoked person
+    -- keeps the row (their attributions and capability history point at it)
+    -- and simply stops being able to act. `member_revoke` is the only writer
+    -- of 'revoked'/`revoked_at`; nothing here ever un-revokes.
+    status             TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'revoked')),
+    revoked_at         TEXT,
+    -- Whether this member appears in "whose spend is this" (attribution /
+    -- splits). A till operator who never incurs household spend can be
+    -- `principal` with `attributable = 0`; a household member is the
+    -- reverse. No setter exists yet — every member starts attributable,
+    -- which is the only case the product has today.
+    attributable       INTEGER NOT NULL DEFAULT 1 CHECK (attributable IN (0, 1)),
+    -- May hold capabilities and devices. See the monotonic note above.
+    principal          INTEGER NOT NULL DEFAULT 0 CHECK (principal IN (0, 1))
 );
 
 -- table merchant_mappings
@@ -1622,6 +1678,30 @@ WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
 BEGIN
     INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
     VALUES ('locations', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_member_capabilities_del
+CREATE TRIGGER sync_capture_member_capabilities_del AFTER DELETE ON member_capabilities
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('member_capabilities', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_member_capabilities_ins
+CREATE TRIGGER sync_capture_member_capabilities_ins AFTER INSERT ON member_capabilities
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('member_capabilities', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_member_capabilities_upd
+CREATE TRIGGER sync_capture_member_capabilities_upd AFTER UPDATE ON member_capabilities
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('member_capabilities', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 END;
 
 -- trigger sync_capture_members_del

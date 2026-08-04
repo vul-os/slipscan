@@ -321,6 +321,7 @@ pub const LWW_TABLES: &[&str] = &[
     "merchant_mappings",
     "budgets",
     "members",
+    "member_capabilities",
     "locations",
     "chart_of_accounts",
     "coa_map",

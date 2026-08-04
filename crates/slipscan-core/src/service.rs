@@ -11,6 +11,7 @@
 use rusqlite::Connection;
 
 use crate::db::Db;
+use crate::device::Devices;
 use crate::domain::*;
 use crate::error::{CoreError, CoreResult};
 use crate::fx;
@@ -1323,6 +1324,14 @@ impl CoreService {
             default_account_id: new.default_account_id,
             created_at: now.clone(),
             updated_at: now,
+            // Every new member starts active, attributable, and not a
+            // principal — `repo::member::insert` relies on exactly these as
+            // the table's own column defaults, so this literal is asserting
+            // them, not choosing them independently of the schema.
+            status: MemberStatus::Active,
+            revoked_at: None,
+            attributable: true,
+            principal: false,
         };
         let tx = self.conn().unchecked_transaction()?;
         repo::member::insert(&tx, &member)?;
@@ -1415,8 +1424,25 @@ impl CoreService {
     /// names another member in the same book — every one of those
     /// attributions is then moved onto the reassignment target before the
     /// member row is deleted, so no transaction silently loses its history.
+    ///
+    /// **Also refused, unconditionally, for a member that is or ever was a
+    /// `principal`** (docs/ROLES.md "`member_remove` guards the wrong axis
+    /// for a principal"). Attribution history is not authority history: a
+    /// till operator plausibly has zero attributed transactions and would
+    /// otherwise pass the check above and be deleted outright, orphaning
+    /// whatever the oplog signed under their id. `reassign_to` cannot lift
+    /// this guard — there is nothing to reassign an *identity* onto.
+    /// `member_revoke` is the only exit for a principal, exactly as it
+    /// already is for a peer device key.
     pub fn member_remove(&self, id: &str, reassign_to: Option<&str>) -> CoreResult<()> {
         let before = self.member_get(id)?;
+        if before.principal {
+            return Err(CoreError::Validation(format!(
+                "member {id} is (or was) a principal — remove is refused even with a \
+                 reassignment target; revoke them instead (`member_revoke`), which keeps \
+                 their authority history and paired devices accounted for"
+            )));
+        }
         let target = match reassign_to {
             Some(target_id) => {
                 if target_id == id {
@@ -1460,6 +1486,153 @@ impl CoreService {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Revoke a person: `status -> 'revoked'`, `revoked_at` stamped, and
+    /// every device peer still paired to them revoked too — a departed
+    /// principal's phone must not silently keep working. This is the only
+    /// exit `member_remove` leaves for a `principal` (see its own doc
+    /// comment); it never deletes the row, so every attribution and
+    /// capability grant that pointed at this id still resolves.
+    ///
+    /// **Data lifecycle only.** Nothing in core refuses an operation because
+    /// a member is revoked — this is `is_permitted`'s job to *answer*, and
+    /// the HTTP/IPC boundary's job to *act on*, once that boundary exists
+    /// (docs/ROLES.md). Idempotent: revoking an already-revoked member
+    /// returns it unchanged rather than erroring or re-stamping `revoked_at`.
+    pub fn member_revoke(&self, id: &str) -> CoreResult<Member> {
+        let before = self.member_get(id)?;
+        if before.status == MemberStatus::Revoked {
+            return Ok(before);
+        }
+
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::member::revoke(&tx, id, &now)?;
+
+        // Cascade to this member's devices, inside the same transaction —
+        // `Devices` borrows `&tx` (it derefs to `&Connection`), so the
+        // member's status flip and every peer tombstone it produces commit
+        // or roll back together.
+        let devices = Devices::new(&tx, self.secrets.as_ref());
+        for peer in devices.peer_list_for_member(id)? {
+            devices.peer_revoke(&peer.public_key)?;
+        }
+
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "member",
+            Some(id),
+            "revoke",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        self.member_get(id)
+    }
+
+    /// Grant `operation` to `member_id`. Idempotent: granting an
+    /// already-held operation returns the existing grant unchanged rather
+    /// than erroring or bumping `granted_at`.
+    ///
+    /// The member's first grant flips `principal` to true — see `Member::
+    /// principal`'s doc comment for why that flag is monotonic and never
+    /// cleared by `member_capability_revoke`.
+    ///
+    /// **Grants a capability row; enforces nothing.** No code path in core
+    /// consults `member_capabilities` to allow or refuse an operation —
+    /// that boundary is HTTP/IPC, which this phase does not build
+    /// (docs/ROLES.md). `member_is_permitted` is the read-only query a
+    /// future enforcement point would call.
+    pub fn member_capability_grant(
+        &self,
+        member_id: &str,
+        operation: &str,
+    ) -> CoreResult<MemberCapability> {
+        let member = self.member_get(member_id)?;
+        let operation = operation.trim();
+        if operation.is_empty() {
+            return Err(CoreError::Validation(
+                "capability operation must not be empty".into(),
+            ));
+        }
+        if member.status == MemberStatus::Revoked {
+            return Err(CoreError::Validation(format!(
+                "member {member_id} is revoked; cannot grant a capability to a revoked member"
+            )));
+        }
+        if let Some(existing) = repo::member::capability_get(self.conn(), member_id, operation)? {
+            return Ok(existing);
+        }
+
+        let capability = MemberCapability {
+            id: new_id(),
+            book_id: member.book_id.clone(),
+            member_id: member_id.to_string(),
+            operation: operation.to_string(),
+            granted_at: now_iso(),
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        if !member.principal {
+            repo::member::set_principal(&tx, member_id)?;
+        }
+        repo::member::capability_insert(&tx, &capability)?;
+        self.emit_audit(
+            &tx,
+            Some(&member.book_id),
+            "member",
+            Some(member_id),
+            "capability_grant",
+            None,
+            Some(serde_json::to_string(&capability)?),
+        )?;
+        tx.commit()?;
+        Ok(capability)
+    }
+
+    /// Revoke `operation` from `member_id`. Idempotent: revoking an
+    /// operation the member does not hold is a no-op. Does **not** clear
+    /// `principal` — see `Member::principal`'s doc comment.
+    pub fn member_capability_revoke(&self, member_id: &str, operation: &str) -> CoreResult<()> {
+        let member = self.member_get(member_id)?;
+        let Some(capability) = repo::member::capability_get(self.conn(), member_id, operation)?
+        else {
+            return Ok(());
+        };
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::member::capability_delete(&tx, member_id, operation)?;
+        self.emit_audit(
+            &tx,
+            Some(&member.book_id),
+            "member",
+            Some(member_id),
+            "capability_revoke",
+            Some(serde_json::to_string(&capability)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every operation `member_id` currently holds, granted-first.
+    pub fn member_capabilities_list(&self, member_id: &str) -> CoreResult<Vec<MemberCapability>> {
+        self.member_get(member_id)?;
+        repo::member::capabilities_list(self.conn(), member_id)
+    }
+
+    /// Whether `member_id` currently holds `operation`: active (not
+    /// revoked), a principal, and the capability is granted. A **read**,
+    /// used by nothing in core today — see the module note on
+    /// `member_capability_grant` for why this stops at answering the
+    /// question rather than acting on it.
+    pub fn member_is_permitted(&self, member_id: &str, operation: &str) -> CoreResult<bool> {
+        let member = self.member_get(member_id)?;
+        if member.status != MemberStatus::Active || !member.principal {
+            return Ok(false);
+        }
+        Ok(repo::member::capability_get(self.conn(), member_id, operation)?.is_some())
     }
 
     // -----------------------------------------------------------------------
@@ -14249,6 +14422,229 @@ mod tests {
             splits_c[0].share_minor, 400,
             "plain rename, no target row existed"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Members become principals (docs/ROLES.md)
+    // -------------------------------------------------------------------
+
+    /// `UNIQUE (book_id, label)` had to become a partial index over active
+    /// rows only, precisely so a departed person's label can be reused
+    /// while their own row (and everything pointing at it) stays put.
+    #[test]
+    fn revoked_member_releases_their_label_but_two_active_ones_cannot_share_it() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let sam = make_member(&svc, &book, "Sam Patel");
+
+        // Two active members cannot share a label.
+        let dup = svc.member_add(NewMember {
+            book_id: book.id.clone(),
+            label: "Sam Patel".into(),
+            initial: None,
+            colour: None,
+            default_account_id: None,
+        });
+        assert!(dup.is_err(), "two active members must not share a label");
+
+        // Revoke releases the label.
+        let revoked = svc.member_revoke(&sam.id).unwrap();
+        assert_eq!(revoked.status, MemberStatus::Revoked);
+        assert!(revoked.revoked_at.is_some());
+
+        let new_sam = svc
+            .member_add(NewMember {
+                book_id: book.id.clone(),
+                label: "Sam Patel".into(),
+                initial: None,
+                colour: None,
+                default_account_id: None,
+            })
+            .unwrap();
+        assert_eq!(new_sam.label, "Sam Patel");
+        assert_ne!(new_sam.id, sam.id, "a distinct row, not a revival");
+        assert_eq!(new_sam.status, MemberStatus::Active);
+
+        // The original, revoked row is still there under the same label —
+        // history, not deletion.
+        let original = svc.member_get(&sam.id).unwrap();
+        assert_eq!(original.label, "Sam Patel");
+        assert_eq!(original.status, MemberStatus::Revoked);
+    }
+
+    /// The guard `member_remove` gets wrong for a principal (ROLES.md):
+    /// zero attributions is not zero authority history, and no reassignment
+    /// target lifts the refusal — revocation is the only exit.
+    #[test]
+    fn member_remove_refuses_a_principal_even_with_no_attributions_or_a_reassign_target() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let till = make_member(&svc, &book, "Till Operator");
+        let other = make_member(&svc, &book, "Someone Else");
+        assert!(
+            !svc.member_get(&till.id).unwrap().principal,
+            "not a principal yet"
+        );
+
+        // A till operator plausibly has zero attributed transactions — the
+        // ordinary guard alone would let this through.
+        assert!(!repo::member::has_attributions(svc.conn_for_test(), &till.id).unwrap());
+
+        svc.member_capability_grant(&till.id, "transaction_categorize")
+            .unwrap();
+        assert!(
+            svc.member_get(&till.id).unwrap().principal,
+            "first grant makes them a principal"
+        );
+
+        let err = svc.member_remove(&till.id, None).unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)), "{err}");
+
+        // Naming a reassignment target does not lift the guard either —
+        // there is nothing to reassign an identity onto.
+        let err = svc.member_remove(&till.id, Some(&other.id)).unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)), "{err}");
+
+        assert!(
+            svc.member_get(&till.id).is_ok(),
+            "member survives every refusal"
+        );
+
+        // Revocation is the exit, and it works on exactly the same member.
+        let revoked = svc.member_revoke(&till.id).unwrap();
+        assert_eq!(revoked.status, MemberStatus::Revoked);
+    }
+
+    /// `member_revoke` cascades to every device peer still paired to that
+    /// member — a departed principal's phone must stop working too. There
+    /// is no pairing flow yet that sets `device_peers.member_id` (out of
+    /// scope for this phase), so the fixture seeds the row the same shape a
+    /// future pairing ceremony would.
+    #[test]
+    fn member_revoke_cascades_to_their_paired_devices() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let staff = make_member(&svc, &book, "Staff");
+
+        let public_key = "ab".repeat(32); // 64 hex chars, a well-formed key.
+        let conn = svc.conn_for_test();
+        conn.execute(
+            "INSERT INTO device_peers
+                 (public_key, keyname, label, paired_at, revoked_at, last_seen_at, member_id)
+             VALUES (?1, 'test-keyname', 'Staff phone', ?2, NULL, NULL, ?3)",
+            rusqlite::params![public_key, now_iso(), staff.id],
+        )
+        .unwrap();
+
+        svc.member_revoke(&staff.id).unwrap();
+
+        let revoked_at: Option<String> = conn
+            .query_row(
+                "SELECT revoked_at FROM device_peers WHERE public_key = ?1",
+                rusqlite::params![public_key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            revoked_at.is_some(),
+            "the staff member's paired device must be revoked too"
+        );
+
+        // Idempotent: revoking an already-revoked member does not error and
+        // does not touch the already-revoked device peer again.
+        svc.member_revoke(&staff.id).unwrap();
+        let revoked_at_again: Option<String> = conn
+            .query_row(
+                "SELECT revoked_at FROM device_peers WHERE public_key = ?1",
+                rusqlite::params![public_key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(revoked_at, revoked_at_again);
+    }
+
+    /// Grant/revoke round-trips, the first grant promotes to `principal`,
+    /// and revoking a capability never demotes back — the flag is
+    /// monotonic by design (`Member::principal`'s doc comment).
+    #[test]
+    fn member_capability_grant_revoke_round_trip_and_promotes_to_principal() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let member = make_member(&svc, &book, "Operator");
+
+        assert!(!member.principal);
+        assert!(svc.member_capabilities_list(&member.id).unwrap().is_empty());
+        assert!(!svc
+            .member_is_permitted(&member.id, "till_sale_record")
+            .unwrap());
+
+        let granted = svc
+            .member_capability_grant(&member.id, "till_sale_record")
+            .unwrap();
+        assert_eq!(granted.operation, "till_sale_record");
+        assert_eq!(granted.member_id, member.id);
+
+        assert!(
+            svc.member_get(&member.id).unwrap().principal,
+            "first grant makes them a principal"
+        );
+        let caps = svc.member_capabilities_list(&member.id).unwrap();
+        assert_eq!(caps.len(), 1);
+        assert_eq!(caps[0].operation, "till_sale_record");
+
+        assert!(svc
+            .member_is_permitted(&member.id, "till_sale_record")
+            .unwrap());
+        assert!(!svc
+            .member_is_permitted(&member.id, "invoice_issue")
+            .unwrap());
+
+        // Idempotent grant: the same row comes back, not a duplicate.
+        let granted_again = svc
+            .member_capability_grant(&member.id, "till_sale_record")
+            .unwrap();
+        assert_eq!(granted_again.id, granted.id);
+        assert_eq!(svc.member_capabilities_list(&member.id).unwrap().len(), 1);
+
+        svc.member_capability_revoke(&member.id, "till_sale_record")
+            .unwrap();
+        assert!(svc.member_capabilities_list(&member.id).unwrap().is_empty());
+        assert!(!svc
+            .member_is_permitted(&member.id, "till_sale_record")
+            .unwrap());
+
+        assert!(
+            svc.member_get(&member.id).unwrap().principal,
+            "principal is monotonic — revoking the capability does not clear it"
+        );
+
+        // Idempotent revoke: revoking an operation not held is a no-op.
+        svc.member_capability_revoke(&member.id, "till_sale_record")
+            .unwrap();
+    }
+
+    /// A revoked member is never permitted, even holding a capability row
+    /// from before the revocation, and cannot be granted a new one.
+    #[test]
+    fn revoked_member_is_never_permitted_and_cannot_be_granted_a_new_capability() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let member = make_member(&svc, &book, "Departed");
+        svc.member_capability_grant(&member.id, "till_sale_record")
+            .unwrap();
+
+        svc.member_revoke(&member.id).unwrap();
+
+        assert!(
+            !svc.member_is_permitted(&member.id, "till_sale_record")
+                .unwrap(),
+            "a revoked member is never permitted, even holding the capability row"
+        );
+
+        let err = svc
+            .member_capability_grant(&member.id, "invoice_issue")
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)), "{err}");
     }
 
     /// Full multi-member fixture exercising every member report: expense,

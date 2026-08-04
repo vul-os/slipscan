@@ -92,6 +92,12 @@ pub struct DevicePeer {
     pub revoked_at: Option<String>,
     /// Always `None` today — nothing connects to anything.
     pub last_seen_at: Option<String>,
+    /// The `members` row this device belongs to (docs/ROLES.md "members
+    /// become principals"). `None` is the pre-existing case: a peer paired
+    /// before this column existed, or one paired directly to the owner
+    /// rather than to a named principal — there is no pairing flow yet that
+    /// sets this. Never replicated (see migration `0007_devices`'s header).
+    pub member_id: Option<String>,
 }
 
 impl DevicePeer {
@@ -360,7 +366,7 @@ impl<'a> Devices<'a> {
     /// Every pinned peer, including revoked tombstones, oldest first.
     pub fn peer_list(&self) -> CoreResult<Vec<DevicePeer>> {
         let mut stmt = self.conn.prepare(
-            "SELECT public_key, keyname, label, paired_at, revoked_at, last_seen_at
+            "SELECT public_key, keyname, label, paired_at, revoked_at, last_seen_at, member_id
              FROM device_peers ORDER BY paired_at, public_key",
         )?;
         let rows = stmt.query_map([], map_peer)?;
@@ -372,13 +378,34 @@ impl<'a> Devices<'a> {
         let public_key = normalize_public_key(public_key)?;
         self.conn
             .query_row(
-                "SELECT public_key, keyname, label, paired_at, revoked_at, last_seen_at
+                "SELECT public_key, keyname, label, paired_at, revoked_at, last_seen_at, member_id
                  FROM device_peers WHERE public_key = ?1",
                 params![public_key],
                 map_peer,
             )
             .optional()
             .map_err(CoreError::from)
+    }
+
+    /// Every **non-revoked** peer currently linked to `member_id`
+    /// (docs/ROLES.md "members become principals"). Backs
+    /// `CoreService::member_revoke`'s cascade: a departed principal's
+    /// devices must stop working too, and this is what it iterates.
+    ///
+    /// A read, not a write — adding it does not touch
+    /// `only_one_code_path_writes_each_pinned_key`'s counts, which is
+    /// deliberate: the cascade still goes through the one existing
+    /// [`Devices::peer_revoke`] writer, once per linked peer, rather than
+    /// opening a second door onto `device_peers`.
+    pub fn peer_list_for_member(&self, member_id: &str) -> CoreResult<Vec<DevicePeer>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT public_key, keyname, label, paired_at, revoked_at, last_seen_at, member_id
+             FROM device_peers
+             WHERE member_id = ?1 AND revoked_at IS NULL
+             ORDER BY paired_at, public_key",
+        )?;
+        let rows = stmt.query_map(params![member_id], map_peer)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(CoreError::from)
     }
 
     /// Revoke a peer: the pin becomes a **tombstone**. The row stays so the
@@ -482,7 +509,7 @@ impl<'a> Devices<'a> {
 
         let existing: Option<DevicePeer> = tx
             .query_row(
-                "SELECT public_key, keyname, label, paired_at, revoked_at, last_seen_at
+                "SELECT public_key, keyname, label, paired_at, revoked_at, last_seen_at, member_id
                  FROM device_peers WHERE public_key = ?1",
                 params![public_key],
                 map_peer,
@@ -506,8 +533,8 @@ impl<'a> Devices<'a> {
         let now = now_iso();
         tx.execute(
             "INSERT INTO device_peers
-                 (public_key, keyname, label, paired_at, revoked_at, last_seen_at)
-             VALUES (?1, ?2, ?3, ?4, NULL, NULL)",
+                 (public_key, keyname, label, paired_at, revoked_at, last_seen_at, member_id)
+             VALUES (?1, ?2, ?3, ?4, NULL, NULL, NULL)",
             params![public_key, keyname, label, now],
         )?;
         Ok(DevicePeer {
@@ -516,6 +543,7 @@ impl<'a> Devices<'a> {
             label,
             paired_at: now,
             revoked_at: None,
+            member_id: None,
             last_seen_at: None,
         })
     }
@@ -639,6 +667,7 @@ fn map_peer(row: &Row<'_>) -> rusqlite::Result<DevicePeer> {
         paired_at: row.get(3)?,
         revoked_at: row.get(4)?,
         last_seen_at: row.get(5)?,
+        member_id: row.get(6)?,
     })
 }
 

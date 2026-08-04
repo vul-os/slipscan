@@ -1010,8 +1010,12 @@ pub struct PayDelivery {
 // Household members & per-person attribution
 // ---------------------------------------------------------------------------
 
+str_enum!(MemberStatus { Active => "active", Revoked => "revoked" });
+
 /// A person in the household sharing this book — local data, never a login.
-/// See ARCHITECTURE.md "Household members & per-person attribution".
+/// See ARCHITECTURE.md "Household members & per-person attribution" and
+/// docs/ROLES.md "members become principals" for `status`/`attributable`/
+/// `principal`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     pub id: String,
@@ -1029,6 +1033,16 @@ pub struct Member {
     pub default_account_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    /// `Revoked` is a tombstone, not a delete — set once by `member_revoke`
+    /// and never reversed. See migration `0006_members`'s header.
+    pub status: MemberStatus,
+    pub revoked_at: Option<String>,
+    /// Appears in "whose spend is this" (attribution / splits).
+    pub attributable: bool,
+    /// May hold capabilities and devices. **Monotonic**: once true, stays
+    /// true — `member_remove` refuses a member who *ever* held authority,
+    /// not just one who holds it now.
+    pub principal: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1059,6 +1073,25 @@ pub struct MemberPatch {
         skip_serializing_if = "Option::is_none"
     )]
     pub default_account_id: Option<Option<String>>,
+}
+
+/// One named operation granted to a `principal` (docs/ROLES.md "Authority is
+/// a set of operations, not table permissions"). A capability is present or
+/// absent — there is no field on it that changes value under a live id, so
+/// grant/revoke are an insert and a delete, never an update.
+///
+/// `operation` is a free-form name today (the 177 IPC commands / 188 HTTP
+/// routes ROLES.md names as the eventual registry); nothing in core
+/// validates it against that registry yet, and nothing reads this table to
+/// refuse an operation — see the module docs on `CoreService::member_
+/// capability_grant` for why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberCapability {
+    pub id: String,
+    pub book_id: String,
+    pub member_id: String,
+    pub operation: String,
+    pub granted_at: String,
 }
 
 /// One `(member, share)` row of a split transaction, as stored. `share_minor`

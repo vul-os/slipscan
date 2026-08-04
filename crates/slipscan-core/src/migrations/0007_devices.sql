@@ -65,6 +65,21 @@ CREATE TABLE device_identity_rotations (
 -- cannot silently re-pair itself. Re-pairing a revoked key is refused; the
 -- user must deliberately `device forget` it first. This mirrors
 -- slipscan-packs keeping its signer pins after a signer is untrusted.
+--
+-- `member_id` (docs/ROLES.md "members become principals") is who this
+-- device belongs to. NULL is the pre-existing case and stays common: this
+-- table was built for a laptop and a phone belonging to the one person
+-- running the book, and those peers name nobody. It is set only once a
+-- device is paired to a `members` row rather than to the owner directly —
+-- that pairing flow is not built yet (ROLES.md scopes this migration to the
+-- data model, not the surface); today the column exists so `member_revoke`
+-- has somewhere to look when it cascades to a departed principal's devices.
+-- `ON DELETE SET NULL` rather than `CASCADE`: deleting the *member* row
+-- (only ever possible for a non-principal — see `member_remove`'s guard)
+-- must not delete paired *hardware*; the peer simply reverts to nameless
+-- rather than vanishing. Deliberately absent from `slipscan_sync`'s mapping
+-- lists, same as the rest of this table: "a peer's opinion of who to trust
+-- is exactly what must not replicate" (migration 0008's header).
 CREATE TABLE device_peers (
     public_key   TEXT PRIMARY KEY,
     keyname      TEXT NOT NULL,
@@ -73,8 +88,11 @@ CREATE TABLE device_peers (
     revoked_at   TEXT,
     -- Reserved for the transport phase. Always NULL today: nothing connects
     -- to anything, so nothing is ever "seen".
-    last_seen_at TEXT
+    last_seen_at TEXT,
+    member_id    TEXT REFERENCES members (id) ON DELETE SET NULL
 );
+
+CREATE INDEX device_peers_member_idx ON device_peers (member_id);
 
 -- Outstanding pairing invites minted by THIS device.
 --
