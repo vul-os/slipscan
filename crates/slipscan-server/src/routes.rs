@@ -3013,6 +3013,143 @@ mod tests {
         );
     }
 
+    /// The catalogue's delete rules over the wire, because the mock had them
+    /// backwards in both directions and nothing compared the two. The schema
+    /// is the authority: `product_variants.product_id` is ON DELETE CASCADE,
+    /// while everything referencing a *variant* is ON DELETE RESTRICT — so a
+    /// product takes its variants with it, unless one has been traded.
+    #[tokio::test]
+    async fn deleting_a_product_cascades_its_variants_unless_one_has_been_traded() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Biz", "kind": "business", "currency": null, "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+
+        let mk = |name: &'static str, sku: &'static str| {
+            let app = app.clone();
+            let book_id = book_id.clone();
+            async move {
+                let (_, p) = call(
+                    &app,
+                    post_req(
+                        "/api/v1/product_create",
+                        json!({"book_id": book_id, "name": name}),
+                        None,
+                    ),
+                )
+                .await;
+                let (_, v) = call(
+                    &app,
+                    post_req(
+                        "/api/v1/product_variant_add",
+                        json!({"product_id": p["id"].as_str().unwrap(), "sku": sku,
+                               "name": sku, "currency": "ZAR"}),
+                        None,
+                    ),
+                )
+                .await;
+                (
+                    p["id"].as_str().unwrap().to_string(),
+                    v["id"].as_str().unwrap().to_string(),
+                )
+            }
+        };
+
+        // Untraded: the product goes, and the variant goes with it.
+        let (free_product, free_variant) = mk("Free", "SKU-FREE").await;
+        let (status, body) = call(
+            &app,
+            post_req("/api/v1/product_delete", json!({"id": free_product}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "product_delete: {body}");
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/product_variant_get",
+                json!({"id": free_variant}),
+                None,
+            ),
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "the variant must have cascaded away with its product"
+        );
+
+        // Traded: the whole delete is refused, and nothing is half-removed.
+        let (used_product, used_variant) = mk("Used", "SKU-USED").await;
+        let (_, location) = call(
+            &app,
+            post_req(
+                "/api/v1/location_create",
+                json!({"book_id": book_id, "name": "Main"}),
+                None,
+            ),
+        )
+        .await;
+        let (status, mv) = call(
+            &app,
+            post_req(
+                "/api/v1/stock_movement_record",
+                json!({"variant_id": used_variant, "location_id": location["id"].as_str().unwrap(),
+                       "qty_delta": 3, "kind": "receipt"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "stock_movement_record: {mv}");
+
+        let (status, body) = call(
+            &app,
+            post_req("/api/v1/product_delete", json!({"id": used_product}), None),
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "a product whose variant has been traded must not be deletable, got {body}"
+        );
+        let (status, _) = call(
+            &app,
+            post_req(
+                "/api/v1/product_variant_get",
+                json!({"id": used_variant}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the refused delete must leave the variant intact"
+        );
+
+        // The variant alone is equally protected.
+        let (status, body) = call(
+            &app,
+            post_req(
+                "/api/v1/product_variant_delete",
+                json!({"id": used_variant}),
+                None,
+            ),
+        )
+        .await;
+        assert_ne!(
+            status,
+            StatusCode::OK,
+            "a traded variant must not be deletable, got {body}"
+        );
+    }
+
     /// The catalogue was in the same state contacts were: shipped in core with
     /// Phase 6.3a, routed nowhere, so an order line could name a `variant_id`
     /// nothing could create. This drives the chain that was impossible —

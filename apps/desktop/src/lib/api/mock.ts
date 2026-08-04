@@ -221,6 +221,16 @@ function nextNumber(bookId: string, series: string): number {
   return next;
 }
 
+/** Everything core marks ON DELETE RESTRICT against `product_variants`. */
+function variantIsReferenced(variantId: string): boolean {
+  return (
+    stockMovements.some((m) => m.variant_id === variantId) ||
+    salesOrderItems.some((i) => i.variant_id === variantId) ||
+    invoiceItems.some((i) => i.variant_id === variantId) ||
+    purchaseOrderItems.some((i) => i.variant_id === variantId)
+  );
+}
+
 function requireProductCategory(id: string): ProductCategory {
   const c = productCategories.find((x) => x.id === id);
   if (!c) throw new Error(`no product category with id ${id}`);
@@ -2527,10 +2537,21 @@ export const mockApi = {
     return clone(p);
   },
 
+  /** Mirrors the schema, which is not what you might guess:
+   * `product_variants.product_id` is ON DELETE **CASCADE**, so deleting a
+   * product deletes its variants with it — but everything that references a
+   * *variant* (stock movements, order and invoice lines) is ON DELETE
+   * RESTRICT, so the cascade is refused the moment any of those variants has
+   * been traded. This mock used to refuse whenever the product had any
+   * variant at all, which is a guard core does not have. */
   product_delete: async (q: { id: string }): Promise<null> => {
     const p = requireProduct(q.id);
-    if (productVariants.some((v) => v.product_id === p.id))
-      throw new Error("this product still has variants and cannot be deleted");
+    const doomed = productVariants.filter((v) => v.product_id === p.id);
+    if (doomed.some((v) => variantIsReferenced(v.id)))
+      throw new Error(
+        "a variant of this product has stock movements or order lines against it and cannot be deleted",
+      );
+    for (const v of doomed) productVariants.splice(productVariants.indexOf(v), 1);
     products.splice(products.indexOf(p), 1);
     return null;
   },
@@ -2603,8 +2624,14 @@ export const mockApi = {
     return clone(v);
   },
 
+  /** ON DELETE RESTRICT from stock movements and every kind of order line —
+   * a variant that has been traded is history and stays. */
   product_variant_delete: async (q: { id: string }): Promise<null> => {
     const v = requireVariant(q.id);
+    if (variantIsReferenced(v.id))
+      throw new Error(
+        "this variant has stock movements or order lines against it and cannot be deleted",
+      );
     productVariants.splice(productVariants.indexOf(v), 1);
     return null;
   },
