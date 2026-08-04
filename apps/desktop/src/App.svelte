@@ -18,6 +18,8 @@
   import Reconcile from "./routes/Reconcile.svelte";
   import Payments from "./routes/Payments.svelte";
   import Reports from "./routes/Reports.svelte";
+  import Stock from "./routes/Stock.svelte";
+  import Purchasing from "./routes/Purchasing.svelte";
   import Packs from "./routes/Packs.svelte";
   import Settings from "./routes/Settings.svelte";
 
@@ -31,6 +33,8 @@
     reconcile: Reconcile,
     payments: Payments,
     reports: Reports,
+    stock: Stock,
+    purchasing: Purchasing,
     packs: Packs,
     settings: Settings,
   };

@@ -43,6 +43,8 @@ import Payments from "../routes/Payments.svelte";
 import Receipts from "../routes/Receipts.svelte";
 import Reconcile from "../routes/Reconcile.svelte";
 import Reports from "../routes/Reports.svelte";
+import Stock from "../routes/Stock.svelte";
+import Purchasing from "../routes/Purchasing.svelte";
 import Settings from "../routes/Settings.svelte";
 import Transactions from "../routes/Transactions.svelte";
 
@@ -151,6 +153,30 @@ const CASES: Record<RouteId, RouteCase & { component: Component }> = {
     component: Reports as Component,
     heading: "Reports",
     anchors: ["VAT201", "R 90,723.84", "Net refundable", "Trial balance (CSV)"],
+  },
+  // Stock and Purchasing are business-only (BookProfile.show_catalogue /
+  // show_purchasing), and the mock's one book is personal — so the loader
+  // that actually resolves here is the gate itself, not a populated table.
+  // That gate is real, data-derived behaviour (it reads book.name and
+  // profile.show_catalogue/show_purchasing from the mock, not a hardcoded
+  // string), which is exactly what this suite is meant to catch drifting.
+  stock: {
+    component: Stock as Component,
+    heading: "Stock",
+    anchors: [
+      "Stock is a business feature",
+      "a stock movement moves a catalogue variant",
+      "Open Settings",
+    ],
+  },
+  purchasing: {
+    component: Purchasing as Component,
+    heading: "Purchasing",
+    anchors: [
+      "Purchasing is a business feature",
+      "a purchase order buys from a supplier contact",
+      "Open Settings",
+    ],
   },
   settings: {
     component: Settings as Component,

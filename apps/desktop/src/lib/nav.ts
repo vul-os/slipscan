@@ -33,9 +33,9 @@ export interface NavGroup {
 }
 
 /**
- * Eleven destinations is more than reads as one list, so the rail is
- * grouped: what the money did, what the books say, and what the machine is
- * set up with.
+ * More destinations than reads as one list, so the rail is grouped: what the
+ * money did, what the books say, what the business trades, and what the
+ * machine is set up with.
  */
 export const NAV_GROUPS: NavGroup[] = [
   {
@@ -109,6 +109,33 @@ export const NAV_GROUPS: NavGroup[] = [
         icon: "reports",
         key: "P",
         keywords: "vat tax spending income expense trial balance export csv",
+      },
+    ],
+  },
+  {
+    // Business-only, gated on the book profile at the screen level
+    // (`BookProfile.show_catalogue`/`show_purchasing`) rather than hidden
+    // from the rail — a personal book still sees the destination and is told
+    // why it is empty, the same pattern Settings › General already states
+    // for these groups (ROADMAP.md "Phase 6.0" doc comment: "the screens
+    // they would gate are 6.9"). Order within this heading, across every
+    // agent adding to it: Contacts, Catalogue, Stock, Purchasing, Sales.
+    heading: "Trade",
+    items: [
+      {
+        route: "stock",
+        label: "Stock",
+        icon: "layers",
+        key: "I",
+        keywords:
+          "inventory on hand levels warehouse count adjustment transfer low reorder variants",
+      },
+      {
+        route: "purchasing",
+        label: "Purchasing",
+        icon: "truck",
+        key: "U",
+        keywords: "purchase orders suppliers goods receipt receiving po",
       },
     ],
   },

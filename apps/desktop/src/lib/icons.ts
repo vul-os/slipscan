@@ -78,6 +78,13 @@ export const icons = {
   scan: '<path d="M3.5 8V5.5A2 2 0 0 1 5.5 3.5H8M16 3.5h2.5a2 2 0 0 1 2 2V8M20.5 16v2.5a2 2 0 0 1-2 2H16M8 20.5H5.5a2 2 0 0 1-2-2V16"/><path d="M3.5 12h17"/>',
   zap: '<path d="M13 2.5 4.5 13.5h6l-1 8 8.5-11h-6z"/>',
   copy: '<rect x="8.5" y="8.5" width="12" height="12" rx="1.5"/><path d="M15.5 8.5v-3A2 2 0 0 0 13.5 3.5h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/>',
+  /** Stacked layers — on-hand stock (Stock nav item). Deliberately distinct
+   * from `package` (Packs) and `dashboard` (a 4-up grid). */
+  layers:
+    '<path d="M12 3.5 3.5 8 12 12.5 20.5 8z"/><path d="m3.5 12 8.5 4.5L20.5 12"/><path d="m3.5 16 8.5 4.5L20.5 16"/>',
+  /** Delivery truck — incoming goods (Purchasing nav item). */
+  truck:
+    '<rect x="2.5" y="8" width="11" height="7.5" rx="1"/><path d="M13.5 10.5H17l3.5 3v2H13.5z"/><circle cx="7" cy="18" r="1.6"/><circle cx="17" cy="18" r="1.6"/>',
 } as const;
 
 export type IconName = keyof typeof icons;
