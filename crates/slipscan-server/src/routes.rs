@@ -21,6 +21,16 @@ use slipscan_core::device::pairing::PairingInviteMeta;
 use slipscan_core::device::{DeviceIdentity, DevicePeer, DeviceRotation};
 use slipscan_core::secrets::VaultSecretMeta;
 
+// Statement import: the same `bank::import_statement_lines` pipeline the
+// CLI's `slipscan import --preset` drives, so dedupe, the categorisation
+// cascade and the Payments detection hook all apply here too — no second
+// import path.
+use slipscan_ingest::bank::import_statement_lines;
+use slipscan_ingest::bank::presets::{
+    statement_preset, statement_presets_by_region, RegionPresetGroup,
+};
+use slipscan_ingest::IngestError;
+
 use crate::ops::{self, BenchmarkReport, InstalledPackEntry, OpsError, PackInstallResult};
 use crate::{ct_eq, hex_decode, token_hash, AppState, AUTH_TOKEN_SETTING};
 
@@ -184,6 +194,20 @@ impl From<CoreError> for ApiError {
             status,
             code,
             message: err.to_string(),
+        }
+    }
+}
+
+impl From<IngestError> for ApiError {
+    fn from(err: IngestError) -> Self {
+        match err {
+            // A core refusal underneath (e.g. a validation guard inside
+            // `transaction_create`, or the duplicate-transaction path) keeps
+            // its own status/code rather than collapsing to a generic one.
+            IngestError::Core(core) => core.into(),
+            // Everything else here is "this file/preset combination did not
+            // parse" — a client precondition, not a server fault.
+            other => Self::unprocessable(other.to_string()),
         }
     }
 }
@@ -1752,6 +1776,106 @@ async fn document_list(
     Ok(Json(s.service()?.document_list(&req.book_id, req.status)?))
 }
 
+// -- Statement import: parse a bank CSV into transactions through a named
+// column-mapping preset (Phase 3/4.95 — the CLI's `slipscan import
+// --preset` reachable over HTTP too). Reuses
+// `slipscan_ingest::bank::import_statement_lines`, the exact function the
+// CLI calls, so dedupe, the categorisation cascade and the Payments
+// detection hook all apply here — no second import path.
+//
+// `document.file_path` is expected to already be readable from this
+// process — the same shared-filesystem assumption `document_import` above
+// already makes over HTTP (self-host mode: server and caller share a
+// machine or a mount). There is no bytes-over-the-wire path yet; that needs
+// a remote desktop client, which ROADMAP.md's Phase 5 headless-mode entry
+// still lists as unbuilt.
+
+#[derive(Debug, Deserialize)]
+struct StatementImportReq {
+    document: NewDocument,
+    account_id: String,
+    preset_id: String,
+}
+
+#[derive(Debug, Serialize)]
+struct StatementImportResp {
+    document: Document,
+    /// The file's content hash already existed as a document in this book —
+    /// the parse below still ran (overlapping statement pulls are the
+    /// normal case for a bank export), so this is informational, not a
+    /// refusal.
+    document_duplicate: bool,
+    preset_id: String,
+    account_id: String,
+    imported: Vec<Transaction>,
+    duplicates: usize,
+    content_duplicates: usize,
+}
+
+/// The built-in statement-preset catalog, grouped by region — the same data
+/// the CLI's `--list-presets` prints. Pure catalog data; no book required.
+async fn statement_preset_list(State(_): State<AppState>) -> ApiResult<Vec<RegionPresetGroup>> {
+    Ok(Json(statement_presets_by_region()))
+}
+
+async fn statement_import(
+    State(s): State<AppState>,
+    Json(req): Json<StatementImportReq>,
+) -> ApiResult<StatementImportResp> {
+    let service = s.service()?;
+
+    let preset = statement_preset(&req.preset_id).ok_or_else(|| {
+        ApiError::unprocessable(format!("unknown statement preset {:?}", req.preset_id))
+    })?;
+
+    // Resolved and book-checked up front (`import_statement_lines` only
+    // catches this once a line reaches `transaction_create`, so an
+    // empty/header-only CSV would otherwise skip the check entirely).
+    let account = service.account_get(&req.account_id)?;
+    if account.book_id != req.document.book_id {
+        return Err(ApiError::unprocessable(format!(
+            "no account {:?} in this book",
+            req.account_id
+        )));
+    }
+
+    let book_id = req.document.book_id.clone();
+    let file_path = req.document.file_path.clone();
+    // A content-hash duplicate is not a refusal here the way it is for
+    // `document_import` alone: overlapping statement pulls are the normal
+    // case for a bank CSV, and the transaction-level dedupe below is what
+    // actually has to catch it.
+    let (document, document_duplicate) = match service.document_import(req.document) {
+        Ok(doc) => (doc, false),
+        Err(CoreError::DuplicateDocument { existing_id }) => {
+            (service.document_get(&existing_id)?, true)
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let bytes = std::fs::read(&file_path)
+        .map_err(|e| ApiError::unprocessable(format!("cannot read {file_path}: {e}")))?;
+    let lines = preset.adapter_for_content(bytes).parse_all()?;
+
+    let outcome = import_statement_lines(
+        &service,
+        &book_id,
+        &account.id,
+        TransactionSource::Import,
+        lines,
+    )?;
+
+    Ok(Json(StatementImportResp {
+        document,
+        document_duplicate,
+        preset_id: preset.id,
+        account_id: account.id,
+        imported: outcome.imported,
+        duplicates: outcome.duplicates,
+        content_duplicates: outcome.content_duplicates,
+    }))
+}
+
 async fn document_transition(
     State(s): State<AppState>,
     Json(req): Json<DocumentTransitionReq>,
@@ -2695,6 +2819,8 @@ pub fn app(state: AppState) -> Router {
             "/document_current_extraction",
             post(document_current_extraction),
         )
+        .route("/statement_preset_list", post(statement_preset_list))
+        .route("/statement_import", post(statement_import))
         .route("/journal_post", post(journal_post))
         .route("/journal_get", post(journal_get))
         .route("/coa_list", post(coa_list))
@@ -6451,5 +6577,194 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    /// Statement import over HTTP: catalog, then a real parse through
+    /// `import_statement_lines` — the identical function the CLI's
+    /// `slipscan import --preset` calls, so dedupe, the categorisation
+    /// cascade and the Payments hook all apply here too. Also proves an
+    /// overlapping re-import (the normal case for a bank CSV) dedupes
+    /// rather than refuses.
+    #[tokio::test]
+    async fn statement_import_over_http_parses_and_dedupes() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Personal", "kind": "personal", "currency": "ZAR", "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+        let (_, account) = call(
+            &app,
+            post_req(
+                "/api/v1/account_create",
+                json!({"book_id": book_id, "name": "Cheque", "kind": "bank", "currency": "ZAR"}),
+                None,
+            ),
+        )
+        .await;
+        let account_id = account["id"].as_str().unwrap().to_string();
+
+        // Catalog: static data, reachable with no book at all.
+        let (status, groups) = call(
+            &app,
+            post_req("/api/v1/statement_preset_list", json!({}), None),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(groups
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|g| g["region"] == "za"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("statement.csv");
+        let csv = "Date,Description,Amount\n2026-06-01,SHOP,-10.00\n2026-06-02,SALARY,2500.00\n";
+        std::fs::write(&path, csv).unwrap();
+        // A real hash, not `null` — `document_import` only checks for a
+        // duplicate when one is given, so a null hash here would make the
+        // second call below pass by not testing what it claims to.
+        let sha256 = {
+            use sha2::{Digest, Sha256};
+            let digest = Sha256::digest(csv.as_bytes());
+            digest
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        let document = json!({
+            "book_id": book_id,
+            "source": "upload",
+            "kind": "bank_statement",
+            "file_path": path.display().to_string(),
+            "mime_type": "text/csv",
+            "size_bytes": csv.len(),
+            "original_name": "statement.csv",
+            "sha256": sha256,
+        });
+
+        let (status, result) = call(
+            &app,
+            post_req(
+                "/api/v1/statement_import",
+                json!({"document": document, "account_id": account_id, "preset_id": "generic-iso"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{result}");
+        assert_eq!(result["imported"].as_array().unwrap().len(), 2);
+        assert_eq!(result["duplicates"], 0);
+        assert_eq!(result["document_duplicate"], false);
+
+        // The same file again — an overlapping statement pull, not a
+        // refusal.
+        let (status, second) = call(
+            &app,
+            post_req(
+                "/api/v1/statement_import",
+                json!({"document": document, "account_id": account_id, "preset_id": "generic-iso"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{second}");
+        assert_eq!(second["document_duplicate"], true);
+        assert_eq!(second["imported"].as_array().unwrap().len(), 0);
+        assert_eq!(second["duplicates"], 2);
+
+        let (status, txns) = call(
+            &app,
+            post_req(
+                "/api/v1/transaction_list",
+                json!({"book_id": book_id, "filter": {}}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            txns.as_array().unwrap().len(),
+            2,
+            "the re-import must not double the books"
+        );
+    }
+
+    #[tokio::test]
+    async fn statement_import_over_http_rejects_unknown_preset_and_cross_book_account() {
+        let app = open_app();
+        let (_, book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Personal", "kind": "personal", "currency": "ZAR", "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let book_id = book["id"].as_str().unwrap().to_string();
+        let (_, account) = call(
+            &app,
+            post_req(
+                "/api/v1/account_create",
+                json!({"book_id": book_id, "name": "Cheque", "kind": "bank", "currency": "ZAR"}),
+                None,
+            ),
+        )
+        .await;
+        let account_id = account["id"].as_str().unwrap().to_string();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("statement.csv");
+        std::fs::write(&path, "Date,Description,Amount\n2026-06-01,SHOP,-10.00\n").unwrap();
+        let document = json!({
+            "book_id": book_id,
+            "source": "upload",
+            "kind": "bank_statement",
+            "file_path": path.display().to_string(),
+            "mime_type": "text/csv",
+            "size_bytes": null,
+            "original_name": "statement.csv",
+            "sha256": null,
+        });
+
+        let (status, err) = call(
+            &app,
+            post_req(
+                "/api/v1/statement_import",
+                json!({"document": document, "account_id": account_id, "preset_id": "zz-nowhere"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+
+        let (_, other_book) = call(
+            &app,
+            post_req(
+                "/api/v1/book_create",
+                json!({"name": "Other", "kind": "personal", "currency": "ZAR", "country": "ZA"}),
+                None,
+            ),
+        )
+        .await;
+        let other_book_id = other_book["id"].as_str().unwrap().to_string();
+        let mut other_document = document.clone();
+        other_document["book_id"] = json!(other_book_id);
+        let (status, err) = call(
+            &app,
+            post_req(
+                "/api/v1/statement_import",
+                json!({"document": other_document, "account_id": account_id, "preset_id": "generic-iso"}),
+                None,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
     }
 }

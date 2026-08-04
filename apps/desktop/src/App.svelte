@@ -2,6 +2,7 @@
   import type { Component } from "svelte";
   import Sidebar from "./lib/components/Sidebar.svelte";
   import CommandPalette from "./lib/components/CommandPalette.svelte";
+  import DropCapture from "./lib/components/DropCapture.svelte";
   import FirstRun from "./lib/components/FirstRun.svelte";
   import { api } from "./lib/api/client";
   import { bookEpoch } from "./lib/state/books.svelte";
@@ -146,3 +147,4 @@
      container, and so their scrim covers the rail as well as the screen. -->
 <CommandPalette />
 <FirstRun />
+<DropCapture />

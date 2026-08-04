@@ -685,6 +685,72 @@ pub struct DocumentImportRequest {
 }
 
 // ---------------------------------------------------------------------------
+// watch folder — local drop-folder watching while the app is open. See
+// commands.rs's `watch_folder_status` / `watch_folder_set` for the lifecycle
+// contract this reports.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WatchFolderStatusDto {
+    /// The persisted choice — survives a restart, drives autostart.
+    pub enabled: bool,
+    pub folder: Option<String>,
+    /// Whether a watcher thread is actually alive right now. Can be `false`
+    /// while `enabled` is `true`: the thread stopped on an error (see
+    /// `last_error`) without anything having turned the setting back off.
+    pub running: bool,
+    pub book_id: Option<String>,
+    pub book_name: Option<String>,
+    pub imported_count: u64,
+    pub last_error: Option<String>,
+    pub started_at: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// statement import — parse a bank CSV into transactions through a named
+// column-mapping preset, over the identical `slipscan_ingest::bank`
+// pipeline the CLI's `slipscan import --preset` drives (dedupe, the
+// categorisation cascade and the Payments detection hook all apply).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StatementImportRequest {
+    pub book_id: String,
+    pub account_id: String,
+    /// Statement-preset id from `statement_preset_list` (e.g. `za-fnb`,
+    /// `generic-mdy`).
+    pub preset_id: String,
+    pub file_name: String,
+    pub mime_type: String,
+    #[serde(default)]
+    pub bytes_base64: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StatementImportResultDto {
+    pub document: DocumentDto,
+    /// The file's content hash already existed as a document in this book —
+    /// the parse below still ran (overlapping statement pulls are the
+    /// normal case for a bank export), so this is informational, not a
+    /// refusal.
+    pub document_duplicate: bool,
+    pub preset_id: String,
+    pub account_id: String,
+    /// Newly created transactions only — a duplicate line is counted below,
+    /// never included here.
+    pub imported: Vec<TransactionDto>,
+    /// Lines that matched an existing transaction (by provider id or
+    /// content hash) and were not re-imported.
+    pub duplicates: i64,
+    /// Subset of `duplicates` matched by content hash alone (no bank
+    /// reference id) — see `slipscan_ingest::bank::import_statement_lines`'s
+    /// cross-batch caveat.
+    pub content_duplicates: i64,
+}
+
+// ---------------------------------------------------------------------------
 // ledger
 // ---------------------------------------------------------------------------
 

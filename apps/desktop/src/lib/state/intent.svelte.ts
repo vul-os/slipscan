@@ -20,9 +20,32 @@ import type { RouteId } from "./router.svelte";
 /** Which Settings tab to land on (mirrors the tab strip in Settings.svelte). */
 export type SettingsTab = "general" | "data" | "connections" | "vault";
 
+/**
+ * One file captured by a drop, normalized to what `DropCapture.svelte`
+ * could actually get out of it:
+ *
+ *   - `path` — a real absolute path, the only thing Tauri's webview
+ *     file-drop event hands over (see DropCapture.svelte's own doc comment
+ *     for why that is the mechanism, not DOM `ondrop`).
+ *   - `bytes` — already-read file content, the DOM drag-and-drop fallback
+ *     used outside Tauri (plain browser dev, every Playwright spec).
+ *   - `oversized` — a `bytes`-path file DropCapture declined to read into
+ *     memory at all, because it already exceeded `MAX_IMPORT_BYTES`.
+ *
+ * Either way, nothing here decides whether the *type* is importable — that
+ * answer comes back from `document_import` itself, off
+ * `crates/slipscan-ingest/src/import.rs`'s accepted-extension list.
+ */
+export type DroppedFile =
+  | { kind: "path"; path: string }
+  | { kind: "bytes"; name: string; mimeType: string; bytesBase64: string }
+  | { kind: "oversized"; name: string; sizeBytes: number };
+
 export type Intent =
   /** Receipts: open the import picker on arrival. */
   | { kind: "import-receipt" }
+  /** Receipts: import files captured by a drop, from anywhere in the app. */
+  | { kind: "import-dropped-files"; files: DroppedFile[] }
   /** Transactions: open the new-transaction composer on arrival. */
   | { kind: "new-transaction" }
   /** Packs: open the install-a-pack panel on arrival. */
@@ -37,6 +60,7 @@ export type Intent =
 /** Which screen is expected to claim each intent. */
 const OWNER: Record<Intent["kind"], RouteId> = {
   "import-receipt": "receipts",
+  "import-dropped-files": "receipts",
   "new-transaction": "transactions",
   "install-pack": "packs",
   "run-reconcile": "reconcile",

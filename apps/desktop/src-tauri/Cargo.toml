@@ -44,3 +44,7 @@ slipscan-ingest = { path = "../../../crates/slipscan-ingest" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time"] }
 base64 = "0.22"
 sha2 = "0.10"
+
+[dev-dependencies]
+# statement_import_impl's tests write a real CSV-backed document to disk.
+tempfile = "3"

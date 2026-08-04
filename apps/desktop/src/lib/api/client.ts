@@ -113,6 +113,9 @@ import type {
   Settings,
   SpendingReport,
   SplitShare,
+  StatementImportRequest,
+  StatementImportResult,
+  StatementPresetGroup,
   StockMovement,
   Transaction,
   TransactionListQuery,
@@ -124,6 +127,8 @@ import type {
   VaultCredentialMeta,
   VaultReplaceRequest,
   VaultSetRequest,
+  WatchFolderSetRequest,
+  WatchFolderStatus,
 } from "./types";
 
 export const isTauri: boolean =
@@ -677,6 +682,15 @@ export const api = {
   dataMove: (q: DataMoveRequest): Promise<DataStatus> =>
     call("data_move", { query: q }, () => mockApi.data_move(q)),
 
+  // -- watch folder (ROADMAP.md "Phase 2 ... Slip/receipt capture"): local
+  // drop-folder watching that runs only while the app is open. --
+
+  watchFolderStatus: (): Promise<WatchFolderStatus> =>
+    call("watch_folder_status", {}, mockApi.watch_folder_status),
+
+  watchFolderSet: (q: WatchFolderSetRequest): Promise<WatchFolderStatus> =>
+    call("watch_folder_set", { query: q }, () => mockApi.watch_folder_set(q)),
+
   accountList: (q: { book_id: string }): Promise<Account[]> =>
     call("account_list", { query: q }, () => mockApi.account_list(q)),
 
@@ -807,6 +821,16 @@ export const api = {
 
   documentImport: (q: DocumentImportRequest): Promise<Document> =>
     call("document_import", { query: q }, () => mockApi.document_import(q)),
+
+  // Statement import (ROADMAP.md Phase 3/4.95): parse a bank CSV into
+  // transactions with a named preset — the desktop wiring for
+  // `slipscan import --preset`. Same core pipeline as the CLI, so dedupe,
+  // categorisation and the Payments hook all apply.
+  statementPresetList: (): Promise<StatementPresetGroup[]> =>
+    call("statement_preset_list", {}, mockApi.statement_preset_list),
+
+  statementImport: (q: StatementImportRequest): Promise<StatementImportResult> =>
+    call("statement_import", { query: q }, () => mockApi.statement_import(q)),
 
   ledgerAccountList: (q: { book_id: string }): Promise<LedgerAccount[]> =>
     call("ledger_account_list", { query: q }, () =>

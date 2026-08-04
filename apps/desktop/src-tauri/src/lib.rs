@@ -63,6 +63,11 @@ pub fn run() {
             let resolver =
                 slipscan_core::datadir::DataDirResolver::system().map_err(std::io::Error::other)?;
             let state = AppState::open(resolver).map_err(std::io::Error::other)?;
+            // Resume watching a drop folder if it was left on last time this
+            // app was open — the honest half of "runs while the app is
+            // open": it comes back on its own each launch, but never while
+            // the app is closed.
+            state.watch_autostart();
             app.manage(state);
             Ok(())
         })
@@ -200,6 +205,12 @@ pub fn run() {
             commands::document_list,
             commands::document_get,
             commands::document_import,
+            // Statement import (ROADMAP.md Phase 3/4.95): parse a bank CSV
+            // into transactions with a named preset — the desktop wiring for
+            // `slipscan import --preset`. See commands.rs's doc comment on
+            // `statement_import` for the reuse contract.
+            commands::statement_preset_list,
+            commands::statement_import,
             commands::ledger_account_list,
             commands::journal_list,
             commands::journal_post,
@@ -243,6 +254,11 @@ pub fn run() {
             commands::pack_benchmark,
             commands::settings_get,
             commands::settings_set,
+            // Watch folder (ROADMAP.md "Phase 2 ... Slip/receipt capture"):
+            // local drop-folder watching that runs only while the app is
+            // open — see state.rs's watch_* methods for the mechanism.
+            commands::watch_folder_status,
+            commands::watch_folder_set,
             commands::vault_list,
             commands::vault_set,
             commands::vault_replace,

@@ -13,6 +13,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 slipscan-core = { workspace = true }
+# Statement import (`/statement_preset_list`, `/statement_import`): the same
+# `bank::import_statement_lines` pipeline the CLI's `import --preset` drives.
+slipscan-ingest = { workspace = true }
 slipscan-packs = { workspace = true }
 thiserror = { workspace = true }
 # `time` on top of the workspace set: the explicit FX fetch drives core's

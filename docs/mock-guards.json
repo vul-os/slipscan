@@ -71,6 +71,10 @@
       0,
       1
     ],
+    "document_import": [
+      0,
+      1
+    ],
     "fx_configure": [
       0,
       1
@@ -120,8 +124,8 @@
       3
     ],
     "member_remove": [
-      3,
-      4
+      4,
+      5
     ],
     "member_update": [
       4,

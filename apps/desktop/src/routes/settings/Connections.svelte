@@ -17,6 +17,7 @@
     FxStatus,
     InstalledPackInfo,
     Settings,
+    WatchFolderStatus,
   } from "../../lib/api/types";
   import { fmtRelative } from "../../lib/util/format";
   import EmptyState from "../../lib/components/EmptyState.svelte";
@@ -85,6 +86,45 @@
   /** A rate dated more than ~26h ago is flagged (weekend/holiday gaps show). */
   function isStale(r: FxCachedRate): boolean {
     return r.age_secs === null || r.age_secs > 93_600;
+  }
+
+  // -- watch folder -----------------------------------------------------------
+  // Local drop-folder watching (ROADMAP.md "Phase 2 ... Slip/receipt
+  // capture") — the desktop wiring for the engine `slipscan watch` already
+  // runs on the CLI. Not egress (nothing here ever touches the network),
+  // but it is the one control on this screen that keeps something running
+  // without being asked again for every file, so its lifecycle gets stated
+  // as plainly as the mailbox panel below states its own gaps.
+
+  let watch = $state<WatchFolderStatus | null>(null);
+  let watchFolderInput = $state("");
+  let watchBusy = $state(false);
+  let watchError = $state<string | null>(null);
+
+  async function loadWatch() {
+    watchError = null;
+    try {
+      watch = await api.watchFolderStatus();
+      watchFolderInput = watch.folder ?? "";
+    } catch (err) {
+      watchError = String(err);
+    }
+  }
+  void loadWatch();
+
+  async function setWatch(enabled: boolean) {
+    watchBusy = true;
+    watchError = null;
+    try {
+      watch = await api.watchFolderSet({
+        enabled,
+        folder: enabled ? watchFolderInput.trim() : (watch?.folder ?? null),
+      });
+    } catch (err) {
+      watchError = String(err);
+    } finally {
+      watchBusy = false;
+    }
   }
 
   // -- bank-alert emails ------------------------------------------------------
@@ -382,6 +422,99 @@
         vault and name that entry in the CLI's config.
       </span>
     </p>
+  </section>
+
+  <!-- watch folder -->
+  <section class="card p-4">
+    <div class="mb-1 flex items-center justify-between">
+      <h2 class="flex items-center gap-2 text-[13px] font-semibold">
+        <Icon name="folder" size={15} class="text-t3" />
+        Watch folder
+      </h2>
+      <Badge
+        tone={watch?.running ? "accent" : "neutral"}
+        label={watch?.running ? "watching" : watch?.enabled ? "not running" : "off"}
+      />
+    </div>
+    <p class="mb-3 text-[12px] text-t3">
+      Point SlipScan at a drop folder and it imports anything already
+      there, then keeps importing as files land — the same engine
+      <span class="font-mono">slipscan watch</span> runs on the CLI, wired
+      into the app and going through the same import path the Receipts file
+      picker uses.
+    </p>
+
+    <!-- The lifecycle, stated once and not softened. -->
+    <p
+      class="mb-3 flex items-start gap-1.5 rounded-lg border border-line bg-sunken/50 px-3 py-2 text-[11.5px] leading-relaxed text-t2"
+    >
+      <Icon name="alert-circle" size={13} class="mt-0.5 shrink-0 text-t3" />
+      <span>
+        <span class="font-medium">This only watches while SlipScan is open.</span>
+        Closing the app stops it — there is no separate background process,
+        and nothing here ever touches the network. It resumes on its own the
+        next time you open SlipScan, if it was still on. For a folder that
+        needs watching whether or not the app is running, use
+        <span class="font-mono">slipscan watch &lt;dir&gt;</span> from the CLI
+        instead (<span class="font-mono">--once</span> for cron or launchd).
+      </span>
+    </p>
+
+    {#if watchError}
+      <p
+        class="mb-3 flex items-center gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+        role="alert"
+      >
+        <Icon name="alert-circle" size={13} />
+        {watchError}
+      </p>
+    {/if}
+
+    {#if watch?.last_error}
+      <p
+        class="mb-3 flex items-center gap-1.5 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-[12px] text-warning"
+        role="alert"
+      >
+        <Icon name="alert-circle" size={13} />
+        Stopped: {watch.last_error}
+      </p>
+    {/if}
+
+    <div class="flex flex-wrap items-end gap-2">
+      <label class="block min-w-56 flex-1">
+        <span class="mb-1 block text-[11.5px] font-medium text-t2">Folder</span>
+        <input
+          class="input font-mono"
+          placeholder="e.g. ~/Documents/SlipScan Drop"
+          bind:value={watchFolderInput}
+          disabled={watchBusy || watch?.running}
+        />
+      </label>
+      {#if watch?.running}
+        <button class="btn h-8" onclick={() => setWatch(false)} disabled={watchBusy}>
+          {watchBusy ? "Stopping…" : "Stop watching"}
+        </button>
+      {:else}
+        <button
+          class="btn btn-primary h-8"
+          onclick={() => setWatch(true)}
+          disabled={watchBusy || !watchFolderInput.trim()}
+        >
+          {watchBusy ? "Starting…" : "Start watching"}
+        </button>
+      {/if}
+    </div>
+
+    {#if watch?.running}
+      <p class="mt-2 text-[11px] text-t3">
+        Watching <span class="font-mono">{watch.folder}</span>
+        {#if watch.book_name}into "{watch.book_name}"{/if} ·
+        {watch.imported_count}
+        {watch.imported_count === 1 ? "file" : "files"} imported since it
+        started{#if watch.started_at}
+          ({fmtRelative(watch.started_at)}){/if}.
+      </p>
+    {/if}
   </section>
 
   <!--

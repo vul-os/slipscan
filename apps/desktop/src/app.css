@@ -647,6 +647,39 @@
     }
   }
 
+  /* --- drag-and-drop capture (DropCapture) ----------------------------- */
+
+  /* One step above the scrim (95) so a drop still reads while a dialog is
+   * open; `pointer-events: none` keeps it from ever becoming the drop
+   * target a browser or the webview has to hit-test against. */
+  .drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 96;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    pointer-events: none;
+    background: oklch(0 0 0 / 0.28);
+  }
+  .dark .drop-overlay {
+    background: oklch(0 0 0 / 0.55);
+  }
+  .drop-overlay-panel {
+    @apply rounded-xl border-2 border-dashed border-accent-ring bg-overlay;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2.5rem 3rem;
+    box-shadow: var(--shadow-overlay);
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .drop-overlay {
+      animation: fade-in var(--dur-quick) var(--ease-standard);
+    }
+  }
+
   /* --- command palette ------------------------------------------------ */
 
   /* The rail's palette button. It looks like the search field it replaced,

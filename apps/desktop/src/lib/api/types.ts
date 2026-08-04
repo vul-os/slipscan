@@ -746,6 +746,35 @@ export interface DataMoveRequest {
   use_existing?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// watch folder — local drop-folder watching while the app is open
+// (ROADMAP.md "Phase 2 ... Slip/receipt capture"). Mirrors
+// `WatchFolderStatusDto` exactly.
+// ---------------------------------------------------------------------------
+
+export interface WatchFolderStatus {
+  /** The persisted choice — survives a restart, drives autostart. */
+  enabled: boolean;
+  folder: string | null;
+  /**
+   * Whether a watcher thread is actually alive right now. Can be `false`
+   * while `enabled` is `true`: the thread stopped on an error (see
+   * `last_error`) without anything having turned the setting back off.
+   */
+  running: boolean;
+  book_id: string | null;
+  book_name: string | null;
+  imported_count: number;
+  last_error: string | null;
+  started_at: string | null;
+}
+
+export interface WatchFolderSetRequest {
+  enabled: boolean;
+  /** Required when `enabled` is true; ignored when false. */
+  folder?: string | null;
+}
+
 /** A selectable region profile (chart of accounts, tax config, labels). */
 export interface RegionInfo {
   id: string;
@@ -913,6 +942,16 @@ export interface Member {
   default_account_id: string | null;
   created_at: string;
   updated_at: string;
+  /** Tombstone, never reversed: `member_revoke` is the only writer. A revoked
+   * member keeps their row because attributions and capability history point
+   * at it. See docs/ROLES.md. */
+  status: "active" | "revoked";
+  revoked_at: string | null;
+  /** Appears in "whose spend is this" (attribution / splits). */
+  attributable: boolean;
+  /** May hold capabilities and devices. Monotonic — once true, stays true,
+   * which is why `member_remove` refuses a principal outright. */
+  principal: boolean;
 }
 
 export interface NewMember {
@@ -1100,6 +1139,65 @@ export interface DocumentImportRequest {
 export interface DocumentReviewRequest {
   document_id: string;
   extraction: SlipExtraction;
+}
+
+// ---------------------------------------------------------------------------
+// statement import — parse a bank CSV into transactions through a named
+// column-mapping preset. Same core pipeline the CLI's
+// `slipscan import --preset` drives: dedupe, the categorisation cascade and
+// the Payments detection hook all apply, because desktop and CLI call the
+// identical `slipscan_ingest::bank::import_statement_lines` function. OFX
+// statements and a fully custom column mapping are still CLI-only — this
+// surface is the built-in preset catalog only.
+// ---------------------------------------------------------------------------
+
+/** One catalog entry: a named, region-tagged CSV column mapping. `mapping`
+ * is the preset's raw CSV column spec — opaque here, since the UI only ever
+ * shows `bank_name` in a picker and never inspects it. */
+export interface StatementPreset {
+  id: string;
+  region: string;
+  region_name: string;
+  bank_name: string;
+  mapping: unknown;
+}
+
+/** Presets of one region, in catalog order — the shape `statementPresetList`
+ * returns (SA banks first, `generic` layouts last). */
+export interface StatementPresetGroup {
+  region: string;
+  region_name: string;
+  presets: StatementPreset[];
+}
+
+export interface StatementImportRequest {
+  book_id: string;
+  account_id: string;
+  /** Id from `StatementPreset.id` (e.g. `za-fnb`, `generic-mdy`). */
+  preset_id: string;
+  file_name: string;
+  mime_type: string;
+  /** Base64 file contents (desktop passes a path in Tauri mode instead). */
+  bytes_base64?: string;
+  path?: string;
+}
+
+export interface StatementImportResult {
+  document: Document;
+  /** The file's content hash already existed as a document in this book —
+   * the parse still ran (overlapping statement pulls are the normal case
+   * for a bank export), so this is informational, never a refusal. */
+  document_duplicate: boolean;
+  preset_id: string;
+  account_id: string;
+  /** Newly created transactions only — a duplicate line is counted below,
+   * never included here. */
+  imported: Transaction[];
+  /** Lines that matched an existing transaction and were not re-imported. */
+  duplicates: number;
+  /** Subset of `duplicates` matched by content hash alone (no bank
+   * reference id) — see the CLI's `import_statement_lines` docs. */
+  content_duplicates: number;
 }
 
 // ---------------------------------------------------------------------------

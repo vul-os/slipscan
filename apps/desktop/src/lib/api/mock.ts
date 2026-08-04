@@ -118,6 +118,10 @@ import type {
   Settings,
   SpendingReport,
   SplitShare,
+  StatementImportRequest,
+  StatementImportResult,
+  StatementPreset,
+  StatementPresetGroup,
   StockMovement,
   Transaction,
   TransactionListQuery,
@@ -129,6 +133,8 @@ import type {
   VaultCredentialMeta,
   VaultReplaceRequest,
   VaultSetRequest,
+  WatchFolderSetRequest,
+  WatchFolderStatus,
 } from "./types";
 
 const BOOK_ID = "0197a1b0-0000-7000-8000-000000000001";
@@ -617,6 +623,14 @@ let members: Member[] = memberSeeds.map((m) => ({
   default_account_id: m.account ? acctId(m.account) : null,
   created_at: "2026-01-05T08:00:00Z",
   updated_at: "2026-01-05T08:00:00Z",
+  // The demo book is a household: everyone is attributable, nobody is a
+  // principal. Nothing pairs a device to a member yet, and no capability
+  // gates anything, so a seeded principal would only be able to misrepresent
+  // what the product does.
+  status: "active",
+  revoked_at: null,
+  attributable: true,
+  principal: false,
 }));
 
 const memberId = (label: string): string =>
@@ -1141,6 +1155,20 @@ const dataState: DataStatus = {
   db_size_bytes: 2_184_192,
   document_count: documents.length,
   documents_size_bytes: 14_386_002,
+};
+
+/** Off by default — mirrors `AppState`'s `watch: Mutex<Option<WatchRuntime>>`
+ * starting empty; nothing watches anything until `watch_folder_set` is
+ * called. */
+const watchFolderState: WatchFolderStatus = {
+  enabled: false,
+  folder: null,
+  running: false,
+  book_id: null,
+  book_name: null,
+  imported_count: 0,
+  last_error: null,
+  started_at: null,
 };
 
 /** Mirrors the desktop shell's trivial path-component cloud detection. */
@@ -2126,6 +2154,87 @@ function seededMonthTotals(month: string): {
 // ---------------------------------------------------------------------------
 
 const clone = <T>(v: T): T => structuredClone(v);
+
+/**
+ * Mirrors `crates/slipscan-ingest/src/import.rs`'s `SUPPORTED_EXTENSIONS`.
+ * The desktop's real `document_import` IPC command enforces that exact list
+ * before writing a file (added alongside drag-and-drop capture); this mock
+ * has to refuse the same names or a rejection the packaged app performs
+ * would silently succeed here — the mock/core divergence class
+ * `check-mock-guards.ts` exists to catch, applied by hand where the check
+ * itself cannot see it (this validation lives in the IPC command, not in a
+ * `CoreService` method the script parses).
+ */
+const IMPORTABLE_EXTENSIONS = [
+  "pdf", "png", "jpg", "jpeg", "webp", "heic", "heif", "gif", "bmp", "avif",
+  "tif", "tiff", "html", "csv", "ofx",
+];
+
+function importableExtension(fileName: string): boolean {
+  // Mirrors `Path::extension()` closely enough: a dot has to be present and
+  // not be the first character, so "invoice" and ".pdf" both have none.
+  const dot = fileName.lastIndexOf(".");
+  if (dot <= 0) return false;
+  return IMPORTABLE_EXTENSIONS.includes(fileName.slice(dot + 1).toLowerCase());
+}
+
+/**
+ * Mirrors `crates/slipscan-ingest/src/bank/presets.rs`'s built-in statement-
+ * preset catalog — same ids, same display order (SA banks first, `generic`
+ * last) — so the preset picker looks identical on mock data. `mapping` is
+ * never read on this side; only the real backend ever parses a byte of a
+ * statement file (see `statement_import` below).
+ */
+const STATEMENT_PRESET_GROUPS: StatementPresetGroup[] = [
+  {
+    region: "za",
+    region_name: "South Africa",
+    presets: (
+      [
+        ["za-fnb", "FNB"],
+        ["za-standard", "Standard Bank"],
+        ["za-capitec", "Capitec"],
+        ["za-nedbank", "Nedbank"],
+        ["za-absa", "Absa"],
+      ] as const
+    ).map(([presetId, bankName]) => ({
+      id: presetId,
+      region: "za",
+      region_name: "South Africa",
+      bank_name: bankName,
+      mapping: null,
+    })),
+  },
+  {
+    region: "generic",
+    region_name: "Generic (any bank)",
+    presets: (
+      [
+        ["iso", "YYYY-MM-DD", "1,234.56"],
+        ["dmy", "DD/MM/YYYY", "1,234.56"],
+        ["mdy", "MM/DD/YYYY", "1,234.56"],
+        ["eu", "DD.MM.YYYY", "1.234,56"],
+      ] as const
+    ).flatMap(
+      ([suffix, dateLabel, decimalLabel]): StatementPreset[] => [
+        {
+          id: `generic-${suffix}`,
+          region: "generic",
+          region_name: "Generic (any bank)",
+          bank_name: `Date, description, amount — ${dateLabel}, ${decimalLabel}`,
+          mapping: null,
+        },
+        {
+          id: `generic-${suffix}-debit-credit`,
+          region: "generic",
+          region_name: "Generic (any bank)",
+          bank_name: `Date, description, debit, credit — ${dateLabel}, ${decimalLabel}`,
+          mapping: null,
+        },
+      ],
+    ),
+  },
+];
 
 // ---------------------------------------------------------------------------
 // period close — mirrors core's `ClosePeriodReport` checks closely enough
@@ -3631,6 +3740,34 @@ export const mockApi = {
     return clone({ ...dataState, cloud_sync_hint: mockCloudHint(target) });
   },
 
+  watch_folder_status: async (): Promise<WatchFolderStatus> =>
+    clone(watchFolderState),
+
+  watch_folder_set: async (
+    q: WatchFolderSetRequest,
+  ): Promise<WatchFolderStatus> => {
+    if (!q.enabled) {
+      watchFolderState.enabled = false;
+      watchFolderState.running = false;
+      watchFolderState.last_error = null;
+      watchFolderState.started_at = null;
+      return clone(watchFolderState);
+    }
+    const folder = q.folder?.trim();
+    if (!folder) throw new Error("choose a folder to watch");
+    const book = books[0];
+    if (!book) throw new Error("create a book before watching a folder");
+    watchFolderState.enabled = true;
+    watchFolderState.folder = folder;
+    watchFolderState.running = true;
+    watchFolderState.book_id = book.id;
+    watchFolderState.book_name = book.name;
+    watchFolderState.imported_count = 0;
+    watchFolderState.last_error = null;
+    watchFolderState.started_at = new Date().toISOString();
+    return clone(watchFolderState);
+  },
+
   account_list: async (_q: { book_id: string }): Promise<Account[]> =>
     clone(accounts),
 
@@ -3716,7 +3853,14 @@ export const mockApi = {
   member_add: async (q: NewMember): Promise<Member> => {
     const label = q.label.trim();
     if (!label) throw new Error("member label must not be empty");
-    if (members.some((m) => m.book_id === q.book_id && m.label === label))
+    // Active rows only, mirroring core's `members_active_label_idx` partial
+    // unique index: a revoked person keeps their label in the history their
+    // attributions point at, and the name is free for whoever replaces them.
+    if (
+      members.some(
+        (m) => m.book_id === q.book_id && m.label === label && m.status === "active",
+      )
+    )
       throw new Error(`a member named "${label}" already exists in this book`);
     if (q.default_account_id && !accounts.some((a) => a.id === q.default_account_id))
       throw new Error(`account not found: ${q.default_account_id}`);
@@ -3731,6 +3875,10 @@ export const mockApi = {
       default_account_id: q.default_account_id ?? null,
       created_at: now,
       updated_at: now,
+      status: "active",
+      revoked_at: null,
+      attributable: true,
+      principal: false,
     };
     members.push(member);
     return clone(member);
@@ -3769,6 +3917,17 @@ export const mockApi = {
   member_remove: async (q: { id: string; reassign_to?: string }): Promise<null> => {
     const idx = members.findIndex((m) => m.id === q.id);
     if (idx === -1) throw new Error(`member not found: ${q.id}`);
+    // Mirrors core: a principal is refused unconditionally, before the
+    // attribution checks below and with no reassign-target override. `principal`
+    // is monotonic, so this is "is or ever was". Removing one would orphan
+    // whatever the oplog signed under their id — revocation is the only exit,
+    // and a till operator plausibly has zero attributions, so the attribution
+    // guard alone would let them through.
+    if (members[idx]!.principal)
+      throw new Error(
+        `member ${q.id} is (or was) a principal — remove is refused even with a ` +
+          "reassign target; revoke them instead",
+      );
     const attributed =
       transactions.some((t) => t.attributed_member_id === q.id) ||
       transactionSplits.some((s) => s.member_id === q.id);
@@ -3942,6 +4101,11 @@ export const mockApi = {
   },
 
   document_import: async (q: DocumentImportRequest): Promise<Document> => {
+    if (!importableExtension(q.file_name)) {
+      throw new Error(
+        `"${q.file_name}" is not a file type SlipScan can import — supported: ${IMPORTABLE_EXTENSIONS.join(", ")}`,
+      );
+    }
     const doc: Document = {
       id: id("dc00"),
       book_id: q.book_id,
@@ -3958,6 +4122,111 @@ export const mockApi = {
     };
     documents.unshift(doc);
     return clone(doc);
+  },
+
+  // Statement import (ROADMAP.md Phase 3/4.95): parse a bank CSV into
+  // transactions with a named preset. The real backend routes both of these
+  // through `slipscan_ingest::bank` — `statement_preset_list` is the same
+  // static catalog `--list-presets` prints, and `statement_import` calls the
+  // identical `import_statement_lines` function the CLI's
+  // `slipscan import --preset` does (dedupe, categorisation cascade, the
+  // Payments hook). Its refusals are read from `commands.rs`'s
+  // `statement_import_impl`, not from a `CoreService` method —
+  // `check-mock-guards.ts` cannot see this pair for the same reason it
+  // cannot see `document_import`'s extension guard above, so they are kept
+  // aligned by hand.
+  statement_preset_list: async (): Promise<StatementPresetGroup[]> =>
+    clone(STATEMENT_PRESET_GROUPS),
+
+  statement_import: async (
+    q: StatementImportRequest,
+  ): Promise<StatementImportResult> => {
+    const account = accounts.find((a) => a.id === q.account_id);
+    if (!account) {
+      throw new Error(`no account with id ${q.account_id}`);
+    }
+    if (account.book_id !== q.book_id) {
+      throw new Error(`no account ${q.account_id} in this book`);
+    }
+    const preset = STATEMENT_PRESET_GROUPS.flatMap((g) => g.presets).find(
+      (p) => p.id === q.preset_id,
+    );
+    if (!preset) {
+      throw new Error(
+        `unknown statement preset ${q.preset_id}; see statement_preset_list`,
+      );
+    }
+
+    const doc: Document = {
+      id: id("dc00"),
+      book_id: q.book_id,
+      kind: "statement",
+      status: "pending",
+      file_name: q.file_name,
+      mime_type: q.mime_type,
+      extraction: null,
+      merchant: null,
+      issued_at: null,
+      total_minor: null,
+      currency: account.currency,
+      created_at: new Date().toISOString(),
+    };
+    documents.unshift(doc);
+
+    // The mock does not parse real CSV bytes — neither does
+    // `document_import`'s mock above. It fabricates a small, deterministic
+    // batch of lines so the screen has something to show, keyed so that
+    // re-importing the same file/preset/account combination dedupes exactly
+    // like a real overlapping statement pull would (the normal case for a
+    // bank export — see `import_statement_lines`'s own docs).
+    const lines = [0, 1, 2].map((i) => ({
+      posted_at: `2026-07-${18 + i}T00:00:00Z`,
+      description: `${preset.bank_name} — ${q.file_name} line ${i + 1}`,
+      amount_minor: -(1250 + i * 375),
+    }));
+
+    const imported: Transaction[] = [];
+    let duplicates = 0;
+    for (const line of lines) {
+      const already = transactions.some(
+        (t) =>
+          t.account_id === account.id &&
+          t.posted_at === line.posted_at &&
+          t.description === line.description,
+      );
+      if (already) {
+        duplicates += 1;
+        continue;
+      }
+      const txn: Transaction = {
+        id: id("tx00"),
+        book_id: q.book_id,
+        account_id: account.id,
+        posted_at: line.posted_at,
+        description: line.description,
+        merchant: null,
+        amount_minor: line.amount_minor,
+        currency: account.currency,
+        category_id: null,
+        source: "import",
+        provider_txn_id: null,
+        hash: id("hs00"),
+        attributed_member_id: null,
+        created_at: new Date().toISOString(),
+      };
+      transactions.unshift(txn);
+      imported.push(txn);
+    }
+
+    return clone({
+      document: doc,
+      document_duplicate: false,
+      preset_id: preset.id,
+      account_id: account.id,
+      imported,
+      duplicates,
+      content_duplicates: duplicates,
+    });
   },
 
   document_review: async (q: DocumentReviewRequest): Promise<Document> => {

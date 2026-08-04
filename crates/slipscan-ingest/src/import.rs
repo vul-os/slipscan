@@ -11,8 +11,16 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 /// File extensions we accept as ingestable documents.
+///
+/// The one list every import path answers to — the drop-folder watcher, the
+/// CLI's `import`/`watch` commands, and the desktop's `document_import` IPC
+/// command (file picker and drag-and-drop alike). Nothing else in the tree
+/// hand-rolls a second copy of it: the desktop rejects with whatever error
+/// this module reports, rather than pre-filtering against a typed-out
+/// duplicate that could silently drift from it.
 pub const SUPPORTED_EXTENSIONS: &[&str] = &[
-    "pdf", "png", "jpg", "jpeg", "webp", "heic", "gif", "tif", "tiff", "html", "csv", "ofx",
+    "pdf", "png", "jpg", "jpeg", "webp", "heic", "heif", "gif", "bmp", "avif", "tif", "tiff",
+    "html", "csv", "ofx",
 ];
 
 /// Lowercased extension of a path, if any.
@@ -35,7 +43,10 @@ pub fn mime_for_extension(ext: &str) -> Option<&'static str> {
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "heic" => "image/heic",
+        "heif" => "image/heif",
         "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "avif" => "image/avif",
         "tif" | "tiff" => "image/tiff",
         "html" => "text/html",
         "csv" => "text/csv",
@@ -48,7 +59,8 @@ pub fn mime_for_extension(ext: &str) -> Option<&'static str> {
 /// slips; CSV/OFX are bank statements; PDFs need extraction to tell.
 pub fn kind_for_extension(ext: &str) -> DocumentKind {
     match ext {
-        "png" | "jpg" | "jpeg" | "webp" | "heic" | "gif" | "tif" | "tiff" => DocumentKind::Slip,
+        "png" | "jpg" | "jpeg" | "webp" | "heic" | "heif" | "gif" | "bmp" | "avif" | "tif"
+        | "tiff" => DocumentKind::Slip,
         "csv" | "ofx" => DocumentKind::BankStatement,
         _ => DocumentKind::Unknown,
     }

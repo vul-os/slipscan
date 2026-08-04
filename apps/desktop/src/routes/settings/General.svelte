@@ -575,8 +575,11 @@
         Connections — and the webhook URLs you register on Payments.
       </li>
       <li>
-        · Each of those fires only when you ask. Nothing polls, and nothing
-        runs in the background.
+        · Each of those fires only when you ask, and none of them poll the
+        network. The one thing that does keep running without being asked
+        again is the optional watch folder (Connections) — it watches a
+        folder on this machine for new files while SlipScan is open, and
+        never touches the network. Closing the app stops it.
       </li>
       <li>
         · Your data is one folder — a SQLite file plus your documents —

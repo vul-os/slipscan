@@ -11,7 +11,9 @@
 //! including this process's own.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread;
 use std::time::Duration;
 
 use slipscan_core::datadir::{self, DataDirResolver};
@@ -55,6 +57,9 @@ pub struct AppState {
     pub resolver: DataDirResolver,
     /// Currently active data folder — swapped when a move completes.
     data_dir: Mutex<PathBuf>,
+    /// The live drop-folder watcher, if one is running — `None` whenever
+    /// nothing is watching. See `watch_set`/`watch_status` below.
+    watch: Mutex<Option<WatchRuntime>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -87,6 +92,7 @@ impl AppState {
             keychain: KeyringSecretStore::default(),
             resolver,
             data_dir: Mutex::new(data_dir),
+            watch: Mutex::new(None),
         })
     }
 
@@ -184,6 +190,297 @@ impl AppState {
             )),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // watch folder — local drop-folder watching while the app is open
+    // (ROADMAP.md "Phase 2 ... Slip/receipt capture"). A background thread
+    // owns its own connection to the same database file, the same pattern
+    // `vault_db`/`devices` above already use, over `slipscan-ingest`'s own
+    // watcher (`FolderWatcher`, `scan_folder`, `import_paths` — the exact
+    // functions `slipscan watch` drives on the CLI) rather than a
+    // reimplementation. The OS's own filesystem-event API does the
+    // watching; nothing here polls, and nothing calls the network.
+    //
+    // The honest lifecycle, stated once here rather than only in the UI
+    // copy: the thread lives exactly as long as this process does. There is
+    // no separate service, nothing survives the app closing, and closing
+    // the app is indistinguishable from "stop watching" from the folder's
+    // point of view. `watch_autostart` (called once from `run()`) is what
+    // makes "leave it on" mean anything across a restart — it is a fresh
+    // start every launch, not a resumed one.
+    // -----------------------------------------------------------------------
+
+    fn watch_config(&self) -> Result<WatchFolderConfig, String> {
+        let service = self.service()?;
+        match service.settings_get(WATCH_FOLDER_KEY).map_err(err)? {
+            None => Ok(WatchFolderConfig::default()),
+            Some(json) => serde_json::from_str(&json).map_err(err),
+        }
+    }
+
+    fn watch_save_config(&self, cfg: &WatchFolderConfig) -> Result<(), String> {
+        let service = self.service()?;
+        let json = serde_json::to_string(cfg).map_err(err)?;
+        service
+            .settings_set(WATCH_FOLDER_KEY, &json, false)
+            .map_err(err)
+    }
+
+    /// The persisted choice plus whatever the live thread (if any) has
+    /// actually done — never just the toggle, so a thread that quietly died
+    /// on an error cannot still read as "watching".
+    pub fn watch_status(&self) -> Result<crate::dto::WatchFolderStatusDto, String> {
+        let cfg = self.watch_config()?;
+        let guard = self
+            .watch
+            .lock()
+            .map_err(|_| "watch state poisoned".to_string())?;
+        Ok(match &*guard {
+            Some(rt) => crate::dto::WatchFolderStatusDto {
+                enabled: cfg.enabled,
+                folder: Some(rt.folder.display().to_string()),
+                running: rt.running.load(Ordering::SeqCst),
+                book_id: Some(rt.book_id.clone()),
+                book_name: Some(rt.book_name.clone()),
+                imported_count: rt.imported.load(Ordering::SeqCst),
+                last_error: rt.last_error.lock().ok().and_then(|g| g.clone()),
+                started_at: Some(rt.started_at.clone()),
+            },
+            None => crate::dto::WatchFolderStatusDto {
+                enabled: cfg.enabled,
+                folder: cfg.folder,
+                running: false,
+                book_id: None,
+                book_name: None,
+                imported_count: 0,
+                last_error: None,
+                started_at: None,
+            },
+        })
+    }
+
+    /// Stop whatever watcher is running, if any — idempotent. The thread is
+    /// signalled and then left to notice on its own within its poll
+    /// interval; not joined, so a slow filesystem can never make this
+    /// command hang.
+    fn watch_stop_locked(guard: &mut Option<WatchRuntime>) {
+        if let Some(rt) = guard.take() {
+            rt.stop.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Start or stop watching `folder`, persisting the choice either way.
+    /// Enabling refuses a missing/non-folder path and a database with no
+    /// book yet (there is nothing to import into) rather than starting a
+    /// thread that could never do anything.
+    pub fn watch_set(
+        &self,
+        enabled: bool,
+        folder: Option<String>,
+    ) -> Result<crate::dto::WatchFolderStatusDto, String> {
+        let mut guard = self
+            .watch
+            .lock()
+            .map_err(|_| "watch state poisoned".to_string())?;
+        Self::watch_stop_locked(&mut guard);
+
+        if !enabled {
+            self.watch_save_config(&WatchFolderConfig {
+                enabled: false,
+                folder,
+            })?;
+            drop(guard);
+            return self.watch_status();
+        }
+
+        let folder = folder
+            .map(|f| f.trim().to_string())
+            .filter(|f| !f.is_empty())
+            .ok_or_else(|| "choose a folder to watch".to_string())?;
+        let path = PathBuf::from(&folder);
+        if !path.is_dir() {
+            return Err(format!("{} is not a folder", path.display()));
+        }
+        let book = {
+            let service = self.service()?;
+            service
+                .book_list()
+                .map_err(err)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| "create a book before watching a folder".to_string())?
+        };
+
+        // Persist before spawning: if the process is killed between the two,
+        // `watch_autostart` still finds the intent on the next launch.
+        self.watch_save_config(&WatchFolderConfig {
+            enabled: true,
+            folder: Some(folder),
+        })?;
+
+        let db_path = datadir::db_path(&self.data_dir()?);
+        *guard = Some(spawn_watch(path, book.id, book.name, db_path));
+        drop(guard);
+        self.watch_status()
+    }
+
+    /// Resume watching on launch if it was left enabled last time SlipScan
+    /// ran. Failures are logged, not surfaced — there is no UI up yet to
+    /// show them to, and `watch_status` reports the same failure the moment
+    /// Settings asks.
+    pub fn watch_autostart(&self) {
+        let cfg = match self.watch_config() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        if !cfg.enabled {
+            return;
+        }
+        let Some(folder) = cfg.folder else { return };
+        if let Err(e) = self.watch_set(true, Some(folder)) {
+            eprintln!("slip/scan: could not resume watching a folder: {e}");
+        }
+    }
+}
+
+/// Desktop's own persisted watch-folder choice — a settings key of its own
+/// (`WATCH_FOLDER_KEY`), independent of the `desktop.settings` blob
+/// `settings_get`/`settings_set` read and write, so toggling it never needs
+/// a trip through Settings' "Save changes" button.
+const WATCH_FOLDER_KEY: &str = "desktop.watch_folder";
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+struct WatchFolderConfig {
+    enabled: bool,
+    folder: Option<String>,
+}
+
+/// A live watcher thread and what it has reported so far.
+struct WatchRuntime {
+    folder: PathBuf,
+    book_id: String,
+    book_name: String,
+    started_at: String,
+    /// Set to ask the thread to stop; it notices within its poll interval.
+    stop: Arc<AtomicBool>,
+    /// The thread clears this itself, on a clean stop or a fatal error
+    /// alike — `watch_status` reads it rather than inferring "running" from
+    /// this struct merely existing.
+    running: Arc<AtomicBool>,
+    imported: Arc<AtomicU64>,
+    last_error: Arc<Mutex<Option<String>>>,
+}
+
+/// Spawn the background watcher. Returns immediately; the thread does the
+/// waiting.
+fn spawn_watch(
+    folder: PathBuf,
+    book_id: String,
+    book_name: String,
+    db_path: PathBuf,
+) -> WatchRuntime {
+    let stop = Arc::new(AtomicBool::new(false));
+    let running = Arc::new(AtomicBool::new(true));
+    let imported = Arc::new(AtomicU64::new(0));
+    let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let started_at = now_iso();
+
+    let (t_stop, t_running, t_imported, t_error) = (
+        stop.clone(),
+        running.clone(),
+        imported.clone(),
+        last_error.clone(),
+    );
+    let (t_folder, t_book_id) = (folder.clone(), book_id.clone());
+    thread::spawn(move || {
+        run_watch_loop(
+            db_path, t_folder, t_book_id, t_stop, t_running, t_imported, t_error,
+        )
+    });
+
+    WatchRuntime {
+        folder,
+        book_id,
+        book_name,
+        started_at,
+        stop,
+        running,
+        imported,
+        last_error,
+    }
+}
+
+/// The watcher's whole life: open its own database connection, watch
+/// *before* the startup scan so a file landing mid-scan is still seen (the
+/// same ordering and the same reason `slipscan watch` uses on the CLI —
+/// content-hash dedup absorbs the overlap either way), then loop importing
+/// whatever the watcher reports until asked to stop or until something it
+/// cannot recover from happens. `running` is cleared on every exit path, so
+/// a status check can never see a dead thread reported as alive.
+#[allow(clippy::too_many_arguments)]
+fn run_watch_loop(
+    db_path: PathBuf,
+    folder: PathBuf,
+    book_id: String,
+    stop: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
+    imported: Arc<AtomicU64>,
+    last_error: Arc<Mutex<Option<String>>>,
+) {
+    let svc = match CoreService::open(&db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            if let Ok(mut g) = last_error.lock() {
+                *g = Some(format!("cannot open the database: {e}"));
+            }
+            running.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+    let watcher = match slipscan_ingest::watch::FolderWatcher::watch(&folder) {
+        Ok(w) => w,
+        Err(e) => {
+            if let Ok(mut g) = last_error.lock() {
+                *g = Some(e.to_string());
+            }
+            running.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+    match slipscan_ingest::watch::scan_folder(&svc, &book_id, &folder) {
+        Ok(outcome) => {
+            imported.fetch_add(outcome.imported.len() as u64, Ordering::SeqCst);
+        }
+        Err(e) => {
+            if let Ok(mut g) = last_error.lock() {
+                *g = Some(e.to_string());
+            }
+        }
+    }
+    while !stop.load(Ordering::SeqCst) {
+        match watcher.next_paths(Duration::from_secs(2)) {
+            Ok(paths) if !paths.is_empty() => {
+                match slipscan_ingest::watch::import_paths(&svc, &book_id, &paths) {
+                    Ok(outcome) => {
+                        imported.fetch_add(outcome.imported.len() as u64, Ordering::SeqCst);
+                    }
+                    Err(e) => {
+                        if let Ok(mut g) = last_error.lock() {
+                            *g = Some(e.to_string());
+                        }
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                if let Ok(mut g) = last_error.lock() {
+                    *g = Some(e.to_string());
+                }
+                break;
+            }
+        }
+    }
+    running.store(false, Ordering::SeqCst);
 }
 
 /// Stand-ins installed while core moves the folder: the move's exclusive

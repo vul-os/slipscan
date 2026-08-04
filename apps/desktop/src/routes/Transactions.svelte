@@ -47,6 +47,8 @@
     Category,
     Member,
     SplitShare,
+    StatementImportResult,
+    StatementPresetGroup,
     Transaction,
   } from "../lib/api/types";
   import PageHeader from "../lib/components/PageHeader.svelte";
@@ -670,6 +672,94 @@
   }
 
   // -------------------------------------------------------------------------
+  // statement import — parse a bank CSV into transactions with a named
+  // preset, through the identical core pipeline `slipscan import --preset`
+  // drives: dedupe, the categorisation cascade and the Payments detection
+  // hook all apply, because this calls the same `import_statement_lines`
+  // function the CLI does. Only the built-in preset catalog is offered here
+  // — a fully custom column mapping and OFX statements are still CLI-only.
+  // -------------------------------------------------------------------------
+
+  let importOpen = $state(false);
+  let importPresetGroups = $state<StatementPresetGroup[]>([]);
+  let importPresetsError = $state<string | null>(null);
+  let importPresetId = $state("");
+  let importAccountId = $state("");
+  let importFile = $state<File | null>(null);
+  let importFileInput = $state<HTMLInputElement | null>(null);
+  let importBusy = $state(false);
+  let importError = $state<string | null>(null);
+  let importResult = $state<StatementImportResult | null>(null);
+
+  function toBase64(buf: ArrayBuffer): string {
+    const bytes = new Uint8Array(buf);
+    let bin = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    }
+    return btoa(bin);
+  }
+
+  async function openImportDialog() {
+    importOpen = true;
+    importBusy = false;
+    importError = null;
+    importResult = null;
+    importFile = null;
+    importAccountId = accountFilter || (accounts[0]?.id ?? "");
+    if (importPresetGroups.length === 0 && !importPresetsError) {
+      try {
+        importPresetGroups = await api.statementPresetList();
+      } catch (err) {
+        importPresetsError = String(err);
+      }
+    }
+    if (!importPresetId) {
+      importPresetId = importPresetGroups[0]?.presets[0]?.id ?? "";
+    }
+  }
+
+  function closeImportDialog() {
+    importOpen = false;
+  }
+
+  function pickImportFile() {
+    importFileInput?.click();
+  }
+
+  function onImportFilePicked(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (file) importFile = file;
+  }
+
+  async function commitImport() {
+    if (!book || !importFile || !importPresetId || !importAccountId) return;
+    importBusy = true;
+    importError = null;
+    try {
+      const result = await api.statementImport({
+        book_id: book.id,
+        account_id: importAccountId,
+        preset_id: importPresetId,
+        file_name: importFile.name,
+        mime_type: importFile.type || "text/csv",
+        bytes_base64: toBase64(await importFile.arrayBuffer()),
+      });
+      importResult = result;
+      importFile = null;
+      await load(true);
+      syncTransactionsCache();
+    } catch (err) {
+      importError = String(err);
+    } finally {
+      importBusy = false;
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // bulk edit
   // -------------------------------------------------------------------------
 
@@ -966,9 +1056,20 @@
 <PageHeader
   eyebrow="Money in · money out"
   title="Transactions"
-  subtitle="Every bank-level transaction across your accounts. Correct one merchant and SlipScan classifies it that way from then on. Statement files still arrive from the CLI: slipscan import parses a CSV into transactions and categorises them on the way in."
+  subtitle="Every bank-level transaction across your accounts. Correct one merchant and SlipScan classifies it that way from then on. Import a bank statement here with a built-in preset — the same pipeline slipscan import --preset drives on the CLI. A fully custom column mapping and OFX statements are still CLI-only."
 >
   {#snippet actions()}
+    <button
+      class="btn"
+      disabled={accounts.length === 0}
+      title={accounts.length === 0
+        ? "Create an account first"
+        : undefined}
+      onclick={openImportDialog}
+    >
+      <Icon name="upload" size={14} />
+      Import statement
+    </button>
     <button class="btn" disabled={!filtersActive} onclick={openSaveView}>
       <Icon name="plus" size={14} />
       Save view
@@ -1681,6 +1782,164 @@
     </p>
   {/if}
 </div>
+
+<input
+  type="file"
+  accept=".csv,text/csv"
+  class="hidden"
+  bind:this={importFileInput}
+  onchange={onImportFilePicked}
+/>
+
+<Dialog
+  open={importOpen}
+  title="Import a bank statement"
+  description="Parse a CSV export into transactions with a named column mapping. Dedupe, categorisation and the Payments watch all run exactly like every other transaction source."
+  size="md"
+  dismissible={!importBusy}
+  onclose={closeImportDialog}
+>
+  <div class="space-y-3 px-5 pb-4">
+    {#if importResult}
+      <div class="rounded-lg border border-line bg-sunken px-3 py-2.5">
+        <p class="text-[12.5px] text-t2">
+          <span class="num">{importResult.imported.length}</span>
+          {plural(importResult.imported.length, "transaction", "transactions")}
+          imported, <span class="num">{importResult.duplicates}</span>
+          {plural(importResult.duplicates, "duplicate", "duplicates")} skipped{#if importResult.content_duplicates > 0}
+            (<span class="num">{importResult.content_duplicates}</span> by content
+            match — this bank line carries no reference id, so an identical
+            line in a separate batch would also read as a repeat)
+          {/if}.
+        </p>
+        {#if importResult.document_duplicate}
+          <p class="mt-1.5 text-[12px] text-t3">
+            This file was already stored as a document here — its
+            transactions were still parsed and deduped above, since
+            overlapping statement exports are the normal case.
+          </p>
+        {/if}
+      </div>
+      {#if importResult.imported.length > 0}
+        <ul class="max-h-48 space-y-1 overflow-y-auto">
+          {#each importResult.imported.slice(0, 8) as t (t.id)}
+            <li class="flex items-center gap-2 text-[11.5px]">
+              <span class="num shrink-0 text-t3">{fmtDate(t.posted_at)}</span>
+              <span class="min-w-0 flex-1 truncate text-t2">{t.description}</span
+              >
+              <Money
+                amount={t.amount_minor}
+                currency={t.currency}
+                signed
+                class="shrink-0"
+              />
+            </li>
+          {/each}
+          {#if importResult.imported.length > 8}
+            <li class="text-[11.5px] text-t3">
+              …and {importResult.imported.length - 8} more.
+            </li>
+          {/if}
+        </ul>
+      {/if}
+    {:else}
+      <label class="block">
+        <span class="mb-1.5 block text-[12px] text-t2">Bank / format</span>
+        <select
+          class="input"
+          disabled={importBusy || importPresetGroups.length === 0}
+          aria-label="Statement preset"
+          bind:value={importPresetId}
+        >
+          {#each importPresetGroups as group (group.region)}
+            <optgroup label={group.region_name}>
+              {#each group.presets as preset (preset.id)}
+                <option value={preset.id}>{preset.bank_name}</option>
+              {/each}
+            </optgroup>
+          {/each}
+        </select>
+      </label>
+      {#if importPresetsError}
+        <p class="text-[12px] text-danger">
+          Could not load the preset catalog: {importPresetsError}
+        </p>
+      {/if}
+
+      <label class="block">
+        <span class="mb-1.5 block text-[12px] text-t2">Account</span>
+        <select
+          class="input"
+          disabled={importBusy}
+          aria-label="Account for imported transactions"
+          bind:value={importAccountId}
+        >
+          <option value="">Choose an account…</option>
+          {#each accounts as a (a.id)}
+            <option value={a.id}>{a.name}</option>
+          {/each}
+        </select>
+      </label>
+
+      <div>
+        <span class="mb-1.5 block text-[12px] text-t2">File</span>
+        <button
+          type="button"
+          class="btn w-full justify-start"
+          disabled={importBusy}
+          onclick={pickImportFile}
+        >
+          <Icon name="upload" size={14} />
+          {importFile ? importFile.name : "Choose a CSV file…"}
+        </button>
+      </div>
+
+      <p class="text-[12px] text-t3">
+        Only the built-in presets above are wired up here. A fully custom
+        column mapping exists in the library with no picker yet, and OFX
+        statements are not parsed on any surface — both still need
+        <code>slipscan import</code> on the CLI.
+      </p>
+
+      {#if importError}
+        <p
+          class="flex items-start gap-1.5 rounded-lg border border-danger/25 bg-danger/10 px-3 py-2 text-[12px] text-danger"
+          role="alert"
+        >
+          <Icon name="alert-circle" size={13} class="mt-px shrink-0" />
+          {importError}
+        </p>
+      {/if}
+    {/if}
+  </div>
+
+  {#snippet footer()}
+    {#if importResult}
+      <button class="btn" onclick={() => (importResult = null)}>
+        Import another
+      </button>
+      <button class="btn btn-primary" onclick={closeImportDialog}>Done</button
+      >
+    {:else}
+      <button class="btn" disabled={importBusy} onclick={closeImportDialog}>
+        Cancel
+      </button>
+      <button
+        class="btn btn-primary"
+        disabled={importBusy ||
+          !importFile ||
+          !importPresetId ||
+          !importAccountId}
+        onclick={commitImport}
+      >
+        {#if importBusy}
+          <Icon name="refresh" size={13} class="animate-spin" />
+        {/if}
+        {importBusy ? "Importing…" : "Import"}
+      </button>
+    {/if}
+  {/snippet}
+</Dialog>
 
 <!-- The standing merchant rule. A dialog rather than an inline strip because
      it is a decision about every future import, and because it has to show

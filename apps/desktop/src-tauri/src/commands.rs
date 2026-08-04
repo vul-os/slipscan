@@ -11,6 +11,7 @@
 //! it exists only in the vault.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::Path;
 
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
@@ -1714,11 +1715,24 @@ pub async fn document_get(
     document_with_extraction(&service, &doc, &book.currency)
 }
 
+/// The one gate every import path — file picker, drag-and-drop, and (via
+/// `slipscan-ingest::watch`) the folder watcher — answers to. Reuses
+/// `slipscan-ingest`'s own accepted-extension list rather than a second copy
+/// kept in sync by hand; the frontend deliberately holds no such list of its
+/// own and just reports whatever this returns.
 #[tauri::command]
 pub async fn document_import(
     state: State<'_, AppState>,
     query: DocumentImportRequest,
 ) -> Result<DocumentDto, String> {
+    if !slipscan_ingest::import::is_supported(Path::new(&query.file_name)) {
+        return Err(format!(
+            "\"{}\" is not a file type SlipScan can import — supported: {}",
+            query.file_name,
+            slipscan_ingest::import::SUPPORTED_EXTENSIONS.join(", ")
+        ));
+    }
+
     let service = state.service()?;
     let book = book_by_id(&service, &query.book_id)?;
 
@@ -1782,6 +1796,156 @@ pub async fn document_import(
             Err(err(e))
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// statement import (ROADMAP.md Phase 3/4.95 — desktop wiring). Reuses the
+// exact core pipeline the CLI's `slipscan import --preset` drives:
+// `slipscan_ingest::bank::import_statement_lines`, which is what gives an
+// imported line dedupe, the categorisation cascade and the Payments
+// detection hook (it feeds `CoreService::transaction_create`, same as every
+// other transaction source). No second import path is written here.
+// ---------------------------------------------------------------------------
+
+/// The built-in statement-preset catalog, grouped by region — the same data
+/// the CLI's `--list-presets` prints, and the same ids `statement_import`
+/// accepts as `preset_id`. Pure catalog data: no book, no service call.
+#[tauri::command]
+pub async fn statement_preset_list(
+) -> Result<Vec<slipscan_ingest::bank::presets::RegionPresetGroup>, String> {
+    Ok(slipscan_ingest::bank::presets::statement_presets_by_region())
+}
+
+/// The whole of `statement_import`, minus the `State<AppState>` extraction —
+/// pulled out so it is callable from a plain unit test with a real
+/// in-memory `CoreService` and a `tempdir()`, the way
+/// `src-tauri/tests/startup_classifier.rs` already tests desktop-lib
+/// behaviour without a Tauri runtime.
+fn statement_import_impl(
+    service: &CoreService,
+    data_dir: &Path,
+    query: StatementImportRequest,
+) -> Result<StatementImportResultDto, String> {
+    let book = book_by_id(service, &query.book_id)?;
+
+    let preset =
+        slipscan_ingest::bank::presets::statement_preset(&query.preset_id).ok_or_else(|| {
+            format!(
+                "unknown statement preset {:?}; see statement_preset_list",
+                query.preset_id
+            )
+        })?;
+
+    // Resolved and book-checked up front (`import_statement_lines` only
+    // catches this once a line reaches `transaction_create`, so an
+    // empty/header-only CSV would otherwise skip the check entirely).
+    let account = service.account_get(&query.account_id).map_err(err)?;
+    if account.book_id != query.book_id {
+        return Err(format!(
+            "no account {:?} in this book; see account_list",
+            query.account_id
+        ));
+    }
+
+    let bytes: Vec<u8> = if let Some(b64) = query.bytes_base64.as_deref() {
+        base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .map_err(|e| format!("invalid base64 file payload: {e}"))?
+    } else if let Some(path) = query.path.as_deref() {
+        std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?
+    } else {
+        return Err("statement_import needs bytes_base64 or path".to_string());
+    };
+
+    let sha256 = {
+        let digest = Sha256::digest(&bytes);
+        digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let safe_name: String = query
+        .file_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let dest =
+        slipscan_core::datadir::documents_dir(data_dir).join(format!("{}-{safe_name}", new_id()));
+    std::fs::write(&dest, &bytes).map_err(|e| format!("cannot store document: {e}"))?;
+
+    let new_doc = NewDocument {
+        book_id: query.book_id.clone(),
+        source: DocumentSource::Upload,
+        kind: DocumentKind::BankStatement,
+        file_path: dest.display().to_string(),
+        mime_type: Some(query.mime_type.clone()),
+        size_bytes: Some(bytes.len() as i64),
+        original_name: Some(query.file_name.clone()),
+        sha256: Some(sha256),
+    };
+    // A content-hash duplicate is not a refusal here the way it is for
+    // `document_import`: overlapping statement pulls (the same "last 90
+    // days" export downloaded twice) are the normal case for a bank CSV,
+    // and the transaction-level dedupe below is what actually has to catch
+    // it. Failing the whole import on a re-uploaded file would defeat the
+    // feature.
+    let (document, document_duplicate) = match service.document_import(new_doc) {
+        Ok(doc) => (doc, false),
+        Err(slipscan_core::CoreError::DuplicateDocument { existing_id }) => {
+            let _ = std::fs::remove_file(&dest);
+            (service.document_get(&existing_id).map_err(err)?, true)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&dest);
+            return Err(err(e));
+        }
+    };
+
+    let lines = preset
+        .adapter_for_content(bytes)
+        .parse_all()
+        .map_err(|e| format!("parsing {} with preset {}: {e}", query.file_name, preset.id))?;
+
+    let outcome = slipscan_ingest::bank::import_statement_lines(
+        service,
+        &query.book_id,
+        &account.id,
+        core::TransactionSource::Import,
+        lines,
+    )
+    .map_err(err)?;
+
+    Ok(StatementImportResultDto {
+        document: document_with_extraction(service, &document, &book.currency)?,
+        document_duplicate,
+        preset_id: preset.id.clone(),
+        account_id: account.id,
+        imported: outcome.imported.iter().map(dto::transaction_dto).collect(),
+        duplicates: outcome.duplicates as i64,
+        content_duplicates: outcome.content_duplicates as i64,
+    })
+}
+
+/// Parse a statement file into transactions with a named preset — the
+/// desktop equivalent of `slipscan import --preset`. Stores the file as a
+/// document (like `document_import`) and, unlike `document_import`, actually
+/// reads it: every line goes through `transaction_create`, so dedupe, the
+/// categorisation cascade and the Payments detection hook apply exactly as
+/// they do on the CLI.
+#[tauri::command]
+pub async fn statement_import(
+    state: State<'_, AppState>,
+    query: StatementImportRequest,
+) -> Result<StatementImportResultDto, String> {
+    let service = state.service()?;
+    let data_dir = state.data_dir()?;
+    statement_import_impl(&service, &data_dir, query)
 }
 
 // ---------------------------------------------------------------------------
@@ -3489,6 +3653,49 @@ pub async fn settings_set(
 }
 
 // ---------------------------------------------------------------------------
+// watch folder — local drop-folder watching while the app is open
+// (ROADMAP.md "Phase 2 ... Slip/receipt capture"). See `AppState::watch_set`
+// for the mechanism; the honest summary is: a background thread inside this
+// process, using the OS's own filesystem-event API (no polling, no network),
+// running only for as long as SlipScan is open. It resumes on its own the
+// next time the app launches if it was left on (`AppState::watch_autostart`,
+// called once from `run()`), and never anything more than that — there is no
+// separate process and nothing survives the app closing.
+// ---------------------------------------------------------------------------
+
+/// Live status: the persisted enabled/folder pair plus whatever the running
+/// thread (if any) has actually done, so the toggle can never say "watching"
+/// when the thread quietly stopped on an error.
+#[tauri::command]
+pub async fn watch_folder_status(
+    state: State<'_, AppState>,
+) -> Result<WatchFolderStatusDto, String> {
+    state.watch_status()
+}
+
+#[derive(serde::Deserialize)]
+pub struct WatchFolderSetRequest {
+    pub enabled: bool,
+    /// Required when `enabled` is true; ignored when false (stopping never
+    /// needs a folder restated).
+    #[serde(default)]
+    pub folder: Option<String>,
+}
+
+/// Start or stop watching. Both directions persist the choice under the
+/// desktop's own settings key — independent of the `desktop.settings` blob
+/// `settings_set` writes, so flipping this does not require a trip through
+/// Settings' "Save changes" button, and cannot be silently left un-applied
+/// by forgetting to press it.
+#[tauri::command]
+pub async fn watch_folder_set(
+    state: State<'_, AppState>,
+    query: WatchFolderSetRequest,
+) -> Result<WatchFolderStatusDto, String> {
+    tokio::task::block_in_place(|| state.watch_set(query.enabled, query.folder))
+}
+
+// ---------------------------------------------------------------------------
 // credential vault — write-only. Commands return METADATA ONLY; there is no
 // IPC path that returns secret material, by construction (core's Vault has
 // no `get`, and no DTO in dto.rs carries material).
@@ -4193,5 +4400,199 @@ mod tests {
             .map(String::as_str)
             .collect();
         assert_eq!(covered.len(), 2, "fuel must not be counted twice");
+    }
+
+    // -----------------------------------------------------------------
+    // statement_import — desktop wiring around
+    // `slipscan_ingest::bank::import_statement_lines` (ROADMAP.md Phase
+    // 3/4.95). `State<AppState>` cannot be built outside a Tauri runtime,
+    // so — like `src-tauri/tests/startup_classifier.rs` — these exercise
+    // `statement_import_impl` directly, which is everything the
+    // `#[tauri::command]` wrapper does other than the state extraction.
+    // -----------------------------------------------------------------
+
+    /// A data folder with the documents subdirectory already created — in
+    /// production `AppState::open` does this once at startup
+    /// (`state.rs`'s `create_dir_all(datadir::documents_dir(..))`);
+    /// `statement_import_impl` itself does not, same as `document_import`.
+    fn tempdir_with_documents_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(slipscan_core::datadir::documents_dir(dir.path())).unwrap();
+        dir
+    }
+
+    fn svc_with_book_and_account() -> (CoreService, core::Book, core::Account) {
+        let service = CoreService::new(
+            slipscan_core::Db::open_in_memory().unwrap(),
+            Box::new(slipscan_core::secrets::MemorySecretStore::new()),
+        );
+        let book = service
+            .book_create(core::NewBook {
+                name: "Test".into(),
+                kind: core::BookKind::Personal,
+                currency: None,
+                country: Some("ZA".into()),
+                region: None,
+            })
+            .unwrap();
+        let account = service
+            .account_create(core::NewAccount {
+                book_id: book.id.clone(),
+                name: "Cheque".into(),
+                kind: core::AccountKind::Bank,
+                currency: "ZAR".into(),
+                institution: None,
+                account_number_masked: None,
+                opening_balance_minor: None,
+            })
+            .unwrap();
+        (service, book, account)
+    }
+
+    const SAMPLE_CSV: &str =
+        "Date,Description,Amount\n2026-06-01,SHOP,-10.00\n2026-06-02,SALARY,2500.00\n";
+
+    fn csv_request(book_id: &str, account_id: &str, csv: &str) -> StatementImportRequest {
+        StatementImportRequest {
+            book_id: book_id.to_string(),
+            account_id: account_id.to_string(),
+            preset_id: "generic-iso".to_string(),
+            file_name: "statement.csv".to_string(),
+            mime_type: "text/csv".to_string(),
+            bytes_base64: Some(base64::engine::general_purpose::STANDARD.encode(csv.as_bytes())),
+            path: None,
+        }
+    }
+
+    /// The whole pipeline, exercised end to end: bytes in over
+    /// `bytes_base64`, a real preset column mapping, and every imported line
+    /// actually reaching `transaction_create` (not a shortcut that only
+    /// looks like it did).
+    #[test]
+    fn statement_import_parses_through_the_real_preset_and_transaction_create() {
+        let (service, book, account) = svc_with_book_and_account();
+        let dir = tempdir_with_documents_dir();
+
+        let result = statement_import_impl(
+            &service,
+            dir.path(),
+            csv_request(&book.id, &account.id, SAMPLE_CSV),
+        )
+        .expect("a well-formed generic-iso CSV must import");
+
+        assert_eq!(result.imported.len(), 2);
+        assert_eq!(result.duplicates, 0);
+        assert_eq!(result.content_duplicates, 0);
+        assert!(!result.document_duplicate);
+        assert_eq!(result.preset_id, "generic-iso");
+        assert_eq!(result.account_id, account.id);
+        assert_eq!(result.imported[0].amount_minor, -1000);
+        assert_eq!(result.imported[1].amount_minor, 250_000);
+
+        let stored = service
+            .transaction_list(&book.id, &TransactionFilter::default())
+            .unwrap();
+        assert_eq!(
+            stored.len(),
+            2,
+            "the lines must have gone through transaction_create, not a shortcut"
+        );
+    }
+
+    /// Overlapping statement pulls are the normal case for a bank export
+    /// (see `import_statement_lines`'s own docs) — a re-upload must dedupe,
+    /// not refuse.
+    #[test]
+    fn re_importing_the_same_file_dedupes_both_the_document_and_every_line() {
+        let (service, book, account) = svc_with_book_and_account();
+        let dir = tempdir_with_documents_dir();
+
+        let first = statement_import_impl(
+            &service,
+            dir.path(),
+            csv_request(&book.id, &account.id, SAMPLE_CSV),
+        )
+        .unwrap();
+        assert_eq!(first.imported.len(), 2);
+
+        let second = statement_import_impl(
+            &service,
+            dir.path(),
+            csv_request(&book.id, &account.id, SAMPLE_CSV),
+        )
+        .expect("an overlapping re-import must succeed, not error");
+
+        assert!(second.document_duplicate);
+        assert_eq!(second.document.id, first.document.id);
+        assert_eq!(second.imported.len(), 0, "every line is a repeat");
+        assert_eq!(second.duplicates, 2);
+        assert_eq!(
+            second.content_duplicates, 2,
+            "generic-iso carries no bank reference id, so dedupe is by content hash"
+        );
+
+        let stored = service
+            .transaction_list(&book.id, &TransactionFilter::default())
+            .unwrap();
+        assert_eq!(stored.len(), 2, "the second pass must not double the books");
+    }
+
+    #[test]
+    fn unknown_preset_is_refused_before_anything_is_stored() {
+        let (service, book, account) = svc_with_book_and_account();
+        let dir = tempdir_with_documents_dir();
+        let mut req = csv_request(&book.id, &account.id, SAMPLE_CSV);
+        req.preset_id = "zz-nowhere".to_string();
+
+        let err = statement_import_impl(&service, dir.path(), req).unwrap_err();
+        assert!(err.contains("unknown statement preset"), "{err}");
+        assert!(
+            service.document_list(&book.id, None).unwrap().is_empty(),
+            "a bad preset must not leave an orphan document behind"
+        );
+    }
+
+    #[test]
+    fn account_from_a_different_book_is_refused() {
+        let (service, _book, account) = svc_with_book_and_account();
+        let other_book = service
+            .book_create(core::NewBook {
+                name: "Other".into(),
+                kind: core::BookKind::Personal,
+                currency: None,
+                country: Some("ZA".into()),
+                region: None,
+            })
+            .unwrap();
+        let dir = tempdir_with_documents_dir();
+
+        let req = csv_request(&other_book.id, &account.id, SAMPLE_CSV);
+        let err = statement_import_impl(&service, dir.path(), req).unwrap_err();
+        assert!(err.contains("no account"), "{err}");
+    }
+
+    #[test]
+    fn invalid_base64_is_refused_rather_than_silently_importing_nothing() {
+        let (service, book, account) = svc_with_book_and_account();
+        let dir = tempdir_with_documents_dir();
+        let mut req = csv_request(&book.id, &account.id, SAMPLE_CSV);
+        req.bytes_base64 = Some("not valid base64 !!".to_string());
+
+        let err = statement_import_impl(&service, dir.path(), req).unwrap_err();
+        assert!(err.contains("base64"), "{err}");
+    }
+
+    /// The preset catalog is total and non-empty on every call — the same
+    /// static data `--list-presets` prints, reachable with no book at all.
+    #[test]
+    fn preset_catalog_lists_every_region_including_generic() {
+        let groups = slipscan_ingest::bank::presets::statement_presets_by_region();
+        assert!(groups.iter().any(|g| g.region == "za"));
+        assert!(groups
+            .iter()
+            .any(|g| g.region == slipscan_ingest::bank::presets::GENERIC_REGION));
+        assert!(groups
+            .iter()
+            .any(|g| g.presets.iter().any(|p| p.id == "generic-iso")));
     }
 }

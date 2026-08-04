@@ -20,11 +20,12 @@
   import { api } from "../lib/api/client";
   import { requireBook } from "../lib/book";
   import { routeCache } from "../lib/loadCache";
-  import { takeIntent } from "../lib/state/intent.svelte";
+  import { takeIntent, type DroppedFile } from "../lib/state/intent.svelte";
   import { requestIntent } from "../lib/state/intent.svelte";
   import { router } from "../lib/state/router.svelte";
   import { fmtDate, fmtPct } from "../lib/util/format";
   import { csvMoney, downloadCsv, toCsv } from "../lib/util/csv";
+  import { MAX_IMPORT_BYTES } from "../lib/util/importLimits";
   import type {
     Document,
     DocumentStatus,
@@ -209,7 +210,6 @@
     ".pdf", ".heic", ".heif", ".png", ".jpg", ".jpeg", ".webp", ".gif",
     ".bmp", ".tif", ".tiff", ".avif",
   ];
-  const MAX_IMPORT_BYTES = 50 * 1024 * 1024;
 
   function unsupportedReason(file: File): string | null {
     const typeOk =
@@ -378,6 +378,73 @@
   if (takeIntent("import-receipt")) {
     queueMicrotask(importReceipt);
   }
+
+  // ---------------------------------------------------------------------------
+  // drag-and-drop capture (DropCapture.svelte, mounted globally in App.svelte)
+  //
+  // A drop anywhere in the app hands its files here rather than calling
+  // `api.documentImport` itself — this is the one place in the UI layer that
+  // does, the same path the file picker above uses. An `$effect` rather than
+  // the top-level `takeIntent` check above: a drop that lands while this
+  // screen is already open must still be picked up, and the screen does not
+  // remount just because the router's current route was already "receipts".
+  // ---------------------------------------------------------------------------
+
+  function basename(path: string): string {
+    return path.split(/[\\/]/).pop() || path;
+  }
+
+  async function importDroppedFiles(files: DroppedFile[]) {
+    if (files.length === 0) return;
+    importing = true;
+    importError = null;
+    const reasons: string[] = [];
+    let ok = 0;
+    try {
+      const book = requireBook(await api.bookList());
+      for (const f of files) {
+        if (f.kind === "oversized") {
+          reasons.push(
+            `"${f.name}" is ${Math.round(f.sizeBytes / 1024 / 1024)} MB — receipts are capped at ${MAX_IMPORT_BYTES / 1024 / 1024} MB.`,
+          );
+          continue;
+        }
+        try {
+          await api.documentImport(
+            f.kind === "path"
+              ? {
+                  book_id: book.id,
+                  file_name: basename(f.path),
+                  mime_type: "application/octet-stream",
+                  path: f.path,
+                }
+              : {
+                  book_id: book.id,
+                  file_name: f.name,
+                  mime_type: f.mimeType,
+                  bytes_base64: f.bytesBase64,
+                },
+          );
+          ok += 1;
+        } catch (err) {
+          reasons.push(String(err));
+        }
+      }
+      if (ok > 0) {
+        bookId = book.id;
+        docs = await api.documentList({ book_id: book.id });
+      }
+    } catch (err) {
+      reasons.push(String(err));
+    }
+    if (reasons.length) importError = reasons.join(" · ");
+    importing = false;
+  }
+
+  $effect(() => {
+    const intent = takeIntent("import-dropped-files");
+    if (intent) void importDroppedFiles(intent.files);
+  });
 </script>
 
 <PageHeader
