@@ -331,6 +331,10 @@ These were settled rather than escalated, and are recorded here so the reasoning
 - [ ] **6.8 Roles.** Genuinely new work — neither codebase had it. The device model here is
       trust-on-first-use pairing built for *your own devices*; branches have staff, and staff turn
       over. Revocation cannot stay "delete the peer row" once a till operator is a real person
+        *(designed, not built: [docs/ROLES.md](docs/ROLES.md) records the model — people are
+        `members` with capabilities, authority is a set of named operations, and the book is
+        encrypted with the key wrapped per person so a keyless principal can only reach the
+        box across a boundary where capabilities are enforceable)*
 - [x] **6.9 Desktop screens.** Catalogue, stock, orders, purchasing, and per-location views, held
       to the same design-system bar as every other screen *(shipped: Contacts, Catalogue, Stock and
       Purchasing landed together, then Sales. All five gate on `BookProfile` — a personal book
