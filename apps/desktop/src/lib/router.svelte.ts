@@ -17,6 +17,10 @@ export const ROUTES = [
   "reconcile",
   "payments",
   "reports",
+  // Trade (Phase 6.9 — business-book screens over the flowstock fold).
+  // Order: Contacts, Catalogue, Stock, Purchasing, Sales — each landing
+  // appends itself here rather than reordering what is already registered.
+  "sales",
   "packs",
   "settings",
 ] as const;

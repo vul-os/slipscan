@@ -43,6 +43,7 @@ import Payments from "../routes/Payments.svelte";
 import Receipts from "../routes/Receipts.svelte";
 import Reconcile from "../routes/Reconcile.svelte";
 import Reports from "../routes/Reports.svelte";
+import Sales from "../routes/Sales.svelte";
 import Settings from "../routes/Settings.svelte";
 import Transactions from "../routes/Transactions.svelte";
 
@@ -151,6 +152,19 @@ const CASES: Record<RouteId, RouteCase & { component: Component }> = {
     component: Reports as Component,
     heading: "Reports",
     anchors: ["VAT201", "R 90,723.84", "Net refundable", "Trial balance (CSV)"],
+  },
+  // The mock's one book is personal (`kind: "personal"`), so `show_sales`
+  // resolves false and this pins the gate, not the trade UI underneath it —
+  // see sales.test.ts for the business-book flow (orders, invoices,
+  // payments, aged receivables) this default state cannot exercise.
+  sales: {
+    component: Sales as Component,
+    heading: "Sales",
+    anchors: [
+      "Sales is a business-book feature",
+      "Personal is a personal book",
+      "Open Settings › General",
+    ],
   },
   settings: {
     component: Settings as Component,

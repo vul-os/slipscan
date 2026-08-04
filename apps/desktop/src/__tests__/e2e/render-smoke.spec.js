@@ -27,6 +27,10 @@ const ROUTES = [
   ["reconcile", "TAKEALOT.COM CPT"],
   ["payments", "RENT-12B"],
   ["reports", "Net refundable"],
+  // The mock's one book is personal, so `show_sales` is false and this
+  // route renders the business-book gate, not the trade UI — the flow that
+  // needs a business book lives in the jsdom suite (sales.test.ts).
+  ["sales", "Sales is a business-book feature"],
   ["packs", "South African retail merchants"],
   ["settings", "~/SlipScan/personal.slipscan.db"],
 ];

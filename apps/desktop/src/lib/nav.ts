@@ -113,6 +113,26 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    // Business-book screens over the flowstock fold (ROADMAP.md Phase 6.9).
+    // Order across every agent landing one of these: Contacts, Catalogue,
+    // Stock, Purchasing, Sales — each one appends itself last rather than
+    // reordering what already shipped. A personal book still sees this rail
+    // entry (nav is static, not runtime-gated); the screens themselves are
+    // the ones that check `BookProfile.show_*` and say plainly that the
+    // feature is hidden for a personal book.
+    heading: "Trade",
+    items: [
+      {
+        route: "sales",
+        label: "Sales",
+        icon: "cart",
+        key: "V",
+        keywords:
+          "orders invoices invoicing customers quotes billing receivables aged",
+      },
+    ],
+  },
+  {
     heading: "This machine",
     items: [
       {
