@@ -102,10 +102,12 @@ charted on the Dashboard. The one structural thing still missing is **no live ba
 anywhere**: every path in is a file you hand it or an email it reads.
 
 **Surface coverage is uneven, and it matters.** Statement CSV import and bank-alert email parsing
-run from the CLI only; budgets have no CLI command at all; the profit-and-loss and balance-sheet
-reports have no desktop screen. A capability is scored on what the code does, not on how many
-surfaces reach it — but the surface gap is named in every row where there is one, because a feature
-a user cannot get to is not one they have.
+run from the CLI only; budgets have no CLI command at all. The profit-and-loss and balance-sheet
+reports closed that gap on 2026-08-04 — both are real Profit & loss and Balance sheet cards on
+[`desktop/src/routes/Reports.svelte`](apps/desktop/src/routes/Reports.svelte) now, driven by the
+same period picker as spending and the household reports. A capability is scored on what the code
+does, not on how many surfaces reach it — but the surface gap is named in every row where there is
+one, because a feature a user cannot get to is not one they have.
 
 ## How to read this
 
@@ -160,11 +162,10 @@ but it is real, and leaving it out would misrepresent the codebase in the other 
   `journal_generate_for_transaction` and `journal_generate_for_document` in
   [`core/src/service.rs`](crates/slipscan-core/src/service.rs).
 - Trial balance, income statement, balance sheet and tax-period summary —
-  [`core/src/repo/report.rs`](crates/slipscan-core/src/repo/report.rs). Note the surface gap: the
-  income statement and balance sheet reach the CLI and HTTP but have no Tauri command at all
-  ([`desktop/src-tauri/src/lib.rs`](apps/desktop/src-tauri/src/lib.rs) registers neither; see also
-  `missing_from_ipc` in [`docs/parity.json`](docs/parity.json)), so the desktop Reports screen
-  carries spending, income vs expense, tax and trial balance only.
+  [`core/src/repo/report.rs`](crates/slipscan-core/src/repo/report.rs), all four reachable from the
+  CLI, HTTP and the desktop Reports screen as of 2026-08-04
+  ([`desktop/src-tauri/src/lib.rs`](apps/desktop/src-tauri/src/lib.rs) registers
+  `report_income_statement` and `report_balance_sheet` alongside the rest).
 - Period close — `close_period_check` / `close_period` / `reopen_period` in
   [`core/src/service.rs`](crates/slipscan-core/src/service.rs), on all three surfaces
   (`slipscan close check|run|reopen`). A close refuses (naming every reason) rather than locking

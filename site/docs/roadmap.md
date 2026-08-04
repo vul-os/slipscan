@@ -212,15 +212,16 @@ These were settled rather than escalated, and are recorded here so the reasoning
       the location CRUD ship on CLI, HTTP and desktop IPC together, with a first-run locations step
       and a Settings panel. The load-bearing test is that downgrading business to personal hides
       every group while leaving every location, contact and product row readable and unchanged.
-      Not built: the flags only reach the Settings panel and first-run step so far, because the
-      screens they would gate are 6.9)*
+      The flags gate real screens as of 6.9, not only the Settings panel and first-run step)*
 - [x] **6.1 Locations.** A `locations` table per book, shaped like `members` — additive, nullable,
       a book with zero locations behaves exactly as today *(shipped: branch/warehouse/site kinds,
       CRUD through the service layer, and the first table created after the oplog existed so it
       carries its own sync-capture triggers rather than having them retrofitted. `BookKind::Business`
       already existed and was already wired through CLI, server and desktop — verified, not
-      re-added. Not built: nothing references a location yet, so deleting one has no reassignment
-      guard, and no surface exposes locations)*
+      re-added. As of 6.9, locations are exposed on the desktop — Stock and Purchasing list and
+      quick-create them inline, and Stock's per-location columns gate on `show_locations` — and
+      `location_delete` refuses a location with movement history rather than deleting it out from
+      under a stock ledger)*
 - [x] **6.2 Contacts.** Customers and suppliers as one contact model per book *(shipped: one
       `contacts` table with a role of customer, supplier or both — a business buys from and sells to
       the same party, and duplicating it is how ledgers drift. Carries company name, email, phone,
@@ -251,16 +252,16 @@ These were settled rather than escalated, and are recorded here so the reasoning
       enforced by `RAISE(ABORT)` triggers rather than convention, and `repo/stock.rs` has no update
       or delete function at all. Registered in `LEDGER_TABLES`, so two locations that both traded
       offline converge by union instead of one overwriting the other. Transfers write two movements
-      summing to zero; on-hand is proven order-independent. Not built: no surface reaches stock,
-      `ref_kind` has no constrained vocabulary until purchasing and sales define one, and
+      summing to zero; on-hand is proven order-independent. The Stock screen reaches it as of 6.9.
+      Still open: `ref_kind` has no constrained vocabulary until purchasing and sales define one, and
       `created_by` is free text until roles land)*
 - [x] **6.4 Purchasing.** Purchase orders and goods receipts, receipts insert-only so partial
       deliveries recorded at two locations merge by union *(shipped, migration `0013_purchasing`.
       `po_receipts` is in `LEDGER_TABLES` with `RAISE(ABORT)` immutability triggers, so a line's
       received quantity is `SUM(qty)` over receipts rather than a stored counter — two sites
-      receiving against the same line while disconnected converge by union. Not built: no
-      Purchasing screen calls any of it (6.9); the 18 `po_*` IPC commands and their `client.ts`
-      wrappers are wired ahead of it)*
+      receiving against the same line while disconnected converge by union. The Purchasing screen
+      calls all of it as of 6.9; the 18 `po_*` IPC commands and their `client.ts` wrappers were
+      wired ahead of it)*
 - [x] **6.5 Sales orders → invoicing.** Draft → confirm (deducts stock) → paid, cancel reverses
       stock. Carried to a real invoice entity with numbering, delivery and paid/unpaid state, this
       is the single largest hole in PARITY — *"there is no invoicing at all"* *(shipped, migration
@@ -271,10 +272,10 @@ These were settled rather than escalated, and are recorded here so the reasoning
       machine. Known gaps, all named rather than implied: **multi-device numbering is unsolved**
       (two offline devices would both mint #47 — the `UNIQUE (book_id, series, number)` index turns
       that into a loud failure, not a silent collision; 6.7's problem once a transport exists), no
-      credit notes or voiding, no quotes, no partial fulfilment, no posting to `journals` (that is
-      6.6), and no desktop screen calls any of it yet (6.9) — the 21 IPC commands and their
-      `client.ts` wrappers are wired ahead of it, and `npm run parity:check` now fails CI if a
-      registered command ever loses its wrapper again)*
+      credit notes or voiding, no quotes, no partial fulfilment, no posting to `journals` (that was
+      6.6). The Sales screen calls all of it as of 6.9 — the 21 IPC commands and their `client.ts`
+      wrappers were wired ahead of it, and `npm run parity:check` now fails CI if a registered
+      command ever loses its wrapper again)*
 - [x] **6.6 Stock posts to the ledger.** The keystone, and the one piece neither codebase had: a
       goods receipt debits inventory-asset and credits accounts-payable; a confirmed sale posts
       revenue, VAT and cost-of-goods-sold against the existing chart of accounts and `journals` /
@@ -330,8 +331,27 @@ These were settled rather than escalated, and are recorded here so the reasoning
 - [ ] **6.8 Roles.** Genuinely new work — neither codebase had it. The device model here is
       trust-on-first-use pairing built for *your own devices*; branches have staff, and staff turn
       over. Revocation cannot stay "delete the peer row" once a till operator is a real person
-- [ ] **6.9 Desktop screens.** Catalogue, stock, orders, purchasing, and per-location views, held
-      to the same design-system bar as every other screen
+- [x] **6.9 Desktop screens.** Catalogue, stock, orders, purchasing, and per-location views, held
+      to the same design-system bar as every other screen *(shipped: Contacts, Catalogue, Stock and
+      Purchasing landed together, then Sales. All five gate on `BookProfile` — a personal book
+      resolves `show_contacts`/`show_catalogue`/`show_purchasing`/`show_sales` to `false`, the
+      "Trade" nav group renders with zero visible items and disappears rather than showing an empty
+      heading, and every route also refuses direct hash/palette access, not only the sidebar link.
+      Contacts is one list with role tabs over the shared customer/supplier model. Catalogue makes
+      the category → product → variant hierarchy legible, labelling a variant-less product "not
+      sellable yet" rather than leaving it looking empty. Stock has no "set level" control anywhere
+      on purpose — Adjust and Count write movements (Count does the signed-delta arithmetic), and
+      Transfer shows both resulting movements so on-hand stays visibly `SUM(qty_delta)`; per-location
+      columns are further gated on `show_locations` so a single-location business sees one honest
+      total rather than a location axis with one entry. Purchasing is built on the derived receiving
+      status (none/partial/complete) rather than three calls per line. Sales is one screen with three
+      tabs — Orders, Invoices, Aged receivables — because issuing an invoice from an order literally
+      copies its lines, and splitting the two would turn one action into a navigation; invoices carry
+      no edit or delete affordance anywhere, because the database refuses one. Merging the parallel
+      streams surfaced a real defect neither could see alone: Catalogue and Purchasing both claimed
+      jump key "U", making one destination keyboard-unreachable while looking correct in the rail —
+      Purchasing moved to "O" and a test now names any key clash, mutation-verified by reintroducing
+      the collision.)*
 
 **Positioning, settled:** SlipScan is now aiming at both axes in full — personal finance *and*
 small-business accounting, with inventory as a module of the book rather than a neighbouring app.

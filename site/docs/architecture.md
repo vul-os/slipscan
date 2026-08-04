@@ -20,8 +20,17 @@ crates/
 apps/
   desktop/                 # Tauri 2 + Svelte 5 + TypeScript + Vite + Tailwind v4
     src/                   # Svelte frontend
+      lib/
+        state/             # the seven Svelte 5 rune stores (books, intent, onboarding,
+                           # palette, router, search, theme)
+        util/              # four dependency-free helpers (csv, daterange, format, fuzzy)
+        api/                # client.ts + hand-maintained TypeScript mirrors of the IPC/HTTP payloads
+        components/         # shared Svelte components
+        book.ts, commands.ts, icons.ts, loadCache.ts, nav.ts, nudges.ts  # app-level, not
+                           # grouped under state/ or util/
     src-tauri/             # Tauri shell — thin IPC adapters over slipscan-core, no logic here
-assets/brand/              # logo, favicon
+brand/                      # the mark + both wordmarks — the one source; scripts/sync-brand.ts
+                           # mirrors them out (see "Brand assets" below)
 docs/                      # this file, guides
 ```
 
@@ -230,7 +239,7 @@ Target: the full Vault22/22seven experience — nudges, spending insights, peer 
   - Coarse cohort buckets only (region, rough income band, household size) — chosen so every cohort clears a k-anonymity floor; submissions carrying no identifiers, no account, no stable pseudonym.
   - Anonymous transport (relay/onion-style submission, randomized timing); aggregators are community-run and can be anyone — the DP noise means even a malicious aggregator learns nothing about an individual.
   - Default is **off**. Turning it on shows exactly what would be sent, in plain language.
-- Parity North Star: the feature-parity matrices vs Xero and Vault22/22seven are written — [PARITY.md](../PARITY.md), 24 capabilities scored Built / Partial / Not built with a file-level citation on every row, and blunt about the result (2 built, 10 partial, 12 not built; **zero of Xero's fourteen**). [ROADMAP.md](../ROADMAP.md) Phases 4.5 and 5 link it rather than restating it. Still owed: each gap filed as an issue, and something that re-scores the matrix instead of a human doing it.
+- Parity North Star: the feature-parity matrices vs Xero and Vault22/22seven are written — [PARITY.md](../PARITY.md), 24 capabilities scored Built / Partial / Not built with a file-level citation on every row, re-scored 2026-08-04 to **5 built, 12 partial, 7 not built** (Xero axis 2 of 14 built — invoicing, contacts). [ROADMAP.md](../ROADMAP.md) Phases 4.5 and 5 link it rather than restating it. Still owed: each gap filed as an issue, and something that re-scores the matrix instead of a human doing it.
 
 ## Non-negotiables (the mantra)
 
