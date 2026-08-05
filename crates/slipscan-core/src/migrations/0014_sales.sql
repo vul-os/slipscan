@@ -1,8 +1,9 @@
 -- =============================================================================
--- Migration 0014: sales orders and invoicing (Phase 6.5, ROADMAP.md "Inventory
--- & trade"). PARITY.md's bluntest line: "there is no invoicing at all — no
--- invoice entity, no numbering, no delivery, no paid/unpaid state". This
--- migration is what closes it.
+-- Migration 0014: quotes, sales orders and invoicing (Phase 6.5, ROADMAP.md
+-- "Inventory & trade"). PARITY.md's bluntest line: "there is no invoicing at
+-- all — no invoice entity, no numbering, no delivery, no paid/unpaid state".
+-- This migration is what closes it, and later gained quotes (below, "Quotes")
+-- to close PARITY.md's next Xero row the same way.
 --
 -- **Why 0014 and not 0013.** ROADMAP.md numbers Phase 6's stages 6.1..6.9, and
 -- the migrations follow that order 1:1 (0009 = 6.1 locations, 0010 = 6.2
@@ -13,19 +14,23 @@
 -- branches both end up called 0013. Both landed, contiguous, needing no
 -- renumbering at merge time.
 --
--- **Two tables, two different mapping decisions, on purpose.** This is the
+-- **Two shapes, two different mapping decisions, on purpose.** This is the
 -- one design choice in this migration worth reading closely, because the
 -- obvious shape (one lifecycle, one table) is wrong for exactly the reason
--- ROADMAP.md's Phase 6 header keeps repeating about stock:
+-- ROADMAP.md's Phase 6 header keeps repeating about stock. `quotes`/
+-- `quote_items` (added later, see "Quotes" below) share the first shape
+-- exactly, so the table below still describes both:
 --
---   sales_orders / sales_order_items    An editable draft while a person is
---                                       still deciding what is on it — add a
+--   quotes / quote_items,               An editable draft while a person is
+--   sales_orders / sales_order_items    still deciding what is on it — add a
 --                                       line, fix a quantity, change the
---                                       customer. `status` moves it through
---                                       draft -> confirmed -> paid, or ->
---                                       cancelled from either of the first
---                                       two. This is a §4.4 LWW register, the
---                                       same family as `contacts` and
+--                                       customer. A quote's `status` moves
+--                                       draft -> sent -> accepted | declined
+--                                       | expired; an order's moves draft ->
+--                                       confirmed -> paid, or -> cancelled
+--                                       from either of the first two. Both
+--                                       are §4.4 LWW registers, the same
+--                                       family as `contacts` and
 --                                       `product_variants`: last-writer-wins
 --                                       is exactly what a person means by
 --                                       editing their own draft on two
@@ -99,11 +104,26 @@
 -- full quantity in one shot. Partial fulfilment across more than one delivery
 -- is not built; a partial shipment today is modelled as two smaller orders.
 --
+-- **Quotes.** `quotes`/`quote_items` (below, right after `sales_order_items`)
+-- closed PARITY.md's next Xero row, on the foundation this migration's
+-- `sales_orders` half exists to convert into: `draft -> sent -> accepted |
+-- declined | expired`, and `CoreService::quote_accept` turns an `accepted`
+-- quote into a brand-new `sales_orders` row by copying its lines — the exact
+-- reuse `invoice_issue` already makes of a confirmed order's lines, one hop
+-- earlier in the lifecycle, rather than a second "confirm"-shaped path. A
+-- quote never touches `stock_movements` or `journals` at all: nothing has
+-- been sold yet, so nothing has moved and nothing is owed. It has no
+-- `location_id` for the identical reason — there is nothing to deduct stock
+-- from until `quote_accept`'s new order gets one, the same as any other
+-- freshly created draft order. Its own numbering series is `"quote"`,
+-- entirely separate from `sales_orders`' `"sales_order"` — a quote and the
+-- order it becomes are not required to share a number, the same
+-- independence `sales_orders`/`invoices` already have from each other.
+-- Deliberately out of scope: no e-mailing a quote, no PDF, no customer
+-- portal, and no partial acceptance — accepting copies every line or none.
+--
 -- **What else is deliberately not here**, stated plainly rather than left to
 -- be discovered later:
---   - No quotes/estimates (PARITY.md's next Xero row, blocked behind this one
---     on purpose — a quote converts into an order, which now exists to
---     convert into).
 --   - No credit notes or invoice voiding. Once issued, an invoice is
 --     permanent; correcting one is future work following the journal
 --     reversal pattern noted above.
@@ -232,6 +252,134 @@ CREATE INDEX sales_order_items_order_idx ON sales_order_items (sales_order_id);
 CREATE INDEX sales_order_items_book_idx ON sales_order_items (book_id);
 CREATE INDEX sales_order_items_variant_idx
     ON sales_order_items (variant_id) WHERE variant_id IS NOT NULL;
+
+-- -----------------------------------------------------------------------------
+-- quotes / quote_items — a priced offer that has not happened yet. See the
+-- header above ("Quotes") for the full reasoning; the short version is that
+-- this is the same editable-draft §4.4 LWW shape as `sales_orders`/
+-- `sales_order_items` just above, one lifecycle stage earlier, with its own
+-- `"quote"` numbering series and no `location_id` at all — a quote never
+-- deducts stock, so it has nothing to deduct stock from.
+-- -----------------------------------------------------------------------------
+
+CREATE TABLE quotes (
+    id           TEXT PRIMARY KEY,
+    book_id      TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    -- A customer with any quote history cannot be deleted out from under it —
+    -- same RESTRICT `sales_orders.contact_id` already carries, for the same
+    -- reason: it is trade history the moment it exists, even unsent.
+    contact_id   TEXT NOT NULL REFERENCES contacts (id) ON DELETE RESTRICT,
+    -- Assigned once, atomically, by `repo::sales::allocate_number` at
+    -- creation, series `"quote"` — entirely separate from `sales_orders`'
+    -- own `"sales_order"` series. Never reassigned.
+    number       INTEGER NOT NULL,
+    quote_date   TEXT NOT NULL,
+    -- Advisory only — nothing here auto-expires a quote past this date; see
+    -- `quote_expire` in service.rs and the header note on why that is a
+    -- deliberate call rather than a background job.
+    expiry_date  TEXT,
+    status       TEXT NOT NULL DEFAULT 'draft'
+        CHECK (status IN ('draft', 'sent', 'accepted', 'declined', 'expired')),
+    -- The whole document's currency; same one-currency-per-document choice
+    -- `sales_orders.currency` makes, for the identical reason.
+    currency     TEXT NOT NULL CHECK (length(currency) = 3),
+    notes        TEXT,
+    sent_at      TEXT,
+    accepted_at  TEXT,
+    declined_at  TEXT,
+    expired_at   TEXT,
+    -- Set only by `quote_accept`, the moment this quote's lines are copied
+    -- into a brand-new `sales_orders` row. ON DELETE SET NULL: a quote is a
+    -- permanent record of what was offered regardless of what later happens
+    -- to the order it became — the same defensive-not-load-bearing choice
+    -- `invoices.sales_order_id` makes, since a sales order has no delete path
+    -- once it is anything other than `draft` in any case.
+    converted_sales_order_id TEXT REFERENCES sales_orders (id) ON DELETE SET NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    UNIQUE (book_id, number)
+);
+
+CREATE INDEX quotes_book_idx ON quotes (book_id);
+CREATE INDEX quotes_book_status_idx ON quotes (book_id, status);
+CREATE INDEX quotes_contact_idx ON quotes (contact_id);
+CREATE INDEX quotes_converted_sales_order_idx
+    ON quotes (converted_sales_order_id) WHERE converted_sales_order_id IS NOT NULL;
+
+CREATE TABLE quote_items (
+    id                TEXT PRIMARY KEY,
+    quote_id          TEXT NOT NULL REFERENCES quotes (id) ON DELETE CASCADE,
+    book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    -- NULL = a free-text/service line, never touched by stock. Set = a
+    -- catalogue line, copied verbatim into the new `sales_order_items` row
+    -- `quote_accept` creates. RESTRICT for the identical reason
+    -- `sales_order_items.variant_id` carries it: a variant that has ever
+    -- appeared on a quote is trade history, even if the quote was never sent.
+    variant_id        TEXT REFERENCES product_variants (id) ON DELETE RESTRICT,
+    description       TEXT NOT NULL,
+    quantity          INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price_minor  INTEGER NOT NULL CHECK (unit_price_minor >= 0),
+    -- Basis points, same convention and same snapshot-not-live-FK reasoning
+    -- as `sales_order_items.tax_rate_bps`.
+    tax_rate_bps      INTEGER NOT NULL DEFAULT 0
+        CHECK (tax_rate_bps >= 0 AND tax_rate_bps <= 10000),
+    line_order        INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+
+CREATE INDEX quote_items_quote_idx ON quote_items (quote_id);
+CREATE INDEX quote_items_book_idx ON quote_items (book_id);
+CREATE INDEX quote_items_variant_idx
+    ON quote_items (variant_id) WHERE variant_id IS NOT NULL;
+
+-- Sync capture: all three verbs, an ordinary editable §4.4 LWW register, the
+-- same treatment `sales_orders`/`sales_order_items` get below.
+-- `crates/slipscan-sync/src/lib.rs`'s `LWW_TABLES` gains `quotes` and
+-- `quote_items` in the same change as this section, and
+-- `crate::sync::capture::tests` assert the two agree in both directions.
+
+CREATE TRIGGER sync_capture_quotes_ins AFTER INSERT ON quotes
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('quotes', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER sync_capture_quotes_upd AFTER UPDATE ON quotes
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('quotes', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER sync_capture_quotes_del AFTER DELETE ON quotes
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('quotes', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER sync_capture_quote_items_ins AFTER INSERT ON quote_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('quote_items', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER sync_capture_quote_items_upd AFTER UPDATE ON quote_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('quote_items', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+CREATE TRIGGER sync_capture_quote_items_del AFTER DELETE ON quote_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('quote_items', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
 
 -- -----------------------------------------------------------------------------
 -- invoices / invoice_items / invoice_payments — the immutable fact. See the

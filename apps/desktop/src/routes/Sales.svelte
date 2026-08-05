@@ -32,6 +32,7 @@
   import PageHeader from "../lib/components/PageHeader.svelte";
   import EmptyState from "../lib/components/EmptyState.svelte";
   import Skeleton from "../lib/components/Skeleton.svelte";
+  import Quotes from "./sales/Quotes.svelte";
   import Orders from "./sales/Orders.svelte";
   import Invoices from "./sales/Invoices.svelte";
   import AgedReceivables from "./sales/AgedReceivables.svelte";
@@ -51,9 +52,10 @@
     swrLoad<Data>("sales:gate", load, (v) => (data = v), { fresh });
   let data = $state(reload());
 
-  type Tab = "orders" | "invoices" | "aged";
+  type Tab = "quotes" | "orders" | "invoices" | "aged";
   let tab = $state<Tab>("orders");
   const tabs: Array<{ id: Tab; label: string }> = [
+    { id: "quotes", label: "Quotes" },
     { id: "orders", label: "Orders" },
     { id: "invoices", label: "Invoices" },
     { id: "aged", label: "Aged receivables" },
@@ -61,9 +63,9 @@
 </script>
 
 <PageHeader
-  eyebrow="Customers · orders · invoicing"
+  eyebrow="Quotes · orders · invoicing"
   title="Sales"
-  subtitle="Draft an order for a customer, confirm it to deduct stock and post revenue — then issue the invoice. Invoices are numbered facts once issued: a correction is a credit note, which is not built yet."
+  subtitle="Offer a customer a priced quote, then draft an order — either straight from scratch or by accepting a quote — confirm it to deduct stock and post revenue, then issue the invoice. A quote never touches stock or the ledger; invoices are numbered facts once issued: a correction is a credit note, which is not built yet."
 />
 
 {#await data}
@@ -107,7 +109,9 @@
       {/each}
     </div>
 
-    {#if tab === "orders"}
+    {#if tab === "quotes"}
+      <Quotes {book} onaccepted={() => (tab = "orders")} />
+    {:else if tab === "orders"}
       <Orders {book} onissued={() => (tab = "invoices")} />
     {:else if tab === "invoices"}
       <Invoices {book} />

@@ -83,6 +83,8 @@ import type {
   NewProductVariant,
   NewPurchaseOrder,
   NewPurchaseOrderItem,
+  NewQuote,
+  NewQuoteItem,
   NewSalesOrder,
   NewSalesOrderItem,
   NewStockMovement,
@@ -114,6 +116,10 @@ import type {
   PurchaseOrder,
   PurchaseOrderItem,
   PurchaseOrderItemReceiving,
+  Quote,
+  QuoteItem,
+  QuoteItemUpdateRequest,
+  QuoteUpdateRequest,
   ReconConfirmRequest,
   ReconSuggestion,
   RegionInfo,
@@ -216,6 +222,19 @@ const purchaseOrderItems: PurchaseOrderItem[] = [];
 const poReceipts: PoReceipt[] = [];
 
 /**
+ * Quotes (Phase 6.5 addendum). Empty by default, like purchasing. A quote
+ * never touches stock or the ledger — this mock has no journal at all, so
+ * that is not something it could simulate wrongly even by accident.
+ */
+const quotes: Quote[] = [];
+const quoteItems: QuoteItem[] = [];
+
+/**
+ * Sales orders & invoicing (Phase 6.5). Empty by default, like purchasing.
+ * `invoices`, `invoiceItems` and `invoicePayments` are append-only here on
+ * purpose, mirroring core's insert-only tables: nothing in this file ever
+ * mutates or removes a row out of them, because the database would refuse to.
+
  * Fixed assets & depreciation (migration 0016, PARITY.md "Fixed assets").
  * Empty by default, like purchasing. Unlike purchasing/sales — the Assets
  * screen (apps/desktop/src/routes/Assets.svelte) calls these. `assetRuns` is
@@ -260,6 +279,7 @@ function nextNumber(bookId: string, series: string): number {
 function variantIsReferenced(variantId: string): boolean {
   return (
     stockMovements.some((m) => m.variant_id === variantId) ||
+    quoteItems.some((i) => i.variant_id === variantId) ||
     salesOrderItems.some((i) => i.variant_id === variantId) ||
     invoiceItems.some((i) => i.variant_id === variantId) ||
     purchaseOrderItems.some((i) => i.variant_id === variantId)
@@ -300,6 +320,19 @@ function requireContact(contactId: string): Contact {
   const c = contacts.find((x) => x.id === contactId);
   if (!c) throw new Error(`no contact with id ${contactId}`);
   return c;
+}
+
+function requireQuote(quoteId: string): Quote {
+  const quote = quotes.find((q) => q.id === quoteId);
+  if (!quote) throw new Error(`no quote with id ${quoteId}`);
+  return quote;
+}
+
+/** Only reachable while the quote is still `draft` — the same guard core
+ * applies before letting a header or line edit through. */
+function requireQuoteDraft(quote: Quote, verb: string): void {
+  if (quote.status !== "draft")
+    throw new Error(`a ${quote.status} quote cannot be ${verb}`);
 }
 
 function requireOrder(orderId: string): SalesOrder {
@@ -3199,12 +3232,13 @@ export const mockApi = {
   contact_remove: async (q: { id: string }): Promise<null> => {
     const c = requireContact(q.id);
     const used =
+      quotes.some((v) => v.contact_id === c.id) ||
       salesOrders.some((o) => o.contact_id === c.id) ||
       invoices.some((v) => v.contact_id === c.id) ||
       purchaseOrders.some((p) => p.supplier_id === c.id);
     if (used)
       throw new Error(
-        "this contact has orders or invoices against it and cannot be deleted",
+        "this contact has quotes, orders or invoices against it and cannot be deleted",
       );
     contacts.splice(contacts.indexOf(c), 1);
     return null;
@@ -3677,6 +3711,224 @@ export const mockApi = {
   depreciation_runs_for_asset: async (q: {
     asset_id: string;
   }): Promise<AssetDepreciationRun[]> => clone(runsForAsset(q.asset_id)),
+  // -- quotes (Phase 6.5 addendum). Empty by default, like sales orders below.
+  // A quote never touches stock or the ledger, so there is nothing here for
+  // this mock to under- or over-simulate on that front — the only behaviour
+  // that has to be modelled is the status machine (draft -> sent -> accepted
+  // | declined | expired), draft-only editing, and `quote_accept` copying
+  // lines into a brand-new draft `SalesOrder`. --
+
+  quote_create: async (q: NewQuote): Promise<Quote> => {
+    const now = new Date().toISOString();
+    const created: Quote = {
+      id: id("qt00"),
+      book_id: q.book_id,
+      contact_id: q.contact_id,
+      number: nextNumber(q.book_id, "quote"),
+      quote_date: q.quote_date ?? now.slice(0, 10),
+      expiry_date: q.expiry_date ?? null,
+      status: "draft",
+      currency: q.currency ?? book.currency,
+      notes: q.notes?.trim() || null,
+      sent_at: null,
+      accepted_at: null,
+      declined_at: null,
+      expired_at: null,
+      converted_sales_order_id: null,
+      created_at: now,
+      updated_at: now,
+    };
+    quotes.push(created);
+    return clone(created);
+  },
+
+  quote_get: async (q: { id: string }): Promise<Quote> => clone(requireQuote(q.id)),
+
+  quote_list: async (q: { book_id: string }): Promise<Quote[]> =>
+    clone(
+      quotes
+        .filter((v) => v.book_id === q.book_id)
+        .sort((a, b) => b.number - a.number),
+    ),
+
+  quote_update: async (q: QuoteUpdateRequest): Promise<Quote> => {
+    const quote = requireQuote(q.id);
+    requireQuoteDraft(quote, "edited");
+    if (q.quote_date !== undefined) quote.quote_date = q.quote_date;
+    if (q.expiry_date !== undefined) quote.expiry_date = q.expiry_date;
+    if (q.notes !== undefined) quote.notes = q.notes?.trim() || null;
+    quote.updated_at = new Date().toISOString();
+    return clone(quote);
+  },
+
+  quote_delete: async (q: { id: string }): Promise<null> => {
+    const quote = requireQuote(q.id);
+    requireQuoteDraft(quote, "deleted");
+    quotes.splice(quotes.indexOf(quote), 1);
+    for (let i = quoteItems.length - 1; i >= 0; i -= 1) {
+      if (quoteItems[i].quote_id === quote.id) quoteItems.splice(i, 1);
+    }
+    return null;
+  },
+
+  quote_item_add: async (q: NewQuoteItem): Promise<QuoteItem> => {
+    const quote = requireQuote(q.quote_id);
+    requireQuoteDraft(quote, "changed");
+    if (q.quantity <= 0) throw new Error("quantity must be greater than zero");
+    const description = q.description?.trim();
+    if (!description)
+      throw new Error("a line without a variant needs a description");
+    if (q.unit_price_minor === undefined)
+      throw new Error("a line without a variant needs a unit price");
+    const now = new Date().toISOString();
+    const created: QuoteItem = {
+      id: id("qti0"),
+      quote_id: quote.id,
+      book_id: quote.book_id,
+      variant_id: q.variant_id ?? null,
+      description,
+      quantity: q.quantity,
+      unit_price_minor: q.unit_price_minor,
+      tax_rate_bps: q.tax_rate_bps ?? 0,
+      line_order: quoteItems.filter((i) => i.quote_id === quote.id).length,
+      created_at: now,
+      updated_at: now,
+    };
+    quoteItems.push(created);
+    return clone(created);
+  },
+
+  quote_items_list: async (q: { quote_id: string }): Promise<QuoteItem[]> =>
+    clone(
+      quoteItems
+        .filter((i) => i.quote_id === q.quote_id)
+        .sort((a, b) => a.line_order - b.line_order),
+    ),
+
+  quote_item_update: async (q: QuoteItemUpdateRequest): Promise<QuoteItem> => {
+    const item = quoteItems.find((i) => i.id === q.id);
+    if (!item) throw new Error(`no quote line with id ${q.id}`);
+    requireQuoteDraft(requireQuote(item.quote_id), "changed");
+    if (q.description !== undefined) {
+      const description = q.description.trim();
+      if (!description)
+        throw new Error("quote line description must not be empty");
+      item.description = description;
+    }
+    if (q.quantity !== undefined) {
+      if (q.quantity <= 0)
+        throw new Error("quote line quantity must be positive");
+      item.quantity = q.quantity;
+    }
+    if (q.unit_price_minor !== undefined) {
+      if (q.unit_price_minor < 0)
+        throw new Error("quote line unit price must not be negative");
+      item.unit_price_minor = q.unit_price_minor;
+    }
+    if (q.tax_rate_bps !== undefined) {
+      if (q.tax_rate_bps < 0 || q.tax_rate_bps > 10_000)
+        throw new Error(
+          "quote line tax rate must be between 0 and 10000 basis points",
+        );
+      item.tax_rate_bps = q.tax_rate_bps;
+    }
+    item.updated_at = new Date().toISOString();
+    return clone(item);
+  },
+
+  quote_item_remove: async (q: { id: string }): Promise<null> => {
+    const idx = quoteItems.findIndex((i) => i.id === q.id);
+    if (idx < 0) throw new Error(`no quote line with id ${q.id}`);
+    requireQuoteDraft(requireQuote(quoteItems[idx].quote_id), "changed");
+    quoteItems.splice(idx, 1);
+    return null;
+  },
+
+  quote_send: async (q: { id: string }): Promise<Quote> => {
+    const quote = requireQuote(q.id);
+    requireQuoteDraft(quote, "sent");
+    const lines = quoteItems.filter((i) => i.quote_id === quote.id);
+    if (lines.length === 0)
+      throw new Error("a quote with no lines cannot be sent");
+    quote.status = "sent";
+    quote.sent_at = new Date().toISOString();
+    quote.updated_at = quote.sent_at;
+    return clone(quote);
+  },
+
+  quote_decline: async (q: { id: string }): Promise<Quote> => {
+    const quote = requireQuote(q.id);
+    if (quote.status !== "sent")
+      throw new Error(`a ${quote.status} quote cannot be declined`);
+    quote.status = "declined";
+    quote.declined_at = new Date().toISOString();
+    quote.updated_at = quote.declined_at;
+    return clone(quote);
+  },
+
+  quote_expire: async (q: { id: string }): Promise<Quote> => {
+    const quote = requireQuote(q.id);
+    if (quote.status !== "sent")
+      throw new Error(`a ${quote.status} quote cannot expire`);
+    quote.status = "expired";
+    quote.expired_at = new Date().toISOString();
+    quote.updated_at = quote.expired_at;
+    return clone(quote);
+  },
+
+  /** Copies this quote's lines into a brand-new draft `SalesOrder` and
+   * returns it — the quote's own rows are never converted in place. Mirrors
+   * `CoreService::quote_accept` exactly, including starting the new order
+   * with `location_id: null`. */
+  quote_accept: async (q: { id: string }): Promise<SalesOrder> => {
+    const quote = requireQuote(q.id);
+    if (quote.status !== "sent")
+      throw new Error(`a ${quote.status} quote cannot be accepted`);
+    const lines = quoteItems.filter((i) => i.quote_id === quote.id);
+    const now = new Date().toISOString();
+    const order: SalesOrder = {
+      id: id("so00"),
+      book_id: quote.book_id,
+      contact_id: quote.contact_id,
+      location_id: null,
+      number: nextNumber(quote.book_id, "sales_order"),
+      order_date: now.slice(0, 10),
+      status: "draft",
+      currency: quote.currency,
+      notes: quote.notes,
+      confirmed_at: null,
+      cancelled_at: null,
+      paid_at: null,
+      created_at: now,
+      updated_at: now,
+    };
+    salesOrders.push(order);
+    lines.forEach((line, i) => {
+      salesOrderItems.push({
+        id: id("soi0"),
+        sales_order_id: order.id,
+        book_id: order.book_id,
+        variant_id: line.variant_id,
+        description: line.description,
+        quantity: line.quantity,
+        unit_price_minor: line.unit_price_minor,
+        tax_rate_bps: line.tax_rate_bps,
+        line_order: i,
+        created_at: now,
+        updated_at: now,
+      });
+    });
+    quote.status = "accepted";
+    quote.accepted_at = now;
+    quote.converted_sales_order_id = order.id;
+    quote.updated_at = now;
+    return clone(order);
+  },
+
+  quote_totals: async (q: { id: string }): Promise<SalesOrderTotals> => {
+    requireQuote(q.id);
+    return totalsOf(quoteItems.filter((i) => i.quote_id === q.id));
+  },
 
   // -- sales orders & invoicing (Phase 6.5). Empty by default, like
   // purchasing above. The Sales screen (ROADMAP.md 6.9) is the first caller.

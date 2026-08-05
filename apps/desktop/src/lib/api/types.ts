@@ -457,6 +457,10 @@ export interface PurchaseOrderItemReceiving {
 }
 
 // ---------------------------------------------------------------------------
+// Quotes, sales orders & invoicing (Phase 6.5, migration 0014_sales; quotes
+// are a Phase 6.5 addendum). The Sales screen (`routes/sales/`) calls all of
+// this as of ROADMAP.md 6.9.
+
 // Fixed assets & depreciation (migration 0016, PARITY.md "Fixed assets").
 //
 // `assets` is the capitalised-cost register — editable via `assetUpdate`
@@ -577,13 +581,17 @@ export interface AssetWithDepreciation {
 // these yet (ROADMAP.md 6.9) — wired ahead of the UI, the same order the
 // purchasing block above and the location CRUD before it landed in.
 //
-// Two shapes on purpose, mirroring core exactly: a sales order is an editable
-// draft, while an invoice is a fact. `Invoice`, `InvoiceItem` and
-// `InvoicePayment` have no update or delete call anywhere in this file because
-// the database refuses one — issued invoices are immutable, and a correction is
-// a credit note (not built yet). There is no `status` on `Invoice` either:
-// paid/unpaid is `InvoiceTotals.status`, derived from the payments each time
-// rather than stored.
+// Three shapes on purpose, mirroring core exactly: a quote and a sales order
+// are both editable drafts, while an invoice is a fact. `Invoice`,
+// `InvoiceItem` and `InvoicePayment` have no update or delete call anywhere
+// in this file because the database refuses one — issued invoices are
+// immutable, and a correction is a credit note (not built yet). There is no
+// `status` on `Invoice` either: paid/unpaid is `InvoiceTotals.status`,
+// derived from the payments each time rather than stored. A quote has no
+// `SalesOrder`-shaped `location_id` at all — it never touches stock, so it
+// has nothing to deduct stock from; `quoteAccept` copies its lines into a
+// brand-new `SalesOrder` that starts with `location_id: null`, same as any
+// other freshly created order.
 //
 // Nullable fields follow the one convention this whole surface uses: omit a
 // key to leave it alone, send `null` to clear it, send a value to set it.
@@ -591,6 +599,94 @@ export interface AssetWithDepreciation {
 
 export type SalesOrderStatus = "draft" | "confirmed" | "paid" | "cancelled";
 export type InvoicePaymentStatus = "unpaid" | "partly_paid" | "paid";
+export type QuoteStatus = "draft" | "sent" | "accepted" | "declined" | "expired";
+
+/** A priced offer that has not happened yet (Phase 6.5 addendum). Never
+ * touches stock or the ledger — `quoteAccept` is the only way one becomes a
+ * `SalesOrder`, by copying its lines into a brand-new draft order. No
+ * `location_id`: a quote has nothing to deduct stock from until the order it
+ * becomes gets one, the same as any other freshly created order. */
+export interface Quote {
+  id: string;
+  book_id: string;
+  contact_id: string;
+  /** Assigned once at creation, its own `"quote"` numbering series — entirely
+   * separate from a sales order's `"sales_order"` series. */
+  number: number;
+  quote_date: string;
+  /** Advisory only; nothing auto-expires a quote past this date —
+   * `quoteExpire` is a deliberate call, not a timer. */
+  expiry_date: string | null;
+  status: QuoteStatus;
+  currency: string;
+  notes: string | null;
+  sent_at: string | null;
+  accepted_at: string | null;
+  declined_at: string | null;
+  expired_at: string | null;
+  /** Set only by `quoteAccept`, the moment this quote's lines are copied into
+   * a new `sales_orders` row. `null` until then, and forever after for a
+   * quote that is declined, expires, or is still draft/sent. */
+  converted_sales_order_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewQuote {
+  book_id: string;
+  contact_id: string;
+  /** Defaults to today. */
+  quote_date?: string;
+  expiry_date?: string;
+  /** Defaults to the book's currency. */
+  currency?: string;
+  notes?: string;
+}
+
+/** Selective update; omitted keys are left untouched, `null` clears. Carries
+ * no `status` — status moves only through send/decline/expire/accept. */
+export interface QuoteUpdateRequest {
+  id: string;
+  quote_date?: string;
+  expiry_date?: string | null;
+  notes?: string | null;
+}
+
+export interface QuoteItem {
+  id: string;
+  quote_id: string;
+  book_id: string;
+  /** `null` = a free-text/service line, never touched by stock. */
+  variant_id: string | null;
+  description: string;
+  quantity: number;
+  unit_price_minor: number;
+  /** Basis points, snapshotted when the line was added. */
+  tax_rate_bps: number;
+  line_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewQuoteItem {
+  quote_id: string;
+  variant_id?: string | null;
+  /** Required for a free-text line; defaults to the variant's name otherwise. */
+  description?: string;
+  quantity: number;
+  /** Required for a free-text line; defaults to the variant's price otherwise. */
+  unit_price_minor?: number;
+  tax_rate_bps?: number;
+}
+
+/** Only reachable while the quote is still a draft. */
+export interface QuoteItemUpdateRequest {
+  id: string;
+  description?: string;
+  quantity?: number;
+  unit_price_minor?: number;
+  tax_rate_bps?: number;
+}
 
 export interface SalesOrder {
   id: string;

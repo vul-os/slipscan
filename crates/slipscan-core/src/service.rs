@@ -1804,14 +1804,14 @@ impl CoreService {
         Ok(after)
     }
 
-    /// Hard delete. As of migration `0014_sales`, a contact with any sales
-    /// order or invoice history is restrained the same way `account_delete`
-    /// is restrained by transactions — `sales_orders.contact_id` and
-    /// `invoices.contact_id` are both `ON DELETE RESTRICT`. That surfaces as
-    /// a raw SQLite foreign-key error here rather than a friendly
-    /// `CoreError`, the same trade-off migration 0012 accepted for
-    /// `stock_movements.variant_id`/`location_id`: nobody has hit it as a
-    /// caller yet.
+    /// Hard delete. As of migration `0014_sales`, a contact with any quote,
+    /// sales order or invoice history is restrained the same way
+    /// `account_delete` is restrained by transactions — `quotes.contact_id`,
+    /// `sales_orders.contact_id` and `invoices.contact_id` are all
+    /// `ON DELETE RESTRICT`. That surfaces as a raw SQLite foreign-key error
+    /// here rather than a friendly `CoreError`, the same trade-off migration
+    /// 0012 accepted for `stock_movements.variant_id`/`location_id`: nobody
+    /// has hit it as a caller yet.
     pub fn contact_remove(&self, id: &str) -> CoreResult<()> {
         let before = self.contact_get(id)?;
         let tx = self.conn().unchecked_transaction()?;
@@ -3161,6 +3161,522 @@ impl CoreService {
         } else {
             PoReceiptStatus::Partial
         })
+    }
+
+    // -----------------------------------------------------------------------
+    // Quotes (Phase 6.5 addendum — PARITY.md's next Xero row once invoicing
+    // shipped). A priced offer that has not happened yet: it never touches
+    // `stock_movements` or `journals`. `quote_accept` is the only function in
+    // this section that writes to a table it does not own — it copies this
+    // quote's lines into a brand-new `sales_orders` row via the same
+    // `repo::sales` functions `sales_order_create` uses below, rather than
+    // routing through that public method itself (which would open a second,
+    // nested transaction). See migration `0014_sales`'s header ("Quotes") for
+    // the full reasoning.
+    // -----------------------------------------------------------------------
+
+    pub fn quote_create(&self, new: NewQuote) -> CoreResult<Quote> {
+        let book = self.book_get(&new.book_id)?;
+        let contact = self.contact_get(&new.contact_id)?;
+        if contact.book_id != book.id {
+            return Err(CoreError::Validation(
+                "quote contact belongs to a different book".into(),
+            ));
+        }
+        let quote_date = new.quote_date.clone().unwrap_or_else(today);
+        parse_date(&quote_date)?;
+        let expiry_date = match &new.expiry_date {
+            Some(d) => {
+                parse_date(d)?;
+                Some(d.clone())
+            }
+            None => None,
+        };
+        let currency = match &new.currency {
+            Some(c) => normalize_currency_code(c)?,
+            None => book.currency.clone(),
+        };
+
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        // Own numbering series ("quote") from sales orders' ("sales_order") —
+        // a quote and the order it becomes are not required to share a
+        // number, the same independence `sales_orders`/`invoices` already
+        // have from each other.
+        let number = repo::sales::allocate_number(&tx, &book.id, "quote")?;
+        let quote = Quote {
+            id: new_id(),
+            book_id: book.id.clone(),
+            contact_id: contact.id,
+            number,
+            quote_date,
+            expiry_date,
+            status: QuoteStatus::Draft,
+            currency,
+            notes: normalize_optional(new.notes),
+            sent_at: None,
+            accepted_at: None,
+            declined_at: None,
+            expired_at: None,
+            converted_sales_order_id: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        repo::sales::quote_insert(&tx, &quote)?;
+        self.emit_audit(
+            &tx,
+            Some(&quote.book_id),
+            "quote",
+            Some(&quote.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&quote)?),
+        )?;
+        tx.commit()?;
+        Ok(quote)
+    }
+
+    pub fn quote_get(&self, id: &str) -> CoreResult<Quote> {
+        repo::sales::quote_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "quote",
+            id: id.to_string(),
+        })
+    }
+
+    /// Every quote in the book, most recently numbered first.
+    pub fn quote_list(&self, book_id: &str) -> CoreResult<Vec<Quote>> {
+        repo::sales::quote_list(self.conn(), book_id)
+    }
+
+    /// Header edit — quote date, expiry date, notes. Only reachable while the
+    /// quote is still `draft`; `status` moves through the dedicated
+    /// transition functions below, never through this patch.
+    pub fn quote_update(&self, id: &str, patch: QuotePatch) -> CoreResult<Quote> {
+        let before = self.quote_get(id)?;
+        if before.status != QuoteStatus::Draft {
+            return Err(CoreError::Validation(
+                "only a draft quote can be edited; a sent one can be declined or left to expire"
+                    .into(),
+            ));
+        }
+        let mut after = before.clone();
+        if let Some(quote_date) = patch.quote_date {
+            parse_date(&quote_date)?;
+            after.quote_date = quote_date;
+        }
+        if let Some(expiry_date) = patch.expiry_date {
+            after.expiry_date = match expiry_date {
+                Some(d) => {
+                    parse_date(&d)?;
+                    Some(d)
+                }
+                None => None,
+            };
+        }
+        if let Some(notes) = patch.notes {
+            after.notes = normalize_optional(notes);
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::quote_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "quote",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Hard delete. Only reachable while `draft` — a sent quote is a
+    /// record of what was offered, so it is declined or left to expire,
+    /// never deleted.
+    pub fn quote_delete(&self, id: &str) -> CoreResult<()> {
+        let before = self.quote_get(id)?;
+        if before.status != QuoteStatus::Draft {
+            return Err(CoreError::Validation(
+                "only a draft quote can be deleted; decline a sent one instead".into(),
+            ));
+        }
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::quote_delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "quote",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// `subtotal + tax == total`, derived from the quote's own items at call
+    /// time — see `Quote`'s header note on why nothing here is stored.
+    pub fn quote_totals(&self, id: &str) -> CoreResult<SalesOrderTotals> {
+        self.quote_get(id)?;
+        repo::sales::quote_totals(self.conn(), id)
+    }
+
+    /// Add a line to a draft quote: a catalogue line (`variant_id: Some`,
+    /// description/price default from the variant) or a free-text/service
+    /// line (`variant_id: None`, description and price required). Only
+    /// reachable while the quote is `draft`.
+    pub fn quote_item_add(&self, new: NewQuoteItem) -> CoreResult<QuoteItem> {
+        let quote = self.quote_get(&new.quote_id)?;
+        if quote.status != QuoteStatus::Draft {
+            return Err(CoreError::Validation(
+                "cannot add a line to a non-draft quote".into(),
+            ));
+        }
+        if new.quantity <= 0 {
+            return Err(CoreError::Validation(
+                "quote line quantity must be positive".into(),
+            ));
+        }
+        let (variant_id, description, unit_price_minor) = self.resolve_sales_order_line(
+            &quote.book_id,
+            new.variant_id.as_deref(),
+            new.description.as_deref(),
+            new.unit_price_minor,
+        )?;
+        if unit_price_minor < 0 {
+            return Err(CoreError::Validation(
+                "quote line unit price must not be negative".into(),
+            ));
+        }
+        let tax_rate_bps = new.tax_rate_bps.unwrap_or(0);
+        if !(0..=10_000).contains(&tax_rate_bps) {
+            return Err(CoreError::Validation(
+                "quote line tax rate must be between 0 and 10000 basis points".into(),
+            ));
+        }
+
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        let line_order = repo::sales::quote_item_list(&tx, &quote.id)?.len() as i64;
+        let item = QuoteItem {
+            id: new_id(),
+            quote_id: quote.id.clone(),
+            book_id: quote.book_id.clone(),
+            variant_id,
+            description,
+            quantity: new.quantity,
+            unit_price_minor,
+            tax_rate_bps,
+            line_order,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        repo::sales::quote_item_insert(&tx, &item)?;
+        self.emit_audit(
+            &tx,
+            Some(&item.book_id),
+            "quote_item",
+            Some(&item.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&item)?),
+        )?;
+        tx.commit()?;
+        Ok(item)
+    }
+
+    /// Every line on a quote, in the order they were added.
+    pub fn quote_items_list(&self, quote_id: &str) -> CoreResult<Vec<QuoteItem>> {
+        repo::sales::quote_item_list(self.conn(), quote_id)
+    }
+
+    /// Edit a line's description/quantity/price/tax rate. `variant_id` is
+    /// never reassigned — remove the line and add a new one to change which
+    /// product it is. Only reachable while the quote is `draft`.
+    pub fn quote_item_update(&self, id: &str, patch: QuoteItemPatch) -> CoreResult<QuoteItem> {
+        let before =
+            repo::sales::quote_item_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+                entity: "quote_item",
+                id: id.to_string(),
+            })?;
+        let quote = self.quote_get(&before.quote_id)?;
+        if quote.status != QuoteStatus::Draft {
+            return Err(CoreError::Validation(
+                "cannot edit a line on a non-draft quote".into(),
+            ));
+        }
+        let mut after = before.clone();
+        if let Some(description) = patch.description {
+            let description = description.trim().to_string();
+            if description.is_empty() {
+                return Err(CoreError::Validation(
+                    "quote line description must not be empty".into(),
+                ));
+            }
+            after.description = description;
+        }
+        if let Some(quantity) = patch.quantity {
+            if quantity <= 0 {
+                return Err(CoreError::Validation(
+                    "quote line quantity must be positive".into(),
+                ));
+            }
+            after.quantity = quantity;
+        }
+        if let Some(unit_price_minor) = patch.unit_price_minor {
+            if unit_price_minor < 0 {
+                return Err(CoreError::Validation(
+                    "quote line unit price must not be negative".into(),
+                ));
+            }
+            after.unit_price_minor = unit_price_minor;
+        }
+        if let Some(tax_rate_bps) = patch.tax_rate_bps {
+            if !(0..=10_000).contains(&tax_rate_bps) {
+                return Err(CoreError::Validation(
+                    "quote line tax rate must be between 0 and 10000 basis points".into(),
+                ));
+            }
+            after.tax_rate_bps = tax_rate_bps;
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::quote_item_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "quote_item",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Remove a line from a draft quote. Only reachable while `draft`.
+    pub fn quote_item_remove(&self, id: &str) -> CoreResult<()> {
+        let before =
+            repo::sales::quote_item_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+                entity: "quote_item",
+                id: id.to_string(),
+            })?;
+        let quote = self.quote_get(&before.quote_id)?;
+        if quote.status != QuoteStatus::Draft {
+            return Err(CoreError::Validation(
+                "cannot remove a line from a non-draft quote".into(),
+            ));
+        }
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::quote_item_delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "quote_item",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// draft -> sent. Requires at least one line item — sending an empty
+    /// quote has nothing for a customer to accept or decline.
+    pub fn quote_send(&self, id: &str) -> CoreResult<Quote> {
+        let before = self.quote_get(id)?;
+        if before.status != QuoteStatus::Draft {
+            return Err(CoreError::InvalidStatusTransition {
+                from: before.status.to_string(),
+                to: QuoteStatus::Sent.to_string(),
+            });
+        }
+        let items = self.quote_items_list(id)?;
+        if items.is_empty() {
+            return Err(CoreError::Validation(
+                "cannot send a quote with no line items".into(),
+            ));
+        }
+        let now = now_iso();
+        let mut after = before.clone();
+        after.status = QuoteStatus::Sent;
+        after.sent_at = Some(now.clone());
+        after.updated_at = now;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::quote_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "quote",
+            Some(id),
+            "send",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// sent -> declined. A customer said no; the quote stays on record rather
+    /// than being removed.
+    pub fn quote_decline(&self, id: &str) -> CoreResult<Quote> {
+        let before = self.quote_get(id)?;
+        if before.status != QuoteStatus::Sent {
+            return Err(CoreError::InvalidStatusTransition {
+                from: before.status.to_string(),
+                to: QuoteStatus::Declined.to_string(),
+            });
+        }
+        let now = now_iso();
+        let mut after = before.clone();
+        after.status = QuoteStatus::Declined;
+        after.declined_at = Some(now.clone());
+        after.updated_at = now;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::quote_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "quote",
+            Some(id),
+            "decline",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// sent -> expired. A deliberate call, not a background timer — see
+    /// migration `0014_sales`'s header on `Quote::expiry_date` for why
+    /// nothing here watches the clock.
+    pub fn quote_expire(&self, id: &str) -> CoreResult<Quote> {
+        let before = self.quote_get(id)?;
+        if before.status != QuoteStatus::Sent {
+            return Err(CoreError::InvalidStatusTransition {
+                from: before.status.to_string(),
+                to: QuoteStatus::Expired.to_string(),
+            });
+        }
+        let now = now_iso();
+        let mut after = before.clone();
+        after.status = QuoteStatus::Expired;
+        after.expired_at = Some(now.clone());
+        after.updated_at = now;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::sales::quote_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "quote",
+            Some(id),
+            "expire",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// sent -> accepted, and the whole reason this section exists: copies
+    /// this quote's lines into a brand-new `draft` `sales_orders` row and
+    /// returns it — reusing `repo::sales`'s order functions directly rather
+    /// than calling the public `sales_order_create`/`sales_order_item_add`
+    /// (which would each open their own transaction), exactly the way
+    /// `invoice_issue` copies a confirmed order's lines today. The new order
+    /// starts with `location_id: None`, same as any other freshly created
+    /// order — a stock-tracked line still needs one set before that order can
+    /// confirm. This quote's own rows are never converted in place: they stay
+    /// exactly as offered, and `converted_sales_order_id` is the only trace
+    /// left pointing at what they became.
+    pub fn quote_accept(&self, id: &str) -> CoreResult<SalesOrder> {
+        let before = self.quote_get(id)?;
+        if before.status != QuoteStatus::Sent {
+            return Err(CoreError::InvalidStatusTransition {
+                from: before.status.to_string(),
+                to: QuoteStatus::Accepted.to_string(),
+            });
+        }
+        let items = self.quote_items_list(id)?;
+        if items.is_empty() {
+            // Unreachable in practice — `quote_send` already refuses an empty
+            // quote and items are only ever removed while `draft` — but
+            // checked anyway rather than trusted, the same belt-and-suspenders
+            // `sales_order_confirm` applies to its own item list.
+            return Err(CoreError::Validation(
+                "cannot accept a quote with no line items".into(),
+            ));
+        }
+
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        let number = repo::sales::allocate_number(&tx, &before.book_id, "sales_order")?;
+        let order = SalesOrder {
+            id: new_id(),
+            book_id: before.book_id.clone(),
+            contact_id: before.contact_id.clone(),
+            location_id: None,
+            number,
+            order_date: today(),
+            status: SalesOrderStatus::Draft,
+            currency: before.currency.clone(),
+            notes: before.notes.clone(),
+            confirmed_at: None,
+            cancelled_at: None,
+            paid_at: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        repo::sales::order_insert(&tx, &order)?;
+        for (line_order, item) in items.iter().enumerate() {
+            let order_item = SalesOrderItem {
+                id: new_id(),
+                sales_order_id: order.id.clone(),
+                book_id: order.book_id.clone(),
+                variant_id: item.variant_id.clone(),
+                description: item.description.clone(),
+                quantity: item.quantity,
+                unit_price_minor: item.unit_price_minor,
+                tax_rate_bps: item.tax_rate_bps,
+                line_order: line_order as i64,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            };
+            repo::sales::order_item_insert(&tx, &order_item)?;
+        }
+        let mut after = before.clone();
+        after.status = QuoteStatus::Accepted;
+        after.accepted_at = Some(now.clone());
+        after.converted_sales_order_id = Some(order.id.clone());
+        after.updated_at = now;
+        repo::sales::quote_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "quote",
+            Some(id),
+            "accept",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        self.emit_audit(
+            &tx,
+            Some(&order.book_id),
+            "sales_order",
+            Some(&order.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&order)?),
+        )?;
+        tx.commit()?;
+        Ok(order)
     }
 
     // -----------------------------------------------------------------------
@@ -10062,6 +10578,396 @@ mod tests {
             svc.sales_order_item_remove(&item.id),
             Err(CoreError::Validation(_))
         ));
+    }
+
+    #[test]
+    fn quote_create_defaults_and_numbers_separately_from_sales_orders() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+
+        let quote = svc
+            .quote_create(NewQuote {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                quote_date: None,
+                expiry_date: Some("2026-03-01".into()),
+                currency: None,
+                notes: Some("first offer".into()),
+            })
+            .unwrap();
+        assert_eq!(quote.status, QuoteStatus::Draft);
+        assert_eq!(quote.currency, book.currency, "defaults from the book");
+        assert_eq!(quote.number, 1, "quotes have their own numbering series");
+        assert_eq!(quote.expiry_date.as_deref(), Some("2026-03-01"));
+        assert_eq!(quote.notes.as_deref(), Some("first offer"));
+
+        // A sales order created in the same book starts its own series at 1
+        // too — the two numbering books do not share a counter.
+        let order = svc
+            .sales_order_create(NewSalesOrder {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                location_id: None,
+                order_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        assert_eq!(
+            order.number, 1,
+            "quote and sales-order numbering do not share a counter"
+        );
+
+        let second_quote = svc
+            .quote_create(NewQuote {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                quote_date: None,
+                expiry_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        assert_eq!(
+            second_quote.number, 2,
+            "quote numbering is gapless within its own series"
+        );
+
+        // Cross-book contact is refused, same guard `sales_order_create` has.
+        let other_book = svc
+            .book_create(NewBook {
+                name: "Side business".into(),
+                kind: BookKind::Business,
+                currency: None,
+                country: Some("ZA".into()),
+                region: None,
+            })
+            .unwrap();
+        assert!(matches!(
+            svc.quote_create(NewQuote {
+                book_id: other_book.id,
+                contact_id: contact.id.clone(),
+                quote_date: None,
+                expiry_date: None,
+                currency: None,
+                notes: None,
+            }),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn quote_item_management_is_restricted_to_draft() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+        let quote = svc
+            .quote_create(NewQuote {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                quote_date: None,
+                expiry_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+
+        // A free-text line needs both a description and a price.
+        assert!(matches!(
+            svc.quote_item_add(NewQuoteItem {
+                quote_id: quote.id.clone(),
+                variant_id: None,
+                description: None,
+                quantity: 1,
+                unit_price_minor: None,
+                tax_rate_bps: None,
+            }),
+            Err(CoreError::Validation(_))
+        ));
+
+        let item = svc
+            .quote_item_add(NewQuoteItem {
+                quote_id: quote.id.clone(),
+                variant_id: None,
+                description: Some("Consulting".into()),
+                quantity: 2,
+                unit_price_minor: Some(5_000),
+                tax_rate_bps: Some(1500),
+            })
+            .unwrap();
+
+        let updated = svc
+            .quote_item_update(
+                &item.id,
+                QuoteItemPatch {
+                    quantity: Some(3),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.quantity, 3);
+
+        let totals = svc.quote_totals(&quote.id).unwrap();
+        assert_eq!(totals.subtotal_minor, 15_000);
+        assert_eq!(totals.tax_minor, 2_250); // 15% of 15 000
+        assert_eq!(totals.total_minor, 17_250);
+
+        svc.quote_send(&quote.id).unwrap();
+
+        // Once sent, the line is frozen.
+        assert!(matches!(
+            svc.quote_item_update(&item.id, QuoteItemPatch::default()),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.quote_item_remove(&item.id),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.quote_item_add(NewQuoteItem {
+                quote_id: quote.id.clone(),
+                variant_id: None,
+                description: Some("Extra".into()),
+                quantity: 1,
+                unit_price_minor: Some(100),
+                tax_rate_bps: None,
+            }),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn quote_status_transitions_are_validated() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+        let quote = svc
+            .quote_create(NewQuote {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                quote_date: None,
+                expiry_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+
+        // Can't send a quote with no lines.
+        assert!(matches!(
+            svc.quote_send(&quote.id),
+            Err(CoreError::Validation(_))
+        ));
+        // Can't accept, decline or expire a draft quote — it was never sent.
+        assert!(matches!(
+            svc.quote_accept(&quote.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+        assert!(matches!(
+            svc.quote_decline(&quote.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+        assert!(matches!(
+            svc.quote_expire(&quote.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+
+        svc.quote_item_add(NewQuoteItem {
+            quote_id: quote.id.clone(),
+            variant_id: None,
+            description: Some("Consulting".into()),
+            quantity: 1,
+            unit_price_minor: Some(1000),
+            tax_rate_bps: None,
+        })
+        .unwrap();
+        let sent = svc.quote_send(&quote.id).unwrap();
+        assert_eq!(sent.status, QuoteStatus::Sent);
+        assert!(sent.sent_at.is_some());
+
+        // Can't send twice.
+        assert!(matches!(
+            svc.quote_send(&quote.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+        // Only a draft quote can be deleted or edited.
+        assert!(matches!(
+            svc.quote_delete(&quote.id),
+            Err(CoreError::Validation(_))
+        ));
+        assert!(matches!(
+            svc.quote_update(&quote.id, QuotePatch::default()),
+            Err(CoreError::Validation(_))
+        ));
+
+        let declined = svc.quote_decline(&quote.id).unwrap();
+        assert_eq!(declined.status, QuoteStatus::Declined);
+        assert!(declined.declined_at.is_some());
+
+        // A declined quote cannot be accepted or expired.
+        assert!(matches!(
+            svc.quote_accept(&quote.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+        assert!(matches!(
+            svc.quote_expire(&quote.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+
+        // A second quote, sent then expired instead of declined.
+        let quote2 = svc
+            .quote_create(NewQuote {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                quote_date: None,
+                expiry_date: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+        svc.quote_item_add(NewQuoteItem {
+            quote_id: quote2.id.clone(),
+            variant_id: None,
+            description: Some("Consulting".into()),
+            quantity: 1,
+            unit_price_minor: Some(1000),
+            tax_rate_bps: None,
+        })
+        .unwrap();
+        svc.quote_send(&quote2.id).unwrap();
+        let expired = svc.quote_expire(&quote2.id).unwrap();
+        assert_eq!(expired.status, QuoteStatus::Expired);
+        assert!(expired.expired_at.is_some());
+    }
+
+    #[test]
+    fn quote_accept_copies_lines_into_a_new_draft_sales_order() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme Wholesale");
+        let variant = make_variant(&svc, &book, "COLA-330");
+
+        // An unrelated sales order created first, so that the order
+        // `quote_accept` produces below (book's second) lands on a different
+        // number than the quote (book's first) — proving the two series are
+        // independent rather than merely both starting at 1 by coincidence.
+        svc.sales_order_create(NewSalesOrder {
+            book_id: book.id.clone(),
+            contact_id: contact.id.clone(),
+            location_id: None,
+            order_date: None,
+            currency: None,
+            notes: None,
+        })
+        .unwrap();
+
+        let quote = svc
+            .quote_create(NewQuote {
+                book_id: book.id.clone(),
+                contact_id: contact.id.clone(),
+                quote_date: Some("2026-01-01".into()),
+                expiry_date: None,
+                currency: Some("ZAR".into()),
+                notes: Some("Q1 proposal".into()),
+            })
+            .unwrap();
+        assert_eq!(
+            quote.number, 1,
+            "quote numbering is unaffected by the unrelated order"
+        );
+        svc.quote_item_add(NewQuoteItem {
+            quote_id: quote.id.clone(),
+            variant_id: Some(variant.id.clone()),
+            description: None,
+            quantity: 4,
+            unit_price_minor: None,
+            tax_rate_bps: Some(1500),
+        })
+        .unwrap();
+        svc.quote_item_add(NewQuoteItem {
+            quote_id: quote.id.clone(),
+            variant_id: None,
+            description: Some("Setup fee".into()),
+            quantity: 1,
+            unit_price_minor: Some(20_000),
+            tax_rate_bps: None,
+        })
+        .unwrap();
+
+        // Can't accept before it's sent.
+        assert!(matches!(
+            svc.quote_accept(&quote.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+
+        svc.quote_send(&quote.id).unwrap();
+        let order = svc.quote_accept(&quote.id).unwrap();
+
+        assert_eq!(
+            order.status,
+            SalesOrderStatus::Draft,
+            "accepting only drafts the order — it does not confirm it"
+        );
+        assert_eq!(order.contact_id, contact.id);
+        assert_eq!(order.currency, "ZAR");
+        assert_eq!(order.location_id, None);
+        assert_eq!(order.notes.as_deref(), Some("Q1 proposal"));
+        assert_ne!(
+            order.number, quote.number,
+            "quote and order numbers are independent"
+        );
+
+        let order_items = svc.sales_order_items_list(&order.id).unwrap();
+        assert_eq!(order_items.len(), 2);
+        assert_eq!(order_items[0].variant_id, Some(variant.id.clone()));
+        assert_eq!(order_items[0].quantity, 4);
+        assert_eq!(order_items[1].description, "Setup fee");
+        assert_eq!(order_items[1].unit_price_minor, 20_000);
+
+        let order_totals = svc.sales_order_totals(&order.id).unwrap();
+        let quote_totals = svc.quote_totals(&quote.id).unwrap();
+        assert_eq!(
+            order_totals, quote_totals,
+            "the new order's totals must match exactly what was quoted"
+        );
+
+        let accepted = svc.quote_get(&quote.id).unwrap();
+        assert_eq!(accepted.status, QuoteStatus::Accepted);
+        assert!(accepted.accepted_at.is_some());
+        assert_eq!(accepted.converted_sales_order_id, Some(order.id.clone()));
+
+        // The quote's own lines are untouched — nothing here mutated them.
+        let quote_items = svc.quote_items_list(&quote.id).unwrap();
+        assert_eq!(quote_items.len(), 2);
+
+        // Accepting twice is refused — the quote is no longer `sent`.
+        assert!(matches!(
+            svc.quote_accept(&quote.id),
+            Err(CoreError::InvalidStatusTransition { .. })
+        ));
+
+        // Confirming the new order works exactly like any other draft order —
+        // proving `quote_accept` really did reuse the `sales_order_*` path
+        // rather than a parallel one that only looks the same.
+        let location = make_location(&svc, &book, "Main Branch");
+        svc.stock_movement_record(new_movement(
+            &variant.id,
+            &location.id,
+            50,
+            StockMovementKind::Receipt,
+        ))
+        .unwrap();
+        svc.sales_order_update(
+            &order.id,
+            SalesOrderPatch {
+                location_id: Some(Some(location.id.clone())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let confirmed = svc.sales_order_confirm(&order.id).unwrap();
+        assert_eq!(confirmed.status, SalesOrderStatus::Confirmed);
+        assert_eq!(svc.stock_on_hand(&variant.id, &location.id).unwrap(), 46);
     }
 
     #[test]

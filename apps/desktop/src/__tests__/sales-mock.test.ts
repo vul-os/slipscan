@@ -36,6 +36,172 @@ async function draftWithLine(quantity = 2, unit = 1_500, taxBps = 1_500) {
   return order;
 }
 
+async function draftQuoteWithLine(quantity = 2, unit = 1_500, taxBps = 1_500) {
+  const quote = await mockApi.quote_create({
+    book_id: BOOK,
+    contact_id: CONTACT,
+  });
+  await mockApi.quote_item_add({
+    quote_id: quote.id,
+    description: "Consulting",
+    quantity,
+    unit_price_minor: unit,
+    tax_rate_bps: taxBps,
+  });
+  return quote;
+}
+
+describe("quote mock", () => {
+  it("numbers quotes per book, separately from sales orders", async () => {
+    // A book of its own, so this assertion cannot be affected by however
+    // many sales orders or quotes other tests in this file already created
+    // against the shared BOOK constant.
+    const book = "book-quote-numbering";
+    const a = await mockApi.quote_create({ book_id: book, contact_id: CONTACT });
+    const b = await mockApi.quote_create({ book_id: book, contact_id: CONTACT });
+    expect(b.number).toBe(a.number + 1);
+
+    // A sales order created in the same book, right after two quotes, still
+    // starts its own series at 1 — the two numbering books do not share a
+    // counter.
+    const order = await mockApi.sales_order_create({
+      book_id: book,
+      contact_id: CONTACT,
+    });
+    expect(order.number).toBe(1);
+
+    const other = await mockApi.quote_create({
+      book_id: "book-other-quotes",
+      contact_id: CONTACT,
+    });
+    expect(other.number).toBe(1);
+  });
+
+  it("starts as a draft and derives totals from its lines rather than storing them", async () => {
+    const quote = await draftQuoteWithLine(2, 1_500, 1_500);
+    expect(quote.status).toBe("draft");
+
+    const totals = await mockApi.quote_totals({ id: quote.id });
+    expect(totals.subtotal_minor).toBe(3_000);
+    expect(totals.tax_minor).toBe(450); // 15% of 3 000
+    expect(totals.total_minor).toBe(totals.subtotal_minor + totals.tax_minor);
+
+    await mockApi.quote_item_add({
+      quote_id: quote.id,
+      description: "Travel",
+      quantity: 1,
+      unit_price_minor: 1_000,
+      tax_rate_bps: 0,
+    });
+    const after = await mockApi.quote_totals({ id: quote.id });
+    expect(after.subtotal_minor).toBe(4_000);
+    expect(after.tax_minor).toBe(450);
+  });
+
+  it("refuses to edit the quote header or its lines once it is no longer a draft", async () => {
+    const quote = await draftQuoteWithLine();
+    const edited = await mockApi.quote_update({ id: quote.id, notes: "before" });
+    expect(edited.notes).toBe("before");
+
+    await mockApi.quote_send({ id: quote.id });
+    await expect(
+      mockApi.quote_update({ id: quote.id, notes: "after" }),
+    ).rejects.toThrow(/sent quote cannot be edited/);
+    expect((await mockApi.quote_get({ id: quote.id })).notes).toBe("before");
+
+    const [line] = await mockApi.quote_items_list({ quote_id: quote.id });
+    await expect(
+      mockApi.quote_item_update({ id: line.id, quantity: 5 }),
+    ).rejects.toThrow(/sent quote cannot be changed/);
+    await expect(mockApi.quote_item_remove({ id: line.id })).rejects.toThrow(
+      /sent quote cannot be changed/,
+    );
+    await expect(
+      mockApi.quote_item_add({
+        quote_id: quote.id,
+        description: "Late addition",
+        quantity: 1,
+        unit_price_minor: 100,
+      }),
+    ).rejects.toThrow(/sent quote cannot be changed/);
+  });
+
+  it("refuses to send a quote with no lines", async () => {
+    const empty = await mockApi.quote_create({ book_id: BOOK, contact_id: CONTACT });
+    await expect(mockApi.quote_send({ id: empty.id })).rejects.toThrow(/no lines/);
+  });
+
+  it("only a draft quote can be deleted; a sent one is declined or left to expire", async () => {
+    const quote = await draftQuoteWithLine();
+    await mockApi.quote_send({ id: quote.id });
+    await expect(mockApi.quote_delete({ id: quote.id })).rejects.toThrow(
+      /sent quote cannot be deleted/,
+    );
+
+    const declined = await mockApi.quote_decline({ id: quote.id });
+    expect(declined.status).toBe("declined");
+    expect(declined.declined_at).not.toBeNull();
+
+    // A declined quote can neither be accepted nor expired.
+    await expect(mockApi.quote_accept({ id: quote.id })).rejects.toThrow(
+      /declined quote cannot be accepted/,
+    );
+    await expect(mockApi.quote_expire({ id: quote.id })).rejects.toThrow(
+      /declined quote cannot expire/,
+    );
+
+    const other = await draftQuoteWithLine();
+    await mockApi.quote_send({ id: other.id });
+    const expired = await mockApi.quote_expire({ id: other.id });
+    expect(expired.status).toBe("expired");
+    expect(expired.expired_at).not.toBeNull();
+  });
+
+  it("accept copies lines into a brand-new DRAFT sales order and leaves the quote's own lines untouched", async () => {
+    const quote = await draftQuoteWithLine(3, 2_000, 1_500);
+    await mockApi.quote_item_add({
+      quote_id: quote.id,
+      description: "Setup fee",
+      quantity: 1,
+      unit_price_minor: 5_000,
+      tax_rate_bps: 0,
+    });
+
+    // Can't accept before it is sent.
+    await expect(mockApi.quote_accept({ id: quote.id })).rejects.toThrow(
+      /draft quote cannot be accepted/,
+    );
+
+    await mockApi.quote_send({ id: quote.id });
+    const order = await mockApi.quote_accept({ id: quote.id });
+
+    expect(order.status).toBe("draft");
+    expect(order.contact_id).toBe(CONTACT);
+    expect(order.location_id).toBeNull();
+
+    const orderLines = await mockApi.sales_order_items_list({
+      sales_order_id: order.id,
+    });
+    const quoteLines = await mockApi.quote_items_list({ quote_id: quote.id });
+    expect(orderLines.map((l) => [l.description, l.quantity, l.unit_price_minor])).toEqual(
+      quoteLines.map((l) => [l.description, l.quantity, l.unit_price_minor]),
+    );
+
+    const orderTotals = await mockApi.sales_order_totals({ id: order.id });
+    const quoteTotals = await mockApi.quote_totals({ id: quote.id });
+    expect(orderTotals).toEqual(quoteTotals);
+
+    const accepted = await mockApi.quote_get({ id: quote.id });
+    expect(accepted.status).toBe("accepted");
+    expect(accepted.converted_sales_order_id).toBe(order.id);
+
+    // Accepting again is refused — the quote is no longer `sent`.
+    await expect(mockApi.quote_accept({ id: quote.id })).rejects.toThrow(
+      /accepted quote cannot be accepted/,
+    );
+  });
+});
+
 describe("sales order mock", () => {
   it("numbers orders per book with no gap and no reuse", async () => {
     const a = await mockApi.sales_order_create({

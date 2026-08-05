@@ -243,6 +243,46 @@
       5,
       6
     ],
+    "quote_accept": [
+      1,
+      1
+    ],
+    "quote_create": [
+      1,
+      0
+    ],
+    "quote_decline": [
+      0,
+      1
+    ],
+    "quote_delete": [
+      1,
+      0
+    ],
+    "quote_expire": [
+      0,
+      1
+    ],
+    "quote_item_add": [
+      4,
+      3
+    ],
+    "quote_item_remove": [
+      1,
+      1
+    ],
+    "quote_item_update": [
+      5,
+      5
+    ],
+    "quote_send": [
+      1,
+      1
+    ],
+    "quote_update": [
+      1,
+      0
+    ],
     "recon_confirm": [
       0,
       1

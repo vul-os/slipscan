@@ -484,6 +484,170 @@ describe("sales · cancelling and deleting ask first", () => {
 });
 
 // ---------------------------------------------------------------------------
+// quotes: draft -> send -> accept converts into a new draft sales order
+// ---------------------------------------------------------------------------
+
+/** Click a tab in the Sales tab strip by its visible label. */
+function openTab(target: HTMLElement, label: string): void {
+  const tab = [...target.querySelectorAll('[role="tab"]')].find(
+    (t) => t.textContent?.trim() === label,
+  );
+  if (!tab) throw new Error(`no tab labelled "${label}"`);
+  (tab as HTMLElement).click();
+}
+
+describe("sales · quotes", () => {
+  it("drafts a quote, sends it, and accepting hands off a new draft order to Orders", async () => {
+    const { contactId } = await makeBusiness();
+    const { target, dispose } = render(Sales as Component);
+    try {
+      await settle(target);
+      // Orders is the landing tab, not Quotes: the screen opens on the work
+      // most days are spent in. Reaching Quotes is a click, so the test takes
+      // it rather than assuming.
+      openTab(target, "Quotes");
+      await settle(target);
+      expect(
+        target.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim(),
+      ).toBe("Quotes");
+
+      // -- create a draft quote ---------------------------------------------
+      buttons(target, "New quote")[0]!.click();
+      await settle(target);
+      const createDialog = dialog(target)!;
+      select(selectField(createDialog, "Customer"), contactId);
+      button(target, "Create draft").click();
+      await settle(target);
+      expect(dialog(target)).toBeNull();
+      expect(text(target)).toContain("Karoo Wholesale");
+      expect(text(target)).toContain("draft");
+
+      // The new quote auto-expands with an empty line editor, and sending is
+      // refused with no lines.
+      expect(text(target)).toContain("No lines yet");
+      expect(
+        buttons(target, "Send quote").at(0)!.disabled,
+        "sending a quote with no lines must be refused",
+      ).toBe(true);
+
+      // -- add a free-text line -----------------------------------------------
+      fill(input(target, "Description for new line"), "Fleet servicing — Q3");
+      fill(input(target, "Quantity for new line"), "2");
+      fill(input(target, "Unit price for new line"), "150.00");
+      button(target, "Add line").click();
+      await settle(target);
+
+      expect(text(target)).toContain("Fleet servicing — Q3");
+      // 2 x R150 = R300 net, plus 15% VAT = R345 — both derived from
+      // `quote_totals`, never a number this test computed itself.
+      expect(text(target)).toContain("R 300.00");
+      expect(text(target)).toContain("R 345.00");
+
+      // -- send -----------------------------------------------------------
+      expect(buttons(target, "Send quote").at(0)!.disabled).toBe(false);
+      buttons(target, "Send quote").at(0)!.click();
+      await settle(target);
+      const sendPrompt = dialog(target)!;
+      expect(text(sendPrompt)).toContain("no longer be edited once sent");
+      buttons(target, "Send quote").at(-1)!.click();
+      await settle(target);
+      expect(dialog(target)).toBeNull();
+      expect(text(target)).toContain("sent");
+
+      // A sent quote's lines are read-only: no quantity input remains.
+      expect(
+        [...target.querySelectorAll("input")].some((i) =>
+          (i.getAttribute("aria-label") ?? "").includes("Quantity for Fleet servicing"),
+        ),
+      ).toBe(false);
+
+      // -- accept: hands off a brand-new draft order --------------------------
+      button(target, "Accept").click();
+      await settle(target);
+      const acceptDialog = dialog(target)!;
+      expect(text(acceptDialog)).toContain("brand-new draft sales order");
+      buttons(target, "Accept").at(-1)!.click();
+      await settle(target);
+      expect(text(target)).toContain("Created sales order #");
+
+      button(target, "View in Orders").click();
+      await settle(target);
+      expect(dialog(target)).toBeNull();
+      expect(
+        target.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim(),
+      ).toBe("Orders");
+      expect(text(target)).toContain("Karoo Wholesale");
+      expect(text(target)).toContain("draft");
+      // The list shows number/date/contact/status/total — line descriptions
+      // live inside the row, so opening it is what actually proves the quote's
+      // lines were copied rather than an empty order being created.
+      expandRowContaining(target, "Karoo Wholesale");
+      await settle(target);
+      expect(text(target)).toContain("Fleet servicing — Q3");
+      // Accepting only drafts the order — it does not confirm it, so no stock
+      // or ledger posting has happened yet. Asserted on the new row's own
+      // actions rather than the absence of "confirmed" from the whole screen:
+      // the seeded book already contains confirmed orders, so the page-wide
+      // version of this check could never have held.
+      expect(buttons(target, "Confirm order").length).toBeGreaterThan(0);
+      const acceptedRow = [...target.querySelectorAll("tr")].find((tr) =>
+        (tr.textContent ?? "").includes("Fleet servicing — Q3"),
+      );
+      expect(acceptedRow?.textContent ?? "").not.toContain("confirmed");
+
+      expect(fatal, fatal.join(" | ")).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 30_000);
+
+  it("Decline, Accept and Let it expire are only offered once a quote is sent, and declining asks first", async () => {
+    const { contactId } = await makeBusiness();
+    const { target, dispose } = render(Sales as Component);
+    try {
+      await settle(target);
+      openTab(target, "Quotes");
+      await settle(target);
+      buttons(target, "New quote")[0]!.click();
+      await settle(target);
+      select(selectField(dialog(target)!, "Customer"), contactId);
+      button(target, "Create draft").click();
+      await settle(target);
+
+      // Neither Decline nor Accept nor "Let it expire" exist on a draft —
+      // only Send and Delete draft do.
+      expect(buttons(target, "Decline")).toHaveLength(0);
+      expect(buttons(target, "Accept")).toHaveLength(0);
+      expect(buttons(target, "Let it expire")).toHaveLength(0);
+
+      fill(input(target, "Description for new line"), "Consulting");
+      fill(input(target, "Quantity for new line"), "1");
+      fill(input(target, "Unit price for new line"), "100.00");
+      button(target, "Add line").click();
+      await settle(target);
+      buttons(target, "Send quote").at(0)!.click();
+      await settle(target);
+      buttons(target, "Send quote").at(-1)!.click();
+      await settle(target);
+
+      button(target, "Decline").click();
+      await settle(target);
+      buttons(target, "Decline quote").at(-1)!.click();
+      await settle(target);
+      expect(dialog(target)).toBeNull();
+      expect(text(target)).toContain("declined");
+      // Once declined, no further status action remains.
+      expect(buttons(target, "Accept")).toHaveLength(0);
+      expect(buttons(target, "Decline")).toHaveLength(0);
+
+      expect(fatal, fatal.join(" | ")).toEqual([]);
+    } finally {
+      dispose();
+    }
+  }, 20_000);
+});
+
+// ---------------------------------------------------------------------------
 // a due date before the issue date is refused, not silently clamped
 // ---------------------------------------------------------------------------
 

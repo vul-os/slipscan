@@ -360,6 +360,15 @@ pub const LWW_TABLES: &[&str] = &[
     // Last-writer-wins is what editing your own register entry on two
     // devices means, the same call `purchase_orders`/`sales_orders` make.
     "assets",
+    // Migration 0014 (ROADMAP.md Phase 6.5 addendum): a quote is the same
+    // kind of editable draft one lifecycle stage earlier — draft -> sent ->
+    // accepted | declined | expired — so it gets the identical mapping for
+    // the identical reason. `quote_accept` copies its lines into a brand new
+    // `sales_orders` row rather than converting this one in place, so a
+    // quote's own rows never change shape once accepted; they just stop
+    // being edited, the same way a `cancelled` sales order does.
+    "quotes",
+    "quote_items",
 ];
 
 /// Whether `table` is an immutable ledger, and so maps to the OR-Set.

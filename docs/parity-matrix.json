@@ -7,9 +7,9 @@
   "counts": {
     "xero": {
       "total": 14,
-      "built": 3,
+      "built": 4,
       "partial": 7,
-      "not_built": 4
+      "not_built": 3
     },
     "vault22": {
       "total": 10,
@@ -19,9 +19,9 @@
     },
     "total": {
       "total": 24,
-      "built": 6,
+      "built": 7,
       "partial": 12,
-      "not_built": 6
+      "not_built": 5
     }
   },
   "rows": [
@@ -38,12 +38,12 @@
     {
       "axis": "xero",
       "name": "Quotes / estimates",
-      "status": "Not built",
-      "reachable": [],
-      "absent": [
+      "status": "Built",
+      "reachable": [
         "quote_create",
-        "quote_issue"
-      ]
+        "quote_accept"
+      ],
+      "absent": []
     },
     {
       "axis": "xero",

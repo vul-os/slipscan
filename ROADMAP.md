@@ -151,7 +151,7 @@ No fabricated credential scrapers. Real, testable, ToS-respecting integrations p
 Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Feature parity". Every screen held to the design-system bar.
 
 - [ ] **Parity matrices** written and tracked: Vault22/22seven (net worth, accounts, goals, nudges, household, peer comparison) and Xero (invoicing, quotes, fixed assets, payroll-lite, multi-currency, reconciliation) *(written — [PARITY.md](PARITY.md). It opened blunt — *zero* of Xero's 14 core capabilities built, no invoicing of any kind — and as of 2026-08-03 reads **2 of 14 built** (invoicing, contacts) with purchasing and aged receivables partial. Not tracked: no issue per gap yet. The ranked gap list at the end of that document is what the rest of this phase has to close)*
-- [ ] Xero-side gaps: ~~invoicing~~ (built, Phase 6.5) + quotes, fixed-asset register, multi-currency converted views (OpenRate FX already wired)
+- [ ] Xero-side gaps: ~~invoicing~~ (built, Phase 6.5) + ~~quotes~~ (built, Phase 6.5b) + fixed-asset register, multi-currency converted views (OpenRate FX already wired)
 - [ ] Vault22-side gaps: net-worth over time, goals, the remaining nudge tiers
 - [ ] UI/UX parity pass: deep design-system CSS across every screen, responsive, both themes — no screen ships below the bar
 - [ ] Headless mode: run the core on your own home server / NAS, desktop and mobile as clients *(partial: `slipscan-server` serves the core surface over HTTP with optional bearer auth; no in-server connectors/scheduler yet, and the desktop cannot connect to a remote server yet)*
@@ -272,10 +272,37 @@ These were settled rather than escalated, and are recorded here so the reasoning
       machine. Known gaps, all named rather than implied: **multi-device numbering is unsolved**
       (two offline devices would both mint #47 — the `UNIQUE (book_id, series, number)` index turns
       that into a loud failure, not a silent collision; 6.7's problem once a transport exists), no
-      credit notes or voiding, no quotes, no partial fulfilment, no posting to `journals` (that was
+      credit notes or voiding, no partial fulfilment, no posting to `journals` (that was
       6.6). The Sales screen calls all of it as of 6.9 — the 21 IPC commands and their `client.ts`
       wrappers were wired ahead of it, and `npm run parity:check` now fails CI if a registered
       command ever loses its wrapper again)*
+- [x] **6.5b Quotes.** PARITY.md's next Xero row once invoicing shipped: a priced offer that has
+      not happened yet, closed on the exact foundation 6.5 exists to convert into rather than a
+      parallel structure *(shipped, migration `0014_sales` (edited in place — a flat pre-release
+      baseline, so a new table is added to the migration that owns its subsystem rather than a new
+      migration file; see that file's header for why). `quotes`/`quote_items` are a third §4.4 LWW
+      register family alongside `sales_orders`/`_items`, editable while `draft`, moving
+      draft → sent → accepted | declined | expired. A quote never touches `stock_movements` or
+      `journals` — nothing has moved and nothing is owed until it is accepted — and carries no
+      `location_id` at all, since it has nothing to deduct stock from. **`quote_accept` converts a
+      quote into a sales order by copying its lines into a brand-new draft `sales_orders` row**,
+      reusing `repo::sales`'s existing insert functions directly rather than nesting a call through
+      the public `sales_order_create`/`sales_order_item_add` (which would each open their own
+      transaction) — the identical reuse `invoice_issue` already makes of a confirmed order's lines,
+      one hop earlier in the lifecycle. Its own `"quote"` numbering series is entirely separate from
+      `sales_orders`' `"sales_order"` series, proven by a test that creates an order first
+      specifically so the two numbers cannot coincidentally match. Deliberately out of scope, named
+      rather than silently missing: no e-mailing a quote, no PDF, no customer portal, no partial
+      acceptance. **Sync decision:** `quotes`/`quote_items` join `LWW_TABLES` (an editable draft, the
+      same call `sales_orders` makes for the identical reason) — `slipscan-sync`'s registry and
+      migration `0014_sales`'s own trigger set are asserted to agree in both directions, the same
+      guard every other table here gets. The Sales screen gains a fourth tab, Quotes, ahead of
+      Orders/Invoices/Aged receivables, gated on the same `show_sales` profile flag; accepting a
+      quote hands off to the Orders tab exactly the way issuing an invoice hands off to Invoices.
+      Fourteen `quote_*` operations reach CLI, HTTP and desktop IPC together with a `client.ts`
+      wrapper for each, and the desktop mock's guards are compared against core's per operation by
+      `npm run mock-guards:check` — the same frozen-baseline discipline the thirteen mock/core
+      divergences earlier in this phase made necessary)*
 - [x] **6.6 Stock posts to the ledger.** The keystone, and the one piece neither codebase had: a
       goods receipt debits inventory-asset and credits accounts-payable; a confirmed sale posts
       revenue, VAT and cost-of-goods-sold against the existing chart of accounts and `journals` /
@@ -348,10 +375,12 @@ These were settled rather than escalated, and are recorded here so the reasoning
       Transfer shows both resulting movements so on-hand stays visibly `SUM(qty_delta)`; per-location
       columns are further gated on `show_locations` so a single-location business sees one honest
       total rather than a location axis with one entry. Purchasing is built on the derived receiving
-      status (none/partial/complete) rather than three calls per line. Sales is one screen with three
-      tabs — Orders, Invoices, Aged receivables — because issuing an invoice from an order literally
-      copies its lines, and splitting the two would turn one action into a navigation; invoices carry
-      no edit or delete affordance anywhere, because the database refuses one. Merging the parallel
+      status (none/partial/complete) rather than three calls per line. Sales is one screen with four
+      tabs — Quotes, Orders, Invoices, Aged receivables — because issuing an invoice from an order,
+      and accepting a quote into one, both literally copy lines, and splitting any of these into
+      separate screens would turn one action into a navigation; invoices carry no edit or delete
+      affordance anywhere, because the database refuses one, and neither does a quote once sent.
+      Merging the parallel
       streams surfaced a real defect neither could see alone: Catalogue and Purchasing both claimed
       jump key "U", making one destination keyboard-unreachable while looking correct in the rail —
       Purchasing moved to "O" and a test now names any key clash, mutation-verified by reintroducing
