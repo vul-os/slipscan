@@ -57,6 +57,11 @@ pub struct BookProfile {
     pub show_catalogue: bool,
     pub show_purchasing: bool,
     pub show_sales: bool,
+    /// The fixed-asset register (migration 0016, PARITY.md "Fixed assets") —
+    /// a business capitalises and depreciates equipment, a personal book
+    /// does not track this axis at all, same gating call as the other three
+    /// business-only groups above.
+    pub show_assets: bool,
 
     /// The location axis: business *and* multi-location. A single-location
     /// business runs one book against one implicit "everywhere", the same
@@ -92,6 +97,7 @@ pub fn resolve(
         show_catalogue: is_business,
         show_purchasing: is_business,
         show_sales: is_business,
+        show_assets: is_business,
         show_locations: is_business && multi_location,
     }
 }
@@ -105,7 +111,13 @@ mod tests {
         let p = resolve(BookKind::Personal, 0, None);
         assert_eq!(p.kind, BookKind::Personal);
         assert!(p.show_accounts && p.show_transactions && p.show_budgets && p.show_members);
-        assert!(!p.show_contacts && !p.show_catalogue && !p.show_purchasing && !p.show_sales);
+        assert!(
+            !p.show_contacts
+                && !p.show_catalogue
+                && !p.show_purchasing
+                && !p.show_sales
+                && !p.show_assets
+        );
         assert!(!p.show_locations);
         assert!(!p.multi_location);
 
@@ -114,7 +126,7 @@ mod tests {
         // screens, it never deletes rows) does not resurrect business
         // groups. Only `kind` gates them.
         let p = resolve(BookKind::Personal, 5, Some(true));
-        assert!(!p.show_contacts && !p.show_catalogue);
+        assert!(!p.show_contacts && !p.show_catalogue && !p.show_assets);
         assert!(!p.show_locations, "locations need BookKind::Business too");
     }
 
@@ -122,7 +134,11 @@ mod tests {
     fn business_book_with_zero_or_one_location_hides_the_location_axis() {
         let zero = resolve(BookKind::Business, 0, None);
         assert!(
-            zero.show_contacts && zero.show_catalogue && zero.show_purchasing && zero.show_sales
+            zero.show_contacts
+                && zero.show_catalogue
+                && zero.show_purchasing
+                && zero.show_sales
+                && zero.show_assets
         );
         assert!(!zero.multi_location && !zero.show_locations);
 

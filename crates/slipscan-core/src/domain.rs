@@ -132,6 +132,10 @@ str_enum!(JournalSourceType {
     // An `invoice_payments` row posted straight to the ledger —
     // ROADMAP.md 6.6. `source_id` is the payment's own id.
     InvoicePayment => "invoice_payment",
+    // An `asset_depreciation_runs` row posted straight to the ledger —
+    // migration `0016_assets`, PARITY.md "Fixed assets". `source_id` is the
+    // run's own id, the same idiom `PoReceipt`/`InvoicePayment` use.
+    Depreciation => "depreciation",
 });
 
 str_enum!(ReconState {
@@ -2011,6 +2015,152 @@ pub struct AgedReceivables {
 }
 
 // ---------------------------------------------------------------------------
+// Fixed assets — a capitalised-cost register + depreciation (migration 0016,
+// PARITY.md "Fixed assets"). See that migration's header for the full
+// reasoning; the short version is repeated on each type below.
+// ---------------------------------------------------------------------------
+
+str_enum!(
+    /// The only two depreciation methods this register implements — no
+    /// revaluation, no tax-vs-book split, no third method without a matching
+    /// schema CHECK and a matching arm in `CoreService::depreciation_run`'s
+    /// schedule function.
+    DepreciationMethod {
+        StraightLine => "straight_line",
+        ReducingBalance => "reducing_balance",
+    }
+);
+
+str_enum!(
+    /// `Active` until `CoreService::asset_dispose` flips it, once, to
+    /// `Disposed`. There is no path back — disposing an asset is not
+    /// reversible the way a purchase order's `Cancelled` isn't either.
+    AssetStatus {
+        Active => "active",
+        Disposed => "disposed",
+    }
+);
+
+/// A capitalised asset: cost, acquisition date, useful life and depreciation
+/// method. Editable via `CoreService::asset_update` up until the moment any
+/// depreciation has actually posted against it (enforced in the service
+/// layer, not the schema — the same boundary purchase orders draw around
+/// their own header fields once a receipt exists).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Asset {
+    pub id: String,
+    pub book_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    /// `YYYY-MM-DD`. Month 1 of the depreciation schedule is the calendar
+    /// month this date falls in — see `CoreService::depreciation_run`'s doc
+    /// comment for the exact period-index convention.
+    pub acquired_date: String,
+    pub cost_minor: i64,
+    pub residual_minor: i64,
+    pub currency: String,
+    pub useful_life_months: i64,
+    pub method: DepreciationMethod,
+    /// Required exactly when `method == ReducingBalance` (schema CHECK);
+    /// `None` for `StraightLine`. A **per-period** (monthly) rate in basis
+    /// points applied to opening net book value — not an annual rate, so
+    /// there is no compounding conversion anywhere in the arithmetic.
+    pub reducing_balance_rate_bps: Option<i64>,
+    pub status: AssetStatus,
+    pub disposed_date: Option<String>,
+    pub disposal_proceeds_minor: Option<i64>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewAsset {
+    pub book_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub acquired_date: String,
+    pub cost_minor: i64,
+    #[serde(default)]
+    pub residual_minor: Option<i64>,
+    pub currency: String,
+    pub useful_life_months: i64,
+    pub method: DepreciationMethod,
+    #[serde(default)]
+    pub reducing_balance_rate_bps: Option<i64>,
+}
+
+/// Selective update over the header fields. Deliberately carries no
+/// `status`/`disposed_date`/`disposal_proceeds_minor` — those move only
+/// through `CoreService::asset_dispose`, never through a general patch, the
+/// same split `PurchaseOrderPatch` draws around `status`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AssetPatch {
+    pub name: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Option<Option<String>>,
+    pub acquired_date: Option<String>,
+    pub cost_minor: Option<i64>,
+    pub residual_minor: Option<i64>,
+    pub useful_life_months: Option<i64>,
+    pub method: Option<DepreciationMethod>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reducing_balance_rate_bps: Option<Option<i64>>,
+}
+
+/// What it takes to dispose an asset: when, and for how much (if anything).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssetDisposal {
+    pub disposed_date: String,
+    #[serde(default)]
+    pub proceeds_minor: Option<i64>,
+}
+
+/// One immutable fact: this much depreciation was recognised for this asset
+/// in this period, backed by exactly this journal. Never edited or deleted —
+/// see migration `0016_assets`'s header for why, and
+/// `slipscan_sync::LEDGER_TABLES` for the sync mapping this earns it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetDepreciationRun {
+    pub id: String,
+    pub book_id: String,
+    pub asset_id: String,
+    /// `YYYY-MM`.
+    pub period: String,
+    /// 1-based count of periods since acquisition (month of acquisition = 1).
+    pub period_index: i64,
+    pub depreciation_minor: i64,
+    pub journal_id: String,
+    pub created_at: String,
+}
+
+/// An asset together with its derived depreciation-to-date — the pairing a
+/// register screen actually wants to render, so it does not have to call
+/// back for the sum itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetWithDepreciation {
+    pub asset: Asset,
+    /// `SUM(depreciation_minor)` over this asset's net-live runs (a run
+    /// whose journal was later reversed — see `asset_dispose` — does not
+    /// count).
+    pub accumulated_depreciation_minor: i64,
+    /// `cost_minor - accumulated_depreciation_minor`. Never below
+    /// `residual_minor` — see `CoreService::depreciation_run`'s doc comment
+    /// for the arithmetic that guarantees it.
+    pub net_book_value_minor: i64,
+    /// How many periods have actually posted, net-live.
+    pub periods_run: i64,
+}
+
+// ---------------------------------------------------------------------------
 // Net worth — periodic per-account balance snapshots (migration 0015,
 // PARITY.md gap #4 "Net worth over time"). See that migration's header for
 // the full reasoning; the short version is repeated on each type below.
@@ -2280,8 +2430,8 @@ mod tests {
             );
         }
         assert_eq!(
-            checked, 19,
-            "expected 19 nullable patch fields; if this moved, the count and the \
+            checked, 21,
+            "expected 21 nullable patch fields; if this moved, the count and the \
              fields above both need looking at rather than the number bumping"
         );
     }
@@ -2298,6 +2448,25 @@ mod tests {
         assert_eq!(LocationKind::Warehouse.as_str(), "warehouse");
         assert_eq!("site".parse::<LocationKind>().unwrap(), LocationKind::Site);
         assert!("bogus".parse::<LocationKind>().is_err());
+        assert_eq!(
+            DepreciationMethod::ReducingBalance.as_str(),
+            "reducing_balance"
+        );
+        assert_eq!(
+            "straight_line".parse::<DepreciationMethod>().unwrap(),
+            DepreciationMethod::StraightLine
+        );
+        assert!("bogus".parse::<DepreciationMethod>().is_err());
+        assert_eq!(AssetStatus::Disposed.as_str(), "disposed");
+        assert_eq!(
+            "active".parse::<AssetStatus>().unwrap(),
+            AssetStatus::Active
+        );
+        assert!("bogus".parse::<AssetStatus>().is_err());
+        assert_eq!(
+            "depreciation".parse::<JournalSourceType>().unwrap(),
+            JournalSourceType::Depreciation
+        );
     }
 
     #[test]

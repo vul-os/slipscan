@@ -12,6 +12,11 @@ import { apiStatus } from "./status.svelte";
 import type {
   Account,
   AgedReceivables,
+  Asset,
+  AssetDepreciationRun,
+  AssetDisposeRequest,
+  AssetUpdateRequest,
+  AssetWithDepreciation,
   BenchmarkReport,
   Book,
   BookKind,
@@ -58,6 +63,7 @@ import type {
   MemberSettleRow,
   NetWorthSeries,
   NetWorthSnapshot,
+  NewAsset,
   NewBook,
   NewContact,
   NewInvoice,
@@ -557,6 +563,50 @@ export const api = {
   }): Promise<PoReceiptStatus> =>
     call("po_receiving_status", { query: q }, () =>
       mockApi.po_receiving_status(q),
+    ),
+
+  // -- fixed assets & depreciation (migration 0016, PARITY.md "Fixed
+  // assets"). `depreciationRun` is the keystone: DR depreciation expense,
+  // CR accumulated depreciation, idempotent per (asset, period). --
+
+  assetCreate: (q: NewAsset): Promise<Asset> =>
+    call("asset_create", { query: q }, () => mockApi.asset_create(q)),
+
+  assetGet: (q: { id: string }): Promise<Asset> =>
+    call("asset_get", { query: q }, () => mockApi.asset_get(q)),
+
+  assetList: (q: { book_id: string }): Promise<Asset[]> =>
+    call("asset_list", { query: q }, () => mockApi.asset_list(q)),
+
+  /** Refused once any depreciation has posted for cost, acquisition date,
+   * useful life, method or rate — name and description stay editable
+   * regardless. */
+  assetUpdate: (q: AssetUpdateRequest): Promise<Asset> =>
+    call("asset_update", { query: q }, () => mockApi.asset_update(q)),
+
+  /** Reverses (never deletes) any depreciation already posted for a period
+   * after the disposal date — the posted ledger is immutable. */
+  assetDispose: (q: AssetDisposeRequest): Promise<Asset> =>
+    call("asset_dispose", { query: q }, () => mockApi.asset_dispose(q)),
+
+  assetWithDepreciation: (q: { id: string }): Promise<AssetWithDepreciation> =>
+    call("asset_with_depreciation", { query: q }, () =>
+      mockApi.asset_with_depreciation(q),
+    ),
+
+  /** `null` (never an error) when the book has no chart of accounts to post
+   * into, or nothing was left to depreciate this period. */
+  depreciationRun: (q: {
+    asset_id: string;
+    period: string;
+  }): Promise<AssetDepreciationRun | null> =>
+    call("depreciation_run", { query: q }, () => mockApi.depreciation_run(q)),
+
+  depreciationRunsForAsset: (q: {
+    asset_id: string;
+  }): Promise<AssetDepreciationRun[]> =>
+    call("depreciation_runs_for_asset", { query: q }, () =>
+      mockApi.depreciation_runs_for_asset(q),
     ),
 
   // -- sales orders & invoicing (Phase 6.5, migration 0014_sales). No screen

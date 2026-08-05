@@ -37,6 +37,7 @@ import { firstRun, FIRST_RUN_KEY } from "../lib/state/onboarding.svelte";
 import { NAV_ITEMS } from "../lib/nav";
 import { router, ROUTES, type RouteId } from "../lib/state/router.svelte";
 import { NAV_GROUPS } from "../lib/nav";
+import Assets from "../routes/Assets.svelte";
 import Budgets from "../routes/Budgets.svelte";
 import Catalogue from "../routes/Catalogue.svelte";
 import Contacts from "../routes/Contacts.svelte";
@@ -222,6 +223,17 @@ const CASES: Record<RouteId, RouteCase & { component: Component }> = {
       "Sales is a business-book feature",
       "Personal is a personal book",
       "Open Settings › General",
+    ],
+  },
+  // Same personal-book default as `purchasing`/`stock` above — pins the
+  // gate, not the register underneath it.
+  assets: {
+    component: Assets as Component,
+    heading: "Assets",
+    anchors: [
+      "Assets is a business feature",
+      "the fixed-asset register only applies to business books",
+      "Open Settings",
     ],
   },
   settings: {

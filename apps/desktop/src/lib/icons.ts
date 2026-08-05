@@ -93,6 +93,10 @@ export const icons = {
     '<path d="M20.5 13.4 13.4 20.5a2 2 0 0 1-2.8 0l-7.1-7.1a2 2 0 0 1-.6-1.4V5.5a2 2 0 0 1 2-2H11a2 2 0 0 1 1.4.6l7.1 7.1a2 2 0 0 1 0 2.8z"/><circle cx="8" cy="8" r="1.3" fill="currentColor" stroke="none"/>',
   /** Sales — a customer order, cart-shaped, distinct from Receipts' slip. */
   cart: '<circle cx="9.5" cy="19.5" r="1.5"/><circle cx="17" cy="19.5" r="1.5"/><path d="M3.5 4h2.3l2.1 11.5h9.7l1.7-8H6.6"/>',
+  /** Books — a fixed asset: an office building, distinct from `package`
+   * (Packs) and `truck` (incoming goods). */
+  building:
+    '<rect x="5" y="3.5" width="14" height="17" rx="1.5"/><path d="M9 8h1.5M13.5 8H15M9 12h1.5M13.5 12H15M9 16h1.5M13.5 16H15"/><path d="M10.5 20.5V17h3v3.5"/>',
 } as const;
 
 export type IconName = keyof typeof icons;

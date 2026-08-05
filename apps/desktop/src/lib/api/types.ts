@@ -79,6 +79,9 @@ export interface BookProfile {
   show_catalogue: boolean;
   show_purchasing: boolean;
   show_sales: boolean;
+  /** The fixed-asset register (migration 0016, PARITY.md "Fixed assets") —
+   * business-only, same gating call as the other three groups above. */
+  show_assets: boolean;
   show_locations: boolean;
 }
 
@@ -451,6 +454,122 @@ export interface PurchaseOrderItemReceiving {
   item: PurchaseOrderItem;
   received_qty: number;
   status: PoReceiptStatus;
+}
+
+// ---------------------------------------------------------------------------
+// Fixed assets & depreciation (migration 0016, PARITY.md "Fixed assets").
+//
+// `assets` is the capitalised-cost register — editable via `assetUpdate`
+// right up until any depreciation has posted against it (cost, acquisition
+// date, useful life, method, rate); name and description stay editable
+// regardless. `depreciationRun` posts one period at a time — **DR**
+// depreciation expense ("6250"), **CR** accumulated depreciation ("1600"),
+// both already seeded on every business chart of accounts — idempotent per
+// (asset, period): a period that already has a net-live journal refuses to
+// post again rather than double-posting. `assetDispose` reverses (never
+// deletes) any depreciation already posted for a period after the disposal
+// date, because the posted ledger is immutable.
+// ---------------------------------------------------------------------------
+
+export type DepreciationMethod = "straight_line" | "reducing_balance";
+export type AssetStatus = "active" | "disposed";
+
+export interface Asset {
+  id: string;
+  book_id: string;
+  name: string;
+  description: string | null;
+  /** `YYYY-MM-DD`. Month 1 of the depreciation schedule is the calendar
+   * month this date falls in. */
+  acquired_date: string;
+  cost_minor: number;
+  residual_minor: number;
+  currency: string;
+  useful_life_months: number;
+  method: DepreciationMethod;
+  /** Required exactly when `method === "reducing_balance"`; a **per-period**
+   * (monthly) rate in basis points applied to opening net book value — not
+   * an annual rate. */
+  reducing_balance_rate_bps: number | null;
+  status: AssetStatus;
+  disposed_date: string | null;
+  disposal_proceeds_minor: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NewAsset {
+  book_id: string;
+  name: string;
+  description?: string;
+  acquired_date: string;
+  cost_minor: number;
+  /** Defaults to 0 when omitted. */
+  residual_minor?: number;
+  currency: string;
+  useful_life_months: number;
+  method: DepreciationMethod;
+  reducing_balance_rate_bps?: number;
+}
+
+/** Selective update over the header fields — mirrors core's `AssetPatch`.
+ * Deliberately carries no `status`/`disposed_date`/`disposal_proceeds_minor`;
+ * those move only through `assetDispose`. */
+export interface AssetPatch {
+  name?: string;
+  description?: string | null;
+  acquired_date?: string;
+  cost_minor?: number;
+  residual_minor?: number;
+  useful_life_months?: number;
+  method?: DepreciationMethod;
+  reducing_balance_rate_bps?: number | null;
+}
+
+/** Mirrors src-tauri's `AssetUpdateQuery`. */
+export interface AssetUpdateRequest extends AssetPatch {
+  id: string;
+}
+
+export interface AssetDisposal {
+  disposed_date: string;
+  proceeds_minor?: number;
+}
+
+/** Mirrors src-tauri's `AssetDisposeQuery`. */
+export interface AssetDisposeRequest extends AssetDisposal {
+  id: string;
+}
+
+/** One immutable fact: this much depreciation was recognised for this asset
+ * in this period, backed by exactly this journal. Never edited or deleted —
+ * a correction reverses the journal, via `journalReverse` or
+ * `assetDispose`'s retroactive cleanup. */
+export interface AssetDepreciationRun {
+  id: string;
+  book_id: string;
+  asset_id: string;
+  /** `YYYY-MM`. */
+  period: string;
+  /** 1-based count of periods since acquisition (month of acquisition = 1). */
+  period_index: number;
+  depreciation_minor: number;
+  journal_id: string;
+  created_at: string;
+}
+
+/** An asset together with its derived accumulated depreciation and net book
+ * value — the pairing a register screen actually renders. */
+export interface AssetWithDepreciation {
+  asset: Asset;
+  /** `SUM(depreciation_minor)` over this asset's net-live runs — a run whose
+   * journal was later reversed does not count. */
+  accumulated_depreciation_minor: number;
+  /** `cost_minor - accumulated_depreciation_minor`. Never below
+   * `residual_minor`. */
+  net_book_value_minor: number;
+  /** How many periods have actually posted, net-live. */
+  periods_run: number;
 }
 
 // ---------------------------------------------------------------------------

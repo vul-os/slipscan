@@ -1060,6 +1060,130 @@ pub async fn po_receiving_status(
 }
 
 // ---------------------------------------------------------------------------
+// Fixed assets & depreciation (migration 0016, PARITY.md "Fixed assets").
+// `depreciation_run` is the keystone: **DR** depreciation expense ("6250"),
+// **CR** accumulated depreciation ("1600"), idempotent per (asset, period) —
+// see `CoreService::depreciation_run`'s doc comment for the exact schedule
+// arithmetic and refusal conditions.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn asset_create(
+    state: State<'_, AppState>,
+    query: core::NewAsset,
+) -> Result<core::Asset, String> {
+    state.service()?.asset_create(query).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct AssetIdQuery {
+    pub id: String,
+}
+
+#[tauri::command]
+pub async fn asset_get(
+    state: State<'_, AppState>,
+    query: AssetIdQuery,
+) -> Result<core::Asset, String> {
+    state.service()?.asset_get(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn asset_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::Asset>, String> {
+    state.service()?.asset_list(&query.book_id).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct AssetUpdateQuery {
+    pub id: String,
+    #[serde(flatten)]
+    pub patch: core::AssetPatch,
+}
+
+/// Refused once any depreciation has posted for cost, acquisition date,
+/// useful life, method or rate — name and description stay editable
+/// regardless (`CoreService::asset_update`).
+#[tauri::command]
+pub async fn asset_update(
+    state: State<'_, AppState>,
+    query: AssetUpdateQuery,
+) -> Result<core::Asset, String> {
+    state
+        .service()?
+        .asset_update(&query.id, query.patch)
+        .map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct AssetDisposeQuery {
+    pub id: String,
+    #[serde(flatten)]
+    pub disposal: core::AssetDisposal,
+}
+
+/// Reverses (never deletes) any depreciation already posted for a period
+/// after the disposal date — the posted ledger is immutable.
+#[tauri::command]
+pub async fn asset_dispose(
+    state: State<'_, AppState>,
+    query: AssetDisposeQuery,
+) -> Result<core::Asset, String> {
+    state
+        .service()?
+        .asset_dispose(&query.id, query.disposal)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn asset_with_depreciation(
+    state: State<'_, AppState>,
+    query: AssetIdQuery,
+) -> Result<core::AssetWithDepreciation, String> {
+    state
+        .service()?
+        .asset_with_depreciation(&query.id)
+        .map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct DepreciationRunQuery {
+    pub asset_id: String,
+    pub period: String,
+}
+
+/// `null` (never an error) when the book has no chart of accounts to post
+/// into, or nothing was left to depreciate this period.
+#[tauri::command]
+pub async fn depreciation_run(
+    state: State<'_, AppState>,
+    query: DepreciationRunQuery,
+) -> Result<Option<core::AssetDepreciationRun>, String> {
+    state
+        .service()?
+        .depreciation_run(&query.asset_id, &query.period)
+        .map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct AssetIdRefQuery {
+    pub asset_id: String,
+}
+
+#[tauri::command]
+pub async fn depreciation_runs_for_asset(
+    state: State<'_, AppState>,
+    query: AssetIdRefQuery,
+) -> Result<Vec<core::AssetDepreciationRun>, String> {
+    state
+        .service()?
+        .depreciation_runs_for_asset(&query.asset_id)
+        .map_err(err)
+}
+
+// ---------------------------------------------------------------------------
 // Sales orders & invoicing (Phase 6.5 — ROADMAP.md "Inventory & trade",
 // PARITY.md's single largest Xero-axis gap). See migration `0014_sales`'s
 // header for why `sales_order*` is a full CRUD+status-machine surface while

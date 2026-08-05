@@ -463,6 +463,35 @@ struct AgedReceivablesReq {
     as_of: Option<String>,
 }
 
+// -- Fixed assets & depreciation (migration 0016) ----------------------------
+
+#[derive(Debug, Deserialize)]
+struct AssetUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: AssetPatch,
+}
+
+#[derive(Debug, Deserialize)]
+struct AssetDisposeReq {
+    id: String,
+    #[serde(flatten)]
+    disposal: AssetDisposal,
+}
+
+/// Shared by every route scoped to one asset's own depreciation history
+/// rather than the asset row itself.
+#[derive(Debug, Deserialize)]
+struct AssetIdReq {
+    asset_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DepreciationRunReq {
+    asset_id: String,
+    period: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct TransactionListReq {
     book_id: String,
@@ -1959,6 +1988,69 @@ async fn vat_rate_set_bps(
     )?))
 }
 
+// -- Fixed assets & depreciation (migration 0016, PARITY.md "Fixed assets") -
+
+async fn asset_create(State(s): State<AppState>, Json(req): Json<NewAsset>) -> ApiResult<Asset> {
+    Ok(Json(s.service()?.asset_create(req)?))
+}
+
+async fn asset_get(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<Asset> {
+    Ok(Json(s.service()?.asset_get(&req.id)?))
+}
+
+async fn asset_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<Asset>> {
+    Ok(Json(s.service()?.asset_list(&req.book_id)?))
+}
+
+async fn asset_update(
+    State(s): State<AppState>,
+    Json(req): Json<AssetUpdateReq>,
+) -> ApiResult<Asset> {
+    Ok(Json(s.service()?.asset_update(&req.id, req.patch)?))
+}
+
+/// Mark an asset disposed — reverses (never deletes) any depreciation
+/// already posted for a period after the disposal date. See
+/// `CoreService::asset_dispose`'s doc comment.
+async fn asset_dispose(
+    State(s): State<AppState>,
+    Json(req): Json<AssetDisposeReq>,
+) -> ApiResult<Asset> {
+    Ok(Json(s.service()?.asset_dispose(&req.id, req.disposal)?))
+}
+
+async fn asset_with_depreciation(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<AssetWithDepreciation> {
+    Ok(Json(s.service()?.asset_with_depreciation(&req.id)?))
+}
+
+/// Post one period's depreciation for an asset. `null` (not an error) when
+/// the book has no chart of accounts to post into, or nothing was left to
+/// depreciate this period — see `CoreService::depreciation_run`'s doc
+/// comment.
+async fn depreciation_run(
+    State(s): State<AppState>,
+    Json(req): Json<DepreciationRunReq>,
+) -> ApiResult<Option<AssetDepreciationRun>> {
+    Ok(Json(
+        s.service()?.depreciation_run(&req.asset_id, &req.period)?,
+    ))
+}
+
+async fn depreciation_runs_for_asset(
+    State(s): State<AppState>,
+    Json(req): Json<AssetIdReq>,
+) -> ApiResult<Vec<AssetDepreciationRun>> {
+    Ok(Json(
+        s.service()?.depreciation_runs_for_asset(&req.asset_id)?,
+    ))
+}
+
 async fn recon_suggest(
     State(s): State<AppState>,
     Json(req): Json<BookIdReq>,
@@ -2827,6 +2919,17 @@ pub fn app(state: AppState) -> Router {
         .route("/coa_seed", post(coa_seed))
         .route("/vat_rate_list", post(vat_rate_list))
         .route("/vat_rate_set_bps", post(vat_rate_set_bps))
+        .route("/asset_create", post(asset_create))
+        .route("/asset_get", post(asset_get))
+        .route("/asset_list", post(asset_list))
+        .route("/asset_update", post(asset_update))
+        .route("/asset_dispose", post(asset_dispose))
+        .route("/asset_with_depreciation", post(asset_with_depreciation))
+        .route("/depreciation_run", post(depreciation_run))
+        .route(
+            "/depreciation_runs_for_asset",
+            post(depreciation_runs_for_asset),
+        )
         .route("/recon_suggest", post(recon_suggest))
         .route("/recon_confirm", post(recon_confirm))
         .route("/report_spending", post(report_spending))

@@ -47,6 +47,11 @@ const COA_CODE_AR: &str = "1100";
 const COA_CODE_REVENUE: &str = "4000";
 /// Cost-of-sales/COGS expense account (business seed only) — ROADMAP.md 6.6.
 const COA_CODE_COGS: &str = "5000";
+/// Depreciation expense account (business seed only) — migration 0016.
+const COA_CODE_DEPRECIATION_EXPENSE: &str = "6250";
+/// Accumulated depreciation control (contra-asset; business seed only) —
+/// migration 0016.
+const COA_CODE_ACCUM_DEPRECIATION: &str = "1600";
 
 const fn fallback_expense_code(kind: BookKind) -> &'static str {
     match kind {
@@ -5804,6 +5809,588 @@ impl CoreService {
             lines: vec![
                 line(&bank, payment.amount_minor, 0),
                 line(&ar, 0, payment.amount_minor),
+            ],
+        };
+        Ok(Some(self.post_journal_in_tx(tx, book, new, None)?))
+    }
+
+    // -----------------------------------------------------------------------
+    // Fixed assets & depreciation (migration 0016, PARITY.md "Fixed assets")
+    // -----------------------------------------------------------------------
+
+    /// Validate a method/rate pair and return the rate to store:
+    /// `ReducingBalance` requires a `1..=10000` bps rate; `StraightLine`
+    /// forbids one being set at all. Shared by `asset_create` and
+    /// `asset_update` so the two can never drift apart on this rule.
+    fn validate_depreciation_method(
+        method: DepreciationMethod,
+        rate_bps: Option<i64>,
+    ) -> CoreResult<Option<i64>> {
+        match method {
+            DepreciationMethod::StraightLine => {
+                if rate_bps.is_some() {
+                    return Err(CoreError::Validation(
+                        "reducing_balance_rate_bps must not be set for straight-line \
+                         depreciation"
+                            .into(),
+                    ));
+                }
+                Ok(None)
+            }
+            DepreciationMethod::ReducingBalance => {
+                let bps = rate_bps.ok_or_else(|| {
+                    CoreError::Validation(
+                        "reducing-balance depreciation requires reducing_balance_rate_bps".into(),
+                    )
+                })?;
+                if !(1..=10_000).contains(&bps) {
+                    return Err(CoreError::Validation(format!(
+                        "reducing_balance_rate_bps must be between 1 and 10000, got {bps}"
+                    )));
+                }
+                Ok(Some(bps))
+            }
+        }
+    }
+
+    /// Parse a `YYYY-MM` period string into `(year, month)`. Same shape check
+    /// `budget_upsert` already uses for `budgets.month` — digits-only would
+    /// pass the schema CHECK but "2026-13" can never match a real month.
+    fn parse_period(period: &str) -> CoreResult<(i32, u32)> {
+        let b = period.as_bytes();
+        let ok = b.len() == 7
+            && b[4] == b'-'
+            && b[..4].iter().all(u8::is_ascii_digit)
+            && b[5..].iter().all(u8::is_ascii_digit)
+            && ("01"..="12").contains(&&period[5..]);
+        if !ok {
+            return Err(CoreError::Validation(format!(
+                "period must be YYYY-MM (MM in 01..=12), got {period:?}"
+            )));
+        }
+        let year: i32 = period[0..4].parse().expect("digits checked above");
+        let month: u32 = period[5..7].parse().expect("digits checked above");
+        Ok((year, month))
+    }
+
+    /// `(year, month)` out of an already-validated `YYYY-MM-DD` date — every
+    /// stored `acquired_date`/`disposed_date` went through `parse_date` on
+    /// the way in, so this never has to re-validate.
+    fn year_month_of_date(date: &str) -> (i32, u32) {
+        (
+            date[0..4].parse().expect("stored dates are YYYY-MM-DD"),
+            date[5..7].parse().expect("stored dates are YYYY-MM-DD"),
+        )
+    }
+
+    /// The 1-based count of periods between an asset's acquisition month and
+    /// `period`, inclusive of both — the month of acquisition is period 1.
+    /// Rejects a `period` before the acquisition month.
+    fn period_index_from(acquired_date: &str, period: &str) -> CoreResult<i64> {
+        let (py, pm) = Self::parse_period(period)?;
+        let (ay, am) = Self::year_month_of_date(acquired_date);
+        let index = (i64::from(py) * 12 + i64::from(pm)) - (i64::from(ay) * 12 + i64::from(am)) + 1;
+        if index < 1 {
+            return Err(CoreError::Validation(format!(
+                "period {period} is before the asset's acquisition month ({acquired_date})"
+            )));
+        }
+        Ok(index)
+    }
+
+    fn days_in_month(year: i32, month: u32) -> u32 {
+        match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
+            2 => 28,
+            _ => unreachable!("month validated 01..=12 by parse_period"),
+        }
+    }
+
+    /// The last calendar day of `period` (`YYYY-MM`) — depreciation is
+    /// recognised as of period-end, the same convention a month-end close
+    /// uses everywhere else in this crate.
+    fn period_end_date(period: &str) -> CoreResult<String> {
+        let (year, month) = Self::parse_period(period)?;
+        let day = Self::days_in_month(year, month);
+        Ok(format!("{year:04}-{month:02}-{day:02}"))
+    }
+
+    /// This period's depreciation amount, in minor units, never negative and
+    /// never enough to push net book value below `residual_minor` — see this
+    /// module's own doc comment on [`Self::depreciation_run`] for the exact
+    /// formula and why it is exact for both methods.
+    fn depreciation_amount(asset: &Asset, period_index: i64, accumulated_before: i64) -> i64 {
+        let depreciable = asset.cost_minor - asset.residual_minor;
+        match asset.method {
+            DepreciationMethod::StraightLine => {
+                let target = |n: i64| -> i64 {
+                    if n <= 0 {
+                        return 0;
+                    }
+                    let n = n.min(asset.useful_life_months);
+                    (i128::from(depreciable) * i128::from(n) / i128::from(asset.useful_life_months))
+                        as i64
+                };
+                target(period_index) - target(period_index - 1)
+            }
+            DepreciationMethod::ReducingBalance => {
+                let rate_bps = asset.reducing_balance_rate_bps.unwrap_or(0);
+                let opening_nbv = asset.cost_minor - accumulated_before;
+                let headroom = opening_nbv - asset.residual_minor;
+                if headroom <= 0 {
+                    return 0;
+                }
+                if period_index >= asset.useful_life_months {
+                    return headroom;
+                }
+                let raw = (i128::from(opening_nbv) * i128::from(rate_bps) / 10_000) as i64;
+                raw.clamp(0, headroom)
+            }
+        }
+    }
+
+    /// This asset's depreciation runs whose journal is still net-live (never
+    /// reversed, or reversed-then-reinstated back to net-live) — a run whose
+    /// journal was reversed by `asset_dispose`'s retroactive cleanup no
+    /// longer counts toward accumulated depreciation or the next expected
+    /// period. Ordered by `period_index`, same as `repo::assets::
+    /// runs_for_asset`.
+    fn net_live_runs(
+        &self,
+        conn: &Connection,
+        asset_id: &str,
+    ) -> CoreResult<Vec<AssetDepreciationRun>> {
+        let runs = repo::assets::runs_for_asset(conn, asset_id)?;
+        let mut live = Vec::with_capacity(runs.len());
+        for run in runs {
+            if !repo::ledger::is_net_reversed(conn, &run.journal_id)? {
+                live.push(run);
+            }
+        }
+        Ok(live)
+    }
+
+    /// Register a capitalised asset: cost, acquisition date, useful life and
+    /// depreciation method. Posts nothing to the ledger by itself —
+    /// `depreciation_run` is what starts posting against it.
+    pub fn asset_create(&self, new: NewAsset) -> CoreResult<Asset> {
+        let book = self.book_get(&new.book_id)?;
+        let name = new.name.trim().to_string();
+        if name.is_empty() {
+            return Err(CoreError::Validation("asset name must not be empty".into()));
+        }
+        parse_date(&new.acquired_date)?;
+        if new.cost_minor <= 0 {
+            return Err(CoreError::Validation(
+                "asset cost must be greater than zero".into(),
+            ));
+        }
+        let residual_minor = new.residual_minor.unwrap_or(0);
+        if residual_minor < 0 {
+            return Err(CoreError::Validation(
+                "asset residual value must not be negative".into(),
+            ));
+        }
+        if residual_minor > new.cost_minor {
+            return Err(CoreError::Validation(
+                "asset residual value must not exceed cost".into(),
+            ));
+        }
+        if new.useful_life_months <= 0 {
+            return Err(CoreError::Validation(
+                "asset useful life must be at least one month".into(),
+            ));
+        }
+        let reducing_balance_rate_bps =
+            Self::validate_depreciation_method(new.method, new.reducing_balance_rate_bps)?;
+        let currency = normalize_currency_code(&new.currency)?;
+
+        let now = now_iso();
+        let asset = Asset {
+            id: new_id(),
+            book_id: book.id,
+            name,
+            description: normalize_optional(new.description),
+            acquired_date: new.acquired_date,
+            cost_minor: new.cost_minor,
+            residual_minor,
+            currency,
+            useful_life_months: new.useful_life_months,
+            method: new.method,
+            reducing_balance_rate_bps,
+            status: AssetStatus::Active,
+            disposed_date: None,
+            disposal_proceeds_minor: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        let tx = self.conn().unchecked_transaction()?;
+        repo::assets::asset_insert(&tx, &asset)?;
+        self.emit_audit(
+            &tx,
+            Some(&asset.book_id),
+            "asset",
+            Some(&asset.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&asset)?),
+        )?;
+        tx.commit()?;
+        Ok(asset)
+    }
+
+    pub fn asset_get(&self, id: &str) -> CoreResult<Asset> {
+        repo::assets::asset_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "asset",
+            id: id.to_string(),
+        })
+    }
+
+    /// Every asset in the book, most recently acquired first.
+    pub fn asset_list(&self, book_id: &str) -> CoreResult<Vec<Asset>> {
+        repo::assets::asset_list(self.conn(), book_id)
+    }
+
+    /// An asset together with its derived accumulated depreciation and net
+    /// book value — the pairing a register screen actually renders.
+    pub fn asset_with_depreciation(&self, id: &str) -> CoreResult<AssetWithDepreciation> {
+        let asset = self.asset_get(id)?;
+        let live = self.net_live_runs(self.conn(), id)?;
+        let accumulated_depreciation_minor: i64 = live.iter().map(|r| r.depreciation_minor).sum();
+        Ok(AssetWithDepreciation {
+            net_book_value_minor: asset.cost_minor - accumulated_depreciation_minor,
+            periods_run: live.len() as i64,
+            accumulated_depreciation_minor,
+            asset,
+        })
+    }
+
+    /// Selective update over the header fields. Deliberately cannot touch
+    /// `status`/`disposed_date`/`disposal_proceeds_minor` — those move only
+    /// through [`Self::asset_dispose`]. Refuses to change anything on a
+    /// disposed asset, and refuses to change cost, dates, useful life or
+    /// method once any depreciation has posted against it (changing the
+    /// schedule underneath periods already recognised would make the ledger
+    /// and the register disagree about what those postings mean) — name and
+    /// description stay editable regardless.
+    pub fn asset_update(&self, id: &str, patch: AssetPatch) -> CoreResult<Asset> {
+        let before = self.asset_get(id)?;
+        if before.status == AssetStatus::Disposed {
+            return Err(CoreError::Validation("cannot edit a disposed asset".into()));
+        }
+        let changes_schedule = patch.acquired_date.is_some()
+            || patch.cost_minor.is_some()
+            || patch.residual_minor.is_some()
+            || patch.useful_life_months.is_some()
+            || patch.method.is_some()
+            || patch.reducing_balance_rate_bps.is_some();
+        if changes_schedule && !repo::assets::runs_for_asset(self.conn(), id)?.is_empty() {
+            return Err(CoreError::Validation(
+                "cannot change cost, acquisition date, useful life or method once \
+                 depreciation has been posted for this asset"
+                    .into(),
+            ));
+        }
+
+        let mut after = before.clone();
+        if let Some(name) = patch.name {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err(CoreError::Validation("asset name must not be empty".into()));
+            }
+            after.name = name;
+        }
+        if let Some(description) = patch.description {
+            after.description = normalize_optional(description);
+        }
+        if let Some(acquired_date) = patch.acquired_date {
+            parse_date(&acquired_date)?;
+            after.acquired_date = acquired_date;
+        }
+        if let Some(cost_minor) = patch.cost_minor {
+            if cost_minor <= 0 {
+                return Err(CoreError::Validation(
+                    "asset cost must be greater than zero".into(),
+                ));
+            }
+            after.cost_minor = cost_minor;
+        }
+        if let Some(residual_minor) = patch.residual_minor {
+            if residual_minor < 0 {
+                return Err(CoreError::Validation(
+                    "asset residual value must not be negative".into(),
+                ));
+            }
+            after.residual_minor = residual_minor;
+        }
+        if after.residual_minor > after.cost_minor {
+            return Err(CoreError::Validation(
+                "asset residual value must not exceed cost".into(),
+            ));
+        }
+        if let Some(useful_life_months) = patch.useful_life_months {
+            if useful_life_months <= 0 {
+                return Err(CoreError::Validation(
+                    "asset useful life must be at least one month".into(),
+                ));
+            }
+            after.useful_life_months = useful_life_months;
+        }
+        if let Some(method) = patch.method {
+            after.method = method;
+        }
+        if let Some(rate) = patch.reducing_balance_rate_bps {
+            after.reducing_balance_rate_bps = rate;
+        }
+        after.reducing_balance_rate_bps =
+            Self::validate_depreciation_method(after.method, after.reducing_balance_rate_bps)?;
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::assets::asset_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "asset",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Dispose an asset: mark it disposed, and — since the posted ledger is
+    /// immutable and there is no way to delete a journal
+    /// (`journals_no_update`/`_no_delete`, migration 0001) — **reverse**,
+    /// never delete, any depreciation already posted for a period after the
+    /// disposal date. That is the one ledger-affecting thing disposal does;
+    /// it does not itself post a derecognition/gain-or-loss journal against
+    /// the asset's cost, because this schema has no chart-of-accounts
+    /// convention for *which* account a given asset's cost sits under (see
+    /// migration `0016_assets`'s header) — out of scope here, alongside
+    /// revaluation and a tax-vs-book split.
+    pub fn asset_dispose(&self, id: &str, disposal: AssetDisposal) -> CoreResult<Asset> {
+        let before = self.asset_get(id)?;
+        if before.status == AssetStatus::Disposed {
+            return Err(CoreError::Validation("asset is already disposed".into()));
+        }
+        parse_date(&disposal.disposed_date)?;
+        if let Some(proceeds) = disposal.proceeds_minor {
+            if proceeds < 0 {
+                return Err(CoreError::Validation(
+                    "disposal proceeds must not be negative".into(),
+                ));
+            }
+        }
+        let disposal_index =
+            Self::period_index_from(&before.acquired_date, &disposal.disposed_date[..7])?;
+        let book = self.book_get(&before.book_id)?;
+
+        let reversal_date = today();
+        let tx = self.conn().unchecked_transaction()?;
+        let runs = repo::assets::runs_for_asset(&tx, id)?;
+        for run in runs.iter().filter(|r| r.period_index > disposal_index) {
+            if !repo::ledger::is_net_reversed(&tx, &run.journal_id)? {
+                self.reverse_journal_in_tx(
+                    &tx,
+                    &book,
+                    &run.journal_id,
+                    Some(&reversal_date),
+                    Some(&format!(
+                        "Reversing depreciation posted after disposal of {}",
+                        before.name
+                    )),
+                )?;
+            }
+        }
+
+        let mut after = before.clone();
+        after.status = AssetStatus::Disposed;
+        after.disposed_date = Some(disposal.disposed_date);
+        after.disposal_proceeds_minor = disposal.proceeds_minor;
+        after.updated_at = now_iso();
+        repo::assets::asset_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "asset",
+            Some(id),
+            "dispose",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Post one period's depreciation for an asset — **DR** depreciation
+    /// expense ("6250"), **CR** accumulated depreciation ("1600"), both
+    /// already present in every business chart-of-accounts seed
+    /// (`region.rs`).
+    ///
+    /// **Idempotent per (asset, period)**: a period that already has a
+    /// net-live journal refuses to post again — the second attempt fails
+    /// [`Self::period_index_from`]'s "next expected period" check below
+    /// before it ever reaches `post_journal_in_tx`, because a net-live run
+    /// already occupies that index. The `asset_depreciation_runs` row this
+    /// writes uses its own freshly generated id as the journal's
+    /// `source_id`, the same "the row is the source" idiom `PoReceipt`/
+    /// `InvoicePayment` already use, backed by the table's own
+    /// `UNIQUE (asset_id, period)` as a second, database-level guard.
+    ///
+    /// **Refuses** (`CoreError::Validation`) a malformed period, a period out
+    /// of sequence (no gaps, no re-running an earlier one — depreciation
+    /// must be run in order), a period beyond the asset's useful life, a
+    /// period after the asset's own disposal date once disposed, or posting
+    /// into a locked book period (`post_journal_in_tx`'s own check).
+    ///
+    /// **Posts nothing, gracefully** (`Ok(None)`, no row written at all —
+    /// not even `asset_depreciation_runs`) when the book has no chart of
+    /// accounts to post into, or when this period's computed depreciation is
+    /// zero (a reducing-balance asset already fully written down) — the same
+    /// posture [`Self::post_revenue_ar_journal`] takes.
+    ///
+    /// ## The arithmetic — exact in `i64` minor units, never floats
+    ///
+    /// * **Straight-line**: define `target(n) = floor((cost - residual) * n
+    ///   / useful_life_months)` for period index `n`, and this period's
+    ///   amount as `target(n) - target(n - 1)`. `target` telescopes and
+    ///   `target(useful_life_months) == cost - residual` exactly (`n`
+    ///   divides itself), so the periods sum to exactly the depreciable
+    ///   amount even when it does not divide evenly — the remainder lands,
+    ///   one minor unit at a time, spread across periods by the flooring,
+    ///   never all dumped on the last one and never exceeding the total.
+    /// * **Reducing-balance**: this period's amount is `floor(opening_nbv *
+    ///   reducing_balance_rate_bps / 10000)` (a **per-period**, not annual,
+    ///   rate), clamped so `opening_nbv - amount` never drops below
+    ///   `residual_minor`, and forced to exactly `opening_nbv - residual`
+    ///   on the asset's final period regardless of what the rate alone would
+    ///   have produced — a reducing-balance schedule is asymptotic and would
+    ///   otherwise never quite reach `residual_minor` on its own.
+    pub fn depreciation_run(
+        &self,
+        asset_id: &str,
+        period: &str,
+    ) -> CoreResult<Option<AssetDepreciationRun>> {
+        let asset = self.asset_get(asset_id)?;
+        let book = self.book_get(&asset.book_id)?;
+        let period_index = Self::period_index_from(&asset.acquired_date, period)?;
+
+        let live = self.net_live_runs(self.conn(), asset_id)?;
+        let next_index = live.last().map(|r| r.period_index).unwrap_or(0) + 1;
+        if period_index != next_index {
+            return Err(CoreError::Validation(format!(
+                "depreciation must be run in period order for {}; expected period index \
+                 {next_index}, got {period_index} ({period})",
+                asset.name
+            )));
+        }
+        if period_index > asset.useful_life_months {
+            return Err(CoreError::Validation(format!(
+                "period {period} is beyond {}'s useful life ({} months)",
+                asset.name, asset.useful_life_months
+            )));
+        }
+        if let Some(disposed_date) = asset.disposed_date.as_deref() {
+            let disposed_index =
+                Self::period_index_from(&asset.acquired_date, &disposed_date[..7])?;
+            if period_index > disposed_index {
+                return Err(CoreError::Validation(format!(
+                    "{} was disposed in {}; cannot run depreciation for {period}",
+                    asset.name,
+                    &disposed_date[..7]
+                )));
+            }
+        }
+
+        let accumulated_before: i64 = live.iter().map(|r| r.depreciation_minor).sum();
+        let amount = Self::depreciation_amount(&asset, period_index, accumulated_before);
+        if amount <= 0 {
+            return Ok(None);
+        }
+
+        let tx = self.conn().unchecked_transaction()?;
+        let run_id = new_id();
+        let posted =
+            match self.post_depreciation_journal(&tx, &book, &asset, period, amount, &run_id)? {
+                Some(posted) => posted,
+                None => return Ok(None),
+            };
+        let run = AssetDepreciationRun {
+            id: run_id,
+            book_id: asset.book_id.clone(),
+            asset_id: asset.id.clone(),
+            period: period.to_string(),
+            period_index,
+            depreciation_minor: amount,
+            journal_id: posted.journal.id.clone(),
+            created_at: now_iso(),
+        };
+        repo::assets::run_insert(&tx, &run)?;
+        self.emit_audit(
+            &tx,
+            Some(&run.book_id),
+            "asset_depreciation_run",
+            Some(&run.id),
+            "post",
+            None,
+            Some(serde_json::to_string(&run)?),
+        )?;
+        tx.commit()?;
+        Ok(Some(run))
+    }
+
+    /// Every depreciation run ever posted for an asset, including any whose
+    /// journal was later reversed by [`Self::asset_dispose`]'s retroactive
+    /// cleanup — the full audit trail, not just what is currently net-live
+    /// (see [`Self::net_live_runs`] for the figure a balance actually uses).
+    pub fn depreciation_runs_for_asset(
+        &self,
+        asset_id: &str,
+    ) -> CoreResult<Vec<AssetDepreciationRun>> {
+        repo::assets::runs_for_asset(self.conn(), asset_id)
+    }
+
+    fn post_depreciation_journal(
+        &self,
+        tx: &Connection,
+        book: &Book,
+        asset: &Asset,
+        period: &str,
+        amount_minor: i64,
+        run_id: &str,
+    ) -> CoreResult<Option<PostedJournal>> {
+        let (expense, accumulated) = match (
+            self.coa_by_code_opt(tx, &book.id, COA_CODE_DEPRECIATION_EXPENSE)?,
+            self.coa_by_code_opt(tx, &book.id, COA_CODE_ACCUM_DEPRECIATION)?,
+        ) {
+            (Some(e), Some(a)) => (e, a),
+            _ => return Ok(None),
+        };
+        let posted_date = Self::period_end_date(period)?;
+        let line = |coa: &CoaAccount, debit: i64, credit: i64| NewJournalLine {
+            coa_id: coa.id.clone(),
+            debit_minor: debit,
+            credit_minor: credit,
+            currency: asset.currency.clone(),
+            description: Some(format!("Depreciation: {} ({period})", asset.name)),
+            vat_rate_id: None,
+            vat_role: None,
+        };
+        let new = NewJournal {
+            book_id: book.id.clone(),
+            posted_date,
+            narrative: Some(format!("Depreciation: {} — {period}", asset.name)),
+            reference: Some(asset.id.clone()),
+            source_type: JournalSourceType::Depreciation,
+            source_id: Some(run_id.to_string()),
+            lines: vec![
+                line(&expense, amount_minor, 0),
+                line(&accumulated, 0, amount_minor),
             ],
         };
         Ok(Some(self.post_journal_in_tx(tx, book, new, None)?))
@@ -15827,5 +16414,385 @@ mod tests {
             .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0], (book.id.clone(), 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Fixed assets & depreciation (migration 0016)
+    // -----------------------------------------------------------------------
+
+    fn make_straight_line_asset(
+        svc: &CoreService,
+        book: &Book,
+        cost_minor: i64,
+        residual_minor: i64,
+        useful_life_months: i64,
+    ) -> Asset {
+        svc.asset_create(NewAsset {
+            book_id: book.id.clone(),
+            name: "Laser printer".into(),
+            description: Some("Office equipment".into()),
+            acquired_date: "2026-01-15".into(),
+            cost_minor,
+            residual_minor: Some(residual_minor),
+            currency: book.currency.clone(),
+            useful_life_months,
+            method: DepreciationMethod::StraightLine,
+            reducing_balance_rate_bps: None,
+        })
+        .unwrap()
+    }
+
+    fn make_reducing_balance_asset(
+        svc: &CoreService,
+        book: &Book,
+        cost_minor: i64,
+        residual_minor: i64,
+        useful_life_months: i64,
+        rate_bps: i64,
+    ) -> Asset {
+        svc.asset_create(NewAsset {
+            book_id: book.id.clone(),
+            name: "Delivery van".into(),
+            description: None,
+            acquired_date: "2026-01-15".into(),
+            cost_minor,
+            residual_minor: Some(residual_minor),
+            currency: book.currency.clone(),
+            useful_life_months,
+            method: DepreciationMethod::ReducingBalance,
+            reducing_balance_rate_bps: Some(rate_bps),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn asset_create_rejects_a_residual_above_cost_and_a_missing_rate() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let mut new = NewAsset {
+            book_id: book.id.clone(),
+            name: "Bad asset".into(),
+            description: None,
+            acquired_date: "2026-01-01".into(),
+            cost_minor: 1_000,
+            residual_minor: Some(2_000),
+            currency: "ZAR".into(),
+            useful_life_months: 12,
+            method: DepreciationMethod::StraightLine,
+            reducing_balance_rate_bps: None,
+        };
+        assert!(matches!(
+            svc.asset_create(new.clone()),
+            Err(CoreError::Validation(_))
+        ));
+        new.residual_minor = Some(0);
+        new.method = DepreciationMethod::ReducingBalance;
+        // Missing the required rate for reducing-balance.
+        assert!(matches!(
+            svc.asset_create(new.clone()),
+            Err(CoreError::Validation(_))
+        ));
+        new.reducing_balance_rate_bps = Some(2000);
+        let ok = svc.asset_create(new).unwrap();
+        assert_eq!(ok.reducing_balance_rate_bps, Some(2000));
+    }
+
+    /// The exact-cents proof: 100_000 minor units over 7 months does not
+    /// divide evenly (14285.71...), yet the seven straight-line periods sum
+    /// to exactly the depreciable amount and each posted journal balances.
+    #[test]
+    fn straight_line_schedule_is_exact_to_the_cent_over_an_awkward_divisor() {
+        let svc = svc();
+        let book = make_business(&svc);
+        let coa = svc.coa_seed(&book.id).unwrap();
+        let asset = make_straight_line_asset(&svc, &book, 100_000, 0, 7);
+
+        let expected = [14285, 14286, 14286, 14285, 14286, 14286, 14286];
+        assert_eq!(expected.iter().sum::<i64>(), 100_000);
+
+        let periods = [
+            "2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07",
+        ];
+        let mut accumulated = 0i64;
+        for (period, want) in periods.iter().zip(expected.iter()) {
+            let run = svc
+                .depreciation_run(&asset.id, period)
+                .unwrap()
+                .unwrap_or_else(|| panic!("expected a run for {period}"));
+            assert_eq!(run.depreciation_minor, *want, "period {period}");
+            accumulated += want;
+
+            // Balanced-journal assertion: DR depreciation expense, CR
+            // accumulated depreciation, exactly this period's amount, on
+            // exactly two accounts, on both sides.
+            let posted = svc.journal_get(&run.journal_id).unwrap();
+            assert_eq!(posted.lines.len(), 2);
+            let debit_total: i64 = posted.lines.iter().map(|l| l.debit_minor).sum();
+            let credit_total: i64 = posted.lines.iter().map(|l| l.credit_minor).sum();
+            assert_eq!(debit_total, credit_total);
+            assert_eq!(debit_total, *want);
+            let expense_line = posted
+                .lines
+                .iter()
+                .find(|l| l.coa_id == by_code(&coa, "6250").id)
+                .expect("depreciation expense line");
+            assert_eq!(expense_line.debit_minor, *want);
+            let accum_line = posted
+                .lines
+                .iter()
+                .find(|l| l.coa_id == by_code(&coa, "1600").id)
+                .expect("accumulated depreciation line");
+            assert_eq!(accum_line.credit_minor, *want);
+
+            let with_dep = svc.asset_with_depreciation(&asset.id).unwrap();
+            assert_eq!(with_dep.accumulated_depreciation_minor, accumulated);
+            assert_eq!(with_dep.net_book_value_minor, 100_000 - accumulated);
+        }
+
+        // Total depreciation must never exceed cost minus residual — here it
+        // reaches it exactly, with nothing left over.
+        let final_state = svc.asset_with_depreciation(&asset.id).unwrap();
+        assert_eq!(final_state.accumulated_depreciation_minor, 100_000);
+        assert_eq!(final_state.net_book_value_minor, 0);
+        assert_eq!(final_state.periods_run, 7);
+
+        // The schedule is exhausted: an eighth period is beyond useful life.
+        assert!(matches!(
+            svc.depreciation_run(&asset.id, "2026-08"),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    /// Reducing-balance over an awkward (non-terminating) rate: every period
+    /// is floor-divided, and the final period is forced to land on exactly
+    /// `cost - residual` rather than asymptotically approaching it forever.
+    #[test]
+    fn reducing_balance_schedule_never_exceeds_depreciable_amount_and_lands_on_it_exactly() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let asset = make_reducing_balance_asset(&svc, &book, 100_000, 10_000, 5, 3_333);
+
+        let expected = [33_330, 22_221, 14_814, 9_877, 9_758];
+        assert_eq!(expected.iter().sum::<i64>(), 90_000, "cost - residual");
+
+        let periods = ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05"];
+        for (period, want) in periods.iter().zip(expected.iter()) {
+            let run = svc
+                .depreciation_run(&asset.id, period)
+                .unwrap()
+                .unwrap_or_else(|| panic!("expected a run for {period}"));
+            assert_eq!(run.depreciation_minor, *want, "period {period}");
+        }
+
+        let final_state = svc.asset_with_depreciation(&asset.id).unwrap();
+        assert_eq!(final_state.accumulated_depreciation_minor, 90_000);
+        assert_eq!(
+            final_state.net_book_value_minor, 10_000,
+            "== residual, never below"
+        );
+    }
+
+    #[test]
+    fn depreciation_run_refuses_to_double_post_a_period() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let asset = make_straight_line_asset(&svc, &book, 12_000, 0, 12);
+
+        svc.depreciation_run(&asset.id, "2026-01").unwrap().unwrap();
+        // Re-running the same period is refused, not silently re-posted.
+        assert!(matches!(
+            svc.depreciation_run(&asset.id, "2026-01"),
+            Err(CoreError::Validation(_))
+        ));
+        // Skipping ahead out of order is refused too.
+        assert!(matches!(
+            svc.depreciation_run(&asset.id, "2026-03"),
+            Err(CoreError::Validation(_))
+        ));
+
+        // Exactly one period's worth is on the books either way.
+        let with_dep = svc.asset_with_depreciation(&asset.id).unwrap();
+        assert_eq!(with_dep.accumulated_depreciation_minor, 1_000);
+        assert_eq!(with_dep.periods_run, 1);
+    }
+
+    #[test]
+    fn depreciation_run_refuses_to_post_into_a_locked_period() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let asset = make_straight_line_asset(&svc, &book, 12_000, 0, 12);
+        // Lock the book through the end of January — depreciation for
+        // January posts on 2026-01-31, which is now sealed.
+        svc.book_set_lock_date(&book.id, Some("2026-01-31"))
+            .unwrap();
+
+        let err = svc.depreciation_run(&asset.id, "2026-01").unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)));
+
+        // Nothing was recorded — not the journal, not the run.
+        assert!(svc
+            .depreciation_runs_for_asset(&asset.id)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn depreciation_run_posts_nothing_when_the_book_has_no_chart_of_accounts() {
+        let svc = svc();
+        let book = make_business(&svc);
+        // Deliberately no `coa_seed` — the book has no chart of accounts.
+        let asset = make_straight_line_asset(&svc, &book, 12_000, 0, 12);
+
+        let result = svc.depreciation_run(&asset.id, "2026-01").unwrap();
+        assert!(result.is_none(), "must post nothing, not error");
+        assert!(svc
+            .depreciation_runs_for_asset(&asset.id)
+            .unwrap()
+            .is_empty());
+
+        // Once a chart of accounts exists, the same period posts cleanly —
+        // the earlier no-op left no half-recorded state behind.
+        svc.coa_seed(&book.id).unwrap();
+        let run = svc.depreciation_run(&asset.id, "2026-01").unwrap();
+        assert!(run.is_some());
+    }
+
+    #[test]
+    fn asset_update_refuses_schedule_changes_once_depreciation_has_posted_but_allows_the_rest() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let asset = make_straight_line_asset(&svc, &book, 12_000, 0, 12);
+        svc.depreciation_run(&asset.id, "2026-01").unwrap().unwrap();
+
+        let patch = AssetPatch {
+            cost_minor: Some(24_000),
+            ..Default::default()
+        };
+        assert!(matches!(
+            svc.asset_update(&asset.id, patch),
+            Err(CoreError::Validation(_))
+        ));
+
+        let rename = AssetPatch {
+            name: Some("Renamed printer".into()),
+            ..Default::default()
+        };
+        let updated = svc.asset_update(&asset.id, rename).unwrap();
+        assert_eq!(updated.name, "Renamed printer");
+        assert_eq!(updated.cost_minor, 12_000, "cost untouched by the rename");
+    }
+
+    #[test]
+    fn asset_dispose_reverses_depreciation_posted_after_the_disposal_period() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let asset = make_straight_line_asset(&svc, &book, 12_000, 0, 12);
+
+        let jan = svc.depreciation_run(&asset.id, "2026-01").unwrap().unwrap();
+        let feb = svc.depreciation_run(&asset.id, "2026-02").unwrap().unwrap();
+
+        // Disposed effective end of January: February's depreciation should
+        // never have been recognised.
+        let disposed = svc
+            .asset_dispose(
+                &asset.id,
+                AssetDisposal {
+                    disposed_date: "2026-01-31".into(),
+                    proceeds_minor: Some(5_000),
+                },
+            )
+            .unwrap();
+        assert_eq!(disposed.status, AssetStatus::Disposed);
+        assert_eq!(disposed.disposal_proceeds_minor, Some(5_000));
+
+        assert!(
+            repo::ledger::is_net_reversed(svc.conn_for_test(), &feb.journal_id).unwrap(),
+            "February's depreciation must be reversed, not left standing"
+        );
+        assert!(
+            !repo::ledger::is_net_reversed(svc.conn_for_test(), &jan.journal_id).unwrap(),
+            "January's depreciation happened before disposal and must stand"
+        );
+
+        // The reversal is a new journal, not an edit or a delete — both the
+        // original and its reversal are still on record.
+        let feb_journal = svc.journal_get(&feb.journal_id).unwrap();
+        assert!(feb_journal.journal.reversal_of.is_none());
+
+        // Accumulated depreciation net of the reversal is January's amount
+        // only.
+        let with_dep = svc.asset_with_depreciation(&asset.id).unwrap();
+        assert_eq!(
+            with_dep.accumulated_depreciation_minor,
+            jan.depreciation_minor
+        );
+
+        // Disposing again, or editing a disposed asset, is refused.
+        assert!(matches!(
+            svc.asset_dispose(
+                &asset.id,
+                AssetDisposal {
+                    disposed_date: "2026-02-28".into(),
+                    proceeds_minor: None,
+                },
+            ),
+            Err(CoreError::Validation(_))
+        ));
+        let patch = AssetPatch {
+            name: Some("Nope".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            svc.asset_update(&asset.id, patch),
+            Err(CoreError::Validation(_))
+        ));
+
+        // And depreciation cannot resume after disposal.
+        assert!(matches!(
+            svc.depreciation_run(&asset.id, "2026-03"),
+            Err(CoreError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn asset_sync_capture_is_lww_and_depreciation_runs_are_insert_only_ledger_facts() {
+        let svc = svc();
+        let book = make_business(&svc);
+        svc.coa_seed(&book.id).unwrap();
+        let asset = make_straight_line_asset(&svc, &book, 12_000, 0, 12);
+        let rename = AssetPatch {
+            name: Some("Renamed".into()),
+            ..Default::default()
+        };
+        svc.asset_update(&asset.id, rename).unwrap();
+        let run = svc.depreciation_run(&asset.id, "2026-01").unwrap().unwrap();
+
+        let asset_events: i64 = svc
+            .conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM sync_outbox WHERE table_name = 'assets' AND row_id = ?1",
+                rusqlite::params![asset.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        // One insert, one update — LWW captures every write.
+        assert_eq!(asset_events, 2);
+
+        let run_events: i64 = svc
+            .conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM sync_outbox WHERE table_name = 'asset_depreciation_runs' \
+                 AND row_id = ?1",
+                rusqlite::params![run.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(run_events, 1);
     }
 }

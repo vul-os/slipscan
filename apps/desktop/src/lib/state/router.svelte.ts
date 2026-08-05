@@ -22,6 +22,7 @@ export const ROUTES = [
   "reconcile",
   "payments",
   "reports",
+  "assets",
   "packs",
   "settings",
 ] as const;

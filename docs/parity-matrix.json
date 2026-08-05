@@ -7,9 +7,9 @@
   "counts": {
     "xero": {
       "total": 14,
-      "built": 2,
+      "built": 3,
       "partial": 7,
-      "not_built": 5
+      "not_built": 4
     },
     "vault22": {
       "total": 10,
@@ -19,9 +19,9 @@
     },
     "total": {
       "total": 24,
-      "built": 5,
+      "built": 6,
       "partial": 12,
-      "not_built": 7
+      "not_built": 6
     }
   },
   "rows": [
@@ -71,12 +71,13 @@
     {
       "axis": "xero",
       "name": "Fixed-asset register",
-      "status": "Not built",
-      "reachable": [],
-      "absent": [
+      "status": "Built",
+      "reachable": [
         "asset_create",
-        "depreciation_run"
-      ]
+        "depreciation_run",
+        "asset_dispose"
+      ],
+      "absent": []
     },
     {
       "axis": "xero",

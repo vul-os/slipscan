@@ -8,6 +8,11 @@ import type {
   AgedBucket,
   AgedReceivables,
   AgedReceivablesRow,
+  Asset,
+  AssetDepreciationRun,
+  AssetDisposeRequest,
+  AssetUpdateRequest,
+  AssetWithDepreciation,
   BenchmarkCohort,
   BenchmarkReport,
   Book,
@@ -25,6 +30,7 @@ import type {
   ContactUpdateRequest,
   DataMoveRequest,
   DataStatus,
+  DepreciationMethod,
   DeviceIdentity,
   DevicePeer,
   DeviceRotateResult,
@@ -61,6 +67,7 @@ import type {
   NetWorthPoint,
   NetWorthSeries,
   NetWorthSnapshot,
+  NewAsset,
   NewBook,
   NewContact,
   NewInvoice,
@@ -207,6 +214,24 @@ const contacts: Contact[] = [];
 const purchaseOrders: PurchaseOrder[] = [];
 const purchaseOrderItems: PurchaseOrderItem[] = [];
 const poReceipts: PoReceipt[] = [];
+
+/**
+ * Fixed assets & depreciation (migration 0016, PARITY.md "Fixed assets").
+ * Empty by default, like purchasing. Unlike purchasing/sales — the Assets
+ * screen (apps/desktop/src/routes/Assets.svelte) calls these. `assetRuns` is
+ * append-only, mirroring core's insert-only `asset_depreciation_runs` table.
+ * `reversedRunIds` is mock-only bookkeeping for `asset_dispose`'s
+ * retroactive cleanup: core reverses the journal a run points at (a new,
+ * separate journal — the row itself is never touched); this mock never
+ * models a ledger at all (see the purchasing section above for the same
+ * limitation), so a reversed run's id is recorded here instead and excluded
+ * from every accumulated-depreciation figure, while still appearing in
+ * `depreciation_runs_for_asset`'s full history — the same net-live-vs-every-
+ * run split `CoreService::net_live_runs` draws.
+ */
+const assets: Asset[] = [];
+const assetRuns: AssetDepreciationRun[] = [];
+const reversedRunIds = new Set<string>();
 
 /**
  * Sales orders & invoicing (Phase 6.5). Empty by default, like purchasing —
@@ -392,6 +417,109 @@ function requirePoItem(itemId: string): PurchaseOrderItem {
   return item;
 }
 
+function requireAsset(assetId: string): Asset {
+  const asset = assets.find((a) => a.id === assetId);
+  if (!asset) throw new Error(`asset not found: ${assetId}`);
+  return asset;
+}
+
+/** Every run recorded against one asset, oldest period first — including any
+ * reversed by `asset_dispose`'s retroactive cleanup. Mirrors
+ * `repo::assets::runs_for_asset`. */
+function runsForAsset(assetId: string): AssetDepreciationRun[] {
+  return assetRuns
+    .filter((r) => r.asset_id === assetId)
+    .sort((a, b) => a.period_index - b.period_index);
+}
+
+/** Net-live runs only — mirrors `CoreService::net_live_runs`, the figure
+ * every accumulated-depreciation calculation actually uses. */
+function liveRunsForAsset(assetId: string): AssetDepreciationRun[] {
+  return runsForAsset(assetId).filter((r) => !reversedRunIds.has(r.id));
+}
+
+/** `YYYY-MM` -> `[year, month]` — mirrors `CoreService::parse_period`. */
+function parsePeriod(period: string): [number, number] {
+  const m = /^(\d{4})-(\d{2})$/.exec(period);
+  if (!m) throw new Error(`period must be YYYY-MM (MM in 01..=12), got ${JSON.stringify(period)}`);
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  if (month < 1 || month > 12)
+    throw new Error(`period must be YYYY-MM (MM in 01..=12), got ${JSON.stringify(period)}`);
+  return [year, month];
+}
+
+/** 1-based count of periods between an asset's acquisition month and
+ * `period`, inclusive of both — the month of acquisition is period 1.
+ * Mirrors `CoreService::period_index_from`. */
+function periodIndexFrom(acquiredDate: string, period: string): number {
+  const [py, pm] = parsePeriod(period);
+  const ay = Number(acquiredDate.slice(0, 4));
+  const am = Number(acquiredDate.slice(5, 7));
+  const index = py * 12 + pm - (ay * 12 + am) + 1;
+  if (index < 1)
+    throw new Error(`period ${period} is before the asset's acquisition month (${acquiredDate})`);
+  return index;
+}
+
+function daysInMonth(year: number, month: number): number {
+  const lengths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month === 2 && ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0)) return 29;
+  return lengths[month - 1]!;
+}
+
+/** The last calendar day of `period` — mirrors `CoreService::period_end_date`. */
+function periodEndDate(period: string): string {
+  const [year, month] = parsePeriod(period);
+  const day = daysInMonth(year, month);
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+/** This period's depreciation charge, in minor units — mirrors
+ * `CoreService::depreciation_amount` exactly (integer floor division; JS
+ * numbers are exact well past every mock money figure, so no BigInt is
+ * needed here the way core needs `i128` for the widest real inputs). */
+function depreciationAmount(asset: Asset, periodIndex: number, accumulatedBefore: number): number {
+  const depreciable = asset.cost_minor - asset.residual_minor;
+  if (asset.method === "straight_line") {
+    const target = (n: number): number => {
+      if (n <= 0) return 0;
+      const clamped = Math.min(n, asset.useful_life_months);
+      return Math.floor((depreciable * clamped) / asset.useful_life_months);
+    };
+    return target(periodIndex) - target(periodIndex - 1);
+  }
+  const rateBps = asset.reducing_balance_rate_bps ?? 0;
+  const openingNbv = asset.cost_minor - accumulatedBefore;
+  const headroom = openingNbv - asset.residual_minor;
+  if (headroom <= 0) return 0;
+  if (periodIndex >= asset.useful_life_months) return headroom;
+  const raw = Math.floor((openingNbv * rateBps) / 10_000);
+  return Math.min(Math.max(raw, 0), headroom);
+}
+
+/** Mirrors `CoreService::validate_depreciation_method`: `reducing_balance`
+ * requires a `1..=10000` bps rate; `straight_line` forbids one being set at
+ * all. Shared by `asset_create` and `asset_update` so the two cannot drift
+ * apart on this rule, the same call core makes. */
+function validateDepreciationMethod(
+  method: DepreciationMethod,
+  rateBps: number | null | undefined,
+): number | null {
+  if (method === "straight_line") {
+    if (rateBps !== undefined && rateBps !== null)
+      throw new Error(
+        "reducing_balance_rate_bps must not be set for straight-line depreciation",
+      );
+    return null;
+  }
+  if (rateBps === undefined || rateBps === null)
+    throw new Error("reducing-balance depreciation requires reducing_balance_rate_bps");
+  if (rateBps < 1 || rateBps > 10_000)
+    throw new Error(`reducing_balance_rate_bps must be between 1 and 10000, got ${rateBps}`);
+  return rateBps;
+}
+
 /** Recompute and persist a PO's `subtotal_minor`/`total_minor` from its
  * current lines — mirrors `CoreService::recalc_po_totals_in_tx`. */
 function recalcPoTotals(poId: string): void {
@@ -422,6 +550,7 @@ function resolveProfile(b: Book): BookProfile {
     show_catalogue: isBusiness,
     show_purchasing: isBusiness,
     show_sales: isBusiness,
+    show_assets: isBusiness,
     show_locations: isBusiness && multiLocation,
   };
 }
@@ -3356,6 +3485,198 @@ export const mockApi = {
     if (statuses.every((s) => s === "none")) return "none";
     return "partial";
   },
+
+  // -- fixed assets & depreciation (migration 0016, PARITY.md "Fixed
+  // assets"). Unlike purchasing/sales above, the Assets screen calls these.
+  // `depreciation_run` has no ledger to post into in this mock — see the
+  // purchasing section above for the same limitation — so it always "posts"
+  // when the computed charge is positive; the one case it can and does model
+  // is a reducing-balance asset already written down to residual, which
+  // returns `null` exactly like core does. --
+
+  asset_create: async (q: NewAsset): Promise<Asset> => {
+    const name = q.name.trim();
+    if (!name) throw new Error("asset name must not be empty");
+    if (q.cost_minor <= 0) throw new Error("asset cost must be greater than zero");
+    const residualMinor = q.residual_minor ?? 0;
+    if (residualMinor < 0)
+      throw new Error("asset residual value must not be negative");
+    if (residualMinor > q.cost_minor)
+      throw new Error("asset residual value must not exceed cost");
+    if (q.useful_life_months <= 0)
+      throw new Error("asset useful life must be at least one month");
+    const rateBps = validateDepreciationMethod(q.method, q.reducing_balance_rate_bps);
+    const now = new Date().toISOString();
+    const created: Asset = {
+      id: id("ast0"),
+      book_id: q.book_id,
+      name,
+      description: q.description?.trim() || null,
+      acquired_date: q.acquired_date,
+      cost_minor: q.cost_minor,
+      residual_minor: residualMinor,
+      currency: q.currency,
+      useful_life_months: q.useful_life_months,
+      method: q.method,
+      reducing_balance_rate_bps: rateBps,
+      status: "active",
+      disposed_date: null,
+      disposal_proceeds_minor: null,
+      created_at: now,
+      updated_at: now,
+    };
+    assets.push(created);
+    return clone(created);
+  },
+
+  asset_get: async (q: { id: string }): Promise<Asset> => clone(requireAsset(q.id)),
+
+  asset_list: async (q: { book_id: string }): Promise<Asset[]> =>
+    clone(
+      assets
+        .filter((a) => a.book_id === q.book_id)
+        .sort((a, b) => b.acquired_date.localeCompare(a.acquired_date)),
+    ),
+
+  /** Refused once any depreciation has posted for cost, acquisition date,
+   * useful life, method or rate — name and description stay editable
+   * regardless. Mirrors `CoreService::asset_update`. */
+  asset_update: async (q: AssetUpdateRequest): Promise<Asset> => {
+    const asset = requireAsset(q.id);
+    if (asset.status === "disposed") throw new Error("cannot edit a disposed asset");
+    const changesSchedule =
+      q.acquired_date !== undefined ||
+      q.cost_minor !== undefined ||
+      q.residual_minor !== undefined ||
+      q.useful_life_months !== undefined ||
+      q.method !== undefined ||
+      q.reducing_balance_rate_bps !== undefined;
+    if (changesSchedule && runsForAsset(asset.id).length > 0)
+      throw new Error(
+        "cannot change cost, acquisition date, useful life or method once depreciation " +
+          "has been posted for this asset",
+      );
+    if (q.name !== undefined) {
+      const name = q.name.trim();
+      if (!name) throw new Error("asset name must not be empty");
+      asset.name = name;
+    }
+    if (q.description !== undefined) asset.description = q.description?.trim() || null;
+    if (q.acquired_date !== undefined) asset.acquired_date = q.acquired_date;
+    if (q.cost_minor !== undefined) {
+      if (q.cost_minor <= 0) throw new Error("asset cost must be greater than zero");
+      asset.cost_minor = q.cost_minor;
+    }
+    if (q.residual_minor !== undefined) {
+      if (q.residual_minor < 0)
+        throw new Error("asset residual value must not be negative");
+      asset.residual_minor = q.residual_minor;
+    }
+    if (asset.residual_minor > asset.cost_minor)
+      throw new Error("asset residual value must not exceed cost");
+    if (q.useful_life_months !== undefined) {
+      if (q.useful_life_months <= 0)
+        throw new Error("asset useful life must be at least one month");
+      asset.useful_life_months = q.useful_life_months;
+    }
+    if (q.method !== undefined) asset.method = q.method;
+    if (q.reducing_balance_rate_bps !== undefined)
+      asset.reducing_balance_rate_bps = q.reducing_balance_rate_bps;
+    asset.reducing_balance_rate_bps = validateDepreciationMethod(
+      asset.method,
+      asset.reducing_balance_rate_bps,
+    );
+    asset.updated_at = new Date().toISOString();
+    return clone(asset);
+  },
+
+  /** Reverses (never deletes) any depreciation already posted for a period
+   * after the disposal date. Mirrors `CoreService::asset_dispose`. */
+  asset_dispose: async (q: AssetDisposeRequest): Promise<Asset> => {
+    const asset = requireAsset(q.id);
+    if (asset.status === "disposed") throw new Error("asset is already disposed");
+    if (q.proceeds_minor !== undefined && q.proceeds_minor < 0)
+      throw new Error("disposal proceeds must not be negative");
+    const disposalIndex = periodIndexFrom(asset.acquired_date, q.disposed_date.slice(0, 7));
+    for (const run of runsForAsset(asset.id)) {
+      if (run.period_index > disposalIndex) reversedRunIds.add(run.id);
+    }
+    asset.status = "disposed";
+    asset.disposed_date = q.disposed_date;
+    asset.disposal_proceeds_minor = q.proceeds_minor ?? null;
+    asset.updated_at = new Date().toISOString();
+    return clone(asset);
+  },
+
+  asset_with_depreciation: async (q: { id: string }): Promise<AssetWithDepreciation> => {
+    const asset = requireAsset(q.id);
+    const live = liveRunsForAsset(asset.id);
+    const accumulated = live.reduce((sum, r) => sum + r.depreciation_minor, 0);
+    return {
+      asset: clone(asset),
+      accumulated_depreciation_minor: accumulated,
+      net_book_value_minor: asset.cost_minor - accumulated,
+      periods_run: live.length,
+    };
+  },
+
+  /** Idempotent per (asset, period) — a period out of sequence (a re-run or
+   * a skip-ahead) is refused, mirroring `CoreService::depreciation_run`'s
+   * own "next expected period" check. `null` (never an error) once a
+   * reducing-balance asset is fully written down to its residual value. */
+  depreciation_run: async (q: {
+    asset_id: string;
+    period: string;
+  }): Promise<AssetDepreciationRun | null> => {
+    const asset = requireAsset(q.asset_id);
+    const periodIndex = periodIndexFrom(asset.acquired_date, q.period);
+    const live = liveRunsForAsset(asset.id);
+    const nextIndex = (live.at(-1)?.period_index ?? 0) + 1;
+    if (periodIndex !== nextIndex)
+      throw new Error(
+        `depreciation must be run in period order for ${asset.name}; expected period ` +
+          `index ${nextIndex}, got ${periodIndex} (${q.period})`,
+      );
+    if (periodIndex > asset.useful_life_months)
+      throw new Error(
+        `period ${q.period} is beyond ${asset.name}'s useful life ` +
+          `(${asset.useful_life_months} months)`,
+      );
+    if (asset.disposed_date) {
+      const disposedIndex = periodIndexFrom(
+        asset.acquired_date,
+        asset.disposed_date.slice(0, 7),
+      );
+      if (periodIndex > disposedIndex)
+        throw new Error(
+          `${asset.name} was disposed in ${asset.disposed_date.slice(0, 7)}; cannot run ` +
+            `depreciation for ${q.period}`,
+        );
+    }
+    const postedDate = periodEndDate(q.period);
+    const lock = lockDates.get(asset.book_id);
+    if (lock && postedDate <= lock)
+      throw new Error(`book is locked up to ${lock}; cannot post on ${postedDate}`);
+    const accumulatedBefore = live.reduce((sum, r) => sum + r.depreciation_minor, 0);
+    const amount = depreciationAmount(asset, periodIndex, accumulatedBefore);
+    if (amount <= 0) return null;
+    const run: AssetDepreciationRun = {
+      id: id("adr0"),
+      book_id: asset.book_id,
+      asset_id: asset.id,
+      period: q.period,
+      period_index: periodIndex,
+      depreciation_minor: amount,
+      journal_id: id("jrn0"),
+      created_at: new Date().toISOString(),
+    };
+    assetRuns.push(run);
+    return clone(run);
+  },
+
+  depreciation_runs_for_asset: async (q: {
+    asset_id: string;
+  }): Promise<AssetDepreciationRun[]> => clone(runsForAsset(q.asset_id)),
 
   // -- sales orders & invoicing (Phase 6.5). Empty by default, like
   // purchasing above. The Sales screen (ROADMAP.md 6.9) is the first caller.

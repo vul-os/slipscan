@@ -15,6 +15,18 @@
     "recorded so the difference is deliberate rather than unnoticed."
   ],
   "operations": {
+    "asset_create": [
+      5,
+      5
+    ],
+    "asset_dispose": [
+      3,
+      2
+    ],
+    "asset_update": [
+      7,
+      7
+    ],
     "book_create": [
       3,
       4
@@ -67,6 +79,10 @@
       3,
       3
     ],
+    "depreciation_run": [
+      3,
+      4
+    ],
     "document_get": [
       0,
       1
@@ -92,7 +108,7 @@
       1
     ],
     "journal_generate_for_document": [
-      2,
+      7,
       1
     ],
     "journal_generate_for_transaction": [
