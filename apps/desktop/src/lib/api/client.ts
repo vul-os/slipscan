@@ -73,6 +73,8 @@ import type {
   NewProductVariant,
   NewPurchaseOrder,
   NewPurchaseOrderItem,
+  NewQuote,
+  NewQuoteItem,
   NewSalesOrder,
   NewSalesOrderItem,
   NewStockMovement,
@@ -102,6 +104,10 @@ import type {
   PurchaseOrder,
   PurchaseOrderItem,
   PurchaseOrderItemReceiving,
+  Quote,
+  QuoteItem,
+  QuoteItemUpdateRequest,
+  QuoteUpdateRequest,
   ReconConfirmRequest,
   ReconSuggestion,
   RegionInfo,
@@ -559,13 +565,74 @@ export const api = {
       mockApi.po_receiving_status(q),
     ),
 
-  // -- sales orders & invoicing (Phase 6.5, migration 0014_sales). No screen
-  // calls these yet (ROADMAP.md 6.9) — wired ahead of the UI, the same as the
-  // purchasing block above. An order is the editable draft; an invoice is a
-  // fact, which is why there is no invoiceUpdate/invoiceDelete here: the
-  // database refuses one, and a correction is a credit note (not built).
-  // Nullable fields clear by sending `null` rather than a `clear_*` flag —
-  // see the note in types.ts for why this differs from purchasing. --
+  // -- quotes (Phase 6.5 addendum, migration 0014_sales). A priced offer that
+  // has not happened yet — never touches stock or the ledger. `quoteAccept`
+  // returns a `SalesOrder`, not a `Quote`: accepting converts the quote into
+  // a brand-new draft order by copying its lines, so everything that happens
+  // to it from that point on goes through the `salesOrder*` calls below. --
+
+  quoteCreate: (q: NewQuote): Promise<Quote> =>
+    call("quote_create", { query: q }, () => mockApi.quote_create(q)),
+
+  quoteGet: (q: { id: string }): Promise<Quote> =>
+    call("quote_get", { query: q }, () => mockApi.quote_get(q)),
+
+  quoteList: (q: { book_id: string }): Promise<Quote[]> =>
+    call("quote_list", { query: q }, () => mockApi.quote_list(q)),
+
+  quoteUpdate: (q: QuoteUpdateRequest): Promise<Quote> =>
+    call("quote_update", { query: q }, () => mockApi.quote_update(q)),
+
+  /** Only reachable while the quote is still a draft — a sent quote is
+   * declined or left to expire rather than deleted. */
+  quoteDelete: (q: { id: string }): Promise<null> =>
+    call("quote_delete", { query: q }, () => mockApi.quote_delete(q)),
+
+  quoteItemAdd: (q: NewQuoteItem): Promise<QuoteItem> =>
+    call("quote_item_add", { query: q }, () => mockApi.quote_item_add(q)),
+
+  quoteItemsList: (q: { quote_id: string }): Promise<QuoteItem[]> =>
+    call("quote_items_list", { query: q }, () => mockApi.quote_items_list(q)),
+
+  quoteItemUpdate: (q: QuoteItemUpdateRequest): Promise<QuoteItem> =>
+    call("quote_item_update", { query: q }, () =>
+      mockApi.quote_item_update(q),
+    ),
+
+  quoteItemRemove: (q: { id: string }): Promise<null> =>
+    call("quote_item_remove", { query: q }, () =>
+      mockApi.quote_item_remove(q),
+    ),
+
+  /** draft -> sent. Requires at least one line item. */
+  quoteSend: (q: { id: string }): Promise<Quote> =>
+    call("quote_send", { query: q }, () => mockApi.quote_send(q)),
+
+  /** sent -> declined. */
+  quoteDecline: (q: { id: string }): Promise<Quote> =>
+    call("quote_decline", { query: q }, () => mockApi.quote_decline(q)),
+
+  /** sent -> expired. A deliberate call, not a background timer. */
+  quoteExpire: (q: { id: string }): Promise<Quote> =>
+    call("quote_expire", { query: q }, () => mockApi.quote_expire(q)),
+
+  /** sent -> accepted: copies this quote's lines into a brand-new draft
+   * `SalesOrder` and returns it. The quote's own rows are never converted in
+   * place. */
+  quoteAccept: (q: { id: string }): Promise<SalesOrder> =>
+    call("quote_accept", { query: q }, () => mockApi.quote_accept(q)),
+
+  /** Derived from the quote's items every time, never stored on the quote. */
+  quoteTotals: (q: { id: string }): Promise<SalesOrderTotals> =>
+    call("quote_totals", { query: q }, () => mockApi.quote_totals(q)),
+
+  // -- sales orders & invoicing (Phase 6.5, migration 0014_sales). The Sales
+  // screen (`routes/sales/`) calls all of this. An order is the editable
+  // draft; an invoice is a fact, which is why there is no invoiceUpdate/
+  // invoiceDelete here: the database refuses one, and a correction is a
+  // credit note (not built). Nullable fields clear by sending `null` rather
+  // than a `clear_*` flag — see the note in types.ts for why this differs
+  // from purchasing. --
 
   salesOrderCreate: (q: NewSalesOrder): Promise<SalesOrder> =>
     call("sales_order_create", { query: q }, () => mockApi.sales_order_create(q)),

@@ -1060,6 +1060,160 @@ pub async fn po_receiving_status(
 }
 
 // ---------------------------------------------------------------------------
+// Quotes (Phase 6.5 addendum — PARITY.md's next Xero row once invoicing
+// shipped). A priced offer that has not happened yet: never touches stock or
+// the ledger. `quote_accept` returns a `SalesOrder`, not a `Quote` —
+// accepting converts the quote into a brand-new draft order by copying its
+// lines, reusing the `sales_order*` commands below for everything that
+// happens to it from that point on.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+pub async fn quote_create(
+    state: State<'_, AppState>,
+    query: core::NewQuote,
+) -> Result<core::Quote, String> {
+    state.service()?.quote_create(query).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct QuoteIdQuery {
+    pub id: String,
+}
+
+#[tauri::command]
+pub async fn quote_get(
+    state: State<'_, AppState>,
+    query: QuoteIdQuery,
+) -> Result<core::Quote, String> {
+    state.service()?.quote_get(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn quote_list(
+    state: State<'_, AppState>,
+    query: BookScopedQuery,
+) -> Result<Vec<core::Quote>, String> {
+    state.service()?.quote_list(&query.book_id).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct QuoteUpdateQuery {
+    pub id: String,
+    #[serde(flatten)]
+    pub patch: core::QuotePatch,
+}
+
+#[tauri::command]
+pub async fn quote_update(
+    state: State<'_, AppState>,
+    query: QuoteUpdateQuery,
+) -> Result<core::Quote, String> {
+    state
+        .service()?
+        .quote_update(&query.id, query.patch)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn quote_delete(state: State<'_, AppState>, query: QuoteIdQuery) -> Result<(), String> {
+    state.service()?.quote_delete(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn quote_item_add(
+    state: State<'_, AppState>,
+    query: core::NewQuoteItem,
+) -> Result<core::QuoteItem, String> {
+    state.service()?.quote_item_add(query).map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct QuoteIdRefQuery {
+    pub quote_id: String,
+}
+
+#[tauri::command]
+pub async fn quote_items_list(
+    state: State<'_, AppState>,
+    query: QuoteIdRefQuery,
+) -> Result<Vec<core::QuoteItem>, String> {
+    state
+        .service()?
+        .quote_items_list(&query.quote_id)
+        .map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct QuoteItemUpdateQuery {
+    pub id: String,
+    #[serde(flatten)]
+    pub patch: core::QuoteItemPatch,
+}
+
+#[tauri::command]
+pub async fn quote_item_update(
+    state: State<'_, AppState>,
+    query: QuoteItemUpdateQuery,
+) -> Result<core::QuoteItem, String> {
+    state
+        .service()?
+        .quote_item_update(&query.id, query.patch)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn quote_item_remove(
+    state: State<'_, AppState>,
+    query: QuoteIdQuery,
+) -> Result<(), String> {
+    state
+        .service()?
+        .quote_item_remove(&query.id)
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn quote_send(
+    state: State<'_, AppState>,
+    query: QuoteIdQuery,
+) -> Result<core::Quote, String> {
+    state.service()?.quote_send(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn quote_decline(
+    state: State<'_, AppState>,
+    query: QuoteIdQuery,
+) -> Result<core::Quote, String> {
+    state.service()?.quote_decline(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn quote_expire(
+    state: State<'_, AppState>,
+    query: QuoteIdQuery,
+) -> Result<core::Quote, String> {
+    state.service()?.quote_expire(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn quote_accept(
+    state: State<'_, AppState>,
+    query: QuoteIdQuery,
+) -> Result<core::SalesOrder, String> {
+    state.service()?.quote_accept(&query.id).map_err(err)
+}
+
+#[tauri::command]
+pub async fn quote_totals(
+    state: State<'_, AppState>,
+    query: QuoteIdQuery,
+) -> Result<core::SalesOrderTotals, String> {
+    state.service()?.quote_totals(&query.id).map_err(err)
+}
+
+// ---------------------------------------------------------------------------
 // Sales orders & invoicing (Phase 6.5 — ROADMAP.md "Inventory & trade",
 // PARITY.md's single largest Xero-axis gap). See migration `0014_sales`'s
 // header for why `sales_order*` is a full CRUD+status-machine surface while

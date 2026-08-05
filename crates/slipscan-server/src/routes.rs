@@ -430,6 +430,27 @@ struct PurchaseOrderIdReq {
     purchase_order_id: String,
 }
 
+// -- Quotes (Phase 6.5 addendum) ---------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct QuoteUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: QuotePatch,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuoteIdReq {
+    quote_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuoteItemUpdateReq {
+    id: String,
+    #[serde(flatten)]
+    patch: QuoteItemPatch,
+}
+
 // -- Sales orders & invoicing (Phase 6.5) ------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -1470,6 +1491,89 @@ async fn po_receiving_status(
     Ok(Json(
         s.service()?.po_receiving_status(&req.purchase_order_id)?,
     ))
+}
+
+// -- Quotes (Phase 6.5 addendum — PARITY.md's next Xero row once invoicing
+// shipped). A priced offer that has not happened yet: never touches stock or
+// the ledger. `quote_accept` is the only route here that returns a
+// `SalesOrder` rather than a `Quote` — accepting converts the quote into a
+// brand-new draft order by copying its lines, reusing the `sales_order*`
+// routes below for everything that happens to it from that point on.
+
+async fn quote_create(State(s): State<AppState>, Json(req): Json<NewQuote>) -> ApiResult<Quote> {
+    Ok(Json(s.service()?.quote_create(req)?))
+}
+
+async fn quote_get(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<Quote> {
+    Ok(Json(s.service()?.quote_get(&req.id)?))
+}
+
+async fn quote_list(
+    State(s): State<AppState>,
+    Json(req): Json<BookIdReq>,
+) -> ApiResult<Vec<Quote>> {
+    Ok(Json(s.service()?.quote_list(&req.book_id)?))
+}
+
+async fn quote_update(
+    State(s): State<AppState>,
+    Json(req): Json<QuoteUpdateReq>,
+) -> ApiResult<Quote> {
+    Ok(Json(s.service()?.quote_update(&req.id, req.patch)?))
+}
+
+async fn quote_delete(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
+    s.service()?.quote_delete(&req.id)?;
+    Ok(Json(OK))
+}
+
+async fn quote_item_add(
+    State(s): State<AppState>,
+    Json(req): Json<NewQuoteItem>,
+) -> ApiResult<QuoteItem> {
+    Ok(Json(s.service()?.quote_item_add(req)?))
+}
+
+async fn quote_items_list(
+    State(s): State<AppState>,
+    Json(req): Json<QuoteIdReq>,
+) -> ApiResult<Vec<QuoteItem>> {
+    Ok(Json(s.service()?.quote_items_list(&req.quote_id)?))
+}
+
+async fn quote_item_update(
+    State(s): State<AppState>,
+    Json(req): Json<QuoteItemUpdateReq>,
+) -> ApiResult<QuoteItem> {
+    Ok(Json(s.service()?.quote_item_update(&req.id, req.patch)?))
+}
+
+async fn quote_item_remove(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<OkResp> {
+    s.service()?.quote_item_remove(&req.id)?;
+    Ok(Json(OK))
+}
+
+async fn quote_send(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<Quote> {
+    Ok(Json(s.service()?.quote_send(&req.id)?))
+}
+
+async fn quote_decline(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<Quote> {
+    Ok(Json(s.service()?.quote_decline(&req.id)?))
+}
+
+async fn quote_expire(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<Quote> {
+    Ok(Json(s.service()?.quote_expire(&req.id)?))
+}
+
+async fn quote_accept(State(s): State<AppState>, Json(req): Json<IdReq>) -> ApiResult<SalesOrder> {
+    Ok(Json(s.service()?.quote_accept(&req.id)?))
+}
+
+async fn quote_totals(
+    State(s): State<AppState>,
+    Json(req): Json<IdReq>,
+) -> ApiResult<SalesOrderTotals> {
+    Ok(Json(s.service()?.quote_totals(&req.id)?))
 }
 
 // -- Sales orders & invoicing (Phase 6.5 — ROADMAP.md "Inventory & trade",
@@ -2770,6 +2874,20 @@ pub fn app(state: AppState) -> Router {
         .route("/po_item_receiving_status", post(po_item_receiving_status))
         .route("/po_items_with_receiving", post(po_items_with_receiving))
         .route("/po_receiving_status", post(po_receiving_status))
+        .route("/quote_create", post(quote_create))
+        .route("/quote_get", post(quote_get))
+        .route("/quote_list", post(quote_list))
+        .route("/quote_update", post(quote_update))
+        .route("/quote_delete", post(quote_delete))
+        .route("/quote_item_add", post(quote_item_add))
+        .route("/quote_items_list", post(quote_items_list))
+        .route("/quote_item_update", post(quote_item_update))
+        .route("/quote_item_remove", post(quote_item_remove))
+        .route("/quote_send", post(quote_send))
+        .route("/quote_decline", post(quote_decline))
+        .route("/quote_expire", post(quote_expire))
+        .route("/quote_accept", post(quote_accept))
+        .route("/quote_totals", post(quote_totals))
         .route("/sales_order_create", post(sales_order_create))
         .route("/sales_order_get", post(sales_order_get))
         .route("/sales_order_list", post(sales_order_list))

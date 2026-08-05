@@ -2,7 +2,7 @@
 //!
 //! Subcommands: `init`, `import`, `watch`, `extract`, `mail-sync`, `recon`,
 //! `report`, `fx`, `pack`, `vault`, `serve`, `list`, `member`, `attribute`,
-//! `split`, `location`, `sales-order`, `invoice`.
+//! `split`, `location`, `quote`, `sales-order`, `invoice`.
 //! Every command has human-readable output by default and `--json` for
 //! machines. Binaries may use anyhow.
 //!
@@ -23,11 +23,12 @@ use slipscan_core::domain::{
     ContactRole, DocumentSource, Location, LocationKind, LocationPatch, Member, MemberPatch,
     NewBook, NewCoaAccount, NewContact, NewInvoice, NewInvoiceItemInput, NewInvoicePayment,
     NewLocation, NewMember, NewPayEndpoint, NewPayWatch, NewPoReceipt, NewProduct,
-    NewProductCategory, NewProductVariant, NewPurchaseOrder, NewPurchaseOrderItem, NewSalesOrder,
-    NewSalesOrderItem, NewStockMovement, PayDeliveryState, PayEndpointWithSecret, ProductPatch,
-    ProductVariant, ProductVariantPatch, PurchaseOrderItemPatch, PurchaseOrderPatch,
-    PurchaseOrderStatus, SalesOrderItemPatch, SalesOrderPatch, SplitShare, StockMovementKind,
-    TransactionFilter, TransactionSource,
+    NewProductCategory, NewProductVariant, NewPurchaseOrder, NewPurchaseOrderItem, NewQuote,
+    NewQuoteItem, NewSalesOrder, NewSalesOrderItem, NewStockMovement, PayDeliveryState,
+    PayEndpointWithSecret, ProductPatch, ProductVariant, ProductVariantPatch,
+    PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus, QuoteItemPatch, QuotePatch,
+    SalesOrderItemPatch, SalesOrderPatch, SplitShare, StockMovementKind, TransactionFilter,
+    TransactionSource,
 };
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
@@ -436,6 +437,15 @@ enum Command {
     Po {
         #[command(subcommand)]
         action: PoAction,
+    },
+    /// Quotes (Phase 6.5 addendum): draft -> send -> accept | decline |
+    /// expire. A quote never touches stock or the ledger — accepting one
+    /// converts it into a draft sales order (`slipscan sales-order`) by
+    /// copying its lines, exactly the way `slipscan invoice issue --order`
+    /// copies a confirmed order's lines.
+    Quote {
+        #[command(subcommand)]
+        action: QuoteAction,
     },
     /// Sales orders (Phase 6.5): draft -> confirm (deducts stock) -> paid,
     /// or cancel (reverses stock if confirmed). See `slipscan invoice` to
@@ -1258,6 +1268,101 @@ enum PoAction {
         /// Line item id.
         item_id: String,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum QuoteAction {
+    /// Create a draft quote for a customer.
+    Create {
+        /// Contact id (must be a customer or "both").
+        #[arg(long)]
+        contact: String,
+        /// YYYY-MM-DD; defaults to today.
+        #[arg(long)]
+        quote_date: Option<String>,
+        /// YYYY-MM-DD; advisory only — nothing auto-expires a quote.
+        #[arg(long)]
+        expiry_date: Option<String>,
+        #[arg(long)]
+        currency: Option<String>,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Show one quote (header only; see `item-list` for lines).
+    Get { id: String },
+    /// List every quote in the book, most recently numbered first.
+    List,
+    /// Edit a draft quote's date/expiry/notes. Only reachable while draft.
+    Update {
+        id: String,
+        #[arg(long)]
+        quote_date: Option<String>,
+        #[arg(long, conflicts_with = "clear_expiry")]
+        expiry_date: Option<String>,
+        /// Clear the expiry date (as opposed to leaving it unchanged).
+        #[arg(long)]
+        clear_expiry: bool,
+        #[arg(long, conflicts_with = "clear_notes")]
+        notes: Option<String>,
+        /// Clear the notes (as opposed to leaving them unchanged).
+        #[arg(long)]
+        clear_notes: bool,
+    },
+    /// Remove a draft quote outright. Decline a sent one instead.
+    Delete { id: String },
+    /// Add a catalogue line (`--variant`) or a free-text/service line
+    /// (`--description` + `--price`) to a draft quote.
+    ItemAdd {
+        /// Quote id.
+        #[arg(long)]
+        quote: String,
+        #[arg(long)]
+        variant: Option<String>,
+        /// Required for a free-text line; defaults from the variant's own
+        /// name for a catalogue line.
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        quantity: i64,
+        /// Minor units. Required for a free-text line; defaults from the
+        /// variant's own price for a catalogue line.
+        #[arg(long)]
+        price_minor: Option<i64>,
+        /// Basis points (1500 = 15.00%). Defaults to 0.
+        #[arg(long)]
+        tax_rate_bps: Option<i64>,
+    },
+    /// List a quote's lines.
+    ItemList {
+        /// Quote id.
+        quote: String,
+    },
+    /// Edit a line's description/quantity/price/tax rate. Only reachable
+    /// while the quote is still draft.
+    ItemUpdate {
+        id: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        quantity: Option<i64>,
+        #[arg(long)]
+        price_minor: Option<i64>,
+        #[arg(long)]
+        tax_rate_bps: Option<i64>,
+    },
+    /// Remove a line from a draft quote.
+    ItemRemove { id: String },
+    /// draft -> sent: the quote is now offered and can no longer be edited.
+    Send { id: String },
+    /// sent -> declined: the customer said no.
+    Decline { id: String },
+    /// sent -> expired: a deliberate call, not a timer.
+    Expire { id: String },
+    /// sent -> accepted: converts this quote into a new draft sales order by
+    /// copying its lines. Use `slipscan sales-order` from here on.
+    Accept { id: String },
+    /// Subtotal/tax/total, derived from the quote's own lines.
+    Totals { id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -3815,6 +3920,189 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 r.note.as_deref().unwrap_or("-")
                             );
                         }
+                    })
+                }
+            }
+        }
+
+        Command::Quote { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                QuoteAction::Create {
+                    contact,
+                    quote_date,
+                    expiry_date,
+                    currency,
+                    notes,
+                } => {
+                    let quote = svc.quote_create(NewQuote {
+                        book_id: book.id.clone(),
+                        contact_id: contact.clone(),
+                        quote_date: quote_date.clone(),
+                        expiry_date: expiry_date.clone(),
+                        currency: currency.clone(),
+                        notes: notes.clone(),
+                    })?;
+                    emit(cli.json, &quote, || {
+                        println!(
+                            "Created quote #{} ({}) — {}",
+                            quote.number, quote.id, quote.status
+                        );
+                    })
+                }
+                QuoteAction::Get { id } => {
+                    let quote = svc.quote_get(id)?;
+                    emit(cli.json, &quote, || {
+                        println!(
+                            "#{}\t{}\t{}\t{}",
+                            quote.number, quote.id, quote.status, quote.quote_date
+                        );
+                    })
+                }
+                QuoteAction::List => {
+                    let quotes = svc.quote_list(&book.id)?;
+                    emit(cli.json, &quotes, || {
+                        if quotes.is_empty() {
+                            println!("No quotes yet. Create one with `slipscan quote create`.");
+                        }
+                        for q in &quotes {
+                            println!("#{}\t{}\t{}\t{}", q.number, q.id, q.status, q.quote_date);
+                        }
+                    })
+                }
+                QuoteAction::Update {
+                    id,
+                    quote_date,
+                    expiry_date,
+                    clear_expiry,
+                    notes,
+                    clear_notes,
+                } => {
+                    let expiry_date = if *clear_expiry {
+                        Some(None)
+                    } else {
+                        expiry_date.clone().map(Some)
+                    };
+                    let notes = if *clear_notes {
+                        Some(None)
+                    } else {
+                        notes.clone().map(Some)
+                    };
+                    let quote = svc.quote_update(
+                        id,
+                        QuotePatch {
+                            quote_date: quote_date.clone(),
+                            expiry_date,
+                            notes,
+                        },
+                    )?;
+                    emit(cli.json, &quote, || {
+                        println!("Updated quote #{} ({})", quote.number, quote.id);
+                    })
+                }
+                QuoteAction::Delete { id } => {
+                    svc.quote_delete(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed quote {id}.");
+                    })
+                }
+                QuoteAction::ItemAdd {
+                    quote,
+                    variant,
+                    description,
+                    quantity,
+                    price_minor,
+                    tax_rate_bps,
+                } => {
+                    let item = svc.quote_item_add(NewQuoteItem {
+                        quote_id: quote.clone(),
+                        variant_id: variant.clone(),
+                        description: description.clone(),
+                        quantity: *quantity,
+                        unit_price_minor: *price_minor,
+                        tax_rate_bps: *tax_rate_bps,
+                    })?;
+                    emit(cli.json, &item, || {
+                        println!(
+                            "Added line {} — {} x{} @ {}",
+                            item.id, item.description, item.quantity, item.unit_price_minor
+                        );
+                    })
+                }
+                QuoteAction::ItemList { quote } => {
+                    let items = svc.quote_items_list(quote)?;
+                    emit(cli.json, &items, || {
+                        for i in &items {
+                            println!(
+                                "{}\t{}\tx{}\t@{}\ttax_bps {}",
+                                i.id, i.description, i.quantity, i.unit_price_minor, i.tax_rate_bps
+                            );
+                        }
+                    })
+                }
+                QuoteAction::ItemUpdate {
+                    id,
+                    description,
+                    quantity,
+                    price_minor,
+                    tax_rate_bps,
+                } => {
+                    let item = svc.quote_item_update(
+                        id,
+                        QuoteItemPatch {
+                            description: description.clone(),
+                            quantity: *quantity,
+                            unit_price_minor: *price_minor,
+                            tax_rate_bps: *tax_rate_bps,
+                        },
+                    )?;
+                    emit(cli.json, &item, || {
+                        println!("Updated line {}", item.id);
+                    })
+                }
+                QuoteAction::ItemRemove { id } => {
+                    svc.quote_item_remove(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed line {id}.");
+                    })
+                }
+                QuoteAction::Send { id } => {
+                    let quote = svc.quote_send(id)?;
+                    emit(cli.json, &quote, || {
+                        println!("Sent quote #{}.", quote.number);
+                    })
+                }
+                QuoteAction::Decline { id } => {
+                    let quote = svc.quote_decline(id)?;
+                    emit(cli.json, &quote, || {
+                        println!("Declined quote #{}.", quote.number);
+                    })
+                }
+                QuoteAction::Expire { id } => {
+                    let quote = svc.quote_expire(id)?;
+                    emit(cli.json, &quote, || {
+                        println!("Expired quote #{}.", quote.number);
+                    })
+                }
+                QuoteAction::Accept { id } => {
+                    let order = svc.quote_accept(id)?;
+                    emit(cli.json, &order, || {
+                        println!(
+                            "Accepted — created sales order #{} ({}) as a draft.",
+                            order.number, order.id
+                        );
+                    })
+                }
+                QuoteAction::Totals { id } => {
+                    let totals = svc.quote_totals(id)?;
+                    emit(cli.json, &totals, || {
+                        println!(
+                            "subtotal {}\ttax {}\ttotal {}",
+                            fmt_minor(totals.subtotal_minor),
+                            fmt_minor(totals.tax_minor),
+                            fmt_minor(totals.total_minor)
+                        );
                     })
                 }
             }

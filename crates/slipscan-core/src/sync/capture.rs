@@ -948,6 +948,93 @@ mod tests {
         }
     }
 
+    /// Migration `0014_sales`'s quotes tables, exercised directly against
+    /// their triggers — same treatment `sales_tables_capture_insert_update_
+    /// and_delete` gives `sales_orders`/`sales_order_items` just above, since
+    /// `quotes`/`quote_items` share the identical editable-draft §4.4 shape.
+    #[test]
+    fn quote_tables_capture_insert_update_and_delete() {
+        let db = Db::open_in_memory().unwrap();
+        let book = seed_book(&db);
+
+        db.conn()
+            .execute(
+                "INSERT INTO contacts (id, book_id, role, name, is_active, created_at, updated_at)
+                 VALUES ('cust-1', ?1, 'customer', 'Acme', 1, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+
+        // -- quotes -----------------------------------------------------------
+        db.conn()
+            .execute(
+                "INSERT INTO quotes
+                     (id, book_id, contact_id, number, quote_date, currency, created_at, updated_at)
+                 VALUES ('q-1', ?1, 'cust-1', 1, '2026-01-01', 'ZAR', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute("UPDATE quotes SET status = 'sent' WHERE id = 'q-1'", [])
+            .unwrap();
+        db.conn()
+            .execute("DELETE FROM quotes WHERE id = 'q-1'", [])
+            .unwrap();
+
+        // -- quote_items --------------------------------------------------------
+        // Re-insert the parent: the delete above cascaded it away.
+        db.conn()
+            .execute(
+                "INSERT INTO quotes
+                     (id, book_id, contact_id, number, quote_date, currency, created_at, updated_at)
+                 VALUES ('q-2', ?1, 'cust-1', 2, '2026-01-01', 'ZAR', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO quote_items
+                     (id, quote_id, book_id, description, quantity, unit_price_minor,
+                      created_at, updated_at)
+                 VALUES ('qi-1', 'q-2', ?1, 'Consulting', 1, 1000, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute("UPDATE quote_items SET quantity = 2 WHERE id = 'qi-1'", [])
+            .unwrap();
+        db.conn()
+            .execute("DELETE FROM quote_items WHERE id = 'qi-1'", [])
+            .unwrap();
+
+        let captured = drain_list(db.conn()).unwrap();
+        for (table, row_id) in [("quotes", "q-1"), ("quote_items", "qi-1")] {
+            let rows: Vec<&Captured> = captured
+                .iter()
+                .filter(|c| c.table == table && c.row_id == row_id)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                3,
+                "{table}/{row_id}: expected an insert, update and delete capture, got {rows:?}"
+            );
+            assert_eq!(
+                rows.iter().filter(|c| !c.deleted).count(),
+                2,
+                "{table}/{row_id}: the insert and the update should both be live captures"
+            );
+            assert_eq!(
+                rows.iter().filter(|c| c.deleted).count(),
+                1,
+                "{table}/{row_id}: the delete should be a tombstone capture"
+            );
+            assert!(
+                rows.iter().all(|c| c.ns == book),
+                "{table}/{row_id}: namespace must be the book id"
+            );
+        }
+    }
+
     /// A `books` row is its own namespace — it has no `book_id` column to take
     /// one from.
     #[test]

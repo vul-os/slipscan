@@ -1,18 +1,20 @@
-//! Sales orders and invoicing (migration 0014, ROADMAP.md Phase 6.5).
+//! Quotes, sales orders and invoicing (migration 0014, ROADMAP.md Phase 6.5).
 //!
 //! Raw SQL only — validation (cross-book scoping, status-transition legality,
 //! stock deduction) lives in the service layer, same as every other module
-//! here. See the migration's own header for the two-table split this module
-//! mirrors exactly: `sales_order*` functions read/write/UPDATE freely (an
-//! editable draft); `invoice*` functions only ever INSERT (an issued invoice
-//! is a fact) — there is no `invoice_update` here for the identical reason
-//! `repo::stock` has no `update`: the schema's own triggers would refuse it.
+//! here. See the migration's own header for the three-table split this
+//! module mirrors exactly: `quote*` and `sales_order*` functions read/write/
+//! UPDATE freely (an editable draft); `invoice*` functions only ever INSERT
+//! (an issued invoice is a fact) — there is no `invoice_update` here for the
+//! identical reason `repo::stock` has no `update`: the schema's own triggers
+//! would refuse it.
 
 use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use crate::domain::{
     AgedBucket, AgedReceivables, AgedReceivablesRow, Invoice, InvoiceItem, InvoicePayment,
-    InvoicePaymentStatus, InvoiceTotals, SalesOrder, SalesOrderItem, SalesOrderTotals,
+    InvoicePaymentStatus, InvoiceTotals, Quote, QuoteItem, SalesOrder, SalesOrderItem,
+    SalesOrderTotals,
 };
 use crate::error::CoreResult;
 use crate::util::parse_date;
@@ -276,6 +278,208 @@ fn line_totals(lines: impl Iterator<Item = (i64, i64, i64)>) -> CoreResult<Sales
         tax_minor,
         total_minor: subtotal_minor + tax_minor,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Quotes — an even-earlier editable draft than a sales order. Same shape,
+// same UPDATE-freely treatment as `sales_order*` above; `quote_accept`
+// (service layer) is the only function that ever reads a quote's items back
+// out to copy them into a new `sales_orders` row.
+// ---------------------------------------------------------------------------
+
+fn map_quote(row: &Row<'_>) -> rusqlite::Result<Quote> {
+    Ok(Quote {
+        id: row.get("id")?,
+        book_id: row.get("book_id")?,
+        contact_id: row.get("contact_id")?,
+        number: row.get("number")?,
+        quote_date: row.get("quote_date")?,
+        expiry_date: row.get("expiry_date")?,
+        status: col_enum(row, "status")?,
+        currency: row.get("currency")?,
+        notes: row.get("notes")?,
+        sent_at: row.get("sent_at")?,
+        accepted_at: row.get("accepted_at")?,
+        declined_at: row.get("declined_at")?,
+        expired_at: row.get("expired_at")?,
+        converted_sales_order_id: row.get("converted_sales_order_id")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
+}
+
+pub fn quote_insert(conn: &Connection, quote: &Quote) -> CoreResult<()> {
+    conn.execute(
+        "INSERT INTO quotes
+             (id, book_id, contact_id, number, quote_date, expiry_date, status, currency,
+              notes, sent_at, accepted_at, declined_at, expired_at, converted_sales_order_id,
+              created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+        params![
+            quote.id,
+            quote.book_id,
+            quote.contact_id,
+            quote.number,
+            quote.quote_date,
+            quote.expiry_date,
+            quote.status.as_str(),
+            quote.currency,
+            quote.notes,
+            quote.sent_at,
+            quote.accepted_at,
+            quote.declined_at,
+            quote.expired_at,
+            quote.converted_sales_order_id,
+            quote.created_at,
+            quote.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn quote_get(conn: &Connection, id: &str) -> CoreResult<Option<Quote>> {
+    Ok(conn
+        .query_row("SELECT * FROM quotes WHERE id = ?1", params![id], map_quote)
+        .optional()?)
+}
+
+/// Every quote in the book, most recently numbered first.
+pub fn quote_list(conn: &Connection, book_id: &str) -> CoreResult<Vec<Quote>> {
+    let mut stmt = conn.prepare("SELECT * FROM quotes WHERE book_id = ?1 ORDER BY number DESC")?;
+    let rows = stmt
+        .query_map(params![book_id], map_quote)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Full-row update — a header edit (date/expiry/notes, while still a draft)
+/// or a status transition, the same pattern `order_update` uses above.
+pub fn quote_update(conn: &Connection, quote: &Quote) -> CoreResult<()> {
+    conn.execute(
+        "UPDATE quotes
+         SET contact_id = ?2, quote_date = ?3, expiry_date = ?4, status = ?5, currency = ?6,
+             notes = ?7, sent_at = ?8, accepted_at = ?9, declined_at = ?10, expired_at = ?11,
+             converted_sales_order_id = ?12, updated_at = ?13
+         WHERE id = ?1",
+        params![
+            quote.id,
+            quote.contact_id,
+            quote.quote_date,
+            quote.expiry_date,
+            quote.status.as_str(),
+            quote.currency,
+            quote.notes,
+            quote.sent_at,
+            quote.accepted_at,
+            quote.declined_at,
+            quote.expired_at,
+            quote.converted_sales_order_id,
+            quote.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Hard delete. The service layer only ever calls this on a `draft` quote.
+pub fn quote_delete(conn: &Connection, id: &str) -> CoreResult<bool> {
+    let n = conn.execute("DELETE FROM quotes WHERE id = ?1", params![id])?;
+    Ok(n > 0)
+}
+
+fn map_quote_item(row: &Row<'_>) -> rusqlite::Result<QuoteItem> {
+    Ok(QuoteItem {
+        id: row.get("id")?,
+        quote_id: row.get("quote_id")?,
+        book_id: row.get("book_id")?,
+        variant_id: row.get("variant_id")?,
+        description: row.get("description")?,
+        quantity: row.get("quantity")?,
+        unit_price_minor: row.get("unit_price_minor")?,
+        tax_rate_bps: row.get("tax_rate_bps")?,
+        line_order: row.get("line_order")?,
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+    })
+}
+
+pub fn quote_item_insert(conn: &Connection, item: &QuoteItem) -> CoreResult<()> {
+    conn.execute(
+        "INSERT INTO quote_items
+             (id, quote_id, book_id, variant_id, description, quantity,
+              unit_price_minor, tax_rate_bps, line_order, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            item.id,
+            item.quote_id,
+            item.book_id,
+            item.variant_id,
+            item.description,
+            item.quantity,
+            item.unit_price_minor,
+            item.tax_rate_bps,
+            item.line_order,
+            item.created_at,
+            item.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn quote_item_get(conn: &Connection, id: &str) -> CoreResult<Option<QuoteItem>> {
+    Ok(conn
+        .query_row(
+            "SELECT * FROM quote_items WHERE id = ?1",
+            params![id],
+            map_quote_item,
+        )
+        .optional()?)
+}
+
+/// Every line on a quote, in the order they were added.
+pub fn quote_item_list(conn: &Connection, quote_id: &str) -> CoreResult<Vec<QuoteItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM quote_items WHERE quote_id = ?1
+         ORDER BY line_order, created_at, id",
+    )?;
+    let rows = stmt
+        .query_map(params![quote_id], map_quote_item)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+pub fn quote_item_update(conn: &Connection, item: &QuoteItem) -> CoreResult<()> {
+    conn.execute(
+        "UPDATE quote_items
+         SET description = ?2, quantity = ?3, unit_price_minor = ?4,
+             tax_rate_bps = ?5, updated_at = ?6
+         WHERE id = ?1",
+        params![
+            item.id,
+            item.description,
+            item.quantity,
+            item.unit_price_minor,
+            item.tax_rate_bps,
+            item.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn quote_item_delete(conn: &Connection, id: &str) -> CoreResult<bool> {
+    let n = conn.execute("DELETE FROM quote_items WHERE id = ?1", params![id])?;
+    Ok(n > 0)
+}
+
+/// `subtotal + tax == total`, derived at query time from the quote's own
+/// items — identical rule to `order_totals` above, reusing its
+/// `SalesOrderTotals` return type since the shape does not differ.
+pub fn quote_totals(conn: &Connection, quote_id: &str) -> CoreResult<SalesOrderTotals> {
+    let items = quote_item_list(conn, quote_id)?;
+    line_totals(
+        items
+            .iter()
+            .map(|i| (i.quantity, i.unit_price_minor, i.tax_rate_bps)),
+    )
 }
 
 // ---------------------------------------------------------------------------

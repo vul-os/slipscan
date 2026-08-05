@@ -1834,6 +1834,153 @@ pub struct SalesOrderTotals {
 }
 
 // ---------------------------------------------------------------------------
+// Quotes (migration 0014, ROADMAP.md Phase 6.5 addendum — PARITY.md's "next
+// Xero row" once invoicing shipped). A quote is a priced offer that has not
+// happened yet: it never touches stock, never touches the ledger, and shares
+// no numbering series with `sales_orders`. `draft -> sent -> accepted |
+// declined | expired`; accepting one copies its lines into a brand new
+// `sales_orders` row (`CoreService::quote_accept`) rather than inventing a
+// second "confirm"-shaped path — the exact reuse `invoice_issue` already
+// makes of a confirmed order's lines, just one hop earlier in the lifecycle.
+// Same §4.4 LWW-register treatment as `sales_orders`/`sales_order_items` for
+// the identical reason: a person keeps editing a quote — add a line, fix a
+// price — right up until it is sent.
+// ---------------------------------------------------------------------------
+
+str_enum!(QuoteStatus {
+    Draft => "draft",
+    Sent => "sent",
+    Accepted => "accepted",
+    Declined => "declined",
+    Expired => "expired",
+});
+
+/// A priced offer, not yet a sale. No `location_id` here at all — unlike
+/// `SalesOrder`, a quote never deducts stock, so it has nothing to deduct
+/// stock *from*. The `sales_orders` row `quote_accept` creates starts with
+/// `location_id: None`, exactly like any other freshly created order; a
+/// stock-tracked line still requires one before that order can confirm, the
+/// same gate every other order line clears.
+///
+/// No `subtotal`/`tax`/`total` column, on purpose — same reasoning as
+/// [`SalesOrder`]: see [`SalesOrderTotals`], reused here as `quote_totals`'s
+/// return type since the shape is identical.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Quote {
+    pub id: String,
+    pub book_id: String,
+    pub contact_id: String,
+    /// Assigned once at creation by `repo::sales::allocate_number`, scoped to
+    /// series `"quote"` — a numbering book entirely separate from
+    /// `sales_orders`' own `"sales_order"` series. Never reassigned.
+    pub number: i64,
+    pub quote_date: String,
+    /// Advisory only: nothing here auto-expires a quote past this date —
+    /// `quote_expire` is a deliberate call, not a timer. See migration
+    /// `0014_sales`'s header for why no background job does this instead.
+    pub expiry_date: Option<String>,
+    pub status: QuoteStatus,
+    pub currency: String,
+    pub notes: Option<String>,
+    pub sent_at: Option<String>,
+    pub accepted_at: Option<String>,
+    pub declined_at: Option<String>,
+    pub expired_at: Option<String>,
+    /// Set only by `quote_accept`, the moment this quote's lines are copied
+    /// into a brand-new draft `sales_orders` row. `None` until then, and
+    /// forever after for a quote that is declined, expires, or is still
+    /// draft/sent.
+    pub converted_sales_order_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewQuote {
+    pub book_id: String,
+    pub contact_id: String,
+    /// `YYYY-MM-DD`; defaults to today when omitted.
+    #[serde(default)]
+    pub quote_date: Option<String>,
+    #[serde(default)]
+    pub expiry_date: Option<String>,
+    /// Defaults to the book's own currency when omitted.
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// Selective update to a quote's own header fields. Only reachable while the
+/// quote is `draft` — see `CoreService::quote_update`. `status` is
+/// deliberately absent, the same reasoning `SalesOrderPatch` gives: a
+/// transition carries effects (timestamps, and for `accept`, a whole new
+/// sales order) a blind field patch must not be able to skip.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QuotePatch {
+    pub quote_date: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expiry_date: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub notes: Option<Option<String>>,
+}
+
+/// A line on a quote. Same shape and the same add-time-capture reasoning as
+/// [`SalesOrderItem`] — `description`/`unit_price_minor` are snapshotted so a
+/// later catalogue rename or repricing does not reword or reprice an offer a
+/// customer has already seen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuoteItem {
+    pub id: String,
+    pub quote_id: String,
+    pub book_id: String,
+    pub variant_id: Option<String>,
+    pub description: String,
+    pub quantity: i64,
+    pub unit_price_minor: i64,
+    pub tax_rate_bps: i64,
+    pub line_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewQuoteItem {
+    pub quote_id: String,
+    #[serde(default)]
+    pub variant_id: Option<String>,
+    /// Required for a free-text line (`variant_id: None`); defaults to the
+    /// variant's own name for a catalogue line.
+    #[serde(default)]
+    pub description: Option<String>,
+    pub quantity: i64,
+    /// Required for a free-text line; defaults to the variant's own
+    /// `price_minor` for a catalogue line.
+    #[serde(default)]
+    pub unit_price_minor: Option<i64>,
+    #[serde(default)]
+    pub tax_rate_bps: Option<i64>,
+}
+
+/// Selective update; `None` fields are left untouched. Only reachable while
+/// the quote is still a draft — see `CoreService::quote_item_update`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QuoteItemPatch {
+    pub description: Option<String>,
+    pub quantity: Option<i64>,
+    pub unit_price_minor: Option<i64>,
+    pub tax_rate_bps: Option<i64>,
+}
+
+// ---------------------------------------------------------------------------
 // Invoices (migration 0014, ROADMAP.md Phase 6.5). See the migration header
 // for why `Invoice`/`InvoiceItem`/`InvoicePayment` are immutable §4.3 OR-Sets
 // rather than editable rows: an invoice is only ever created already issued
@@ -2200,6 +2347,13 @@ mod tests {
             "\"loc-1\"",
             "loc-1".to_string()
         );
+        three_states!(QuotePatch, notes, "\"n\"", "n".to_string());
+        three_states!(
+            QuotePatch,
+            expiry_date,
+            "\"2026-02-01\"",
+            "2026-02-01".to_string()
+        );
     }
 
     /// Serializing must be the exact inverse of deserializing, or a patch that
@@ -2280,8 +2434,8 @@ mod tests {
             );
         }
         assert_eq!(
-            checked, 19,
-            "expected 19 nullable patch fields; if this moved, the count and the \
+            checked, 21,
+            "expected 21 nullable patch fields; if this moved, the count and the \
              fields above both need looking at rather than the number bumping"
         );
     }
