@@ -19,15 +19,15 @@ use clap::{Parser, Subcommand, ValueEnum};
 use slipscan_core::datadir::{self, DataDirResolver, MoveStep};
 use slipscan_core::device::pairing::{KeynameCheck, DEFAULT_INVITE_TTL_SECONDS};
 use slipscan_core::domain::{
-    Account, Book, BookKind, ClosePeriodReport, CoaKind, CoaMapEntity, Contact, ContactPatch,
-    ContactRole, DocumentSource, Location, LocationKind, LocationPatch, Member, MemberPatch,
-    NewBook, NewCoaAccount, NewContact, NewInvoice, NewInvoiceItemInput, NewInvoicePayment,
-    NewLocation, NewMember, NewPayEndpoint, NewPayWatch, NewPoReceipt, NewProduct,
-    NewProductCategory, NewProductVariant, NewPurchaseOrder, NewPurchaseOrderItem, NewSalesOrder,
-    NewSalesOrderItem, NewStockMovement, PayDeliveryState, PayEndpointWithSecret, ProductPatch,
-    ProductVariant, ProductVariantPatch, PurchaseOrderItemPatch, PurchaseOrderPatch,
-    PurchaseOrderStatus, SalesOrderItemPatch, SalesOrderPatch, SplitShare, StockMovementKind,
-    TransactionFilter, TransactionSource,
+    Account, AssetDisposal, AssetPatch, Book, BookKind, ClosePeriodReport, CoaKind, CoaMapEntity,
+    Contact, ContactPatch, ContactRole, DepreciationMethod, DocumentSource, Location, LocationKind,
+    LocationPatch, Member, MemberPatch, NewAsset, NewBook, NewCoaAccount, NewContact, NewInvoice,
+    NewInvoiceItemInput, NewInvoicePayment, NewLocation, NewMember, NewPayEndpoint, NewPayWatch,
+    NewPoReceipt, NewProduct, NewProductCategory, NewProductVariant, NewPurchaseOrder,
+    NewPurchaseOrderItem, NewSalesOrder, NewSalesOrderItem, NewStockMovement, PayDeliveryState,
+    PayEndpointWithSecret, ProductPatch, ProductVariant, ProductVariantPatch,
+    PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus, SalesOrderItemPatch,
+    SalesOrderPatch, SplitShare, StockMovementKind, TransactionFilter, TransactionSource,
 };
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
@@ -153,6 +153,23 @@ impl From<CliPoStatus> for PurchaseOrderStatus {
         match status {
             CliPoStatus::Ordered => PurchaseOrderStatus::Ordered,
             CliPoStatus::Cancelled => PurchaseOrderStatus::Cancelled,
+        }
+    }
+}
+
+/// `asset add`/`asset update --method` — the only two depreciation methods
+/// this register implements (migration 0016).
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliDepreciationMethod {
+    StraightLine,
+    ReducingBalance,
+}
+
+impl From<CliDepreciationMethod> for DepreciationMethod {
+    fn from(method: CliDepreciationMethod) -> Self {
+        match method {
+            CliDepreciationMethod::StraightLine => DepreciationMethod::StraightLine,
+            CliDepreciationMethod::ReducingBalance => DepreciationMethod::ReducingBalance,
         }
     }
 }
@@ -436,6 +453,16 @@ enum Command {
     Po {
         #[command(subcommand)]
         action: PoAction,
+    },
+    /// Fixed-asset register & depreciation (migration 0016, PARITY.md "Fixed
+    /// assets"). `asset run` posts one period's depreciation — DR
+    /// depreciation expense ("6250"), CR accumulated depreciation ("1600") —
+    /// idempotent per (asset, period); `asset dispose` reverses (never
+    /// deletes) any depreciation wrongly posted for a period after the
+    /// disposal date.
+    Asset {
+        #[command(subcommand)]
+        action: AssetAction,
     },
     /// Sales orders (Phase 6.5): draft -> confirm (deducts stock) -> paid,
     /// or cancel (reverses stock if confirmed). See `slipscan invoice` to
@@ -1257,6 +1284,92 @@ enum PoAction {
     Receipts {
         /// Line item id.
         item_id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum AssetAction {
+    /// Register a capitalised asset.
+    Add {
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+        /// YYYY-MM-DD.
+        #[arg(long)]
+        acquired_date: String,
+        /// Minor units.
+        #[arg(long)]
+        cost_minor: i64,
+        /// Minor units; defaults to 0.
+        #[arg(long)]
+        residual_minor: Option<i64>,
+        /// Defaults to the book's own currency.
+        #[arg(long)]
+        currency: Option<String>,
+        #[arg(long)]
+        useful_life_months: i64,
+        #[arg(long, value_enum)]
+        method: CliDepreciationMethod,
+        /// Required for `reducing-balance`: a **per-period** (monthly) rate
+        /// in basis points applied to opening net book value.
+        #[arg(long)]
+        reducing_balance_rate_bps: Option<i64>,
+    },
+    /// List assets in the book, most recently acquired first.
+    List,
+    /// Show one asset with its accumulated depreciation and net book value.
+    Get { id: String },
+    /// Update an asset's header fields. Refused once any depreciation has
+    /// posted for cost, acquisition date, useful life, method or rate — name
+    /// and description stay editable regardless.
+    Update {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, conflicts_with = "clear_description")]
+        description: Option<String>,
+        #[arg(long)]
+        clear_description: bool,
+        #[arg(long)]
+        acquired_date: Option<String>,
+        #[arg(long)]
+        cost_minor: Option<i64>,
+        #[arg(long)]
+        residual_minor: Option<i64>,
+        #[arg(long)]
+        useful_life_months: Option<i64>,
+        #[arg(long, value_enum)]
+        method: Option<CliDepreciationMethod>,
+        #[arg(long, conflicts_with = "clear_reducing_balance_rate_bps")]
+        reducing_balance_rate_bps: Option<i64>,
+        #[arg(long)]
+        clear_reducing_balance_rate_bps: bool,
+    },
+    /// Dispose an asset: reverses (never deletes) any depreciation already
+    /// posted for a period after the disposal date.
+    Dispose {
+        id: String,
+        /// YYYY-MM-DD.
+        #[arg(long)]
+        disposed_date: String,
+        /// Minor units.
+        #[arg(long)]
+        proceeds_minor: Option<i64>,
+    },
+    /// Post one period's depreciation — DR depreciation expense, CR
+    /// accumulated depreciation. Idempotent per (asset, period); `null`
+    /// (never an error) when the book has no chart of accounts, or nothing
+    /// was left to depreciate.
+    Run {
+        /// Asset id.
+        asset_id: String,
+        /// YYYY-MM.
+        period: String,
+    },
+    /// Every depreciation run posted for an asset, oldest period first.
+    Runs {
+        /// Asset id.
+        asset_id: String,
     },
 }
 
@@ -4109,6 +4222,182 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 p.id,
                                 fmt_minor(p.amount_minor),
                                 p.method.as_deref().unwrap_or("-")
+                            );
+                        }
+                    })
+                }
+            }
+        }
+
+        Command::Asset { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                AssetAction::Add {
+                    name,
+                    description,
+                    acquired_date,
+                    cost_minor,
+                    residual_minor,
+                    currency,
+                    useful_life_months,
+                    method,
+                    reducing_balance_rate_bps,
+                } => {
+                    let asset = svc.asset_create(NewAsset {
+                        book_id: book.id.clone(),
+                        name: name.clone(),
+                        description: description.clone(),
+                        acquired_date: acquired_date.clone(),
+                        cost_minor: *cost_minor,
+                        residual_minor: *residual_minor,
+                        currency: currency.clone().unwrap_or_else(|| book.currency.clone()),
+                        useful_life_months: *useful_life_months,
+                        method: (*method).into(),
+                        reducing_balance_rate_bps: *reducing_balance_rate_bps,
+                    })?;
+                    emit(cli.json, &asset, || {
+                        println!(
+                            "Registered asset {} ({}) — cost {} {}, {} months",
+                            asset.name,
+                            asset.id,
+                            fmt_minor(asset.cost_minor),
+                            asset.currency,
+                            asset.useful_life_months
+                        );
+                    })
+                }
+                AssetAction::List => {
+                    let assets = svc.asset_list(&book.id)?;
+                    emit(cli.json, &assets, || {
+                        if assets.is_empty() {
+                            println!("No assets yet. Add one with `slipscan asset add`.");
+                        }
+                        for a in &assets {
+                            println!(
+                                "{}\t{}\t{}\t{} {}\t{}",
+                                a.id,
+                                a.name,
+                                a.status,
+                                fmt_minor(a.cost_minor),
+                                a.currency,
+                                a.method
+                            );
+                        }
+                    })
+                }
+                AssetAction::Get { id } => {
+                    let with_dep = svc.asset_with_depreciation(id)?;
+                    emit(cli.json, &with_dep, || {
+                        let a = &with_dep.asset;
+                        println!("{} ({}) — {}", a.name, a.id, a.status);
+                        println!(
+                            "  Cost: {} {}   Residual: {} {}",
+                            fmt_minor(a.cost_minor),
+                            a.currency,
+                            fmt_minor(a.residual_minor),
+                            a.currency
+                        );
+                        println!(
+                            "  Accumulated depreciation: {} {} over {} period(s)",
+                            fmt_minor(with_dep.accumulated_depreciation_minor),
+                            a.currency,
+                            with_dep.periods_run
+                        );
+                        println!(
+                            "  Net book value: {} {}",
+                            fmt_minor(with_dep.net_book_value_minor),
+                            a.currency
+                        );
+                    })
+                }
+                AssetAction::Update {
+                    id,
+                    name,
+                    description,
+                    clear_description,
+                    acquired_date,
+                    cost_minor,
+                    residual_minor,
+                    useful_life_months,
+                    method,
+                    reducing_balance_rate_bps,
+                    clear_reducing_balance_rate_bps,
+                } => {
+                    let description = if *clear_description {
+                        Some(None)
+                    } else {
+                        description.clone().map(Some)
+                    };
+                    let reducing_balance_rate_bps = if *clear_reducing_balance_rate_bps {
+                        Some(None)
+                    } else {
+                        reducing_balance_rate_bps.map(Some)
+                    };
+                    let asset = svc.asset_update(
+                        id,
+                        AssetPatch {
+                            name: name.clone(),
+                            description,
+                            acquired_date: acquired_date.clone(),
+                            cost_minor: *cost_minor,
+                            residual_minor: *residual_minor,
+                            useful_life_months: *useful_life_months,
+                            method: method.map(Into::into),
+                            reducing_balance_rate_bps,
+                        },
+                    )?;
+                    emit(cli.json, &asset, || {
+                        println!("Updated asset {} ({}).", asset.name, asset.id);
+                    })
+                }
+                AssetAction::Dispose {
+                    id,
+                    disposed_date,
+                    proceeds_minor,
+                } => {
+                    let asset = svc.asset_dispose(
+                        id,
+                        AssetDisposal {
+                            disposed_date: disposed_date.clone(),
+                            proceeds_minor: *proceeds_minor,
+                        },
+                    )?;
+                    emit(cli.json, &asset, || {
+                        println!(
+                            "Disposed asset {} ({}) effective {}.",
+                            asset.name,
+                            asset.id,
+                            asset.disposed_date.as_deref().unwrap_or("-")
+                        );
+                    })
+                }
+                AssetAction::Run { asset_id, period } => {
+                    let run = svc.depreciation_run(asset_id, period)?;
+                    emit(cli.json, &run, || match &run {
+                        Some(run) => println!(
+                            "Posted depreciation for {period}: {} (journal {}).",
+                            fmt_minor(run.depreciation_minor),
+                            run.journal_id
+                        ),
+                        None => println!(
+                            "Nothing posted for {period} — no chart of accounts, or nothing left \
+                             to depreciate."
+                        ),
+                    })
+                }
+                AssetAction::Runs { asset_id } => {
+                    let runs = svc.depreciation_runs_for_asset(asset_id)?;
+                    emit(cli.json, &runs, || {
+                        if runs.is_empty() {
+                            println!("No depreciation runs yet.");
+                        }
+                        for r in &runs {
+                            println!(
+                                "{}\t{}\t{}",
+                                r.period,
+                                fmt_minor(r.depreciation_minor),
+                                r.journal_id
                             );
                         }
                     })

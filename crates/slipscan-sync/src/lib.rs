@@ -32,9 +32,9 @@
 //! Books, accounts, categories, transactions, transaction splits, merchant
 //! mappings, budgets, members, locations, contacts, the chart of accounts, its
 //! entity map, the VAT-rate table, the product catalogue (product
-//! categories, products, product variants), and purchasing headers/lines
-//! (purchase orders, purchase order items) — the full list is
-//! [`LWW_TABLES`].
+//! categories, products, product variants), purchasing headers/lines
+//! (purchase orders, purchase order items), sales orders/lines, and the
+//! fixed-asset register — the full list is [`LWW_TABLES`].
 //!
 //! ```text
 //! target  "<table>/<row-id>"      field "row"
@@ -68,12 +68,12 @@
 //! `field` the column name — deliberately not taken here, because it would be a
 //! behaviour change rather than a faithful mapping.
 //!
-//! ## Posted journals, their lines, stock movements, goods receipts, and net-worth snapshots → §4.3 OR-Set ([`Kind::SetAdd`])
+//! ## Posted journals, their lines, stock movements, goods receipts, net-worth snapshots, and depreciation runs → §4.3 OR-Set ([`Kind::SetAdd`])
 //!
 //! ```text
 //! target  "journals" / "journal_lines" / "stock_movements" / "po_receipts"
 //!         / "invoices" / "invoice_items" / "invoice_payments"
-//!         / "networth_snapshots"
+//!         / "networth_snapshots" / "asset_depreciation_runs"
 //! value   tstr, "v" + canonical JSON of the row including its id
 //! ```
 //!
@@ -112,6 +112,14 @@
 //! the same date while offline must converge by keeping **both** facts, not
 //! by one silently overwriting the other — exactly the stock-movements case,
 //! and for the identical reason the migration's own header spells out.
+//!
+//! `asset_depreciation_runs` (migration `0016_assets`, PARITY.md "Fixed
+//! assets") is the same shape once more: one immutable fact per asset per
+//! period, backed by exactly the journal it names. Its own `UNIQUE (asset_id,
+//! period)` keeps a period idempotent to run twice; a correction reverses the
+//! journal (`CoreService::asset_dispose`'s retroactive cleanup, or an
+//! ordinary `journal_reverse`) rather than editing or deleting this row —
+//! the same reversal-not-edit posture `journals` itself enforces.
 //!
 //! No set-remove is ever minted, so this is an OR-Set with no removes, which is
 //! a grow-only set whose merge is plain union. The mapping is therefore an
@@ -296,6 +304,13 @@ pub const LEDGER_TABLES: &[&str] = &[
     // a fact about a date, never a value someone edits — see the module
     // header above for the §4.10 selection test this one turns on.
     "networth_snapshots",
+    // Migration 0016 (PARITY.md "Fixed assets"): one immutable fact per
+    // (asset, period) actually posted to the ledger — a correction reverses
+    // the journal it points at, never edits or deletes the row itself. See
+    // that migration's header for why this is the OR-Set side of the split
+    // and `assets` (below, in `LWW_TABLES`) is not, even though both are
+    // "asset" tables.
+    "asset_depreciation_runs",
 ];
 
 /// Tables whose rows are editable and merge last-writer-wins.
@@ -339,6 +354,12 @@ pub const LWW_TABLES: &[&str] = &[
     // this list for the same reason `product_variants` follows `products`.
     "sales_orders",
     "sales_order_items",
+    // Migration 0016 (PARITY.md "Fixed assets"): the register itself is a
+    // draft a person keeps editing — cost, life, method — right up until
+    // depreciation exists against it, then a status flip to dispose it.
+    // Last-writer-wins is what editing your own register entry on two
+    // devices means, the same call `purchase_orders`/`sales_orders` make.
+    "assets",
 ];
 
 /// Whether `table` is an immutable ledger, and so maps to the OR-Set.

@@ -24,6 +24,7 @@
   import Stock from "./routes/Stock.svelte";
   import Purchasing from "./routes/Purchasing.svelte";
   import Sales from "./routes/Sales.svelte";
+  import Assets from "./routes/Assets.svelte";
   import Packs from "./routes/Packs.svelte";
   import Settings from "./routes/Settings.svelte";
 
@@ -42,6 +43,7 @@
     stock: Stock,
     purchasing: Purchasing,
     sales: Sales,
+    assets: Assets,
     packs: Packs,
     settings: Settings,
   };

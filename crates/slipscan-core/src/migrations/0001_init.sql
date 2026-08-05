@@ -486,10 +486,16 @@ CREATE TABLE journals (
     -- journals sharing one source_id — the cost/inventory leg and the
     -- revenue/AR/VAT leg — so a cancellation can reverse either on its own,
     -- and so a book seeded with only one side still gets a coherent posting.
+    -- `depreciation` (migration 0016, fixed-asset register) is posted by
+    -- `CoreService::depreciation_run`, one journal per (asset, period) —
+    -- `source_id` is the owning `asset_depreciation_runs` row's own id, the
+    -- same "the row is the source" idiom `po_receipt`/`invoice_payment`
+    -- already use.
     source_type TEXT NOT NULL DEFAULT 'manual'
         CHECK (source_type IN (
             'manual', 'transaction', 'document', 'opening_balance',
-            'po_receipt', 'sales_cogs', 'sales_revenue', 'invoice_payment'
+            'po_receipt', 'sales_cogs', 'sales_revenue', 'invoice_payment',
+            'depreciation'
         )),
     source_id   TEXT,
     created_at  TEXT NOT NULL,

@@ -1,6 +1,13 @@
 -- index accounts_book_idx
 CREATE INDEX accounts_book_idx ON accounts (book_id);
 
+-- index asset_depreciation_runs_asset_idx
+CREATE INDEX asset_depreciation_runs_asset_idx
+    ON asset_depreciation_runs (asset_id, period_index);
+
+-- index assets_book_status_idx
+CREATE INDEX assets_book_status_idx ON assets (book_id, status);
+
 -- index audit_log_book_created_idx
 CREATE INDEX audit_log_book_created_idx ON audit_log (book_id, created_at DESC);
 
@@ -240,6 +247,18 @@ CREATE INDEX sales_orders_location_idx
     ON sales_orders (location_id) WHERE location_id IS NOT NULL;
 
 -- index sqlite_autoindex_accounts_1
+;
+
+-- index sqlite_autoindex_asset_depreciation_runs_1
+;
+
+-- index sqlite_autoindex_asset_depreciation_runs_2
+;
+
+-- index sqlite_autoindex_asset_depreciation_runs_3
+;
+
+-- index sqlite_autoindex_assets_1
 ;
 
 -- index sqlite_autoindex_audit_log_1
@@ -498,6 +517,48 @@ CREATE TABLE accounts (
     is_archived           INTEGER NOT NULL DEFAULT 0,
     created_at            TEXT NOT NULL,
     updated_at            TEXT NOT NULL
+);
+
+-- table asset_depreciation_runs
+CREATE TABLE asset_depreciation_runs (
+    id                 TEXT PRIMARY KEY,
+    book_id            TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    asset_id           TEXT NOT NULL REFERENCES assets (id) ON DELETE RESTRICT,
+    period             TEXT NOT NULL
+        CHECK (period GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'),
+    period_index       INTEGER NOT NULL CHECK (period_index > 0),
+    depreciation_minor INTEGER NOT NULL CHECK (depreciation_minor > 0),
+    journal_id         TEXT NOT NULL REFERENCES journals (id) ON DELETE CASCADE,
+    created_at         TEXT NOT NULL,
+    UNIQUE (asset_id, period),
+    UNIQUE (asset_id, period_index)
+);
+
+-- table assets
+CREATE TABLE assets (
+    id                        TEXT PRIMARY KEY,
+    book_id                   TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    name                      TEXT NOT NULL,
+    description               TEXT,
+    acquired_date             TEXT NOT NULL,
+    cost_minor                INTEGER NOT NULL CHECK (cost_minor > 0),
+    residual_minor            INTEGER NOT NULL DEFAULT 0 CHECK (residual_minor >= 0),
+    currency                  TEXT NOT NULL CHECK (length(currency) = 3),
+    useful_life_months        INTEGER NOT NULL CHECK (useful_life_months > 0),
+    method                    TEXT NOT NULL
+        CHECK (method IN ('straight_line', 'reducing_balance')),
+    reducing_balance_rate_bps INTEGER
+        CHECK (reducing_balance_rate_bps IS NULL
+               OR (reducing_balance_rate_bps > 0 AND reducing_balance_rate_bps <= 10000)),
+    status                    TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'disposed')),
+    disposed_date             TEXT,
+    disposal_proceeds_minor   INTEGER,
+    created_at                TEXT NOT NULL,
+    updated_at                TEXT NOT NULL,
+    CHECK (residual_minor <= cost_minor),
+    CHECK ((method = 'reducing_balance') = (reducing_balance_rate_bps IS NOT NULL)),
+    CHECK ((status = 'disposed') = (disposed_date IS NOT NULL))
 );
 
 -- table audit_log
@@ -815,10 +876,16 @@ CREATE TABLE journals (
     -- journals sharing one source_id — the cost/inventory leg and the
     -- revenue/AR/VAT leg — so a cancellation can reverse either on its own,
     -- and so a book seeded with only one side still gets a coherent posting.
+    -- `depreciation` (migration 0016, fixed-asset register) is posted by
+    -- `CoreService::depreciation_run`, one journal per (asset, period) —
+    -- `source_id` is the owning `asset_depreciation_runs` row's own id, the
+    -- same "the row is the source" idiom `po_receipt`/`invoice_payment`
+    -- already use.
     source_type TEXT NOT NULL DEFAULT 'manual'
         CHECK (source_type IN (
             'manual', 'transaction', 'document', 'opening_balance',
-            'po_receipt', 'sales_cogs', 'sales_revenue', 'invoice_payment'
+            'po_receipt', 'sales_cogs', 'sales_revenue', 'invoice_payment',
+            'depreciation'
         )),
     source_id   TEXT,
     created_at  TEXT NOT NULL,
@@ -1322,6 +1389,20 @@ CREATE TABLE vault_secrets (
     last_used_at TEXT
 );
 
+-- trigger asset_depreciation_runs_no_delete
+CREATE TRIGGER asset_depreciation_runs_no_delete
+BEFORE DELETE ON asset_depreciation_runs
+BEGIN
+    SELECT RAISE(ABORT, 'depreciation runs are immutable; reverse the journal instead');
+END;
+
+-- trigger asset_depreciation_runs_no_update
+CREATE TRIGGER asset_depreciation_runs_no_update
+BEFORE UPDATE ON asset_depreciation_runs
+BEGIN
+    SELECT RAISE(ABORT, 'depreciation runs are immutable; reverse the journal instead');
+END;
+
 -- trigger audit_log_no_delete
 CREATE TRIGGER audit_log_no_delete
 BEFORE DELETE ON audit_log
@@ -1470,6 +1551,39 @@ WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
 BEGIN
     INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
     VALUES ('accounts', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_asset_depreciation_runs_ins
+CREATE TRIGGER sync_capture_asset_depreciation_runs_ins
+AFTER INSERT ON asset_depreciation_runs
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('asset_depreciation_runs', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_assets_del
+CREATE TRIGGER sync_capture_assets_del AFTER DELETE ON assets
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('assets', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_assets_ins
+CREATE TRIGGER sync_capture_assets_ins AFTER INSERT ON assets
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('assets', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_assets_upd
+CREATE TRIGGER sync_capture_assets_upd AFTER UPDATE ON assets
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('assets', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 END;
 
 -- trigger sync_capture_books_del

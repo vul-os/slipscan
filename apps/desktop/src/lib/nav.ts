@@ -176,6 +176,15 @@ export const NAV_GROUPS: NavGroup[] = [
         key: "P",
         keywords: "vat tax spending income expense trial balance export csv",
       },
+      {
+        route: "assets",
+        label: "Assets",
+        icon: "building",
+        key: "A",
+        keywords:
+          "fixed assets depreciation register straight line reducing balance dispose schedule",
+        requires: "show_assets",
+      },
     ],
   },
   {
