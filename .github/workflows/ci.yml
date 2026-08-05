@@ -181,6 +181,20 @@ jobs:
       - name: Every test asserts something, and no stubs ship
         run: npm run tests:check
         working-directory: .
+      # PARITY.md scores 24 capabilities Built/Partial/Not built by hand, and
+      # it has gone stale for a whole development wave before — it once said
+      # "no invoicing at all" on a tree that had invoicing. The judgement
+      # itself cannot be automated, but each row's falsifiable residue can: a
+      # Not-built row names the symbol(s) whose absence it depends on, and
+      # fails if one now exists; a Built row names the CoreService method(s)
+      # it depends on, and fails if reachable:check's own call-detection finds
+      # none of core's three surfaces reaching it — this repo's own
+      # worst-documented defect, complete in core and reachable from nowhere.
+      # The summary counts and docs/parity-matrix.json are derived from the
+      # rows, never hand-typed, for the same reason docs/parity.json is.
+      - name: Parity matrix rows are not stale
+        run: npm run parity-matrix:check
+        working-directory: .
       - name: Install
         run: npm ci
       - name: Check

@@ -6,6 +6,8 @@
     "docs:check": "node scripts/sync-docs.ts --check",
     "parity:sync": "node scripts/check-parity.ts --write",
     "parity:check": "node scripts/check-parity.ts",
+    "parity-matrix:sync": "node scripts/check-parity-matrix.ts --write",
+    "parity-matrix:check": "node scripts/check-parity-matrix.ts",
     "reachable:sync": "node scripts/check-reachable.ts --write",
     "reachable:check": "node scripts/check-reachable.ts",
     "mock-guards:sync": "node scripts/check-mock-guards.ts --write",

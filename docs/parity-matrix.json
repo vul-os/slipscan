@@ -1,0 +1,233 @@
+{
+  "//": [
+    "Derived from PARITY.md's own rows by scripts/check-parity-matrix.ts --write.",
+    "DO NOT hand-edit -- counts here were hand-maintained and wrong before this existed.",
+    "`npm run parity-matrix:check` fails CI if this drifts from PARITY.md."
+  ],
+  "counts": {
+    "xero": {
+      "total": 14,
+      "built": 2,
+      "partial": 7,
+      "not_built": 5
+    },
+    "vault22": {
+      "total": 10,
+      "built": 3,
+      "partial": 5,
+      "not_built": 2
+    },
+    "total": {
+      "total": 24,
+      "built": 5,
+      "partial": 12,
+      "not_built": 7
+    }
+  },
+  "rows": [
+    {
+      "axis": "xero",
+      "name": "Invoicing",
+      "status": "Built",
+      "reachable": [
+        "invoice_issue",
+        "invoice_payment_record"
+      ],
+      "absent": []
+    },
+    {
+      "axis": "xero",
+      "name": "Quotes / estimates",
+      "status": "Not built",
+      "reachable": [],
+      "absent": [
+        "quote_create",
+        "quote_issue"
+      ]
+    },
+    {
+      "axis": "xero",
+      "name": "Bills / accounts payable",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "xero",
+      "name": "Contacts (customers & suppliers)",
+      "status": "Built",
+      "reachable": [
+        "contact_add"
+      ],
+      "absent": []
+    },
+    {
+      "axis": "xero",
+      "name": "Aged receivables / payables",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "xero",
+      "name": "Fixed-asset register",
+      "status": "Not built",
+      "reachable": [],
+      "absent": [
+        "asset_create",
+        "depreciation_run"
+      ]
+    },
+    {
+      "axis": "xero",
+      "name": "Bank rules",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "xero",
+      "name": "Repeating invoices / recurring transactions",
+      "status": "Not built",
+      "reachable": [],
+      "absent": [
+        "invoice_recurring_create",
+        "invoice_schedule_create"
+      ]
+    },
+    {
+      "axis": "xero",
+      "name": "Multi-currency converted views",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "xero",
+      "name": "Bank reconciliation",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "xero",
+      "name": "Tax returns",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "xero",
+      "name": "Payroll-lite",
+      "status": "Not built",
+      "reachable": [],
+      "absent": [
+        "payroll_run",
+        "employee_create"
+      ]
+    },
+    {
+      "axis": "xero",
+      "name": "Tracking categories",
+      "status": "Not built",
+      "reachable": [],
+      "absent": [
+        "tracking_category_create"
+      ]
+    },
+    {
+      "axis": "xero",
+      "name": "CSV / OFX import & export",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "vault22",
+      "name": "Account aggregation",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "vault22",
+      "name": "Net worth over time",
+      "status": "Built",
+      "reachable": [
+        "networth_capture",
+        "networth_backfill",
+        "networth_series"
+      ],
+      "absent": []
+    },
+    {
+      "axis": "vault22",
+      "name": "Goals",
+      "status": "Not built",
+      "reachable": [],
+      "absent": [
+        "goal_create"
+      ]
+    },
+    {
+      "axis": "vault22",
+      "name": "Budgets",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "vault22",
+      "name": "Nudges",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "vault22",
+      "name": "Categorisation quality",
+      "status": "Built",
+      "reachable": [
+        "transaction_categorize"
+      ],
+      "absent": []
+    },
+    {
+      "axis": "vault22",
+      "name": "Household / shared spending",
+      "status": "Built",
+      "reachable": [
+        "transaction_attribute",
+        "transaction_split_set",
+        "report_member_expense",
+        "report_member_contribution",
+        "report_member_category",
+        "report_settle_up"
+      ],
+      "absent": []
+    },
+    {
+      "axis": "vault22",
+      "name": "Peer comparison / benchmarks",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "vault22",
+      "name": "Subscription detection",
+      "status": "Partial",
+      "reachable": [],
+      "absent": []
+    },
+    {
+      "axis": "vault22",
+      "name": "Fee tracking",
+      "status": "Not built",
+      "reachable": [],
+      "absent": [
+        "fee_detect"
+      ]
+    }
+  ]
+}
