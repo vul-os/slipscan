@@ -948,6 +948,174 @@ mod tests {
         }
     }
 
+    /// Migration `0017_recurring`'s two LWW tables, exercised directly
+    /// against their triggers — the same treatment `sales_tables_capture_
+    /// insert_update_and_delete` gives migration 0014's editable-draft half.
+    #[test]
+    fn recurring_schedule_tables_capture_insert_update_and_delete() {
+        let db = Db::open_in_memory().unwrap();
+        let book = seed_book(&db);
+
+        db.conn()
+            .execute(
+                "INSERT INTO contacts (id, book_id, role, name, is_active, created_at, updated_at)
+                 VALUES ('cust-1', ?1, 'customer', 'Acme', 1, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn().execute("DELETE FROM sync_outbox", []).unwrap();
+
+        // -- recurring_schedules ---------------------------------------------
+        db.conn()
+            .execute(
+                "INSERT INTO recurring_schedules
+                     (id, book_id, kind, name, frequency, start_date, next_run_date,
+                      contact_id, created_at, updated_at)
+                 VALUES ('rs-1', ?1, 'invoice', 'Monthly retainer', 'monthly', '2026-01-31',
+                         '2026-01-31', 'cust-1', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE recurring_schedules SET status = 'paused' WHERE id = 'rs-1'",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute("DELETE FROM recurring_schedules WHERE id = 'rs-1'", [])
+            .unwrap();
+
+        // -- recurring_schedule_items ------------------------------------------
+        // Re-insert the parent: the delete above cascaded it away.
+        db.conn()
+            .execute(
+                "INSERT INTO recurring_schedules
+                     (id, book_id, kind, name, frequency, start_date, next_run_date,
+                      contact_id, created_at, updated_at)
+                 VALUES ('rs-2', ?1, 'invoice', 'Monthly retainer', 'monthly', '2026-01-31',
+                         '2026-01-31', 'cust-1', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO recurring_schedule_items
+                     (id, schedule_id, book_id, description, quantity, unit_price_minor,
+                      created_at, updated_at)
+                 VALUES ('rsi-1', 'rs-2', ?1, 'Retainer', 1, 1000, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE recurring_schedule_items SET quantity = 2 WHERE id = 'rsi-1'",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "DELETE FROM recurring_schedule_items WHERE id = 'rsi-1'",
+                [],
+            )
+            .unwrap();
+
+        let captured = drain_list(db.conn()).unwrap();
+        for (table, row_id) in [
+            ("recurring_schedules", "rs-1"),
+            ("recurring_schedule_items", "rsi-1"),
+        ] {
+            let rows: Vec<&Captured> = captured
+                .iter()
+                .filter(|c| c.table == table && c.row_id == row_id)
+                .collect();
+            assert_eq!(
+                rows.len(),
+                3,
+                "{table}/{row_id}: expected an insert, update and delete capture, got {rows:?}"
+            );
+            assert_eq!(
+                rows.iter().filter(|c| !c.deleted).count(),
+                2,
+                "{table}/{row_id}: the insert and the update should both be live captures"
+            );
+            assert_eq!(
+                rows.iter().filter(|c| c.deleted).count(),
+                1,
+                "{table}/{row_id}: the delete should be a tombstone capture"
+            );
+            assert!(
+                rows.iter().all(|c| c.ns == book),
+                "{table}/{row_id}: namespace must be the book id"
+            );
+        }
+    }
+
+    /// Migration `0017_recurring`'s immutable fact table — the other half of
+    /// its split. Captures exactly its insert (never an update or a delete,
+    /// matching `invoice_tables_capture_insert_only_and_are_immutable`'s
+    /// treatment of migration 0014), and the database itself refuses the
+    /// UPDATE/DELETE statements that would otherwise be silently
+    /// unreachable.
+    #[test]
+    fn recurring_run_table_captures_insert_only_and_is_immutable() {
+        let db = Db::open_in_memory().unwrap();
+        let book = seed_book(&db);
+
+        db.conn()
+            .execute(
+                "INSERT INTO contacts (id, book_id, role, name, is_active, created_at, updated_at)
+                 VALUES ('cust-1', ?1, 'customer', 'Acme', 1, 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO recurring_schedules
+                     (id, book_id, kind, name, frequency, start_date, next_run_date,
+                      contact_id, created_at, updated_at)
+                 VALUES ('rs-1', ?1, 'invoice', 'Monthly retainer', 'monthly', '2026-01-31',
+                         '2026-01-31', 'cust-1', 't', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+        db.conn().execute("DELETE FROM sync_outbox", []).unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO recurring_runs
+                     (id, schedule_id, book_id, occurrence_index, occurrence_date, outcome,
+                      created_at)
+                 VALUES ('rr-1', 'rs-1', ?1, 0, '2026-01-31', 'skipped', 't')",
+                rusqlite::params![book],
+            )
+            .unwrap();
+
+        let captured = drain_list(db.conn()).unwrap();
+        let rows: Vec<&Captured> = captured
+            .iter()
+            .filter(|c| c.table == "recurring_runs" && c.row_id == "rr-1")
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "an immutable table must capture exactly its insert: {rows:?}"
+        );
+        assert!(!rows[0].deleted);
+        assert_eq!(rows[0].ns, book);
+
+        for sql in [
+            "UPDATE recurring_runs SET outcome = 'generated' WHERE id = 'rr-1'",
+            "DELETE FROM recurring_runs WHERE id = 'rr-1'",
+        ] {
+            let err = db.conn().execute(sql, []).unwrap_err();
+            assert!(
+                err.to_string().contains("immutable"),
+                "`{sql}` must be refused by the database itself, got {err}"
+            );
+        }
+    }
+
     /// A `books` row is its own namespace — it has no `book_id` column to take
     /// one from.
     #[test]
