@@ -2522,7 +2522,7 @@ function buildCloseReport(book_id: string, to_date: string): ClosePeriodReport {
 export const mockApi = {
   health: async (): Promise<Health> => ({
     status: "ok",
-    version: "0.2.0-mock",
+    version: "0.1.0-mock",
     tauri: "browser",
   }),
 
