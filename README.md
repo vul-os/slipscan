@@ -188,8 +188,11 @@ cargo run -p slipscan-cli -- --help    # import, watch, extract, mail-sync, reco
 Everything runs on your machine. Sources feed one Rust core, the core owns a plain SQLite database holding your books, and the desktop app is a thin shell over the same services. The only network endpoints in the picture are ones **you** configured — your bank, your mailbox, your LLM provider, and (opt-in, for multi-currency) your own [OpenRate](https://github.com/vul-os/openrate) instance for provenance-graded FX rates:
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-monospace, SFMono-Regular, Menlo, monospace','primaryColor':'transparent','primaryBorderColor':'#14b8a6','primaryTextColor':'#8f969e','lineColor':'#8a8f98','nodeBorder':'#5f8f8a','edgeLabelBackground':'transparent','clusterBorder':'#3f8f86','clusterBkg':'transparent'}}}%%
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-monospace, SFMono-Regular, Menlo, monospace','primaryColor':'#334155','primaryBorderColor':'#94a3b8','primaryTextColor':'#e2e8f0','lineColor':'#0d9488','edgeLabelBackground':'#1e293b','clusterBorder':'#3f8f86','clusterBkg':'transparent'}}}%%
 flowchart LR
+    classDef entry fill:#1e293b,stroke:#64748b,color:#e2e8f0
+    classDef subject fill:#0f766e,stroke:#5eead4,color:#f0fdfa
+    classDef downstream fill:#334155,stroke:#94a3b8,color:#e2e8f0
     subgraph machine["your machine"]
         direction LR
         subgraph sources["sources"]
@@ -208,13 +211,20 @@ flowchart LR
     end
     openrate["OpenRate<br/>(your self-hosted FX instance —<br/>opt-in, no URL = no FX calls)"]
     openrate -.->|"rates + provenance,<br/>cached locally"| core
+
+    class bank,mail,files entry
+    class core subject
+    class db,app,openrate downstream
 ```
 
 Between machines there is no hub — every node is a self-hosted peer. The only thing that crosses the network today is a **signed pack** (taxonomies, classification rules, bank-alert mail rules, benchmark statistics — ed25519-verified on install), carried by whichever transport you chose: a folder, a stick, a git remote, an HTTPS URL. The dashed edges are the **designed and unbuilt** half — **differentially-private aggregates**, category-level statistics noised on-device before they leave it, with community-run aggregators untrusted by design. No contribution code, noise generation or anonymous transport exists in the tree, so no aggregate has ever left a machine. Transactions, merchants, and credentials never appear on any edge:
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-monospace, SFMono-Regular, Menlo, monospace','primaryColor':'transparent','primaryBorderColor':'#14b8a6','primaryTextColor':'#8f969e','lineColor':'#8a8f98','nodeBorder':'#5f8f8a','edgeLabelBackground':'transparent','clusterBorder':'#3f8f86','clusterBkg':'transparent'}}}%%
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-monospace, SFMono-Regular, Menlo, monospace','primaryColor':'#334155','primaryBorderColor':'#94a3b8','primaryTextColor':'#e2e8f0','lineColor':'#0d9488','edgeLabelBackground':'#1e293b','clusterBorder':'#3f8f86','clusterBkg':'transparent'}}}%%
 flowchart TB
+    classDef entry fill:#1e293b,stroke:#64748b,color:#e2e8f0
+    classDef subject fill:#0f766e,stroke:#5eead4,color:#f0fdfa
+    classDef downstream fill:#334155,stroke:#94a3b8,color:#e2e8f0
     a["Alice's node<br/>(desktop or self-host server)"]
     b["Ben's node"]
     c["Chris's node"]
@@ -228,6 +238,10 @@ flowchart TB
     a -.->|"opt-in: DP-noised aggregates,<br/>anonymous transport"| agg
     c -.->|"opt-in"| agg
     agg -->|"aggregate statistics"| m
+
+    class a,b,c entry
+    class m subject
+    class agg downstream
 ```
 
 Reading benchmark packs is perfectly private — comparison happens locally, and that half is built. Contributing will be off by default, anonymous, and lossy by design; it is **not implemented**, and [docs/BENCHMARKS.md](docs/BENCHMARKS.md) writes the bar down so it cannot quietly slip.
