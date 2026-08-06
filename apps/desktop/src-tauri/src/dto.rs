@@ -1367,6 +1367,7 @@ mod tests {
                 paired_at: "2026-07-20T09:00:00Z".to_string(),
                 revoked_at: None,
                 last_seen_at: None,
+                member_id: None,
             },
             blob: BLOB.to_string(),
         };
