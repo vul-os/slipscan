@@ -1291,10 +1291,7 @@ pub async fn quote_item_remove(
     state: State<'_, AppState>,
     query: QuoteIdQuery,
 ) -> Result<(), String> {
-    state
-        .service()?
-        .quote_item_remove(&query.id)
-        .map_err(err)
+    state.service()?.quote_item_remove(&query.id).map_err(err)
 }
 
 #[tauri::command]
