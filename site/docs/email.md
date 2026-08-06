@@ -35,12 +35,14 @@ Push normally means webhooks, and webhooks mean a public HTTPS endpoint — whic
 All connections are outbound, from your machine, to your provider. That is the whole trick.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-monospace, SFMono-Regular, Menlo, monospace','actorBkg':'#0f766e','actorBorder':'#5eead4','actorTextColor':'#f0fdfa','actorLineColor':'#94a3b8','signalColor':'#0d9488','signalTextColor':'#e2e8f0','noteBkgColor':'#1e293b','noteBorderColor':'#64748b','noteTextColor':'#e2e8f0'}}}%%
 sequenceDiagram
     participant M as Your mail provider
     participant C as SlipScan connector
     participant P as Import pipeline
     participant DB as SQLite (your book)
 
+    rect rgb(30, 41, 59)
     Note over M,C: outbound connection only — no inbound port
     C->>M: connect + authenticate (secret from vault, inside a closure)
     M-->>C: new-mail signal (IDLE / Pub/Sub pull / delta)
@@ -49,6 +51,7 @@ sequenceDiagram
     C->>P: normalised InboundMessage
     P->>P: dedupe (message id / content hash)
     P->>DB: document (pending) → extraction → review
+    end
 ```
 
 ---
