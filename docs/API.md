@@ -109,7 +109,7 @@ Nullable fields follow this API's one convention: omit a key to leave it untouch
 
 ### Purchasing (Phase 6.4)
 
-Purchase orders and goods receipts, re-derived from the retired FlowStock product ([ROADMAP.md](../ROADMAP.md) "Phase 6"). `po_receive` is the keystone: it writes a stock movement (`kind = receipt`, `ref_kind = "po_receipt"`) in the same transaction as the receipt row, so on-hand (`stock_on_hand` — Phase 6.3b, itself not yet routed over HTTP either) and a PO's receiving progress can never disagree about how much arrived. `po_receipts` is insert-only — a correction is a second, signed row (`qty` can be negative), never an edit to one already recorded — so two sites receiving against the same line while disconnected converge by union.
+Purchase orders and goods receipts, re-derived from a retired Vulos product folded into this one ([ROADMAP.md](../ROADMAP.md) "Phase 6"). `po_receive` is the keystone: it writes a stock movement (`kind = receipt`, `ref_kind = "po_receipt"`) in the same transaction as the receipt row, so on-hand (`stock_on_hand` — Phase 6.3b, itself not yet routed over HTTP either) and a PO's receiving progress can never disagree about how much arrived. `po_receipts` is insert-only — a correction is a second, signed row (`qty` can be negative), never an edit to one already recorded — so two sites receiving against the same line while disconnected converge by union.
 
 Receiving progress (none / partial / complete) is always derived from `po_receipts`, never stored; `purchase_orders.status` (`draft` / `ordered` / `cancelled`) is the one hand-maintained field, moved only through the guarded `po_set_status` transitions.
 
