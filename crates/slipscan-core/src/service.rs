@@ -15,6 +15,7 @@ use crate::device::Devices;
 use crate::domain::*;
 use crate::error::{CoreError, CoreResult};
 use crate::fx;
+use crate::recurrence;
 use crate::repo;
 use crate::secrets::SecretString;
 use crate::secrets::{KeyringSecretStore, SecretStore};
@@ -102,6 +103,20 @@ fn derive_initial(label: &str) -> String {
 /// `order_date`/`issue_date`/`paid_at` when a caller omits them.
 fn today() -> String {
     now_iso()[..10].to_string()
+}
+
+/// Everything `CoreService::issue_invoice_in_tx` needs to write, already
+/// validated by `CoreService::resolve_invoice` — see that function's header
+/// for why the read and the write are two separate steps.
+struct ResolvedInvoice {
+    issue_date: String,
+    due_date: String,
+    series: String,
+    contact_id: String,
+    currency: String,
+    sales_order_id: Option<String>,
+    notes: Option<String>,
+    lines: Vec<(Option<String>, String, i64, i64, i64)>,
 }
 
 fn normalize_optional(raw: Option<String>) -> Option<String> {
@@ -276,18 +291,18 @@ impl CoreService {
 
     /// Open a database file with the real OS-keychain secret store.
     ///
-    /// Sets a busy timeout on this connection specifically because a real
-    /// file (unlike `Db::open_in_memory`, which nothing else can ever share)
-    /// can genuinely be opened by more than one process or thread at once —
-    /// exactly the scenario `invoice_issue`'s numbering has to survive. Without
-    /// this, a second writer racing the first for the same book's counter
-    /// would fail immediately with `SQLITE_BUSY` instead of simply waiting
-    /// its turn; with it, SQLite's own writer-serialization does the rest.
-    /// See migration `0014_sales`'s header for what this guarantee does and
-    /// does not cover.
+    /// `Db::open` itself sets a busy timeout, before it runs migrations, on
+    /// the connection it returns — a real file (unlike `Db::open_in_memory`,
+    /// which nothing else can ever share) can genuinely be opened by more
+    /// than one process or thread at once, exactly the scenario
+    /// `invoice_issue`'s numbering has to survive. Without it, a second
+    /// writer racing the first — for a fresh file's own migration bookkeeping
+    /// or for a book's numbering counter — would fail immediately with
+    /// `SQLITE_BUSY` instead of simply waiting its turn; with it, SQLite's
+    /// own writer-serialization does the rest. See migration `0014_sales`'s
+    /// header for what this guarantee does and does not cover.
     pub fn open(path: impl AsRef<std::path::Path>) -> CoreResult<Self> {
         let db = Db::open(path)?;
-        db.conn().busy_timeout(std::time::Duration::from_secs(5))?;
         Ok(Self::new(db, Box::new(KeyringSecretStore::default())))
     }
 
@@ -863,6 +878,24 @@ impl CoreService {
     /// the same cascade. `merchant` itself is left exactly as the source gave
     /// it (`None` for a statement line): we never invent a display name.
     pub fn transaction_create(&self, new: NewTransaction) -> CoreResult<Transaction> {
+        let tx = self.conn().unchecked_transaction()?;
+        let txn = self.create_transaction_in_tx(&tx, new)?;
+        tx.commit()?;
+        Ok(txn)
+    }
+
+    /// Shared creation path: dedupe, categorisation cascade, insert, payment
+    /// match detection. Caller owns the SQLite transaction — the same shape
+    /// `post_journal_in_tx` already uses, and what lets migration
+    /// `0017_recurring`'s `recurring_process_occurrence` create a
+    /// schedule-generated transaction and record that occurrence as done in
+    /// one atomic transaction, without a second, parallel implementation of
+    /// transaction creation.
+    fn create_transaction_in_tx(
+        &self,
+        tx: &Connection,
+        new: NewTransaction,
+    ) -> CoreResult<Transaction> {
         let account = self.account_get(&new.account_id)?;
         if account.book_id != new.book_id {
             return Err(CoreError::Validation(
@@ -926,16 +959,15 @@ impl CoreService {
                 .and_then(merchant_key_from_description),
         };
 
-        let tx = self.conn().unchecked_transaction()?;
         if let Some(pid) = new.provider_txn_id.as_deref() {
             if let Some(existing_id) =
-                repo::transaction::find_by_provider_txn_id(&tx, &new.account_id, pid)?
+                repo::transaction::find_by_provider_txn_id(tx, &new.account_id, pid)?
             {
                 return Err(CoreError::DuplicateTransaction { existing_id });
             }
         }
         if let Some(existing_id) =
-            repo::transaction::find_by_dedupe_hash(&tx, &new.account_id, &dedupe_hash)?
+            repo::transaction::find_by_dedupe_hash(tx, &new.account_id, &dedupe_hash)?
         {
             return Err(CoreError::DuplicateTransaction { existing_id });
         }
@@ -949,11 +981,11 @@ impl CoreService {
         let mut category_id = new.category_id;
         if category_id.is_none() {
             if let Some(m) = merchant_normalized.as_deref() {
-                if let Some(mapping) = repo::category::get_mapping(&tx, &new.book_id, m)? {
+                if let Some(mapping) = repo::category::get_mapping(tx, &new.book_id, m)? {
                     category_id = Some(mapping.category_id);
                 } else if let Some(classifier) = merchant_classifier() {
                     category_id =
-                        self.classify_by_packs(&tx, classifier, &new.book_id, m, &new.description)?;
+                        self.classify_by_packs(tx, classifier, &new.book_id, m, &new.description)?;
                 }
             }
         }
@@ -964,7 +996,7 @@ impl CoreService {
         // Backward compatible by construction: a book with zero members (or
         // an account nobody claimed) always yields None here.
         let attributed_member_id =
-            repo::member::find_default_owner(&tx, &new.book_id, &new.account_id)?.map(|m| m.id);
+            repo::member::find_default_owner(tx, &new.book_id, &new.account_id)?.map(|m| m.id);
 
         let now = now_iso();
         let txn = Transaction {
@@ -988,9 +1020,9 @@ impl CoreService {
             created_at: now.clone(),
             updated_at: now,
         };
-        repo::transaction::insert(&tx, &txn)?;
+        repo::transaction::insert(tx, &txn)?;
         self.emit_audit(
-            &tx,
+            tx,
             Some(&txn.book_id),
             "transaction",
             Some(&txn.id),
@@ -1003,8 +1035,7 @@ impl CoreService {
         // detection inherits all of them. Runs inside the same SQLite
         // transaction — a failed insert enqueues nothing, and the dedupe
         // rejections above mean a re-imported duplicate can never re-fire.
-        self.detect_payment_matches(&tx, &txn)?;
-        tx.commit()?;
+        self.detect_payment_matches(tx, &txn)?;
         Ok(txn)
     }
 
@@ -3728,6 +3759,35 @@ impl CoreService {
     /// way, proven in this module's own tests under real concurrent access.
     pub fn invoice_issue(&self, new: NewInvoice) -> CoreResult<Invoice> {
         let book = self.book_get(&new.book_id)?;
+        let resolved = self.resolve_invoice(&book, &new)?;
+        let tx = self.conn().unchecked_transaction()?;
+        let invoice = self.issue_invoice_in_tx(&tx, &book, resolved)?;
+        tx.commit()?;
+        Ok(invoice)
+    }
+
+    /// Every read `invoice_issue` needs — the order/contact lookup and line
+    /// resolution — done with **no transaction open on this connection**.
+    ///
+    /// This has to be a separate step from `issue_invoice_in_tx`, not merged
+    /// into it, for a subtle but load-bearing reason: `issue_invoice_in_tx`'s
+    /// very first statement must be `allocate_number`'s write, with nothing
+    /// read on this connection beforehand (see that function's own comment).
+    /// In SQLite's WAL mode, a transaction that has already done a read
+    /// establishes a snapshot: if another connection commits a write before
+    /// this one's later write attempt, that write is refused outright
+    /// (`SQLITE_BUSY`) rather than queued behind `busy_timeout` the way
+    /// ordinary lock contention is — retrying the same statement cannot fix
+    /// it, only restarting the transaction can. An earlier version of this
+    /// split ran these lookups through `self.contact_get`/`self.sales_
+    /// order_get` *inside* `issue_invoice_in_tx`, after its caller had
+    /// already opened the transaction — which reintroduced exactly that
+    /// snapshot-staleness failure and turned `invoice_numbering_has_no_gap_
+    /// or_duplicate_under_concurrent_issue` from occasional contention into
+    /// a deterministic `database is locked`. Resolving everything here,
+    /// before any transaction exists on this connection, is what restores
+    /// the original guarantee.
+    fn resolve_invoice(&self, book: &Book, new: &NewInvoice) -> CoreResult<ResolvedInvoice> {
         let issue_date = new.issue_date.clone().unwrap_or_else(today);
         parse_date(&issue_date)?;
         parse_date(&new.due_date)?;
@@ -3848,6 +3908,44 @@ impl CoreService {
             (contact.id, currency, None, lines)
         };
 
+        Ok(ResolvedInvoice {
+            issue_date,
+            due_date: new.due_date.clone(),
+            series,
+            contact_id,
+            currency,
+            sales_order_id,
+            notes: normalize_optional(new.notes.clone()),
+            lines,
+        })
+    }
+
+    /// Write-only: allocates the number, inserts the invoice and its items,
+    /// and posts revenue recognition for a standalone invoice, from a
+    /// [`ResolvedInvoice`] `resolve_invoice` already validated. Caller owns
+    /// the SQLite transaction and must not have read anything on it before
+    /// calling this — see `resolve_invoice`'s own header for why. The same
+    /// shape `post_journal_in_tx` already uses, and what lets migration
+    /// `0017_recurring`'s `recurring_process_occurrence` issue a
+    /// schedule-generated invoice and record that occurrence as done in one
+    /// atomic transaction, without a second, parallel implementation of
+    /// invoice issuing.
+    fn issue_invoice_in_tx(
+        &self,
+        tx: &Connection,
+        book: &Book,
+        resolved: ResolvedInvoice,
+    ) -> CoreResult<Invoice> {
+        let ResolvedInvoice {
+            issue_date,
+            due_date,
+            series,
+            contact_id,
+            currency,
+            sales_order_id,
+            notes,
+            lines,
+        } = resolved;
         let now = now_iso();
         // Deferred is enough here (rusqlite's `unchecked_transaction` is the
         // only variant `&self` can start — `transaction_with_behavior` needs
@@ -3856,6 +3954,8 @@ impl CoreService {
         // transaction executes, so it acquires SQLite's write lock right
         // there regardless of the transaction's declared mode, and a second
         // issuer blocks on that lock (see `CoreService::open`'s busy timeout).
+        // That is only true because nothing has read on this connection
+        // since the transaction opened — see `resolve_invoice`'s header.
         //
         // What the transaction is actually for here is **gaplessness**, not
         // uniqueness: `allocate_number` is a single UPSERT ... RETURNING and
@@ -3864,8 +3964,7 @@ impl CoreService {
         // and then not used — because the insert below fails a constraint, or
         // anything else rolls this back — return to the sequence instead of
         // being burned.
-        let tx = self.conn().unchecked_transaction()?;
-        let number = repo::sales::allocate_number(&tx, &book.id, &series)?;
+        let number = repo::sales::allocate_number(tx, &book.id, &series)?;
         let invoice = Invoice {
             id: new_id(),
             book_id: book.id.clone(),
@@ -3874,12 +3973,12 @@ impl CoreService {
             series,
             number,
             issue_date,
-            due_date: new.due_date,
+            due_date,
             currency,
-            notes: normalize_optional(new.notes),
+            notes,
             created_at: now.clone(),
         };
-        repo::sales::invoice_insert(&tx, &invoice)?;
+        repo::sales::invoice_insert(tx, &invoice)?;
         let mut posted_lines: Vec<(i64, i64, i64)> = Vec::new();
         for (line_order, (variant_id, description, quantity, unit_price_minor, tax_rate_bps)) in
             lines.into_iter().enumerate()
@@ -3897,7 +3996,7 @@ impl CoreService {
                 line_order: line_order as i64,
                 created_at: now.clone(),
             };
-            repo::sales::invoice_item_insert(&tx, &item)?;
+            repo::sales::invoice_item_insert(tx, &item)?;
         }
         // **Revenue recognition happens exactly once per sale.** An
         // order-backed invoice has already had accounts-receivable debited and
@@ -3913,8 +4012,8 @@ impl CoreService {
         // the kind of wrong a trial balance cannot show you.
         if invoice.sales_order_id.is_none() {
             self.post_revenue_ar_journal(
-                &tx,
-                &book,
+                tx,
+                book,
                 &invoice.currency,
                 &posted_lines,
                 &invoice.issue_date,
@@ -3925,7 +4024,7 @@ impl CoreService {
             )?;
         }
         self.emit_audit(
-            &tx,
+            tx,
             Some(&invoice.book_id),
             "invoice",
             Some(&invoice.id),
@@ -3933,7 +4032,6 @@ impl CoreService {
             None,
             Some(serde_json::to_string(&invoice)?),
         )?;
-        tx.commit()?;
         Ok(invoice)
     }
 
@@ -4030,6 +4128,1054 @@ impl CoreService {
             None => today(),
         };
         repo::sales::aged_receivables(self.conn(), book_id, &as_of)
+    }
+
+    // -----------------------------------------------------------------------
+    // Recurring schedules (migration 0017, PARITY.md "Repeating invoices /
+    // recurring transactions"). See that migration's header for the full
+    // design. The short version, worth repeating here because it is the
+    // decision that matters most: **nothing below fires by itself.**
+    // `recurring_run_due` is the only function that ever generates an
+    // invoice or a transaction, and it does so only because something —
+    // this crate's own caller, the CLI, an HTTP request, the desktop app —
+    // called it. There is no scheduler, no daemon, no timer anywhere in
+    // this module.
+    // -----------------------------------------------------------------------
+
+    /// Create a schedule and, for an `Invoice`-kind one, its line items —
+    /// the recurring counterpart of `sales_order_create` (draft header) and
+    /// `invoice_issue`'s standalone-item loop (line validation), reused
+    /// rather than re-derived. `frequency`/`interval_count`/`start_date` are
+    /// fixed for the schedule's whole life from this call on — see
+    /// `RecurringSchedulePatch`'s header for why.
+    pub fn recurring_schedule_create(
+        &self,
+        new: NewRecurringSchedule,
+    ) -> CoreResult<RecurringSchedule> {
+        let book = self.book_get(&new.book_id)?;
+        let name = new.name.trim().to_string();
+        if name.is_empty() {
+            return Err(CoreError::Validation(
+                "a recurring schedule needs a name".into(),
+            ));
+        }
+        let interval_count = new.interval_count.unwrap_or(1);
+        if interval_count <= 0 {
+            return Err(CoreError::Validation(
+                "interval_count must be a positive number".into(),
+            ));
+        }
+        let start_date = new.start_date.clone().unwrap_or_else(today);
+        parse_date(&start_date)?;
+        if let Some(end_date) = &new.end_date {
+            parse_date(end_date)?;
+            if end_date.as_str() < start_date.as_str() {
+                return Err(CoreError::Validation(
+                    "end date must not be before the start date".into(),
+                ));
+            }
+        }
+        if let Some(n) = new.max_occurrences {
+            if n <= 0 {
+                return Err(CoreError::Validation(
+                    "max_occurrences must be a positive number".into(),
+                ));
+            }
+        }
+        let currency = match &new.currency {
+            Some(c) => Some(normalize_currency_code(c)?),
+            None => None,
+        };
+        // Exercises the recurrence arithmetic once up front, on the caller's
+        // own frequency/interval, rather than only discovering a bad
+        // combination the first time `recurring_run_due` calls it.
+        let next_run_date =
+            recurrence::occurrence_date(&start_date, new.frequency, interval_count, 0)?;
+
+        struct KindFields {
+            contact_id: Option<String>,
+            series: Option<String>,
+            due_days: Option<i64>,
+            account_id: Option<String>,
+            category_id: Option<String>,
+            amount_minor: Option<i64>,
+            merchant: Option<String>,
+            description: Option<String>,
+            items: Vec<NewInvoiceItemInput>,
+        }
+        let fields = match new.kind {
+            RecurringScheduleKind::Invoice => {
+                let contact_id = new.contact_id.clone().ok_or_else(|| {
+                    CoreError::Validation("an invoice schedule needs a contact_id".into())
+                })?;
+                let contact = self.contact_get(&contact_id)?;
+                if contact.book_id != book.id {
+                    return Err(CoreError::Validation(
+                        "recurring schedule contact belongs to a different book".into(),
+                    ));
+                }
+                if new.items.is_empty() {
+                    return Err(CoreError::Validation(
+                        "an invoice schedule needs at least one line item".into(),
+                    ));
+                }
+                if let Some(due_days) = new.due_days {
+                    if due_days < 0 {
+                        return Err(CoreError::Validation(
+                            "due_days must not be negative".into(),
+                        ));
+                    }
+                }
+                KindFields {
+                    contact_id: Some(contact.id),
+                    series: normalize_optional(new.series.clone()),
+                    due_days: new.due_days,
+                    account_id: None,
+                    category_id: None,
+                    amount_minor: None,
+                    merchant: None,
+                    description: None,
+                    items: new.items.clone(),
+                }
+            }
+            RecurringScheduleKind::Transaction => {
+                if !new.items.is_empty() {
+                    return Err(CoreError::Validation(
+                        "a transaction schedule does not take line items".into(),
+                    ));
+                }
+                let account_id = new.account_id.clone().ok_or_else(|| {
+                    CoreError::Validation("a transaction schedule needs an account_id".into())
+                })?;
+                let account = self.account_get(&account_id)?;
+                if account.book_id != book.id {
+                    return Err(CoreError::Validation(
+                        "recurring schedule account belongs to a different book".into(),
+                    ));
+                }
+                let amount_minor = new.amount_minor.ok_or_else(|| {
+                    CoreError::Validation("a transaction schedule needs an amount_minor".into())
+                })?;
+                if amount_minor == 0 {
+                    return Err(CoreError::Validation(
+                        "a transaction schedule amount must not be zero".into(),
+                    ));
+                }
+                KindFields {
+                    contact_id: None,
+                    series: None,
+                    due_days: None,
+                    account_id: Some(account.id),
+                    category_id: new.category_id.clone(),
+                    amount_minor: Some(amount_minor),
+                    merchant: normalize_optional(new.merchant.clone()),
+                    description: normalize_optional(new.description.clone()),
+                    items: Vec::new(),
+                }
+            }
+        };
+
+        let now = now_iso();
+        let schedule = RecurringSchedule {
+            id: new_id(),
+            book_id: book.id.clone(),
+            kind: new.kind,
+            status: RecurringScheduleStatus::Active,
+            name,
+            frequency: new.frequency,
+            interval_count,
+            start_date,
+            end_date: normalize_optional(new.end_date.clone()),
+            max_occurrences: new.max_occurrences,
+            occurrences_processed: 0,
+            next_run_date,
+            contact_id: fields.contact_id,
+            series: fields.series,
+            due_days: fields.due_days,
+            account_id: fields.account_id,
+            category_id: fields.category_id,
+            amount_minor: fields.amount_minor,
+            merchant: fields.merchant,
+            description: fields.description,
+            currency,
+            notes: normalize_optional(new.notes.clone()),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::recurring::schedule_insert(&tx, &schedule)?;
+        for (line_order, item) in fields.items.into_iter().enumerate() {
+            let (variant_id, description, unit_price_minor) = self.resolve_sales_order_line(
+                &book.id,
+                item.variant_id.as_deref(),
+                Some(&item.description),
+                Some(item.unit_price_minor),
+            )?;
+            if item.quantity <= 0 {
+                return Err(CoreError::Validation(
+                    "recurring schedule line quantity must be positive".into(),
+                ));
+            }
+            if unit_price_minor < 0 {
+                return Err(CoreError::Validation(
+                    "recurring schedule line unit price must not be negative".into(),
+                ));
+            }
+            let tax_rate_bps = item.tax_rate_bps.unwrap_or(0);
+            if !(0..=10_000).contains(&tax_rate_bps) {
+                return Err(CoreError::Validation(
+                    "recurring schedule line tax rate must be between 0 and 10000 basis points"
+                        .into(),
+                ));
+            }
+            let line = RecurringScheduleItem {
+                id: new_id(),
+                schedule_id: schedule.id.clone(),
+                book_id: schedule.book_id.clone(),
+                variant_id,
+                description,
+                quantity: item.quantity,
+                unit_price_minor,
+                tax_rate_bps,
+                line_order: line_order as i64,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            };
+            repo::recurring::item_insert(&tx, &line)?;
+        }
+        self.emit_audit(
+            &tx,
+            Some(&schedule.book_id),
+            "recurring_schedule",
+            Some(&schedule.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&schedule)?),
+        )?;
+        tx.commit()?;
+        Ok(schedule)
+    }
+
+    pub fn recurring_schedule_get(&self, id: &str) -> CoreResult<RecurringSchedule> {
+        repo::recurring::schedule_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+            entity: "recurring_schedule",
+            id: id.to_string(),
+        })
+    }
+
+    /// Every schedule in the book, most recently created first.
+    pub fn recurring_schedule_list(&self, book_id: &str) -> CoreResult<Vec<RecurringSchedule>> {
+        repo::recurring::schedule_list(self.conn(), book_id)
+    }
+
+    /// Every `active` schedule due as of `as_of` (defaults to today) — a
+    /// read, never a write. What `recurring_run_due` is about to act on,
+    /// without acting on it: the "N schedules due" a caller shows before
+    /// running them for real.
+    pub fn recurring_due_list(
+        &self,
+        book_id: &str,
+        as_of: Option<&str>,
+    ) -> CoreResult<Vec<RecurringSchedule>> {
+        let book = self.book_get(book_id)?;
+        let as_of = match as_of {
+            Some(d) => {
+                parse_date(d)?;
+                d.to_string()
+            }
+            None => today(),
+        };
+        repo::recurring::schedule_list_due(self.conn(), &book.id, &as_of)
+    }
+
+    /// Edit a schedule's template fields. `kind`, `frequency`,
+    /// `interval_count` and `start_date` cannot be changed here — see
+    /// `RecurringSchedulePatch`'s header. A kind-specific field (`contact_id`/
+    /// `series`/`due_days` for `Invoice`; `account_id`/`category_id`/
+    /// `amount_minor`/`merchant`/`description` for `Transaction`) is refused
+    /// on a schedule of the other kind, the same discipline
+    /// `recurring_schedule_create` already applies at creation.
+    pub fn recurring_schedule_update(
+        &self,
+        id: &str,
+        patch: RecurringSchedulePatch,
+    ) -> CoreResult<RecurringSchedule> {
+        let before = self.recurring_schedule_get(id)?;
+        let book = self.book_get(&before.book_id)?;
+        let mut after = before.clone();
+
+        if let Some(name) = patch.name {
+            let name = name.trim().to_string();
+            if name.is_empty() {
+                return Err(CoreError::Validation(
+                    "a recurring schedule needs a name".into(),
+                ));
+            }
+            after.name = name;
+        }
+        if let Some(end_date) = patch.end_date {
+            after.end_date = match end_date {
+                Some(d) => {
+                    parse_date(&d)?;
+                    if d.as_str() < after.start_date.as_str() {
+                        return Err(CoreError::Validation(
+                            "end date must not be before the start date".into(),
+                        ));
+                    }
+                    Some(d)
+                }
+                None => None,
+            };
+        }
+        if let Some(max_occurrences) = patch.max_occurrences {
+            if let Some(n) = max_occurrences {
+                if n <= 0 {
+                    return Err(CoreError::Validation(
+                        "max_occurrences must be a positive number".into(),
+                    ));
+                }
+            }
+            after.max_occurrences = max_occurrences;
+        }
+        if let Some(contact_id) = patch.contact_id {
+            if after.kind != RecurringScheduleKind::Invoice {
+                return Err(CoreError::Validation(
+                    "contact_id only applies to an invoice schedule".into(),
+                ));
+            }
+            let contact = self.contact_get(&contact_id)?;
+            if contact.book_id != book.id {
+                return Err(CoreError::Validation(
+                    "recurring schedule contact belongs to a different book".into(),
+                ));
+            }
+            after.contact_id = Some(contact.id);
+        }
+        if let Some(series) = patch.series {
+            if after.kind != RecurringScheduleKind::Invoice {
+                return Err(CoreError::Validation(
+                    "series only applies to an invoice schedule".into(),
+                ));
+            }
+            after.series = normalize_optional(series);
+        }
+        if let Some(due_days) = patch.due_days {
+            if after.kind != RecurringScheduleKind::Invoice {
+                return Err(CoreError::Validation(
+                    "due_days only applies to an invoice schedule".into(),
+                ));
+            }
+            if let Some(d) = due_days {
+                if d < 0 {
+                    return Err(CoreError::Validation(
+                        "due_days must not be negative".into(),
+                    ));
+                }
+            }
+            after.due_days = due_days;
+        }
+        if let Some(account_id) = patch.account_id {
+            if after.kind != RecurringScheduleKind::Transaction {
+                return Err(CoreError::Validation(
+                    "account_id only applies to a transaction schedule".into(),
+                ));
+            }
+            let account = self.account_get(&account_id)?;
+            if account.book_id != book.id {
+                return Err(CoreError::Validation(
+                    "recurring schedule account belongs to a different book".into(),
+                ));
+            }
+            after.account_id = Some(account.id);
+        }
+        if let Some(category_id) = patch.category_id {
+            if after.kind != RecurringScheduleKind::Transaction {
+                return Err(CoreError::Validation(
+                    "category_id only applies to a transaction schedule".into(),
+                ));
+            }
+            after.category_id = category_id;
+        }
+        if let Some(amount_minor) = patch.amount_minor {
+            if after.kind != RecurringScheduleKind::Transaction {
+                return Err(CoreError::Validation(
+                    "amount_minor only applies to a transaction schedule".into(),
+                ));
+            }
+            if amount_minor == 0 {
+                return Err(CoreError::Validation(
+                    "a transaction schedule amount must not be zero".into(),
+                ));
+            }
+            after.amount_minor = Some(amount_minor);
+        }
+        if let Some(merchant) = patch.merchant {
+            if after.kind != RecurringScheduleKind::Transaction {
+                return Err(CoreError::Validation(
+                    "merchant only applies to a transaction schedule".into(),
+                ));
+            }
+            after.merchant = normalize_optional(merchant);
+        }
+        if let Some(description) = patch.description {
+            if after.kind != RecurringScheduleKind::Transaction {
+                return Err(CoreError::Validation(
+                    "description only applies to a transaction schedule".into(),
+                ));
+            }
+            after.description = normalize_optional(description);
+        }
+        if let Some(currency) = patch.currency {
+            after.currency = match currency {
+                Some(c) => Some(normalize_currency_code(&c)?),
+                None => None,
+            };
+        }
+        if let Some(notes) = patch.notes {
+            after.notes = normalize_optional(notes);
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::recurring::schedule_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "recurring_schedule",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// `active -> paused`: `recurring_due_list`/`recurring_run_due` skip a
+    /// paused schedule entirely, and nothing about it advances until
+    /// `recurring_schedule_resume`. Reversible, unlike reaching `ended`.
+    pub fn recurring_schedule_pause(&self, id: &str) -> CoreResult<RecurringSchedule> {
+        let before = self.recurring_schedule_get(id)?;
+        if before.status != RecurringScheduleStatus::Active {
+            return Err(CoreError::InvalidStatusTransition {
+                from: before.status.to_string(),
+                to: RecurringScheduleStatus::Paused.to_string(),
+            });
+        }
+        let mut after = before.clone();
+        after.status = RecurringScheduleStatus::Paused;
+        after.updated_at = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::recurring::schedule_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "recurring_schedule",
+            Some(id),
+            "pause",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// `paused -> active`. `next_run_date` is untouched — a schedule paused
+    /// through several of its own due dates catches every one of them up on
+    /// the next `recurring_run_due`, exactly as a schedule left dormant for
+    /// any other reason would (see migration `0017_recurring`'s header).
+    pub fn recurring_schedule_resume(&self, id: &str) -> CoreResult<RecurringSchedule> {
+        let before = self.recurring_schedule_get(id)?;
+        if before.status != RecurringScheduleStatus::Paused {
+            return Err(CoreError::InvalidStatusTransition {
+                from: before.status.to_string(),
+                to: RecurringScheduleStatus::Active.to_string(),
+            });
+        }
+        let mut after = before.clone();
+        after.status = RecurringScheduleStatus::Active;
+        after.updated_at = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        repo::recurring::schedule_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "recurring_schedule",
+            Some(id),
+            "resume",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Hard delete. Only reachable while the schedule has never run
+    /// (`occurrences_processed == 0`) — once it has, `recurring_runs` holds
+    /// facts that reference it, and deleting the schedule out from under
+    /// them is the same mistake `sales_order_delete` refuses for a confirmed
+    /// order. Pause it instead.
+    pub fn recurring_schedule_delete(&self, id: &str) -> CoreResult<()> {
+        let before = self.recurring_schedule_get(id)?;
+        if before.occurrences_processed > 0 {
+            return Err(CoreError::Validation(
+                "a schedule that has already run cannot be deleted; pause it instead".into(),
+            ));
+        }
+        let tx = self.conn().unchecked_transaction()?;
+        repo::recurring::schedule_delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "recurring_schedule",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Add a line to an `Invoice`-kind schedule's template — the recurring
+    /// counterpart of `sales_order_item_add`, reusing the identical
+    /// catalogue-line-or-free-text-line resolution.
+    pub fn recurring_schedule_item_add(
+        &self,
+        new: NewRecurringScheduleItem,
+    ) -> CoreResult<RecurringScheduleItem> {
+        let schedule = self.recurring_schedule_get(&new.schedule_id)?;
+        if schedule.kind != RecurringScheduleKind::Invoice {
+            return Err(CoreError::Validation(
+                "only an invoice schedule has line items".into(),
+            ));
+        }
+        if new.quantity <= 0 {
+            return Err(CoreError::Validation(
+                "recurring schedule line quantity must be positive".into(),
+            ));
+        }
+        let (variant_id, description, unit_price_minor) = self.resolve_sales_order_line(
+            &schedule.book_id,
+            new.variant_id.as_deref(),
+            new.description.as_deref(),
+            new.unit_price_minor,
+        )?;
+        if unit_price_minor < 0 {
+            return Err(CoreError::Validation(
+                "recurring schedule line unit price must not be negative".into(),
+            ));
+        }
+        let tax_rate_bps = new.tax_rate_bps.unwrap_or(0);
+        if !(0..=10_000).contains(&tax_rate_bps) {
+            return Err(CoreError::Validation(
+                "recurring schedule line tax rate must be between 0 and 10000 basis points".into(),
+            ));
+        }
+
+        let now = now_iso();
+        let tx = self.conn().unchecked_transaction()?;
+        let line_order = repo::recurring::item_list(&tx, &schedule.id)?.len() as i64;
+        let item = RecurringScheduleItem {
+            id: new_id(),
+            schedule_id: schedule.id.clone(),
+            book_id: schedule.book_id.clone(),
+            variant_id,
+            description,
+            quantity: new.quantity,
+            unit_price_minor,
+            tax_rate_bps,
+            line_order,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        repo::recurring::item_insert(&tx, &item)?;
+        self.emit_audit(
+            &tx,
+            Some(&item.book_id),
+            "recurring_schedule_item",
+            Some(&item.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&item)?),
+        )?;
+        tx.commit()?;
+        Ok(item)
+    }
+
+    /// Every line on a schedule, in the order they were added.
+    pub fn recurring_schedule_items_list(
+        &self,
+        schedule_id: &str,
+    ) -> CoreResult<Vec<RecurringScheduleItem>> {
+        repo::recurring::item_list(self.conn(), schedule_id)
+    }
+
+    /// Edit a line's description/quantity/price/tax rate. `variant_id` is
+    /// never reassigned — remove the line and add a new one, same as
+    /// `sales_order_item_update`.
+    pub fn recurring_schedule_item_update(
+        &self,
+        id: &str,
+        patch: RecurringScheduleItemPatch,
+    ) -> CoreResult<RecurringScheduleItem> {
+        let before =
+            repo::recurring::item_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+                entity: "recurring_schedule_item",
+                id: id.to_string(),
+            })?;
+        let mut after = before.clone();
+        if let Some(description) = patch.description {
+            let description = description.trim().to_string();
+            if description.is_empty() {
+                return Err(CoreError::Validation(
+                    "recurring schedule line description must not be empty".into(),
+                ));
+            }
+            after.description = description;
+        }
+        if let Some(quantity) = patch.quantity {
+            if quantity <= 0 {
+                return Err(CoreError::Validation(
+                    "recurring schedule line quantity must be positive".into(),
+                ));
+            }
+            after.quantity = quantity;
+        }
+        if let Some(unit_price_minor) = patch.unit_price_minor {
+            if unit_price_minor < 0 {
+                return Err(CoreError::Validation(
+                    "recurring schedule line unit price must not be negative".into(),
+                ));
+            }
+            after.unit_price_minor = unit_price_minor;
+        }
+        if let Some(tax_rate_bps) = patch.tax_rate_bps {
+            if !(0..=10_000).contains(&tax_rate_bps) {
+                return Err(CoreError::Validation(
+                    "recurring schedule line tax rate must be between 0 and 10000 basis points"
+                        .into(),
+                ));
+            }
+            after.tax_rate_bps = tax_rate_bps;
+        }
+        after.updated_at = now_iso();
+
+        let tx = self.conn().unchecked_transaction()?;
+        repo::recurring::item_update(&tx, &after)?;
+        self.emit_audit(
+            &tx,
+            Some(&after.book_id),
+            "recurring_schedule_item",
+            Some(id),
+            "update",
+            Some(serde_json::to_string(&before)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        tx.commit()?;
+        Ok(after)
+    }
+
+    /// Remove a line from an invoice schedule's template.
+    pub fn recurring_schedule_item_remove(&self, id: &str) -> CoreResult<()> {
+        let before =
+            repo::recurring::item_get(self.conn(), id)?.ok_or_else(|| CoreError::NotFound {
+                entity: "recurring_schedule_item",
+                id: id.to_string(),
+            })?;
+        let tx = self.conn().unchecked_transaction()?;
+        repo::recurring::item_delete(&tx, id)?;
+        self.emit_audit(
+            &tx,
+            Some(&before.book_id),
+            "recurring_schedule_item",
+            Some(id),
+            "delete",
+            Some(serde_json::to_string(&before)?),
+            None,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// What the next `count` occurrences (default 1, capped at 60) of `id`
+    /// would generate — a pure read, nothing is created, no schedule state
+    /// changes. Stops early once the schedule's own `end_date`/
+    /// `max_occurrences` bound is reached, the identical bound
+    /// `recurring_process_occurrence` enforces for a real run.
+    pub fn recurring_schedule_preview(
+        &self,
+        id: &str,
+        count: Option<u32>,
+    ) -> CoreResult<Vec<RecurringOccurrencePreview>> {
+        let schedule = self.recurring_schedule_get(id)?;
+        let count = count.unwrap_or(1).clamp(1, 60);
+        let items = if schedule.kind == RecurringScheduleKind::Invoice {
+            repo::recurring::item_list(self.conn(), &schedule.id)?
+        } else {
+            Vec::new()
+        };
+        let mut out = Vec::new();
+        for offset in 0..i64::from(count) {
+            let occurrence_index = schedule.occurrences_processed + offset;
+            if let Some(max) = schedule.max_occurrences {
+                if occurrence_index >= max {
+                    break;
+                }
+            }
+            let occurrence_date = recurrence::occurrence_date(
+                &schedule.start_date,
+                schedule.frequency,
+                schedule.interval_count,
+                occurrence_index,
+            )?;
+            if let Some(end) = &schedule.end_date {
+                if occurrence_date.as_str() > end.as_str() {
+                    break;
+                }
+            }
+            let summary = self.recurring_preview_summary(&schedule, &occurrence_date, &items)?;
+            out.push(RecurringOccurrencePreview {
+                schedule_id: schedule.id.clone(),
+                occurrence_index,
+                occurrence_date,
+                kind: schedule.kind,
+                summary,
+            });
+        }
+        Ok(out)
+    }
+
+    /// One human sentence for a schedule's occurrence, money left in raw
+    /// minor units (formatting for display is a surface's job, not core's)
+    /// — shared so `recurring_schedule_preview` and every surface that
+    /// renders it agree on the wording rather than composing their own.
+    fn recurring_preview_summary(
+        &self,
+        schedule: &RecurringSchedule,
+        occurrence_date: &str,
+        items: &[RecurringScheduleItem],
+    ) -> CoreResult<String> {
+        let currency = schedule.currency.as_deref().unwrap_or("book currency");
+        match schedule.kind {
+            RecurringScheduleKind::Invoice => {
+                let contact_name = match &schedule.contact_id {
+                    Some(id) => self
+                        .contact_get(id)
+                        .map(|c| c.name)
+                        .unwrap_or_else(|_| "an unknown contact".to_string()),
+                    None => "an unknown contact".to_string(),
+                };
+                let totals = repo::sales::line_totals(
+                    items
+                        .iter()
+                        .map(|i| (i.quantity, i.unit_price_minor, i.tax_rate_bps)),
+                )?;
+                let due_date =
+                    recurrence::due_date(occurrence_date, schedule.due_days.unwrap_or(0))?;
+                Ok(format!(
+                    "Invoice for {contact_name} — {} {currency} due {due_date}",
+                    totals.total_minor
+                ))
+            }
+            RecurringScheduleKind::Transaction => {
+                let amount = schedule.amount_minor.unwrap_or(0);
+                let label = schedule
+                    .merchant
+                    .clone()
+                    .or_else(|| schedule.description.clone())
+                    .unwrap_or_else(|| schedule.name.clone());
+                Ok(format!("Transaction: {label} — {amount} {currency}"))
+            }
+        }
+    }
+
+    /// Process exactly one occurrence of `schedule` — generate a real
+    /// invoice/transaction through the shared `issue_invoice_in_tx`/
+    /// `create_transaction_in_tx` path, or (`skip: true`) record a
+    /// `Skipped` run without generating anything — and advance
+    /// `occurrences_processed`/`next_run_date`/`status` in the *same*
+    /// SQLite transaction. This one transaction is the whole idempotency
+    /// story: see migration `0017_recurring`'s header for why running due
+    /// schedules twice cannot double-create once this commits.
+    fn recurring_process_occurrence(
+        &self,
+        schedule: &RecurringSchedule,
+        skip: bool,
+    ) -> CoreResult<RecurringRun> {
+        let book = self.book_get(&schedule.book_id)?;
+        let occurrence_index = schedule.occurrences_processed;
+        let occurrence_date = recurrence::occurrence_date(
+            &schedule.start_date,
+            schedule.frequency,
+            schedule.interval_count,
+            occurrence_index,
+        )?;
+
+        let tx = self.conn().unchecked_transaction()?;
+
+        // Belt-and-suspenders: `occurrences_processed` already having moved
+        // past this index is the primary guard (a second call simply finds
+        // nothing due), and `UNIQUE (schedule_id, occurrence_index)` is the
+        // schema-level backstop. This is the read-side half of that
+        // backstop, catching the race before it reaches the constraint.
+        if repo::recurring::run_exists(&tx, &schedule.id, occurrence_index)? {
+            return Err(CoreError::DuplicateRecurringRun {
+                schedule_id: schedule.id.clone(),
+                occurrence_index,
+            });
+        }
+
+        let (outcome, generated_table, generated_id) = if skip {
+            (RecurringRunOutcome::Skipped, None, None)
+        } else {
+            match schedule.kind {
+                RecurringScheduleKind::Invoice => {
+                    let contact_id = schedule.contact_id.clone().ok_or_else(|| {
+                        CoreError::Validation("invoice schedule has no contact_id".into())
+                    })?;
+                    let items = repo::recurring::item_list(&tx, &schedule.id)?;
+                    if items.is_empty() {
+                        return Err(CoreError::Validation(
+                            "cannot generate an invoice with no line items".into(),
+                        ));
+                    }
+                    let due_date =
+                        recurrence::due_date(&occurrence_date, schedule.due_days.unwrap_or(0))?;
+                    let new_invoice = NewInvoice {
+                        book_id: schedule.book_id.clone(),
+                        contact_id: Some(contact_id),
+                        sales_order_id: None,
+                        series: schedule.series.clone(),
+                        issue_date: Some(occurrence_date.clone()),
+                        due_date,
+                        currency: schedule.currency.clone(),
+                        notes: schedule.notes.clone(),
+                        items: items
+                            .into_iter()
+                            .map(|i| NewInvoiceItemInput {
+                                variant_id: i.variant_id,
+                                description: i.description,
+                                quantity: i.quantity,
+                                unit_price_minor: i.unit_price_minor,
+                                tax_rate_bps: Some(i.tax_rate_bps),
+                            })
+                            .collect(),
+                    };
+                    // Reads more on this already-open transaction (the
+                    // `run_exists` check above already did) — fine here:
+                    // `recurring_process_occurrence` never claimed
+                    // `invoice_issue`'s own zero-reads-before-the-write
+                    // concurrency guarantee (see `resolve_invoice`'s
+                    // header), only that this occurrence's writes commit
+                    // atomically together.
+                    let resolved = self.resolve_invoice(&book, &new_invoice)?;
+                    let invoice = self.issue_invoice_in_tx(&tx, &book, resolved)?;
+                    (
+                        RecurringRunOutcome::Generated,
+                        Some("invoices".to_string()),
+                        Some(invoice.id),
+                    )
+                }
+                RecurringScheduleKind::Transaction => {
+                    let account_id = schedule.account_id.clone().ok_or_else(|| {
+                        CoreError::Validation("transaction schedule has no account_id".into())
+                    })?;
+                    let amount_minor = schedule.amount_minor.ok_or_else(|| {
+                        CoreError::Validation("transaction schedule has no amount_minor".into())
+                    })?;
+                    let currency = match &schedule.currency {
+                        Some(c) => c.clone(),
+                        None => book.currency.clone(),
+                    };
+                    let new_txn = NewTransaction {
+                        book_id: schedule.book_id.clone(),
+                        account_id,
+                        source: TransactionSource::Recurring,
+                        // A second, independent idempotency backstop for the
+                        // transaction path specifically — see migration
+                        // `0017_recurring`'s header: `transaction_create`'s
+                        // own dedupe refuses a second insert on its own,
+                        // with no knowledge that a recurring schedule is
+                        // even involved.
+                        provider_txn_id: Some(format!(
+                            "recurring:{}:{occurrence_index}",
+                            schedule.id
+                        )),
+                        posted_date: occurrence_date.clone(),
+                        amount_minor,
+                        currency,
+                        merchant: schedule.merchant.clone(),
+                        description: schedule.description.clone(),
+                        notes: schedule.notes.clone(),
+                        category_id: schedule.category_id.clone(),
+                        document_id: None,
+                        dedupe_occurrence: 0,
+                    };
+                    let txn = self.create_transaction_in_tx(&tx, new_txn)?;
+                    (
+                        RecurringRunOutcome::Generated,
+                        Some("transactions".to_string()),
+                        Some(txn.id),
+                    )
+                }
+            }
+        };
+
+        let run = RecurringRun {
+            id: new_id(),
+            schedule_id: schedule.id.clone(),
+            book_id: schedule.book_id.clone(),
+            occurrence_index,
+            occurrence_date,
+            outcome,
+            generated_table,
+            generated_id,
+            created_at: now_iso(),
+        };
+        repo::recurring::run_insert(&tx, &run)?;
+
+        let mut after = schedule.clone();
+        after.occurrences_processed = occurrence_index + 1;
+        after.next_run_date = recurrence::occurrence_date(
+            &after.start_date,
+            after.frequency,
+            after.interval_count,
+            after.occurrences_processed,
+        )?;
+        let ended_by_count = after
+            .max_occurrences
+            .is_some_and(|max| after.occurrences_processed >= max);
+        let ended_by_date = after
+            .end_date
+            .as_deref()
+            .is_some_and(|end| after.next_run_date.as_str() > end);
+        if ended_by_count || ended_by_date {
+            after.status = RecurringScheduleStatus::Ended;
+        }
+        after.updated_at = now_iso();
+        repo::recurring::schedule_update(&tx, &after)?;
+
+        self.emit_audit(
+            &tx,
+            Some(&schedule.book_id),
+            "recurring_schedule",
+            Some(&schedule.id),
+            if skip {
+                "skip_occurrence"
+            } else {
+                "run_occurrence"
+            },
+            Some(serde_json::to_string(schedule)?),
+            Some(serde_json::to_string(&after)?),
+        )?;
+        self.emit_audit(
+            &tx,
+            Some(&run.book_id),
+            "recurring_run",
+            Some(&run.id),
+            "create",
+            None,
+            Some(serde_json::to_string(&run)?),
+        )?;
+
+        tx.commit()?;
+        Ok(run)
+    }
+
+    /// Deliberately advance a schedule past its next occurrence without
+    /// generating anything — a supplier on hold, a customer who asked to
+    /// skip a month. Still consumes the occurrence index and records a
+    /// `Skipped` run, so a later `recurring_run_due` does not turn around
+    /// and generate the one just skipped. Refused once a schedule has
+    /// `ended` — there is nothing left to skip.
+    pub fn recurring_schedule_skip_next(&self, id: &str) -> CoreResult<RecurringRun> {
+        let schedule = self.recurring_schedule_get(id)?;
+        if schedule.status == RecurringScheduleStatus::Ended {
+            return Err(CoreError::Validation(
+                "this schedule has already ended; there is no occurrence left to skip".into(),
+            ));
+        }
+        self.recurring_process_occurrence(&schedule, true)
+    }
+
+    /// Generate every occurrence due, across every active schedule in
+    /// `book_id`, as of `as_of` (defaults to today) — **the only function
+    /// in this feature that ever creates an invoice or a transaction on its
+    /// own initiative, and only because this was called.** See migration
+    /// `0017_recurring`'s header: there is no scheduler behind this, and
+    /// calling it twice for the same date generates nothing the second
+    /// time, because the first call already advanced every schedule it
+    /// touched past its due date.
+    ///
+    /// A schedule dormant long enough to have several occurrences due is
+    /// caught all the way up — one `recurring_process_occurrence` call, and
+    /// one `recurring_runs` row, per occurrence, not a single lump
+    /// generation.
+    ///
+    /// A schedule whose occurrence fails to generate (an archived contact,
+    /// a locked accounting period) is recorded in the audit log rather than
+    /// aborting every other schedule due in the same call, and is left
+    /// exactly as due as it was — re-running after fixing the underlying
+    /// problem picks it straight back up.
+    pub fn recurring_run_due(
+        &self,
+        book_id: &str,
+        as_of: Option<&str>,
+    ) -> CoreResult<Vec<RecurringRun>> {
+        let book = self.book_get(book_id)?;
+        let as_of = match as_of {
+            Some(d) => {
+                parse_date(d)?;
+                d.to_string()
+            }
+            None => today(),
+        };
+        let due = repo::recurring::schedule_list_due(self.conn(), &book.id, &as_of)?;
+        let mut runs = Vec::new();
+        for mut schedule in due {
+            loop {
+                if schedule.status != RecurringScheduleStatus::Active
+                    || schedule.next_run_date.as_str() > as_of.as_str()
+                {
+                    break;
+                }
+                match self.recurring_process_occurrence(&schedule, false) {
+                    Ok(run) => {
+                        runs.push(run);
+                        schedule = self.recurring_schedule_get(&schedule.id)?;
+                    }
+                    Err(e) => {
+                        let tx = self.conn().unchecked_transaction()?;
+                        self.emit_audit(
+                            &tx,
+                            Some(&schedule.book_id),
+                            "recurring_schedule",
+                            Some(&schedule.id),
+                            "run_failed",
+                            None,
+                            Some(
+                                serde_json::json!({
+                                    "occurrence_index": schedule.occurrences_processed,
+                                    "error": e.to_string(),
+                                })
+                                .to_string(),
+                            ),
+                        )?;
+                        tx.commit()?;
+                        break;
+                    }
+                }
+            }
+        }
+        Ok(runs)
+    }
+
+    /// Every occurrence a schedule has ever reached, generated or
+    /// deliberately skipped, oldest first.
+    pub fn recurring_runs_list(&self, schedule_id: &str) -> CoreResult<Vec<RecurringRun>> {
+        repo::recurring::run_list(self.conn(), schedule_id)
     }
 
     // -----------------------------------------------------------------------
@@ -9832,6 +10978,515 @@ mod tests {
         assert_eq!(
             numbers, expected,
             "concurrent invoice_issue calls must hand out exactly 1..=N — no gap, no duplicate"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Recurring schedules (migration 0017, PARITY.md "Repeating invoices /
+    // recurring transactions")
+    // -----------------------------------------------------------------------
+
+    fn make_invoice_schedule(
+        svc: &CoreService,
+        book: &Book,
+        contact: &Contact,
+        start_date: &str,
+    ) -> RecurringSchedule {
+        svc.recurring_schedule_create(NewRecurringSchedule {
+            book_id: book.id.clone(),
+            kind: RecurringScheduleKind::Invoice,
+            name: "Monthly retainer".into(),
+            frequency: RecurringFrequency::Monthly,
+            interval_count: None,
+            start_date: Some(start_date.to_string()),
+            end_date: None,
+            max_occurrences: None,
+            contact_id: Some(contact.id.clone()),
+            series: None,
+            due_days: Some(14),
+            items: vec![NewInvoiceItemInput {
+                variant_id: None,
+                description: "Retainer".into(),
+                quantity: 1,
+                unit_price_minor: 100_000,
+                tax_rate_bps: None,
+            }],
+            account_id: None,
+            category_id: None,
+            amount_minor: None,
+            merchant: None,
+            description: None,
+            currency: None,
+            notes: None,
+        })
+        .expect("create invoice schedule")
+    }
+
+    fn make_transaction_schedule(
+        svc: &CoreService,
+        book: &Book,
+        account: &Account,
+        start_date: &str,
+    ) -> RecurringSchedule {
+        svc.recurring_schedule_create(NewRecurringSchedule {
+            book_id: book.id.clone(),
+            kind: RecurringScheduleKind::Transaction,
+            name: "Rent".into(),
+            frequency: RecurringFrequency::Monthly,
+            interval_count: None,
+            start_date: Some(start_date.to_string()),
+            end_date: None,
+            max_occurrences: None,
+            contact_id: None,
+            series: None,
+            due_days: None,
+            items: vec![],
+            account_id: Some(account.id.clone()),
+            category_id: None,
+            amount_minor: Some(-850_000),
+            merchant: Some("Landlord".into()),
+            description: None,
+            currency: None,
+            notes: None,
+        })
+        .expect("create transaction schedule")
+    }
+
+    #[test]
+    fn recurring_schedule_create_requires_kind_specific_fields() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme");
+        let account = make_account(&svc, &book);
+
+        // An invoice schedule with no contact_id is refused.
+        let err = svc
+            .recurring_schedule_create(NewRecurringSchedule {
+                book_id: book.id.clone(),
+                kind: RecurringScheduleKind::Invoice,
+                name: "No contact".into(),
+                frequency: RecurringFrequency::Monthly,
+                interval_count: None,
+                start_date: None,
+                end_date: None,
+                max_occurrences: None,
+                contact_id: None,
+                series: None,
+                due_days: None,
+                items: vec![NewInvoiceItemInput {
+                    variant_id: None,
+                    description: "x".into(),
+                    quantity: 1,
+                    unit_price_minor: 100,
+                    tax_rate_bps: None,
+                }],
+                account_id: None,
+                category_id: None,
+                amount_minor: None,
+                merchant: None,
+                description: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)));
+
+        // An invoice schedule with no line items is refused.
+        let err = svc
+            .recurring_schedule_create(NewRecurringSchedule {
+                book_id: book.id.clone(),
+                kind: RecurringScheduleKind::Invoice,
+                name: "No items".into(),
+                frequency: RecurringFrequency::Monthly,
+                interval_count: None,
+                start_date: None,
+                end_date: None,
+                max_occurrences: None,
+                contact_id: Some(contact.id.clone()),
+                series: None,
+                due_days: None,
+                items: vec![],
+                account_id: None,
+                category_id: None,
+                amount_minor: None,
+                merchant: None,
+                description: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)));
+
+        // A transaction schedule with no account_id is refused.
+        let err = svc
+            .recurring_schedule_create(NewRecurringSchedule {
+                book_id: book.id.clone(),
+                kind: RecurringScheduleKind::Transaction,
+                name: "No account".into(),
+                frequency: RecurringFrequency::Monthly,
+                interval_count: None,
+                start_date: None,
+                end_date: None,
+                max_occurrences: None,
+                contact_id: None,
+                series: None,
+                due_days: None,
+                items: vec![],
+                account_id: None,
+                category_id: None,
+                amount_minor: Some(-1000),
+                merchant: None,
+                description: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)));
+
+        // A transaction schedule with no amount_minor is refused.
+        let err = svc
+            .recurring_schedule_create(NewRecurringSchedule {
+                book_id: book.id.clone(),
+                kind: RecurringScheduleKind::Transaction,
+                name: "No amount".into(),
+                frequency: RecurringFrequency::Monthly,
+                interval_count: None,
+                start_date: None,
+                end_date: None,
+                max_occurrences: None,
+                contact_id: None,
+                series: None,
+                due_days: None,
+                items: vec![],
+                account_id: Some(account.id.clone()),
+                category_id: None,
+                amount_minor: None,
+                merchant: None,
+                description: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)));
+    }
+
+    /// **The idempotency guarantee the task exists to prove.** Calling
+    /// `recurring_run_due` twice for the same `as_of` must not double-create
+    /// — see migration `0017_recurring`'s header. A monthly schedule anchored
+    /// on the 31st is used deliberately: its due date crossing February is
+    /// the month-end trap, proven end to end here (not just in
+    /// `recurrence::tests`) via the actual invoice dates `recurring_run_due`
+    /// produces.
+    #[test]
+    fn recurring_invoice_schedule_runs_idempotently_and_respects_month_end() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme");
+        let schedule = make_invoice_schedule(&svc, &book, &contact, "2026-01-31");
+
+        // Dry run: nothing generated, but the preview reports the occurrence
+        // that would be.
+        let preview = svc
+            .recurring_schedule_preview(&schedule.id, Some(1))
+            .unwrap();
+        assert_eq!(preview.len(), 1);
+        assert_eq!(preview[0].occurrence_index, 0);
+        assert_eq!(preview[0].occurrence_date, "2026-01-31");
+        assert!(svc.invoice_list(&book.id).unwrap().is_empty());
+
+        // First real run, as of a date on/after the first occurrence.
+        let runs = svc
+            .recurring_run_due(&book.id, Some("2026-02-01"))
+            .unwrap();
+        assert_eq!(runs.len(), 1, "exactly one occurrence was due");
+        assert_eq!(runs[0].occurrence_index, 0);
+        assert_eq!(runs[0].occurrence_date, "2026-01-31");
+        assert_eq!(runs[0].outcome, RecurringRunOutcome::Generated);
+        let invoices = svc.invoice_list(&book.id).unwrap();
+        assert_eq!(invoices.len(), 1, "exactly one invoice was generated");
+        assert_eq!(invoices[0].issue_date, "2026-01-31");
+        assert_eq!(invoices[0].due_date, "2026-02-14");
+
+        // Calling it again for the SAME as_of must generate nothing more:
+        // the schedule already advanced past it.
+        let runs_again = svc
+            .recurring_run_due(&book.id, Some("2026-02-01"))
+            .unwrap();
+        assert!(
+            runs_again.is_empty(),
+            "a second run for the same as_of must not double-create"
+        );
+        assert_eq!(
+            svc.invoice_list(&book.id).unwrap().len(),
+            1,
+            "still exactly one invoice after re-running"
+        );
+
+        // The schedule itself only advanced once.
+        let after_first = svc.recurring_schedule_get(&schedule.id).unwrap();
+        assert_eq!(after_first.occurrences_processed, 1);
+        assert_eq!(after_first.next_run_date, "2026-02-28");
+
+        // Running again as of March generates occurrence 1 (Feb 28 — the
+        // month-end clamp) and only that one occurrence, proving the
+        // schedule caught up exactly one step rather than skipping ahead.
+        let runs_feb = svc
+            .recurring_run_due(&book.id, Some("2026-03-01"))
+            .unwrap();
+        assert_eq!(runs_feb.len(), 1);
+        assert_eq!(runs_feb[0].occurrence_date, "2026-02-28");
+        let invoices = svc.invoice_list(&book.id).unwrap();
+        assert_eq!(invoices.len(), 2);
+        assert!(
+            invoices.iter().any(|i| i.issue_date == "2026-02-28"),
+            "February's occurrence must clamp to the 28th, not skip to March"
+        );
+
+        // Every occurrence is recorded, oldest first.
+        let history = svc.recurring_runs_list(&schedule.id).unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].occurrence_index, 0);
+        assert_eq!(history[1].occurrence_index, 1);
+        assert!(history.iter().all(|r| r.generated_table.as_deref() == Some("invoices")));
+    }
+
+    /// A schedule dormant across several of its own due dates catches all of
+    /// them up in one `recurring_run_due` call — one occurrence, one
+    /// generated transaction, per missed date — rather than a single lump
+    /// generation. Also proves the transaction path reuses `transaction_
+    /// create`'s own dedupe: the `provider_txn_id` it stamps on each
+    /// generated transaction is unique per occurrence.
+    #[test]
+    fn recurring_transaction_schedule_catches_up_multiple_missed_occurrences() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let _schedule = make_transaction_schedule(&svc, &book, &account, "2026-01-01");
+
+        // Three months pass with nobody running it.
+        let runs = svc
+            .recurring_run_due(&book.id, Some("2026-04-15"))
+            .unwrap();
+        assert_eq!(runs.len(), 3, "three occurrences were due: Jan, Feb, Mar");
+        let dates: Vec<&str> = runs.iter().map(|r| r.occurrence_date.as_str()).collect();
+        assert_eq!(dates, vec!["2026-01-01", "2026-02-01", "2026-03-01"]);
+
+        let txns = svc
+            .transaction_list(&book.id, &TransactionFilter::default())
+            .unwrap();
+        assert_eq!(txns.len(), 3);
+        for txn in &txns {
+            assert_eq!(txn.amount_minor, -850_000);
+            assert_eq!(txn.merchant.as_deref(), Some("Landlord"));
+        }
+
+        // Re-running the same as_of generates nothing more.
+        let empty = svc
+            .recurring_run_due(&book.id, Some("2026-04-15"))
+            .unwrap();
+        assert!(empty.is_empty());
+        assert_eq!(
+            svc.transaction_list(&book.id, &TransactionFilter::default())
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn recurring_schedule_pause_hides_it_from_due_and_resume_catches_it_back_up() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let schedule = make_transaction_schedule(&svc, &book, &account, "2026-01-01");
+
+        let paused = svc.recurring_schedule_pause(&schedule.id).unwrap();
+        assert_eq!(paused.status, RecurringScheduleStatus::Paused);
+
+        // Pausing again (already paused) is an invalid transition.
+        assert!(matches!(
+            svc.recurring_schedule_pause(&schedule.id).unwrap_err(),
+            CoreError::InvalidStatusTransition { .. }
+        ));
+
+        // Due as of well after the anchor date, but paused, so nothing runs.
+        assert!(svc
+            .recurring_due_list(&book.id, Some("2026-06-01"))
+            .unwrap()
+            .is_empty());
+        let runs = svc.recurring_run_due(&book.id, Some("2026-06-01")).unwrap();
+        assert!(runs.is_empty());
+
+        let resumed = svc.recurring_schedule_resume(&schedule.id).unwrap();
+        assert_eq!(resumed.status, RecurringScheduleStatus::Active);
+        assert_eq!(
+            resumed.next_run_date, "2026-01-01",
+            "pausing does not move the clock — resuming catches up every missed date"
+        );
+
+        let runs = svc.recurring_run_due(&book.id, Some("2026-06-01")).unwrap();
+        assert_eq!(runs.len(), 6, "Jan through Jun, all caught up after resume");
+    }
+
+    #[test]
+    fn recurring_schedule_skip_next_advances_without_generating() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let schedule = make_transaction_schedule(&svc, &book, &account, "2026-01-01");
+
+        let run = svc.recurring_schedule_skip_next(&schedule.id).unwrap();
+        assert_eq!(run.outcome, RecurringRunOutcome::Skipped);
+        assert_eq!(run.generated_table, None);
+        assert_eq!(run.generated_id, None);
+        assert!(svc
+            .transaction_list(&book.id, &TransactionFilter::default())
+            .unwrap()
+            .is_empty());
+
+        let after = svc.recurring_schedule_get(&schedule.id).unwrap();
+        assert_eq!(after.occurrences_processed, 1);
+        assert_eq!(after.next_run_date, "2026-02-01");
+
+        // A later real run does not resurrect the skipped occurrence.
+        let runs = svc.recurring_run_due(&book.id, Some("2026-02-01")).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].occurrence_index, 1);
+    }
+
+    #[test]
+    fn recurring_schedule_delete_only_before_it_has_ever_run() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let schedule = make_transaction_schedule(&svc, &book, &account, "2026-01-01");
+
+        svc.recurring_schedule_skip_next(&schedule.id).unwrap();
+        let err = svc.recurring_schedule_delete(&schedule.id).unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)));
+
+        let fresh = make_transaction_schedule(&svc, &book, &account, "2026-01-01");
+        svc.recurring_schedule_delete(&fresh.id).unwrap();
+        assert!(svc.recurring_schedule_get(&fresh.id).is_err());
+    }
+
+    #[test]
+    fn recurring_schedule_ends_once_max_occurrences_is_reached() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let schedule = svc
+            .recurring_schedule_create(NewRecurringSchedule {
+                book_id: book.id.clone(),
+                kind: RecurringScheduleKind::Transaction,
+                name: "Two-month trial".into(),
+                frequency: RecurringFrequency::Monthly,
+                interval_count: None,
+                start_date: Some("2026-01-01".into()),
+                end_date: None,
+                max_occurrences: Some(2),
+                contact_id: None,
+                series: None,
+                due_days: None,
+                items: vec![],
+                account_id: Some(account.id.clone()),
+                category_id: None,
+                amount_minor: Some(-500),
+                merchant: None,
+                description: None,
+                currency: None,
+                notes: None,
+            })
+            .unwrap();
+
+        let runs = svc.recurring_run_due(&book.id, Some("2026-12-31")).unwrap();
+        assert_eq!(runs.len(), 2, "the cap stops it at exactly two occurrences");
+        let after = svc.recurring_schedule_get(&schedule.id).unwrap();
+        assert_eq!(after.status, RecurringScheduleStatus::Ended);
+
+        // An ended schedule is never due again, no matter how far as_of is
+        // pushed out.
+        assert!(svc
+            .recurring_due_list(&book.id, Some("2030-01-01"))
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Belt-and-suspenders backstop, exercised directly against the schema —
+    /// see migration `0017_recurring`'s header. `recurring_process_occurrence`
+    /// never reaches this in ordinary use; it is what stops a race from
+    /// silently double-posting if it ever did.
+    #[test]
+    fn recurring_run_occurrence_uniqueness_is_enforced_at_the_database_level() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let account = make_account(&svc, &book);
+        let schedule = make_transaction_schedule(&svc, &book, &account, "2026-01-01");
+        let conn = svc.conn_for_test();
+
+        conn.execute(
+            "INSERT INTO recurring_runs
+                 (id, schedule_id, book_id, occurrence_index, occurrence_date, outcome, created_at)
+             VALUES ('rr-a', ?1, ?2, 0, '2026-01-01', 'skipped', 't')",
+            rusqlite::params![schedule.id, book.id],
+        )
+        .unwrap();
+
+        let err = conn
+            .execute(
+                "INSERT INTO recurring_runs
+                     (id, schedule_id, book_id, occurrence_index, occurrence_date, outcome, created_at)
+                 VALUES ('rr-b', ?1, ?2, 0, '2026-01-01', 'skipped', 't')",
+                rusqlite::params![schedule.id, book.id],
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("unique"),
+            "a duplicate (schedule_id, occurrence_index) must be refused by the database itself, got {err}"
+        );
+    }
+
+    #[test]
+    fn recurring_schedule_item_add_list_update_and_remove() {
+        let svc = svc();
+        let book = make_book(&svc);
+        let contact = make_contact(&svc, &book, "Acme");
+        let schedule = make_invoice_schedule(&svc, &book, &contact, "2026-01-15");
+
+        let item = svc
+            .recurring_schedule_item_add(NewRecurringScheduleItem {
+                schedule_id: schedule.id.clone(),
+                variant_id: None,
+                description: Some("Extra hours".into()),
+                quantity: 2,
+                unit_price_minor: Some(5_000),
+                tax_rate_bps: None,
+            })
+            .unwrap();
+        assert_eq!(
+            svc.recurring_schedule_items_list(&schedule.id)
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let updated = svc
+            .recurring_schedule_item_update(
+                &item.id,
+                RecurringScheduleItemPatch {
+                    quantity: Some(3),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.quantity, 3);
+
+        svc.recurring_schedule_item_remove(&item.id).unwrap();
+        assert_eq!(
+            svc.recurring_schedule_items_list(&schedule.id)
+                .unwrap()
+                .len(),
+            1
         );
     }
 

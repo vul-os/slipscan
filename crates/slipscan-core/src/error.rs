@@ -30,6 +30,16 @@ pub enum CoreError {
         source_id: String,
     },
 
+    #[error(
+        "recurring schedule {schedule_id} already has a run recorded for occurrence \
+         {occurrence_index} — the belt-and-suspenders backstop in migration 0017_recurring, \
+         not expected to fire outside a genuine race"
+    )]
+    DuplicateRecurringRun {
+        schedule_id: String,
+        occurrence_index: i64,
+    },
+
     #[error("invalid status transition: {from} -> {to}")]
     InvalidStatusTransition { from: String, to: String },
 

@@ -58,6 +58,14 @@ str_enum!(TransactionSource {
     Email => "email",
     Import => "import",
     Manual => "manual",
+    // Migration 0017 (recurring schedules): a transaction materialised by
+    // `CoreService::recurring_run_due`/`recurring_schedule_skip_next` from a
+    // schedule template. Distinct from `Manual` on purpose — labelling a
+    // machine-materialised row "manual" would claim a person typed it in,
+    // which is exactly the false "looks automatic" honesty this feature's
+    // brief warns against. Nothing about the row's *effect* differs: it
+    // dedupes, categorises and posts exactly like any other transaction.
+    Recurring => "recurring",
 });
 
 str_enum!(TransactionStatus {
@@ -2011,6 +2019,327 @@ pub struct AgedReceivables {
 }
 
 // ---------------------------------------------------------------------------
+// Recurring schedules (migration 0017, PARITY.md "Repeating invoices /
+// recurring transactions"). See that migration's header for the full design:
+// nothing here runs itself, `recurring_run_due` is the only thing that ever
+// generates, and it does so by calling `invoice_issue`/`transaction_create`
+// verbatim rather than reimplementing either.
+// ---------------------------------------------------------------------------
+
+str_enum!(
+    /// Which existing creation path `recurring_process_occurrence` calls.
+    /// Fixed for a schedule's whole life — see migration `0017_recurring`'s
+    /// header for why this is not one of `RecurringSchedulePatch`'s fields.
+    RecurringScheduleKind {
+        Invoice => "invoice",
+        Transaction => "transaction",
+    }
+);
+
+str_enum!(
+    /// `Active` schedules are the only ones `recurring_due_list`/
+    /// `recurring_run_due` ever look at. `Paused` is reversible
+    /// (`recurring_schedule_resume`); `Ended` is not — it is set once by
+    /// `recurring_process_occurrence` itself when an occurrence reaches
+    /// `end_date`/`max_occurrences`, never by direct request.
+    RecurringScheduleStatus {
+        Active => "active",
+        Paused => "paused",
+        Ended => "ended",
+    }
+);
+
+str_enum!(
+    /// A recurrence cadence with `interval_count` giving the "every N"
+    /// multiplier (`interval_count: 2, frequency: Monthly` = every second
+    /// month). See `crate::recurrence::occurrence_date` for the exact
+    /// arithmetic, especially `Monthly`/`Yearly`'s month-end clamp.
+    RecurringFrequency {
+        Daily => "daily",
+        Weekly => "weekly",
+        Monthly => "monthly",
+        Yearly => "yearly",
+    }
+);
+
+str_enum!(
+    /// What `recurring_process_occurrence` did with one occurrence:
+    /// generated a real invoice/transaction, or — `recurring_schedule_skip_
+    /// next` — deliberately produced nothing while still advancing the
+    /// schedule past it.
+    RecurringRunOutcome {
+        Generated => "generated",
+        Skipped => "skipped",
+    }
+);
+
+/// A repeating template plus its recurrence rule and the date its next
+/// occurrence falls due. See migration `0017_recurring`'s header for the
+/// full design; the short version: nothing here runs itself, and every
+/// field is either the rule (`frequency`/`interval_count`/`start_date`/
+/// `end_date`/`max_occurrences`), the progress marker
+/// (`occurrences_processed`/`next_run_date`, both owned exclusively by
+/// `recurring_process_occurrence`), or a template field for exactly one of
+/// the two kinds (`kind` decides which half of the row is live — the same
+/// discriminated-by-a-sibling-column shape `stock_movements.ref_kind` and
+/// `sales_order_items.variant_id` already use).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecurringSchedule {
+    pub id: String,
+    pub book_id: String,
+    pub kind: RecurringScheduleKind,
+    pub status: RecurringScheduleStatus,
+    pub name: String,
+    pub frequency: RecurringFrequency,
+    pub interval_count: i64,
+    pub start_date: String,
+    pub end_date: Option<String>,
+    pub max_occurrences: Option<i64>,
+    pub occurrences_processed: i64,
+    pub next_run_date: String,
+    // Invoice-kind fields (kind = Invoice); None for a Transaction schedule.
+    pub contact_id: Option<String>,
+    pub series: Option<String>,
+    pub due_days: Option<i64>,
+    // Transaction-kind fields (kind = Transaction); None for an Invoice
+    // schedule.
+    pub account_id: Option<String>,
+    pub category_id: Option<String>,
+    pub amount_minor: Option<i64>,
+    pub merchant: Option<String>,
+    pub description: Option<String>,
+    // Shared by both kinds.
+    pub currency: Option<String>,
+    pub notes: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Everything `recurring_schedule_create` needs. Exactly one of two shapes,
+/// chosen by `kind` — see [`RecurringSchedule`]'s header.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewRecurringSchedule {
+    pub book_id: String,
+    pub kind: RecurringScheduleKind,
+    pub name: String,
+    pub frequency: RecurringFrequency,
+    /// Defaults to 1 ("every 1 <frequency>") when omitted.
+    #[serde(default)]
+    pub interval_count: Option<i64>,
+    /// `YYYY-MM-DD`; defaults to today. Occurrence 0 and the day-of-month/
+    /// day-of-year every later occurrence anchors back to.
+    #[serde(default)]
+    pub start_date: Option<String>,
+    #[serde(default)]
+    pub end_date: Option<String>,
+    #[serde(default)]
+    pub max_occurrences: Option<i64>,
+    // Invoice-kind fields.
+    #[serde(default)]
+    pub contact_id: Option<String>,
+    /// Numbering series passed through to each generated invoice; defaults
+    /// to `invoice_issue`'s own default ("invoice") when omitted.
+    #[serde(default)]
+    pub series: Option<String>,
+    /// Days from an occurrence's date to that invoice's due date. Defaults
+    /// to 0 (due the same day) when omitted.
+    #[serde(default)]
+    pub due_days: Option<i64>,
+    /// Required, non-empty, for an `Invoice` schedule; ignored for a
+    /// `Transaction` schedule. Reuses [`NewInvoiceItemInput`] rather than a
+    /// parallel line-item shape.
+    #[serde(default)]
+    pub items: Vec<NewInvoiceItemInput>,
+    // Transaction-kind fields.
+    #[serde(default)]
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub category_id: Option<String>,
+    #[serde(default)]
+    pub amount_minor: Option<i64>,
+    #[serde(default)]
+    pub merchant: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    // Shared.
+    /// Defaults to the book's own currency, re-resolved at generation time,
+    /// when omitted.
+    #[serde(default)]
+    pub currency: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// Selective update to a schedule's template fields. `kind`, `frequency`,
+/// `interval_count` and `start_date` are deliberately absent — see migration
+/// `0017_recurring`'s header for why those are fixed for the schedule's
+/// whole life. `status` is also absent: it moves only through
+/// `recurring_schedule_pause`/`_resume`, which is where a status change's
+/// own bookkeeping (nothing today, but the same discipline
+/// `SalesOrderPatch` already applies) belongs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RecurringSchedulePatch {
+    pub name: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub end_date: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub max_occurrences: Option<Option<i64>>,
+    /// A new contact — never cleared to `None`; an `Invoice` schedule always
+    /// needs one.
+    pub contact_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub series: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub due_days: Option<Option<i64>>,
+    /// A new account — never cleared to `None`; a `Transaction` schedule
+    /// always needs one.
+    pub account_id: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub category_id: Option<Option<String>>,
+    /// A new amount — never cleared; a `Transaction` schedule always needs
+    /// one.
+    pub amount_minor: Option<i64>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub merchant: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub description: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub currency: Option<Option<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::util::double_option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub notes: Option<Option<String>>,
+}
+
+/// A line on an `Invoice`-kind schedule's template — copied into each
+/// generated invoice's own items the same way `invoice_issue` copies a
+/// confirmed sales order's. See [`SalesOrderItem`]'s header for the same
+/// "captured at add-time, not read live" reasoning; it applies identically
+/// here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecurringScheduleItem {
+    pub id: String,
+    pub schedule_id: String,
+    pub book_id: String,
+    pub variant_id: Option<String>,
+    pub description: String,
+    pub quantity: i64,
+    pub unit_price_minor: i64,
+    pub tax_rate_bps: i64,
+    pub line_order: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// What it takes to add one line to an existing `Invoice`-kind schedule,
+/// after `recurring_schedule_create` — the identical shape [`NewSalesOrderItem`]
+/// gives a draft order, for the identical reason: a catalogue line
+/// (`variant_id: Some`, description/price default from the variant) or a
+/// free-text line (`variant_id: None`, description and price required).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewRecurringScheduleItem {
+    pub schedule_id: String,
+    #[serde(default)]
+    pub variant_id: Option<String>,
+    /// Required for a free-text line; defaults to the variant's own name
+    /// otherwise.
+    #[serde(default)]
+    pub description: Option<String>,
+    pub quantity: i64,
+    /// Required for a free-text line; defaults to the variant's own price
+    /// otherwise.
+    #[serde(default)]
+    pub unit_price_minor: Option<i64>,
+    #[serde(default)]
+    pub tax_rate_bps: Option<i64>,
+}
+
+/// Selective update; `None` fields are left untouched. `variant_id` is never
+/// reassigned — remove the line and add a new one, the same restriction
+/// [`SalesOrderItemPatch`] places on a draft order's own lines.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RecurringScheduleItemPatch {
+    pub description: Option<String>,
+    pub quantity: Option<i64>,
+    pub unit_price_minor: Option<i64>,
+    pub tax_rate_bps: Option<i64>,
+}
+
+/// What a dry-run preview, or a real run, would do/did with one occurrence.
+/// `recurring_schedule_preview` and `recurring_run_due`/`recurring_runs_list`
+/// report through the same shape so a preview and its later real run read
+/// identically.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecurringOccurrencePreview {
+    pub schedule_id: String,
+    pub occurrence_index: i64,
+    pub occurrence_date: String,
+    pub kind: RecurringScheduleKind,
+    /// A one-line human summary, e.g. "Invoice for Acme Ltd — 125000 ZAR due
+    /// 2026-09-15" or "Transaction: Rent — -850000 ZAR" — money left in raw
+    /// minor units, like every other API response; formatting it for
+    /// display is a surface's job, not core's. Built once in
+    /// `CoreService::recurring_preview_summary` so the CLI, HTTP and desktop
+    /// surfaces all render the identical sentence rather than each
+    /// composing their own.
+    pub summary: String,
+}
+
+/// One immutable fact: schedule `schedule_id` reached occurrence
+/// `occurrence_index`, on `occurrence_date`, and either generated a real
+/// record or was deliberately skipped. Never edited, never deleted — see
+/// migration `0017_recurring`'s header for why this table, not
+/// re-derivation, is what makes running due schedules twice safe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecurringRun {
+    pub id: String,
+    pub schedule_id: String,
+    pub book_id: String,
+    pub occurrence_index: i64,
+    pub occurrence_date: String,
+    pub outcome: RecurringRunOutcome,
+    /// `Some("invoices")` / `Some("transactions")` for a `Generated` run;
+    /// `None` for a `Skipped` one.
+    pub generated_table: Option<String>,
+    pub generated_id: Option<String>,
+    pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
 // Net worth — periodic per-account balance snapshots (migration 0015,
 // PARITY.md gap #4 "Net worth over time"). See that migration's header for
 // the full reasoning; the short version is repeated on each type below.
@@ -2280,9 +2609,10 @@ mod tests {
             );
         }
         assert_eq!(
-            checked, 19,
-            "expected 19 nullable patch fields; if this moved, the count and the \
-             fields above both need looking at rather than the number bumping"
+            checked, 28,
+            "expected 28 nullable patch fields (19 pre-existing + 9 added by \
+             RecurringSchedulePatch in migration 0017); if this moved, the count and \
+             the fields above both need looking at rather than the number bumping"
         );
     }
 

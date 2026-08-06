@@ -74,6 +74,17 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0015_networth",
         include_str!("migrations/0015_networth.sql"),
     ),
+    // 16 is reserved and held by a migration written concurrently on another
+    // branch (ledger/trade work) that has not landed in this history yet —
+    // the same "reserve the number up front" convention 13/14/15's own
+    // comment describes, applied across branches rather than within one.
+    // This file takes 17 rather than "one past the highest applied here" so
+    // the two do not collide at merge time either.
+    (
+        17,
+        "0017_recurring",
+        include_str!("migrations/0017_recurring.sql"),
+    ),
 ];
 
 /// A configured, migrated SQLite database handle.
@@ -85,8 +96,23 @@ pub struct Db {
 impl Db {
     /// Open (creating if needed) the database file at `path` and run pending
     /// migrations.
+    ///
+    /// The busy timeout is set here, before `configure`/`migrate` run, not
+    /// left to the caller (`CoreService::open` used to set it only after
+    /// this returned). A real file can genuinely be opened by more than one
+    /// thread or process at once — the migration runner's own `CREATE TABLE
+    /// IF NOT EXISTS schema_migrations` is itself a write, in autocommit
+    /// mode, before any transaction exists to hold a lock across — so two
+    /// callers racing to open the same file for the first time need the
+    /// timeout in effect for that write too, not only for the application
+    /// code that opens afterward. Migration `0017_recurring` growing the
+    /// schema enough to widen that open-time race from "never observed" to
+    /// "reliably fails" (`invoice_numbering_has_no_gap_or_duplicate_under_
+    /// concurrent_issue`, 8 threads opening the same fresh file) is what
+    /// surfaced this; the fix is general, not specific to that migration.
     pub fn open(path: impl AsRef<Path>) -> CoreResult<Self> {
         let conn = Connection::open(path)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         Self::from_connection(conn)
     }
 
@@ -170,13 +196,13 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17]
         );
         // Re-running is a no-op.
         migrate(db.conn()).expect("re-migrate");
         assert_eq!(
             db.applied_migrations().unwrap(),
-            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17]
         );
     }
 
@@ -222,6 +248,9 @@ mod tests {
             "purchase_order_items",
             "purchase_orders",
             "recon_matches",
+            "recurring_runs",
+            "recurring_schedule_items",
+            "recurring_schedules",
             "sales_order_items",
             "sales_orders",
             "schema_migrations",

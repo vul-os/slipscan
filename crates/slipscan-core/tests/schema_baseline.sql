@@ -216,6 +216,36 @@ CREATE INDEX recon_matches_document_idx ON recon_matches (document_id);
 CREATE UNIQUE INDEX recon_matches_tx_active_unique
     ON recon_matches (transaction_id) WHERE state <> 'rejected';
 
+-- index recurring_runs_book_idx
+CREATE INDEX recurring_runs_book_idx ON recurring_runs (book_id);
+
+-- index recurring_runs_schedule_idx
+CREATE INDEX recurring_runs_schedule_idx ON recurring_runs (schedule_id);
+
+-- index recurring_schedule_items_book_idx
+CREATE INDEX recurring_schedule_items_book_idx ON recurring_schedule_items (book_id);
+
+-- index recurring_schedule_items_schedule_idx
+CREATE INDEX recurring_schedule_items_schedule_idx ON recurring_schedule_items (schedule_id);
+
+-- index recurring_schedule_items_variant_idx
+CREATE INDEX recurring_schedule_items_variant_idx
+    ON recurring_schedule_items (variant_id) WHERE variant_id IS NOT NULL;
+
+-- index recurring_schedules_account_idx
+CREATE INDEX recurring_schedules_account_idx
+    ON recurring_schedules (account_id) WHERE account_id IS NOT NULL;
+
+-- index recurring_schedules_book_idx
+CREATE INDEX recurring_schedules_book_idx ON recurring_schedules (book_id);
+
+-- index recurring_schedules_contact_idx
+CREATE INDEX recurring_schedules_contact_idx
+    ON recurring_schedules (contact_id) WHERE contact_id IS NOT NULL;
+
+-- index recurring_schedules_due_idx
+CREATE INDEX recurring_schedules_due_idx ON recurring_schedules (book_id, status, next_run_date);
+
 -- index sales_order_items_book_idx
 CREATE INDEX sales_order_items_book_idx ON sales_order_items (book_id);
 
@@ -384,6 +414,18 @@ CREATE INDEX sales_orders_location_idx
 ;
 
 -- index sqlite_autoindex_recon_matches_1
+;
+
+-- index sqlite_autoindex_recurring_runs_1
+;
+
+-- index sqlite_autoindex_recurring_runs_2
+;
+
+-- index sqlite_autoindex_recurring_schedule_items_1
+;
+
+-- index sqlite_autoindex_recurring_schedules_1
 ;
 
 -- index sqlite_autoindex_sales_order_items_1
@@ -1099,6 +1141,110 @@ CREATE TABLE recon_matches (
 , merchant_score REAL NOT NULL DEFAULT 0.0
     CHECK (merchant_score >= 0.0 AND merchant_score <= 1.0));
 
+-- table recurring_runs
+CREATE TABLE recurring_runs (
+    id                TEXT PRIMARY KEY,
+    schedule_id       TEXT NOT NULL REFERENCES recurring_schedules (id) ON DELETE CASCADE,
+    book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    -- 0-based, matching recurring_schedules.occurrences_processed.
+    occurrence_index  INTEGER NOT NULL CHECK (occurrence_index >= 0),
+    occurrence_date   TEXT NOT NULL,
+    outcome           TEXT NOT NULL CHECK (outcome IN ('generated', 'skipped')),
+    -- Set together, or both NULL for a skipped occurrence.
+    generated_table   TEXT CHECK (generated_table IS NULL OR generated_table IN ('invoices', 'transactions')),
+    generated_id      TEXT,
+    created_at        TEXT NOT NULL,
+    -- The backstop described in the header: a second attempt at the same
+    -- occurrence fails loudly here rather than existing side by side.
+    UNIQUE (schedule_id, occurrence_index)
+);
+
+-- table recurring_schedule_items
+CREATE TABLE recurring_schedule_items (
+    id                TEXT PRIMARY KEY,
+    schedule_id       TEXT NOT NULL REFERENCES recurring_schedules (id) ON DELETE CASCADE,
+    -- Denormalized from recurring_schedules.book_id, the same choice
+    -- migration 0014 makes for sales_order_items.book_id.
+    book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    variant_id        TEXT REFERENCES product_variants (id) ON DELETE RESTRICT,
+    description       TEXT NOT NULL,
+    quantity          INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price_minor  INTEGER NOT NULL CHECK (unit_price_minor >= 0),
+    tax_rate_bps      INTEGER NOT NULL DEFAULT 0
+        CHECK (tax_rate_bps >= 0 AND tax_rate_bps <= 10000),
+    line_order        INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+
+-- table recurring_schedules
+CREATE TABLE recurring_schedules (
+    id                     TEXT PRIMARY KEY,
+    book_id                TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    -- Fixed for the schedule's whole life — see the header note on why this
+    -- is not one of `recurring_schedule_update`'s patchable fields.
+    kind                   TEXT NOT NULL CHECK (kind IN ('invoice', 'transaction')),
+    status                 TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'paused', 'ended')),
+    name                   TEXT NOT NULL,
+    -- Recurrence rule. `frequency`/`interval_count`/`start_date` are fixed at
+    -- creation for the identical reason `kind` is — see the header.
+    frequency              TEXT NOT NULL CHECK (frequency IN ('daily', 'weekly', 'monthly', 'yearly')),
+    interval_count         INTEGER NOT NULL DEFAULT 1 CHECK (interval_count > 0),
+    -- Occurrence 0's date, and the day-of-month/day-of-year every later
+    -- occurrence's clamp anchors back to. See `crate::recurrence` for the
+    -- arithmetic this drives.
+    start_date             TEXT NOT NULL,
+    -- Inclusive: an occurrence landing after this date ends the schedule
+    -- instead of generating. NULL = no end date.
+    end_date               TEXT,
+    -- NULL = unbounded. Otherwise the schedule ends once
+    -- `occurrences_processed` reaches this count.
+    max_occurrences        INTEGER CHECK (max_occurrences IS NULL OR max_occurrences > 0),
+    -- How many occurrences (generated or skipped) this schedule has already
+    -- reached. The next one to process is occurrence index
+    -- `occurrences_processed` itself (0-based) — never decremented, and the
+    -- only writer is `CoreService::recurring_process_occurrence`.
+    occurrences_processed  INTEGER NOT NULL DEFAULT 0 CHECK (occurrences_processed >= 0),
+    -- `crate::recurrence::occurrence_date(start_date, frequency,
+    -- interval_count, occurrences_processed)`, cached so "what's due" is an
+    -- indexed WHERE clause rather than a per-row recomputation, and rewritten
+    -- every time `occurrences_processed` advances. Never hand-set.
+    next_run_date          TEXT NOT NULL,
+
+    -- Invoice-kind template fields (kind = 'invoice'). Required by
+    -- `recurring_schedule_create`/`recurring_process_occurrence` when kind is
+    -- 'invoice'; otherwise NULL and unused, the same discriminated-by-kind
+    -- shape `sales_order_items.variant_id` uses for "catalogue line or
+    -- free-text line".
+    contact_id             TEXT REFERENCES contacts (id) ON DELETE RESTRICT,
+    series                 TEXT,
+    -- Offset in days from an occurrence's date to that invoice's due date.
+    -- NULL is treated as 0 (due on the issue date) by the service layer,
+    -- matching how `invoice_issue` itself requires a due date but this
+    -- template expresses it relatively so it stays correct however far in
+    -- the future an occurrence lands.
+    due_days               INTEGER CHECK (due_days IS NULL OR due_days >= 0),
+
+    -- Transaction-kind template fields (kind = 'transaction'). Required when
+    -- kind is 'transaction'; otherwise NULL and unused.
+    account_id             TEXT REFERENCES accounts (id) ON DELETE RESTRICT,
+    category_id            TEXT REFERENCES categories (id) ON DELETE SET NULL,
+    amount_minor           INTEGER,
+    merchant               TEXT,
+    description            TEXT,
+
+    -- Shared by both kinds. `currency` NULL defers to the book's own
+    -- currency at generation time (re-resolved on every occurrence, not
+    -- frozen at creation) — the identical default `invoice_issue` and
+    -- `transaction_create` already apply when a caller omits it.
+    currency               TEXT CHECK (currency IS NULL OR length(currency) = 3),
+    notes                  TEXT,
+
+    created_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL
+);
+
 -- table sales_order_items
 CREATE TABLE sales_order_items (
     id                TEXT PRIMARY KEY,
@@ -1266,8 +1412,15 @@ CREATE TABLE transactions (
     account_id          TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
     category_id         TEXT REFERENCES categories (id) ON DELETE SET NULL,
     document_id         TEXT REFERENCES documents (id) ON DELETE SET NULL,
+    -- 'recurring' widened in here directly (never an ALTER — see this
+    -- file's own header) for migration 0017_recurring:
+    -- `CoreService::recurring_process_occurrence` stamps it on every
+    -- transaction a schedule generates, so a report or a future screen can
+    -- tell "the user typed this" apart from "a schedule produced this"
+    -- without inspecting `provider_txn_id`'s `recurring:<schedule>:<n>`
+    -- convention.
     source              TEXT NOT NULL
-        CHECK (source IN ('scraper', 'email', 'import', 'manual')),
+        CHECK (source IN ('scraper', 'email', 'import', 'manual', 'recurring')),
     provider_txn_id     TEXT,
     dedupe_hash         TEXT NOT NULL,
     posted_date         TEXT NOT NULL,
@@ -1432,6 +1585,20 @@ CREATE TRIGGER po_receipts_no_update
 BEFORE UPDATE ON po_receipts
 BEGIN
     SELECT RAISE(ABORT, 'goods receipts are immutable; record a compensating receipt instead');
+END;
+
+-- trigger recurring_runs_no_delete
+CREATE TRIGGER recurring_runs_no_delete
+BEFORE DELETE ON recurring_runs
+BEGIN
+    SELECT RAISE(ABORT, 'a recurring run is an immutable fact; record a compensating action instead');
+END;
+
+-- trigger recurring_runs_no_update
+CREATE TRIGGER recurring_runs_no_update
+BEFORE UPDATE ON recurring_runs
+BEGIN
+    SELECT RAISE(ABORT, 'a recurring run is an immutable fact; record a compensating action instead');
 END;
 
 -- trigger stock_movements_no_delete
@@ -1886,6 +2053,62 @@ WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
 BEGIN
     INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
     VALUES ('purchase_orders', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_recurring_runs_ins
+CREATE TRIGGER sync_capture_recurring_runs_ins AFTER INSERT ON recurring_runs
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('recurring_runs', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_recurring_schedule_items_del
+CREATE TRIGGER sync_capture_recurring_schedule_items_del AFTER DELETE ON recurring_schedule_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('recurring_schedule_items', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_recurring_schedule_items_ins
+CREATE TRIGGER sync_capture_recurring_schedule_items_ins AFTER INSERT ON recurring_schedule_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('recurring_schedule_items', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_recurring_schedule_items_upd
+CREATE TRIGGER sync_capture_recurring_schedule_items_upd AFTER UPDATE ON recurring_schedule_items
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('recurring_schedule_items', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_recurring_schedules_del
+CREATE TRIGGER sync_capture_recurring_schedules_del AFTER DELETE ON recurring_schedules
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('recurring_schedules', OLD.id, OLD.book_id, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_recurring_schedules_ins
+CREATE TRIGGER sync_capture_recurring_schedules_ins AFTER INSERT ON recurring_schedules
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('recurring_schedules', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+END;
+
+-- trigger sync_capture_recurring_schedules_upd
+CREATE TRIGGER sync_capture_recurring_schedules_upd AFTER UPDATE ON recurring_schedules
+WHEN (SELECT applying FROM sync_control WHERE id = 1) = 0
+BEGIN
+    INSERT INTO sync_outbox (table_name, row_id, ns, deleted, captured_at)
+    VALUES ('recurring_schedules', NEW.id, NEW.book_id, 0, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 END;
 
 -- trigger sync_capture_sales_order_items_del

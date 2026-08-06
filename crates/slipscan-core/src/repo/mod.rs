@@ -26,6 +26,7 @@ pub mod networth;
 pub mod pay;
 pub mod purchasing;
 pub mod recon;
+pub mod recurring;
 pub mod report;
 pub mod sales;
 pub mod settings;

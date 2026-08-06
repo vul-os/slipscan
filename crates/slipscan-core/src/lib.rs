@@ -21,6 +21,10 @@ pub mod pay;
 /// Book profiles — the personal/business/multi-location disclosure rules
 /// (Phase 6.0, the flowstock fold entry point). See `profile::resolve`.
 pub mod profile;
+/// Recurrence date arithmetic for `recurring_schedules` (migration
+/// `0017_recurring`) — the month-end clamp rule lives here, see
+/// `recurrence::occurrence_date`.
+pub mod recurrence;
 pub mod region;
 pub mod repo;
 pub mod secrets;
