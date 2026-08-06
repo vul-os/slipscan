@@ -58,21 +58,26 @@ jobs:
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
 
   sync-dmtap:
-    # crates/slipscan-sync is `exclude`d from the root workspace so that a bare
-    # `git clone && cargo build` never fetches envoir (see the root
-    # Cargo.toml comment) — which also meant its tests were never run.
+    # crates/slipscan-sync rejoined the root workspace once its dmtap-sync
+    # dependency became a registry dep (kotva-sync, published to crates.io) —
+    # see the root Cargo.toml and crates/slipscan-sync/Cargo.toml comments —
+    # so it no longer fetches a sibling repo over the network. This job stays
+    # anyway, now for two narrower reasons: a fast, scoped check of just this
+    # crate with the feature explicitly named, and the vacuous-run guard
+    # below.
     #
-    # Its own job, not a step in `rust`, precisely to preserve that property in
-    # CI as well as on a laptop: this is the ONLY job that fetches a sibling
-    # repo over the network, and the offline-buildable jobs neither wait on it
-    # nor share a checkout step with it. If envoir ever becomes unreachable,
-    # this job goes red on its own and the rest of the pipeline is unaffected.
-    #
-    # It runs on every push/PR rather than on a schedule because the dependency
-    # is a public repo pinned to a reviewed rev, so the fetch is deterministic;
-    # if that stops being true, move this to `on: schedule` — the command is
-    # the same either way.
-    name: Rust (slipscan-sync, fetches envoir)
+    # `sync-dmtap` is default-on (see Cargo.toml's [features] comment), which
+    # means the *bare* `cargo test` a developer is most likely to type runs
+    # the real suite and looks green — so the only way left to exercise
+    # `feature_gate` (src/lib.rs), the guard that fails loudly, by name, if
+    # the mapping suite is ever skipped, is to explicitly pass
+    # `--no-default-features`. That guard is the sort of thing a later
+    # refactor silently defeats (e.g. by flipping the default back off
+    # without updating this check), so CI asserts the `--no-default-features`
+    # run still refuses to look green — checking the guard fires by name, not
+    # merely that the command exited non-zero (any compile error would do
+    # that).
+    name: Rust (slipscan-sync, --no-default-features guard)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,26 +89,20 @@ jobs:
         run: |
           cargo test --manifest-path crates/slipscan-sync/Cargo.toml \
             --features sync-dmtap
-      # The whole suite lives behind the feature, so the bare invocation a
-      # developer is most likely to type verifies nothing. It used to print
-      # `test result: ok` for zero tests; `feature_gate` in src/lib.rs now
-      # fails it and names what did not run. That guard is the sort of thing a
-      # later refactor deletes without noticing, so CI asserts the bare command
-      # still refuses to look green — checking the guard by name, not merely
-      # that the command exited non-zero (any compile error would do that).
-      - name: Bare invocation must fail loudly, not vacuously pass
+      - name: --no-default-features must fail loudly, not vacuously pass
         run: |
           set +e
-          out="$(cargo test --manifest-path crates/slipscan-sync/Cargo.toml 2>&1)"
+          out="$(cargo test --manifest-path crates/slipscan-sync/Cargo.toml \
+            --no-default-features 2>&1)"
           status=$?
           set -e
           echo "$out"
           if [ "$status" -eq 0 ]; then
-            echo "::error::a bare cargo test on slipscan-sync reported success; the vacuous-run guard is gone"
+            echo "::error::a --no-default-features cargo test on slipscan-sync reported success; the vacuous-run guard is gone"
             exit 1
           fi
           echo "$out" | grep -q 'dmtap_mapping_suite_did_not_run' || {
-            echo "::error::bare run failed, but not via the feature_gate guard — it broke for some other reason"
+            echo "::error::run failed, but not via the feature_gate guard — it broke for some other reason"
             exit 1
           }
           echo "$out" | grep -q 'features sync-dmtap' || {
