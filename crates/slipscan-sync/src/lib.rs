@@ -190,7 +190,7 @@
 //! checked. The library itself is still empty and dependency-free without the
 //! feature — the guard is `cfg(test)`-only and links nothing.
 
-/// Fails a bare `cargo test` on this crate, on purpose.
+/// Fails `cargo test --no-default-features` on this crate, on purpose.
 ///
 /// The whole mapping and its suite are behind `sync-dmtap`, so without the
 /// feature there is nothing to test — and a test runner that reports success
@@ -198,8 +198,13 @@
 /// module is the loud skip: it names the suite that did not run and the exact
 /// command that runs it.
 ///
-/// CI passes the feature, so this never fires there; it fires for a developer
-/// who typed the short command and would otherwise have believed it.
+/// `sync-dmtap` is ON by default (see this crate's `Cargo.toml` `[features]`
+/// comment), so a bare `cargo test` already runs the real suite and never
+/// reaches this module — only an explicit `--no-default-features` does.
+/// CI's own guard job passes that flag deliberately, to prove this module
+/// still fires if the default is ever flipped back off; it is the developer
+/// who bothers to type the long, unusual flag who hits this, not the one who
+/// typed the short command.
 #[cfg(all(test, not(feature = "sync-dmtap")))]
 mod feature_gate {
     /// Not a broken build — a refused false green. See the module docs.
