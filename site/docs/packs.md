@@ -97,7 +97,7 @@ Installing a pack was only ever half the story: for a long time every pack had t
 
 A pack that came off a USB stick, out of a git remote, over HTTPS, or from a file a friend emailed you is the *identical byte sequence*, and it is checked the *identical way*. No transport grants any authority: every one of them ends at raw bytes whose only exit is `verify_detached`, and the installer still accepts nothing but a `VerifiedPack`. Fetching cannot reach installed state without passing every gate below, in this order.
 
-(The model is borrowed. FlowStock's folder sync — "files as transport, never as truth", each writer owning its own append-only file so a file-sync service never has a conflict to resolve — is where the layout comes from; the credit is in `crates/slipscan-packs/src/transport/mod.rs`.)
+(The model is borrowed, from a retired Vulos product's folder sync — "files as transport, never as truth", each writer owning its own append-only file so a file-sync service never has a conflict to resolve; the credit is in `crates/slipscan-packs/src/transport/mod.rs`.)
 
 ### The four transports, and the seam
 
@@ -128,7 +128,7 @@ Each publisher owns a directory named for their key's fingerprint, and writes on
     za-personal-1.2.0.pack.json.sig   # detached signature
 ```
 
-Two publishers sharing one synced folder never write the same path, so a file-sync service never has a conflict to resolve — that is the FlowStock rule, applied. A given `<id>-<version>.pack.json` is write-once (a version's bytes never change), so even re-publishing is not an edit: it is a no-op, reported as one. And because the directory name is derived from the key it holds, a key filed in the wrong place is caught for free.
+Two publishers sharing one synced folder never write the same path, so a file-sync service never has a conflict to resolve — that is the borrowed rule, applied. A given `<id>-<version>.pack.json` is write-once (a version's bytes never change), so even re-publishing is not an edit: it is a no-op, reported as one. And because the directory name is derived from the key it holds, a key filed in the wrong place is caught for free.
 
 Dropping three loose files (`x.pack.json`, `x.pack.json.sig`, `x.pack.json.pub`) into the root also works, with no index at all. That is the "someone handed me a stick" case, and it should not require ceremony.
 
