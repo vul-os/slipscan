@@ -262,8 +262,15 @@ CREATE TABLE transactions (
     account_id          TEXT NOT NULL REFERENCES accounts (id) ON DELETE RESTRICT,
     category_id         TEXT REFERENCES categories (id) ON DELETE SET NULL,
     document_id         TEXT REFERENCES documents (id) ON DELETE SET NULL,
+    -- 'recurring' widened in here directly (never an ALTER — see this
+    -- file's own header) for migration 0017_recurring:
+    -- `CoreService::recurring_process_occurrence` stamps it on every
+    -- transaction a schedule generates, so a report or a future screen can
+    -- tell "the user typed this" apart from "a schedule produced this"
+    -- without inspecting `provider_txn_id`'s `recurring:<schedule>:<n>`
+    -- convention.
     source              TEXT NOT NULL
-        CHECK (source IN ('scraper', 'email', 'import', 'manual')),
+        CHECK (source IN ('scraper', 'email', 'import', 'manual', 'recurring')),
     provider_txn_id     TEXT,
     dedupe_hash         TEXT NOT NULL,
     posted_date         TEXT NOT NULL,

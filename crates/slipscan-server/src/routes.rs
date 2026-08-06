@@ -121,7 +121,8 @@ impl From<CoreError> for ApiError {
             CoreError::NotFound { .. } => (StatusCode::NOT_FOUND, "not_found"),
             CoreError::DuplicateTransaction { .. }
             | CoreError::DuplicateDocument { .. }
-            | CoreError::DuplicateJournal { .. } => (StatusCode::CONFLICT, "conflict"),
+            | CoreError::DuplicateJournal { .. }
+            | CoreError::DuplicateRecurringRun { .. } => (StatusCode::CONFLICT, "conflict"),
             CoreError::Validation(_)
             | CoreError::InvalidEnum { .. }
             | CoreError::InvalidStatusTransition { .. }

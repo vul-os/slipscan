@@ -33,8 +33,10 @@
 //! mappings, budgets, members, locations, contacts, the chart of accounts, its
 //! entity map, the VAT-rate table, the product catalogue (product
 //! categories, products, product variants), purchasing headers/lines
-//! (purchase orders, purchase order items), sales orders/lines, and the
-//! fixed-asset register — the full list is [`LWW_TABLES`].
+//! (purchase orders, purchase order items), sales headers/lines (sales
+//! orders, sales order items, quotes, quote items), the fixed-asset register,
+//! and recurring-schedule templates (recurring schedules, their
+//! invoice-template lines) — the full list is [`LWW_TABLES`].
 //!
 //! ```text
 //! target  "<table>/<row-id>"      field "row"
@@ -68,12 +70,12 @@
 //! `field` the column name — deliberately not taken here, because it would be a
 //! behaviour change rather than a faithful mapping.
 //!
-//! ## Posted journals, their lines, stock movements, goods receipts, net-worth snapshots, and depreciation runs → §4.3 OR-Set ([`Kind::SetAdd`])
+//! ## Posted journals, their lines, stock movements, goods receipts, net-worth snapshots, depreciation runs, and recurring-schedule runs → §4.3 OR-Set ([`Kind::SetAdd`])
 //!
 //! ```text
 //! target  "journals" / "journal_lines" / "stock_movements" / "po_receipts"
 //!         / "invoices" / "invoice_items" / "invoice_payments"
-//!         / "networth_snapshots" / "asset_depreciation_runs"
+//!         / "networth_snapshots" / "asset_depreciation_runs" / "recurring_runs"
 //! value   tstr, "v" + canonical JSON of the row including its id
 //! ```
 //!
@@ -311,6 +313,14 @@ pub const LEDGER_TABLES: &[&str] = &[
     // and `assets` (below, in `LWW_TABLES`) is not, even though both are
     // "asset" tables.
     "asset_depreciation_runs",
+    // Migration 0017 (PARITY.md "Repeating invoices / recurring
+    // transactions"): one immutable fact per occurrence a recurring schedule
+    // has ever reached, generated or deliberately skipped — never edited,
+    // the same call `po_receipts`/`invoices` already make for their own
+    // facts. See that migration's header for why `recurring_schedules`/
+    // `recurring_schedule_items` (below, in `LWW_TABLES`) land on the
+    // opposite side even though all three are "recurring" tables.
+    "recurring_runs",
 ];
 
 /// Tables whose rows are editable and merge last-writer-wins.
@@ -369,6 +379,15 @@ pub const LWW_TABLES: &[&str] = &[
     // being edited, the same way a `cancelled` sales order does.
     "quotes",
     "quote_items",
+    // Migration 0017 (PARITY.md "Repeating invoices / recurring
+    // transactions"): a schedule (and its invoice-template lines) is a
+    // person's template, edited — the amount, the contact, whether it is
+    // paused — right up until it is deleted (only possible before it has
+    // ever run). Last-writer-wins is exactly what editing your own schedule
+    // on two devices means, the same call this migration's own header makes
+    // for `sales_orders`.
+    "recurring_schedules",
+    "recurring_schedule_items",
 ];
 
 /// Whether `table` is an immutable ledger, and so maps to the OR-Set.

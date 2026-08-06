@@ -24,11 +24,12 @@ use slipscan_core::domain::{
     LocationPatch, Member, MemberPatch, NewAsset, NewBook, NewCoaAccount, NewContact, NewInvoice,
     NewInvoiceItemInput, NewInvoicePayment, NewLocation, NewMember, NewPayEndpoint, NewPayWatch,
     NewPoReceipt, NewProduct, NewProductCategory, NewProductVariant, NewPurchaseOrder,
-    NewPurchaseOrderItem, NewQuote, NewQuoteItem, NewSalesOrder, NewSalesOrderItem,
-    NewStockMovement, PayDeliveryState, PayEndpointWithSecret, ProductPatch, ProductVariant,
-    ProductVariantPatch, PurchaseOrderItemPatch, PurchaseOrderPatch, PurchaseOrderStatus,
-    QuoteItemPatch, QuotePatch, SalesOrderItemPatch, SalesOrderPatch, SplitShare,
-    StockMovementKind, TransactionFilter, TransactionSource,
+    NewPurchaseOrderItem, NewQuote, NewQuoteItem, NewRecurringSchedule, NewRecurringScheduleItem,
+    NewSalesOrder, NewSalesOrderItem, NewStockMovement, PayDeliveryState, PayEndpointWithSecret,
+    ProductPatch, ProductVariant, ProductVariantPatch, PurchaseOrderItemPatch, PurchaseOrderPatch,
+    PurchaseOrderStatus, QuoteItemPatch, QuotePatch, RecurringFrequency,
+    RecurringScheduleItemPatch, RecurringScheduleKind, RecurringSchedulePatch, SalesOrderItemPatch,
+    SalesOrderPatch, SplitShare, StockMovementKind, TransactionFilter, TransactionSource,
 };
 use slipscan_core::secrets::{KeyringSecretStore, SecretStore, SecretString, Vault};
 use slipscan_core::{CoreService, Db};
@@ -486,6 +487,13 @@ enum Command {
     Invoice {
         #[command(subcommand)]
         action: InvoiceAction,
+    },
+    /// Recurring schedules (migration 0017): repeating invoices and
+    /// transactions. Nothing generates on its own — see `recurring run-due
+    /// --help`.
+    Recurring {
+        #[command(subcommand)]
+        action: RecurringAction,
     },
     /// Household members: local data describing whose money it is, never a
     /// login (see ARCHITECTURE.md "Household members & per-person
@@ -1662,6 +1670,238 @@ fn parse_invoice_item(raw: &str) -> Result<NewInvoiceItemInput, String> {
             .map_err(|_| format!("invalid unit_price_minor in {raw:?}"))?,
         tax_rate_bps: None,
     })
+}
+
+#[derive(Debug, Copy, Clone, ValueEnum)]
+enum CliRecurringKind {
+    Invoice,
+    Transaction,
+}
+
+impl From<CliRecurringKind> for RecurringScheduleKind {
+    fn from(v: CliRecurringKind) -> Self {
+        match v {
+            CliRecurringKind::Invoice => RecurringScheduleKind::Invoice,
+            CliRecurringKind::Transaction => RecurringScheduleKind::Transaction,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, ValueEnum)]
+enum CliRecurringFrequency {
+    Daily,
+    Weekly,
+    Monthly,
+    Yearly,
+}
+
+impl From<CliRecurringFrequency> for RecurringFrequency {
+    fn from(v: CliRecurringFrequency) -> Self {
+        match v {
+            CliRecurringFrequency::Daily => RecurringFrequency::Daily,
+            CliRecurringFrequency::Weekly => RecurringFrequency::Weekly,
+            CliRecurringFrequency::Monthly => RecurringFrequency::Monthly,
+            CliRecurringFrequency::Yearly => RecurringFrequency::Yearly,
+        }
+    }
+}
+
+/// Recurring schedules (migration 0017, PARITY.md "Repeating invoices /
+/// recurring transactions"): a template plus a recurrence rule for
+/// `invoice`- or `transaction`-kind generation. **Nothing here fires by
+/// itself** — `run-due` is the only subcommand that ever creates an invoice
+/// or a transaction, and only because it was called; point a cron at it if
+/// you want it to happen on a schedule. See `slipscan recurring run-due
+/// --help`.
+#[derive(Debug, Subcommand)]
+enum RecurringAction {
+    /// Create a schedule. `--kind invoice` needs `--contact` and at least
+    /// one `--item description:qty:price`; `--kind transaction` needs
+    /// `--account` and `--amount-minor`. `frequency`/`interval-count`/
+    /// `start-date` are fixed for the schedule's whole life — see `update`.
+    Create {
+        #[arg(long, value_enum)]
+        kind: CliRecurringKind,
+        name: String,
+        #[arg(long, value_enum)]
+        frequency: CliRecurringFrequency,
+        /// "every N <frequency>"; defaults to 1.
+        #[arg(long)]
+        interval_count: Option<i64>,
+        /// YYYY-MM-DD; defaults to today. Occurrence 0, and the day every
+        /// later occurrence's month-end clamp anchors back to.
+        #[arg(long)]
+        start_date: Option<String>,
+        #[arg(long)]
+        end_date: Option<String>,
+        #[arg(long)]
+        max_occurrences: Option<i64>,
+        /// Contact id — required for an invoice schedule.
+        #[arg(long)]
+        contact: Option<String>,
+        /// Numbering series; defaults to invoice_issue's own default.
+        #[arg(long)]
+        series: Option<String>,
+        /// Days from an occurrence's date to that invoice's due date;
+        /// defaults to 0.
+        #[arg(long)]
+        due_days: Option<i64>,
+        /// One standalone line as `description:quantity:unit_price_minor`,
+        /// repeatable. Required (at least one) for an invoice schedule.
+        #[arg(long = "item", value_parser = parse_invoice_item)]
+        items: Vec<NewInvoiceItemInput>,
+        /// Account id — required for a transaction schedule.
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long)]
+        category: Option<String>,
+        /// Minor units — required for a transaction schedule.
+        #[arg(long)]
+        amount_minor: Option<i64>,
+        #[arg(long)]
+        merchant: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        currency: Option<String>,
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Show one schedule's header.
+    Get { id: String },
+    /// List every schedule in the book, most recently created first.
+    List,
+    /// Every active schedule due as of `--as-of` (defaults to today) — a
+    /// read; nothing generates. See `run-due` to actually generate.
+    Due {
+        #[arg(long)]
+        as_of: Option<String>,
+    },
+    /// Edit a schedule's template fields. `kind`, `frequency`,
+    /// `interval-count` and `start-date` cannot be changed — pause this
+    /// schedule and create a new one instead.
+    Update {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, conflicts_with = "clear_end_date")]
+        end_date: Option<String>,
+        #[arg(long)]
+        clear_end_date: bool,
+        #[arg(long, conflicts_with = "clear_max_occurrences")]
+        max_occurrences: Option<i64>,
+        #[arg(long)]
+        clear_max_occurrences: bool,
+        /// A new contact — invoice schedules only, never cleared.
+        #[arg(long)]
+        contact: Option<String>,
+        #[arg(long, conflicts_with = "clear_series")]
+        series: Option<String>,
+        #[arg(long)]
+        clear_series: bool,
+        #[arg(long, conflicts_with = "clear_due_days")]
+        due_days: Option<i64>,
+        #[arg(long)]
+        clear_due_days: bool,
+        /// A new account — transaction schedules only, never cleared.
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long, conflicts_with = "clear_category")]
+        category: Option<String>,
+        #[arg(long)]
+        clear_category: bool,
+        /// A new amount — transaction schedules only, never cleared.
+        #[arg(long)]
+        amount_minor: Option<i64>,
+        #[arg(long, conflicts_with = "clear_merchant")]
+        merchant: Option<String>,
+        #[arg(long)]
+        clear_merchant: bool,
+        #[arg(long, conflicts_with = "clear_description")]
+        description: Option<String>,
+        #[arg(long)]
+        clear_description: bool,
+        #[arg(long, conflicts_with = "clear_currency")]
+        currency: Option<String>,
+        #[arg(long)]
+        clear_currency: bool,
+        #[arg(long, conflicts_with = "clear_notes")]
+        notes: Option<String>,
+        #[arg(long)]
+        clear_notes: bool,
+    },
+    /// active -> paused: `due`/`run-due` skip a paused schedule entirely.
+    Pause { id: String },
+    /// paused -> active. `next_run_date` is untouched, so a schedule paused
+    /// through several of its own due dates catches every one of them up.
+    Resume { id: String },
+    /// Hard delete. Only reachable while the schedule has never run; pause
+    /// it instead once it has.
+    Delete { id: String },
+    /// Add a line to an invoice-kind schedule's template.
+    ItemAdd {
+        #[arg(long)]
+        schedule: String,
+        #[arg(long)]
+        variant: Option<String>,
+        /// Required for a free-text line; defaults from the variant's own
+        /// name for a catalogue line.
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        quantity: i64,
+        /// Minor units. Required for a free-text line; defaults from the
+        /// variant's own price for a catalogue line.
+        #[arg(long)]
+        price_minor: Option<i64>,
+        /// Basis points (1500 = 15.00%). Defaults to 0.
+        #[arg(long)]
+        tax_rate_bps: Option<i64>,
+    },
+    /// List a schedule's lines, in the order they were added.
+    ItemList {
+        /// Schedule id.
+        schedule: String,
+    },
+    /// Edit a line's description/quantity/price/tax rate.
+    ItemUpdate {
+        id: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        quantity: Option<i64>,
+        #[arg(long)]
+        price_minor: Option<i64>,
+        #[arg(long)]
+        tax_rate_bps: Option<i64>,
+    },
+    /// Remove a line from an invoice schedule's template.
+    ItemRemove { id: String },
+    /// What the next `--count` (default 1, max 60) occurrences would
+    /// generate — a pure read; nothing is created, no schedule state
+    /// changes.
+    Preview {
+        id: String,
+        #[arg(long)]
+        count: Option<u32>,
+    },
+    /// Generate every occurrence due, across every active schedule in the
+    /// book, as of `--as-of` (defaults to today). **The only subcommand
+    /// that creates an invoice or a transaction.** Calling it twice for the
+    /// same date generates nothing the second time.
+    RunDue {
+        #[arg(long)]
+        as_of: Option<String>,
+    },
+    /// Deliberately advance a schedule past its next occurrence without
+    /// generating anything.
+    SkipNext { id: String },
+    /// Every occurrence a schedule has ever reached, generated or
+    /// deliberately skipped, oldest first.
+    Runs {
+        /// Schedule id.
+        schedule: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -4686,6 +4926,330 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                                 r.period,
                                 fmt_minor(r.depreciation_minor),
                                 r.journal_id
+                            );
+                        }
+                    })
+                }
+            }
+        }
+
+        Command::Recurring { ref action } => {
+            let svc = open_service(&env.db)?;
+            let book = resolve_book(&svc, cli.book.as_deref())?;
+            match action {
+                RecurringAction::Create {
+                    kind,
+                    name,
+                    frequency,
+                    interval_count,
+                    start_date,
+                    end_date,
+                    max_occurrences,
+                    contact,
+                    series,
+                    due_days,
+                    items,
+                    account,
+                    category,
+                    amount_minor,
+                    merchant,
+                    description,
+                    currency,
+                    notes,
+                } => {
+                    let schedule = svc.recurring_schedule_create(NewRecurringSchedule {
+                        book_id: book.id.clone(),
+                        kind: (*kind).into(),
+                        name: name.clone(),
+                        frequency: (*frequency).into(),
+                        interval_count: *interval_count,
+                        start_date: start_date.clone(),
+                        end_date: end_date.clone(),
+                        max_occurrences: *max_occurrences,
+                        contact_id: contact.clone(),
+                        series: series.clone(),
+                        due_days: *due_days,
+                        items: items.clone(),
+                        account_id: account.clone(),
+                        category_id: category.clone(),
+                        amount_minor: *amount_minor,
+                        merchant: merchant.clone(),
+                        description: description.clone(),
+                        currency: currency.clone(),
+                        notes: notes.clone(),
+                    })?;
+                    emit(cli.json, &schedule, || {
+                        println!(
+                            "Created recurring schedule {} ({}) — {} {}, next due {}",
+                            schedule.name,
+                            schedule.id,
+                            schedule.kind,
+                            schedule.frequency,
+                            schedule.next_run_date
+                        );
+                    })
+                }
+                RecurringAction::Get { id } => {
+                    let schedule = svc.recurring_schedule_get(id)?;
+                    emit(cli.json, &schedule, || {
+                        println!(
+                            "{}\t{}\t{}\t{}\tstatus {}\tnext due {}",
+                            schedule.id,
+                            schedule.name,
+                            schedule.kind,
+                            schedule.frequency,
+                            schedule.status,
+                            schedule.next_run_date
+                        );
+                    })
+                }
+                RecurringAction::List => {
+                    let schedules = svc.recurring_schedule_list(&book.id)?;
+                    emit(cli.json, &schedules, || {
+                        if schedules.is_empty() {
+                            println!(
+                                "No recurring schedules yet. Create one with \
+                                 `slipscan recurring create`."
+                            );
+                        }
+                        for s in &schedules {
+                            println!(
+                                "{}\t{}\t{}\t{}\tstatus {}\tnext due {}",
+                                s.id, s.name, s.kind, s.frequency, s.status, s.next_run_date
+                            );
+                        }
+                    })
+                }
+                RecurringAction::Due { as_of } => {
+                    let due = svc.recurring_due_list(&book.id, as_of.as_deref())?;
+                    emit(cli.json, &due, || {
+                        if due.is_empty() {
+                            println!("Nothing due.");
+                        }
+                        for s in &due {
+                            println!("{}\t{}\tdue {}", s.id, s.name, s.next_run_date);
+                        }
+                    })
+                }
+                RecurringAction::Update {
+                    id,
+                    name,
+                    end_date,
+                    clear_end_date,
+                    max_occurrences,
+                    clear_max_occurrences,
+                    contact,
+                    series,
+                    clear_series,
+                    due_days,
+                    clear_due_days,
+                    account,
+                    category,
+                    clear_category,
+                    amount_minor,
+                    merchant,
+                    clear_merchant,
+                    description,
+                    clear_description,
+                    currency,
+                    clear_currency,
+                    notes,
+                    clear_notes,
+                } => {
+                    // `Some(None)` clears, plain `None` leaves untouched —
+                    // the same three states the JSON surfaces express with
+                    // null (see `ContactAction::Update`).
+                    let patch = RecurringSchedulePatch {
+                        name: name.clone(),
+                        end_date: if *clear_end_date {
+                            Some(None)
+                        } else {
+                            end_date.clone().map(Some)
+                        },
+                        max_occurrences: if *clear_max_occurrences {
+                            Some(None)
+                        } else {
+                            max_occurrences.map(Some)
+                        },
+                        contact_id: contact.clone(),
+                        series: if *clear_series {
+                            Some(None)
+                        } else {
+                            series.clone().map(Some)
+                        },
+                        due_days: if *clear_due_days {
+                            Some(None)
+                        } else {
+                            due_days.map(Some)
+                        },
+                        account_id: account.clone(),
+                        category_id: if *clear_category {
+                            Some(None)
+                        } else {
+                            category.clone().map(Some)
+                        },
+                        amount_minor: *amount_minor,
+                        merchant: if *clear_merchant {
+                            Some(None)
+                        } else {
+                            merchant.clone().map(Some)
+                        },
+                        description: if *clear_description {
+                            Some(None)
+                        } else {
+                            description.clone().map(Some)
+                        },
+                        currency: if *clear_currency {
+                            Some(None)
+                        } else {
+                            currency.clone().map(Some)
+                        },
+                        notes: if *clear_notes {
+                            Some(None)
+                        } else {
+                            notes.clone().map(Some)
+                        },
+                    };
+                    let schedule = svc.recurring_schedule_update(id, patch)?;
+                    emit(cli.json, &schedule, || {
+                        println!(
+                            "Updated recurring schedule {} ({})",
+                            schedule.name, schedule.id
+                        );
+                    })
+                }
+                RecurringAction::Pause { id } => {
+                    let schedule = svc.recurring_schedule_pause(id)?;
+                    emit(cli.json, &schedule, || {
+                        println!(
+                            "Paused recurring schedule {} ({}).",
+                            schedule.name, schedule.id
+                        );
+                    })
+                }
+                RecurringAction::Resume { id } => {
+                    let schedule = svc.recurring_schedule_resume(id)?;
+                    emit(cli.json, &schedule, || {
+                        println!(
+                            "Resumed recurring schedule {} ({}).",
+                            schedule.name, schedule.id
+                        );
+                    })
+                }
+                RecurringAction::Delete { id } => {
+                    svc.recurring_schedule_delete(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed recurring schedule {id}.");
+                    })
+                }
+                RecurringAction::ItemAdd {
+                    schedule,
+                    variant,
+                    description,
+                    quantity,
+                    price_minor,
+                    tax_rate_bps,
+                } => {
+                    let item = svc.recurring_schedule_item_add(NewRecurringScheduleItem {
+                        schedule_id: schedule.clone(),
+                        variant_id: variant.clone(),
+                        description: description.clone(),
+                        quantity: *quantity,
+                        unit_price_minor: *price_minor,
+                        tax_rate_bps: *tax_rate_bps,
+                    })?;
+                    emit(cli.json, &item, || {
+                        println!(
+                            "Added line {} — {} x{} @ {}",
+                            item.id, item.description, item.quantity, item.unit_price_minor
+                        );
+                    })
+                }
+                RecurringAction::ItemList { schedule } => {
+                    let items = svc.recurring_schedule_items_list(schedule)?;
+                    emit(cli.json, &items, || {
+                        for i in &items {
+                            println!(
+                                "{}\t{}\tx{}\t@{}\ttax_bps {}",
+                                i.id, i.description, i.quantity, i.unit_price_minor, i.tax_rate_bps
+                            );
+                        }
+                    })
+                }
+                RecurringAction::ItemUpdate {
+                    id,
+                    description,
+                    quantity,
+                    price_minor,
+                    tax_rate_bps,
+                } => {
+                    let item = svc.recurring_schedule_item_update(
+                        id,
+                        RecurringScheduleItemPatch {
+                            description: description.clone(),
+                            quantity: *quantity,
+                            unit_price_minor: *price_minor,
+                            tax_rate_bps: *tax_rate_bps,
+                        },
+                    )?;
+                    emit(cli.json, &item, || {
+                        println!("Updated line {}", item.id);
+                    })
+                }
+                RecurringAction::ItemRemove { id } => {
+                    svc.recurring_schedule_item_remove(id)?;
+                    emit(cli.json, &serde_json::json!({ "removed": id }), || {
+                        println!("Removed line {id}.");
+                    })
+                }
+                RecurringAction::Preview { id, count } => {
+                    let preview = svc.recurring_schedule_preview(id, *count)?;
+                    emit(cli.json, &preview, || {
+                        if preview.is_empty() {
+                            println!("Nothing left to preview — the schedule has ended.");
+                        }
+                        for p in &preview {
+                            println!(
+                                "#{}\t{}\t{}",
+                                p.occurrence_index, p.occurrence_date, p.summary
+                            );
+                        }
+                    })
+                }
+                RecurringAction::RunDue { as_of } => {
+                    let runs = svc.recurring_run_due(&book.id, as_of.as_deref())?;
+                    emit(cli.json, &runs, || {
+                        if runs.is_empty() {
+                            println!("Nothing due.");
+                        }
+                        for r in &runs {
+                            println!(
+                                "{}\tschedule {}\t#{}\t{}\t{}",
+                                r.id,
+                                r.schedule_id,
+                                r.occurrence_index,
+                                r.occurrence_date,
+                                r.outcome
+                            );
+                        }
+                    })
+                }
+                RecurringAction::SkipNext { id } => {
+                    let run = svc.recurring_schedule_skip_next(id)?;
+                    emit(cli.json, &run, || {
+                        println!(
+                            "Skipped occurrence #{} of schedule {} ({}).",
+                            run.occurrence_index, run.schedule_id, run.occurrence_date
+                        );
+                    })
+                }
+                RecurringAction::Runs { schedule } => {
+                    let runs = svc.recurring_runs_list(schedule)?;
+                    emit(cli.json, &runs, || {
+                        for r in &runs {
+                            println!(
+                                "{}\t#{}\t{}\t{}",
+                                r.id, r.occurrence_index, r.occurrence_date, r.outcome
                             );
                         }
                     })

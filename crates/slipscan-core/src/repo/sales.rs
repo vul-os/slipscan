@@ -265,7 +265,14 @@ pub fn order_totals(conn: &Connection, sales_order_id: &str) -> CoreResult<Sales
     )
 }
 
-fn line_totals(lines: impl Iterator<Item = (i64, i64, i64)>) -> CoreResult<SalesOrderTotals> {
+/// `pub(crate)` rather than private: migration `0017_recurring`'s
+/// `CoreService::recurring_preview_summary` reuses this exact math for an
+/// `Invoice`-kind schedule's line items rather than re-deriving it — the
+/// same subtotal/tax/total shape whether the lines belong to a sales order,
+/// an invoice, or a schedule template.
+pub(crate) fn line_totals(
+    lines: impl Iterator<Item = (i64, i64, i64)>,
+) -> CoreResult<SalesOrderTotals> {
     let mut subtotal_minor = 0i64;
     let mut tax_minor = 0i64;
     for (quantity, unit_price_minor, tax_rate_bps) in lines {
