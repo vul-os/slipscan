@@ -4405,7 +4405,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     emit(cli.json, &schedule, || {
                         println!(
                             "Created recurring schedule {} ({}) — {} {}, next due {}",
-                            schedule.name, schedule.id, schedule.kind, schedule.frequency,
+                            schedule.name,
+                            schedule.id,
+                            schedule.kind,
+                            schedule.frequency,
                             schedule.next_run_date
                         );
                     })
@@ -4533,19 +4536,28 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     };
                     let schedule = svc.recurring_schedule_update(id, patch)?;
                     emit(cli.json, &schedule, || {
-                        println!("Updated recurring schedule {} ({})", schedule.name, schedule.id);
+                        println!(
+                            "Updated recurring schedule {} ({})",
+                            schedule.name, schedule.id
+                        );
                     })
                 }
                 RecurringAction::Pause { id } => {
                     let schedule = svc.recurring_schedule_pause(id)?;
                     emit(cli.json, &schedule, || {
-                        println!("Paused recurring schedule {} ({}).", schedule.name, schedule.id);
+                        println!(
+                            "Paused recurring schedule {} ({}).",
+                            schedule.name, schedule.id
+                        );
                     })
                 }
                 RecurringAction::Resume { id } => {
                     let schedule = svc.recurring_schedule_resume(id)?;
                     emit(cli.json, &schedule, || {
-                        println!("Resumed recurring schedule {} ({}).", schedule.name, schedule.id);
+                        println!(
+                            "Resumed recurring schedule {} ({}).",
+                            schedule.name, schedule.id
+                        );
                     })
                 }
                 RecurringAction::Delete { id } => {
@@ -4621,7 +4633,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                             println!("Nothing left to preview — the schedule has ended.");
                         }
                         for p in &preview {
-                            println!("#{}\t{}\t{}", p.occurrence_index, p.occurrence_date, p.summary);
+                            println!(
+                                "#{}\t{}\t{}",
+                                p.occurrence_index, p.occurrence_date, p.summary
+                            );
                         }
                     })
                 }
@@ -4634,7 +4649,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                         for r in &runs {
                             println!(
                                 "{}\tschedule {}\t#{}\t{}\t{}",
-                                r.id, r.schedule_id, r.occurrence_index, r.occurrence_date, r.outcome
+                                r.id,
+                                r.schedule_id,
+                                r.occurrence_index,
+                                r.occurrence_date,
+                                r.outcome
                             );
                         }
                     })

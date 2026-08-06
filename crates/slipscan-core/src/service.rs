@@ -11195,9 +11195,7 @@ mod tests {
         assert!(svc.invoice_list(&book.id).unwrap().is_empty());
 
         // First real run, as of a date on/after the first occurrence.
-        let runs = svc
-            .recurring_run_due(&book.id, Some("2026-02-01"))
-            .unwrap();
+        let runs = svc.recurring_run_due(&book.id, Some("2026-02-01")).unwrap();
         assert_eq!(runs.len(), 1, "exactly one occurrence was due");
         assert_eq!(runs[0].occurrence_index, 0);
         assert_eq!(runs[0].occurrence_date, "2026-01-31");
@@ -11209,9 +11207,7 @@ mod tests {
 
         // Calling it again for the SAME as_of must generate nothing more:
         // the schedule already advanced past it.
-        let runs_again = svc
-            .recurring_run_due(&book.id, Some("2026-02-01"))
-            .unwrap();
+        let runs_again = svc.recurring_run_due(&book.id, Some("2026-02-01")).unwrap();
         assert!(
             runs_again.is_empty(),
             "a second run for the same as_of must not double-create"
@@ -11230,9 +11226,7 @@ mod tests {
         // Running again as of March generates occurrence 1 (Feb 28 — the
         // month-end clamp) and only that one occurrence, proving the
         // schedule caught up exactly one step rather than skipping ahead.
-        let runs_feb = svc
-            .recurring_run_due(&book.id, Some("2026-03-01"))
-            .unwrap();
+        let runs_feb = svc.recurring_run_due(&book.id, Some("2026-03-01")).unwrap();
         assert_eq!(runs_feb.len(), 1);
         assert_eq!(runs_feb[0].occurrence_date, "2026-02-28");
         let invoices = svc.invoice_list(&book.id).unwrap();
@@ -11247,7 +11241,9 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].occurrence_index, 0);
         assert_eq!(history[1].occurrence_index, 1);
-        assert!(history.iter().all(|r| r.generated_table.as_deref() == Some("invoices")));
+        assert!(history
+            .iter()
+            .all(|r| r.generated_table.as_deref() == Some("invoices")));
     }
 
     /// A schedule dormant across several of its own due dates catches all of
@@ -11270,9 +11266,7 @@ mod tests {
         // too and pull in a fourth, which is what this test caught the
         // first time it was written (`recurring_run_due` was correct — the
         // `as_of` boundary picked to test it was one occurrence too late).
-        let runs = svc
-            .recurring_run_due(&book.id, Some("2026-03-15"))
-            .unwrap();
+        let runs = svc.recurring_run_due(&book.id, Some("2026-03-15")).unwrap();
         assert_eq!(runs.len(), 3, "three occurrences were due: Jan, Feb, Mar");
         let dates: Vec<&str> = runs.iter().map(|r| r.occurrence_date.as_str()).collect();
         assert_eq!(dates, vec!["2026-01-01", "2026-02-01", "2026-03-01"]);
@@ -11287,9 +11281,7 @@ mod tests {
         }
 
         // Re-running the same as_of generates nothing more.
-        let empty = svc
-            .recurring_run_due(&book.id, Some("2026-03-15"))
-            .unwrap();
+        let empty = svc.recurring_run_due(&book.id, Some("2026-03-15")).unwrap();
         assert!(empty.is_empty());
         assert_eq!(
             svc.transaction_list(&book.id, &TransactionFilter::default())
