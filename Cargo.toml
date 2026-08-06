@@ -9,8 +9,10 @@ members = ["crates/*"]
 #
 # The engine is now published to crates.io, and a registry dependency resolves from the
 # committed Cargo.lock without any network access. The exclusion is therefore no longer
-# needed, and slipscan-sync is an ordinary workspace member whose mapping stays behind a
-# default-off `sync-dmtap` feature.
+# needed, and slipscan-sync is an ordinary workspace member. Its mapping still sits behind
+# a `sync-dmtap` feature, but that feature is ON by default now — see that crate's own
+# Cargo.toml [features] comment for why (the git-dep constraint that justified default-off
+# is gone along with the exclusion, and leaving it off would only mean its tests never run).
 
 [workspace.package]
 version = "0.1.0"
