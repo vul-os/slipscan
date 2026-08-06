@@ -18,13 +18,21 @@ The short version: **a copy of your files yields nothing.** Secrets are only usa
 Each secret is encrypted with XChaCha20-Poly1305 under a per-machine **data-encryption key (DEK)**. The DEK is wrapped by a **key-encryption key (KEK)** that lives *only* in the OS keychain — macOS Keychain, Windows Credential Manager, or Secret Service on Linux — never on disk in any file SlipScan writes.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-monospace, SFMono-Regular, Menlo, monospace','primaryColor':'#334155','primaryBorderColor':'#94a3b8','primaryTextColor':'#e2e8f0','lineColor':'#0d9488','edgeLabelBackground':'#1e293b'}}}%%
 flowchart TD
+    classDef entry fill:#1e293b,stroke:#64748b,color:#e2e8f0
+    classDef subject fill:#0f766e,stroke:#5eead4,color:#f0fdfa
+    classDef downstream fill:#334155,stroke:#94a3b8,color:#e2e8f0
     OS["OS keychain\n(unlocked session)"] -->|holds| KEK["KEK — never on disk"]
     KEK -->|wraps| DEK["per-machine DEK"]
     DEK -->|"XChaCha20-Poly1305"| S1["secret: za-fnb-main"]
     DEK -->|"XChaCha20-Poly1305"| S2["secret: imap-home"]
     DEK -->|"XChaCha20-Poly1305"| S3["secret: llm-api-key"]
     S1 & S2 & S3 --> V[("vault file on disk\n(ciphertext only)")]
+
+    class OS entry
+    class KEK,DEK subject
+    class S1,S2,S3,V downstream
 ```
 
 Consequence: the vault file, the SQLite books, a full disk image — all of it together is ciphertext without the KEK, and the KEK is only released by *that machine's* OS keychain inside *that user's* unlocked session.
