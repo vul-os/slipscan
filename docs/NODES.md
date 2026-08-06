@@ -50,17 +50,20 @@ There is **no coordinator, no directory, no rendezvous service, and no default e
 Pairing is a **local, human-in-the-loop ceremony**. SlipScan opens no socket to perform it. The two blobs are base64url text and moving them between devices is your job — a QR code, a paste into a chat, a file on a USB stick.
 
 ```mermaid
-%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-monospace, SFMono-Regular, Menlo, monospace','primaryColor':'transparent','primaryBorderColor':'#14b8a6','primaryTextColor':'#8f969e','lineColor':'#8a8f98','nodeBorder':'#5f8f8a','edgeLabelBackground':'transparent','clusterBorder':'#3f8f86','clusterBkg':'transparent'}}}%%
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-monospace, SFMono-Regular, Menlo, monospace','actorBkg':'#0f766e','actorBorder':'#5eead4','actorTextColor':'#f0fdfa','actorLineColor':'#94a3b8','signalColor':'#0d9488','signalTextColor':'#e2e8f0','noteBkgColor':'#1e293b','noteBorderColor':'#64748b','noteTextColor':'#e2e8f0'}}}%%
 sequenceDiagram
     participant A as laptop
     participant H as you<br/>(the only channel)
     participant B as home server
+
+    rect rgb(30, 41, 59)
     A->>H: 1. device invite<br/>(blob + claim token)
     H->>B: carry it
     B->>B: 2. device accept<br/>compare key-name, PIN laptop
     B->>H: acceptance blob
     H->>A: carry it back
     A->>A: 3. device confirm<br/>burn token, PIN home server
+    end
 ```
 
 ```
