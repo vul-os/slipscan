@@ -12,12 +12,13 @@
 #     that layout obvious.
 #
 # Maintainer flow: bump every version file — VERSION, tauri.conf.json,
-# apps/desktop/package.json, apps/desktop/src-tauri/Cargo.toml,
-# [workspace.package] in the root Cargo.toml, crates/slipscan-sync/Cargo.toml
-# (excluded from the workspace, so it does not inherit) — then push a matching
-# tag (e.g. v0.1.0). The first build step checks all six against the tag. A
-# *draft* release appears under GitHub → Releases with generated notes and all
-# assets; review and publish.
+# apps/desktop/package.json, apps/desktop/src-tauri/Cargo.toml, and
+# [workspace.package] in the root Cargo.toml (crates/slipscan-sync/Cargo.toml
+# rejoined the root workspace and inherits `version.workspace = true`, so it
+# moves with the line above rather than needing its own edit) — then push a
+# matching tag (e.g. v0.1.0). The first build step checks all six against the
+# tag. A *draft* release appears under GitHub → Releases with generated notes
+# and all assets; review and publish.
 #
 # ── Signing (not configured; all artifacts ship unsigned until then) ─────────
 # macOS  — add repo secrets and uncomment the env lines in "Build desktop
@@ -80,7 +81,15 @@ jobs:
           # version key before it.
           desktop="$(grep -m1 '^version = ' apps/desktop/src-tauri/Cargo.toml | cut -d'"' -f2)"
           root="$(python3 -c "import re;print(re.search(r'\[workspace\.package\][^\[]*?^version = \"([^\"]+)\"', open('Cargo.toml').read(), re.M|re.S).group(1))")"
-          sync="$(grep -m1 '^version = ' crates/slipscan-sync/Cargo.toml | cut -d'"' -f2)"
+          # slipscan-sync rejoined the root workspace and declares
+          # `version.workspace = true` (no literal version string of its own
+          # left to grep), so its effective version IS $root; only fall back
+          # to a literal-version grep if it ever stops inheriting.
+          if grep -q '^version\.workspace = true' crates/slipscan-sync/Cargo.toml; then
+            sync="$root"
+          else
+            sync="$(grep -m1 '^version = ' crates/slipscan-sync/Cargo.toml | cut -d'"' -f2)"
+          fi
           base="${tag%%-*}"   # v0.1.0-rc1 dry-runs build against base version 0.1.0
           echo "tag=$tag base=$base VERSION=$ver tauri.conf.json=$conf package.json=$pkg src-tauri/Cargo.toml=$desktop workspace=$root slipscan-sync=$sync"
           bad=0
