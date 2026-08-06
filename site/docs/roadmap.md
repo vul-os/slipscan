@@ -47,9 +47,9 @@ Share the smarts, not the data.
         shared DMTAP Sync engine (`substrate/SYNC.md` ③) rather than a private
         CRDT — editable rows as §4.4 LWW registers, the posted ledger as a §4.3
         add-only set. The same compiled core Diwan runs; as a native Rust
-        product SlipScan takes it as a plain crate dependency. FlowStock ran it
-        too, behind a build tag, until it was retired into this repo — see
-        Phase 6.
+        product SlipScan takes it as a plain crate dependency. So did the
+        product retired into Phase 6 below, behind a build tag, before it
+        was folded in.
   - [x] Per-device identity and pairing (phase 1 of the node model — spec:
         [docs/NODES.md](docs/NODES.md)). An ed25519 keypair per device whose
         **public half is the device id**, private half held in the existing
@@ -158,23 +158,24 @@ Contract: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) "Feature parity". Every s
 - [ ] IPC/HTTP parity: every operation under the same name and payload on both transports (current gaps listed in [docs/API.md](docs/API.md))
 - [ ] Mobile companion app (Tauri mobile)
 
-## Phase 6 — Inventory & trade (the flowstock fold)
+## Phase 6 — Inventory & trade
 
-FlowStock was a separate Vulos product: offline-first, multi-branch inventory for shops and
-wholesalers, a Go binary serving a React UI. It has been retired and its 89 commits folded into this
-history (archival — no files landed; `git log 0fea5e8` reads them). This phase re-derives its domain
-in Rust here, because the argument for two products never survived contact with the code:
+A retired Vulos product covered this ground before: offline-first, multi-branch inventory for shops
+and wholesalers, a Go binary serving a React UI. It has been retired and its 89 commits folded into
+this history (archival — no files landed; `git log 0fea5e8` reads them). This phase re-derives its
+domain in Rust here, because the argument for two products never survived contact with the code:
 
 - **The overlap was structural, not cosmetic.** Xero and QuickBooks treat stock as a *module* of the
   book, not a neighbouring app, and for a reason — a goods receipt is an inventory event *and* a
   journal entry. Two databases cannot both own that fact.
-- **It closes real [PARITY.md](PARITY.md) gaps rather than adding a 15th axis.** FlowStock already
-  had customers, suppliers, purchase orders, payments and sales documents — four of the fourteen
-  Xero capabilities currently scored *Not built*, arriving with the inventory instead of beside it.
-- **Most of it was never going to be ported anyway.** FlowStock's domain model was a 16-row table
+- **It closes real [PARITY.md](PARITY.md) gaps rather than adding a 15th axis.** The retired product
+  already had customers, suppliers, purchase orders, payments and sales documents — four of the
+  fourteen Xero capabilities currently scored *Not built*, arriving with the inventory instead of
+  beside it.
+- **Most of it was never going to be ported anyway.** Its domain model was a 16-row table
   registry; ~4.7k of its ~5.3k Go source lines were HLC, oplog, peer auth and folder replication —
-  all of which this repo already has, signed and immutable by trigger (migration 0700), which
-  FlowStock's was not.
+  all of which this repo already has, signed and immutable by trigger (migration 0700), which its
+  own was not.
 
 **What is deliberately not taken:** the Go backend, its unsigned oplog and HLC (superseded by
 migration 0700), its React UI, and its cloud-node deployment path. This is a re-derivation against
@@ -350,11 +351,12 @@ These were settled rather than escalated, and are recorded here so the reasoning
       what was collected. Every journal still balanced, so no trial balance could show it; it is
       covered now by tests from both sides (a standalone invoice clears AR to zero when paid, and an
       order-backed invoice does not debit AR twice))*
-- [ ] **6.7 Sync transport.** FlowStock shipped the one thing [docs/NODES.md](docs/NODES.md) still
-      lists as missing: a working authenticated transport — three HTTP endpoints
-      (`/sync/vector`, `/sync/pull`, `/sync/ops`) plus folder/USB replication for sites with no
-      link at all. Re-derived over the *signed* oplog, so it carries a guarantee FlowStock's could
-      not: every op individually verifiable, not merely fetched from a trusted peer
+- [ ] **6.7 Sync transport.** The retired product folded into Phase 6 (above) shipped the one thing
+      [docs/NODES.md](docs/NODES.md) still lists as missing: a working authenticated transport —
+      three HTTP endpoints (`/sync/vector`, `/sync/pull`, `/sync/ops`) plus folder/USB replication
+      for sites with no link at all. Re-derived over the *signed* oplog, so it carries a guarantee
+      the earlier version could not: every op individually verifiable, not merely fetched from a
+      trusted peer
 - [ ] **6.8 Roles.** Genuinely new work — neither codebase had it. The device model here is
       trust-on-first-use pairing built for *your own devices*; branches have staff, and staff turn
       over. Revocation cannot stay "delete the peer row" once a till operator is a real person
