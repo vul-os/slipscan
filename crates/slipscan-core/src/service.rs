@@ -11263,9 +11263,15 @@ mod tests {
         let account = make_account(&svc, &book);
         let _schedule = make_transaction_schedule(&svc, &book, &account, "2026-01-01");
 
-        // Three months pass with nobody running it.
+        // Three months pass with nobody running it. `as_of` is deliberately
+        // "2026-03-15" — strictly after March 1's occurrence and strictly
+        // before April 1's — so exactly three occurrences (Jan, Feb, Mar)
+        // are due; "2026-04-15" would be on/after April 1's own occurrence
+        // too and pull in a fourth, which is what this test caught the
+        // first time it was written (`recurring_run_due` was correct — the
+        // `as_of` boundary picked to test it was one occurrence too late).
         let runs = svc
-            .recurring_run_due(&book.id, Some("2026-04-15"))
+            .recurring_run_due(&book.id, Some("2026-03-15"))
             .unwrap();
         assert_eq!(runs.len(), 3, "three occurrences were due: Jan, Feb, Mar");
         let dates: Vec<&str> = runs.iter().map(|r| r.occurrence_date.as_str()).collect();
@@ -11282,7 +11288,7 @@ mod tests {
 
         // Re-running the same as_of generates nothing more.
         let empty = svc
-            .recurring_run_due(&book.id, Some("2026-04-15"))
+            .recurring_run_due(&book.id, Some("2026-03-15"))
             .unwrap();
         assert!(empty.is_empty());
         assert_eq!(
