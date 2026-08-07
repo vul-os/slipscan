@@ -172,16 +172,11 @@ mod tests {
 
     /// Minimal block_on so unit tests do not need a runtime.
     fn futures_block_on<F: std::future::Future>(fut: F) -> F::Output {
-        use std::sync::Arc;
-        use std::task::{Context, Poll, Wake, Waker};
+        use std::task::{Context, Poll, Waker};
 
-        struct NoopWaker;
-        impl Wake for NoopWaker {
-            fn wake(self: Arc<Self>) {}
-        }
-
-        let waker = Waker::from(Arc::new(NoopWaker));
-        let mut cx = Context::from_waker(&waker);
+        // `Waker::noop()` (stable since 1.85, our rust-version floor) replaces
+        // what used to be a hand-rolled `impl Wake for NoopWaker`.
+        let mut cx = Context::from_waker(Waker::noop());
         let mut fut = Box::pin(fut);
         loop {
             match fut.as_mut().poll(&mut cx) {

@@ -290,9 +290,9 @@ fn detect_datetime(text: &str) -> Option<String> {
             std::mem::swap(&mut m, &mut d);
         }
         format!("{y:04}-{m:02}-{d:02}")
-    } else if let Some(c) =
-        regex(&DMY, r"\b([0-9]{1,2})[-/.]([0-9]{1,2})[-/.](20[0-9]{2})\b").captures(text)
-    {
+    } else {
+        let c =
+            regex(&DMY, r"\b([0-9]{1,2})[-/.]([0-9]{1,2})[-/.](20[0-9]{2})\b").captures(text)?;
         let (mut d, mut m, y): (i64, i64, i64) =
             (c[1].parse().ok()?, c[2].parse().ok()?, c[3].parse().ok()?);
         // Receipts here print day-first; swap when that can't be right.
@@ -300,8 +300,6 @@ fn detect_datetime(text: &str) -> Option<String> {
             std::mem::swap(&mut m, &mut d);
         }
         format!("{y:04}-{m:02}-{d:02}")
-    } else {
-        return None;
     };
 
     let time = regex(&TIME, r"\b([01]?[0-9]|2[0-3]):([0-5][0-9])\b")

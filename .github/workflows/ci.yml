@@ -105,7 +105,12 @@ jobs:
             echo "::error::run failed, but not via the feature_gate guard — it broke for some other reason"
             exit 1
           }
-          echo "$out" | grep -q 'features sync-dmtap' || {
+          # The guard must not just refuse — it must say how to run the real
+          # suite. That remedy is `cargo test -p slipscan-sync` (plain, because
+          # sync-dmtap is default-on); this assertion is what stops the message
+          # drifting back to the pre-default-on `--features sync-dmtap` wording
+          # and handing developers a command that is no longer the short path.
+          echo "$out" | grep -q 'cargo test -p slipscan-sync' || {
             echo "::error::the guard no longer prints the command that runs the real suite"
             exit 1
           }
