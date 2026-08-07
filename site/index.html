@@ -378,7 +378,14 @@ h1 .slash{color:var(--accent-text)}
 .section-head{display:flex;align-items:center;justify-content:space-between;gap:36px}
 .section-head .sh-text{flex:1;min-width:0}
 .illo-wrap{flex:none;width:clamp(126px,15vw,190px)}
-@media(max-width:900px){.illo-wrap{display:none}}
+/* Below 900px the head stacks and the illustration sits under the copy at a
+   fixed size, rather than being dropped. It used to be display:none, which
+   left the narrow layout — the one most people actually read — with no
+   drawing on it at all. */
+@media(max-width:900px){
+  .section-head{flex-direction:column;align-items:stretch;gap:22px}
+  .illo-wrap{width:170px;align-self:center}
+}
 .illo{display:block;width:100%;height:auto;overflow:visible}
 .illo .i-line{stroke:var(--line-2);stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
 .illo .i-fill{fill:var(--sunken);stroke:var(--line-2);stroke-width:1.3}
@@ -390,6 +397,65 @@ h1 .slash{color:var(--accent-text)}
 .illo .i-dim{stroke:var(--t3);stroke-width:1.4;fill:none;stroke-linecap:round;stroke-dasharray:1 5}
 .illo .i-x{stroke:var(--t3);stroke-width:1.6;fill:none;stroke-linecap:round}
 .illo .i-cap{font-family:var(--mono);font-size:10.5px;fill:var(--t3);letter-spacing:.03em}
+
+/* ── illustration draw-in ───────────────────────────────────────────────
+   Each illustration sits inside a .section-head that already carries
+   .reveal, so these ride that observer's .in rather than adding a second
+   one. The order is the order the drawing is meant to be read in: the
+   paper first, then the line that connects it to the result, then the
+   ticks landing on the result.
+
+   The dash length is a constant, not a measured getTotalLength(). Every
+   stroked path in these three illustrations is well under 240 user units,
+   and a constant keeps the whole effect in CSS with no script walking the
+   DOM at load. `.i-dim` is deliberately excluded — its dasharray is the
+   dotted texture itself, and overwriting it would turn it solid. */
+@media(prefers-reduced-motion:no-preference){
+  /* Scoped to `.reveal .illo`, never bare `.illo`. The hidden starting state
+     and the thing that undoes it must have the same reach: the closing
+     illustration is not inside a .reveal, so a bare `.illo` selector here hid
+     it and nothing ever brought it back. Only hide what something is going to
+     restore. */
+  .reveal .illo .i-line,.reveal .illo .i-accent-line,.reveal .illo .i-x{
+    stroke-dasharray:240;stroke-dashoffset:240;
+  }
+  .reveal .illo .i-fill,.reveal .illo .i-panel,.reveal .illo .i-overlay{opacity:0}
+  .reveal .illo .i-accent,.reveal .illo .i-check,.reveal .illo .i-cap{opacity:0}
+
+  .reveal.in .illo .i-fill,.reveal.in .illo .i-panel,.reveal.in .illo .i-overlay{
+    animation:illo-in .5s var(--decel) forwards;
+  }
+  .reveal.in .illo .i-line,.reveal.in .illo .i-x{
+    animation:illo-draw .8s .25s var(--decel) forwards;
+  }
+  .reveal.in .illo .i-accent-line{
+    animation:illo-draw .55s .5s var(--decel) forwards;
+  }
+  /* transform-box:fill-box so the scale happens about the mark's own centre.
+     Without it an SVG transform-origin resolves against the viewBox origin,
+     and the ticks fly in from the top-left corner instead of popping. */
+  .reveal .illo .i-accent,.reveal .illo .i-check{transform-box:fill-box;transform-origin:center}
+  .reveal.in .illo .i-accent,.reveal.in .illo .i-check{
+    animation:illo-pop .4s .78s var(--decel) forwards;
+  }
+  .reveal.in .illo .i-cap{animation:illo-in .5s .9s var(--decel) forwards}
+
+  /* Stagger the stacked slips and the ticked rows so they arrive as a
+     sequence rather than all at once. */
+  .reveal.in .illo>g:nth-of-type(2) .i-fill,
+  .reveal.in .illo>g:nth-of-type(2) .i-panel{animation-delay:.08s}
+  .reveal.in .illo>g:nth-of-type(3) .i-fill,
+  .reveal.in .illo>g:nth-of-type(3) .i-panel{animation-delay:.16s}
+  .reveal.in .illo>g:nth-of-type(5) .i-accent,
+  .reveal.in .illo>g:nth-of-type(5) .i-check{animation-delay:.86s}
+  .reveal.in .illo>g:nth-of-type(6) .i-accent,
+  .reveal.in .illo>g:nth-of-type(6) .i-check{animation-delay:.94s}
+  .reveal.in .illo>g:nth-of-type(7) .i-accent,
+  .reveal.in .illo>g:nth-of-type(7) .i-check{animation-delay:1.02s}
+}
+@keyframes illo-draw{to{stroke-dashoffset:0}}
+@keyframes illo-in{from{opacity:0}to{opacity:1}}
+@keyframes illo-pop{from{opacity:0;transform:scale(.6)}to{opacity:1;transform:none}}
 
 /* ── generic card grids ────────────────────────────────────────────────── */
 .grid{display:grid;gap:14px;margin-top:30px}
@@ -982,13 +1048,43 @@ h1 .slash{color:var(--accent-text)}
 
     <!-- ═══ screens ═══════════════════════════════════════════════════════ -->
     <section class="pane" id="screens">
-      <div class="reveal">
-        <span class="eyebrow">screens</span>
-        <h2>Real screens, no mockups.</h2>
-        <p class="lead">Every shot is the shipped desktop app against a seeded demo book, captured
-          with a pinned clock, locale and timezone so it reproduces byte-for-byte — in whichever
-          theme you are reading. Pick one from the list, the contact sheet below, the arrows, or
-          <kbd>←</kbd> <kbd>→</kbd> once the gallery has focus.</p>
+      <div class="section-head reveal">
+        <div class="sh-text">
+          <span class="eyebrow">screens</span>
+          <h2>Real screens, no mockups.</h2>
+          <p class="lead">Every shot is the shipped desktop app against a seeded demo book, captured
+            with a pinned clock, locale and timezone so it reproduces byte-for-byte — in whichever
+            theme you are reading. Pick one from the list, the contact sheet below, the arrows, or
+            <kbd>←</kbd> <kbd>→</kbd> once the gallery has focus.</p>
+        </div>
+        <div class="illo-wrap">
+          <!-- A capture being taken: the app window, the frozen clock pinned to
+               it, and the shutter mark. Same rects-and-lines vocabulary as the
+               other two illustrations, and it reads no system value — the hands
+               are drawn at the capture time the script actually pins
+               (09:30), not at whatever time the page is opened. -->
+          <svg class="illo" viewBox="0 0 200 140" aria-hidden="true" focusable="false">
+            <g transform="translate(6,16)">
+              <rect class="i-panel" width="140" height="96" rx="7"/>
+              <path class="i-line" d="M0 16h140"/>
+              <path class="i-line" d="M14 34h34M14 46h34M14 58h34M14 70h22"/>
+              <path class="i-line" d="M62 34h62M62 46h62"/>
+            </g>
+            <path class="i-accent-line" d="M62 78h48"/>
+            <g transform="translate(66,74)">
+              <rect class="i-overlay" width="52" height="30" rx="6"/>
+            </g>
+            <g transform="translate(150,26)">
+              <circle class="i-accent" cx="18" cy="18" r="17"/>
+              <path class="i-check" d="M18 8v10l7 4"/>
+            </g>
+            <g transform="translate(150,84)">
+              <circle class="i-accent" cx="18" cy="14" r="13"/>
+              <path class="i-check" d="M13 14l4 4 8-8"/>
+            </g>
+            <text class="i-cap" x="6" y="130">09:30 · pinned</text>
+          </svg>
+        </div>
       </div>
 
       <div class="gal reveal">
