@@ -80,7 +80,7 @@ document.documentElement.setAttribute('data-theme',s==='light'||s==='dark'?s:(ma
   --quick:120ms; --base:200ms; --slow:320ms;
   --ease:cubic-bezier(.2,0,.2,1); --decel:cubic-bezier(.05,.7,.1,1);
 
-  --radius:14px; --radius-sm:9px; --max:1180px;
+  --radius:14px; --radius-sm:9px; --max:1320px;
   --mono:ui-monospace,SFMono-Regular,"SF Mono","Geist Mono",Menlo,Consolas,monospace;
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
   color-scheme:dark;
@@ -495,7 +495,24 @@ h1 .slash{color:var(--accent-text)}
 @media(max-width:800px){.caps .row{flex-direction:column;gap:7px}.caps .row .nm{width:auto}}
 
 /* ── screens gallery ───────────────────────────────────────────────────── */
+/* Two columns from 1040px up: the screen list stands as a vertical rail
+   beside the stage rather than a horizontal strip above it. The strip made
+   the whole section one narrow stack down the middle of a wide display, and
+   it could only show four or five of the twelve names before scrolling —
+   the rail shows all twelve at once, which is the actual point of a list of
+   what the app contains. `minmax(0,1fr)` on the stage, not `1fr`: a grid
+   child's default `min-width:auto` refuses to shrink below its content, and
+   the 2880px-wide capture inside would push the page sideways. */
 .gal{margin-top:28px}
+.galmain{display:grid;gap:22px}
+/* Both children need this, at every width. A grid item defaults to
+   `min-width:auto`, which refuses to shrink below its content — so the
+   single-column stack below 1040px let the horizontally-scrolling tab strip
+   set the page's width and push it sideways by 3px at 360. The stage needs
+   it for the same reason, against the 2880px capture inside. */
+.galmain>*{min-width:0}
+@media(min-width:1040px){.galmain{grid-template-columns:236px minmax(0,1fr);gap:26px;align-items:start}}
+
 .galtabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:10px;scrollbar-width:thin}
 .galtabs button{
   flex:none;display:inline-flex;align-items:center;gap:7px;height:32px;padding:0 12px;
@@ -505,7 +522,54 @@ h1 .slash{color:var(--accent-text)}
 }
 .galtabs button:hover{border-color:var(--line-2);color:var(--t1)}
 .galtabs button[aria-selected=true]{background:var(--accent);border-color:var(--accent);color:var(--accent-fg);font-weight:650}
+
+@media(min-width:1040px){
+  .galtabs{
+    display:grid;grid-template-columns:1fr;gap:2px;overflow:visible;padding-bottom:0;
+    border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:6px;
+    position:sticky;top:76px;
+  }
+  .galtabs button{
+    width:100%;height:auto;min-height:34px;padding:7px 11px;border-radius:var(--radius-sm);
+    border-color:transparent;background:transparent;justify-content:flex-start;text-align:left;
+    white-space:normal;position:relative;
+  }
+  .galtabs button::before{
+    content:"";position:absolute;left:0;top:50%;translate:0 -50%;
+    width:2px;height:0;border-radius:2px;background:var(--accent);
+    transition:height var(--quick) var(--ease);
+  }
+  .galtabs button:hover{background:var(--sunken);border-color:transparent}
+  .galtabs button[aria-selected=true]{
+    background:var(--sunken);border-color:transparent;color:var(--t1);
+  }
+  .galtabs button[aria-selected=true]::before{height:60%}
+}
 .galstage{margin-top:6px}
+@media(min-width:1040px){.galstage{margin-top:0}}
+
+/* Contact sheet: every screen at once, under the stage. One shot at a time
+   answers "what does it look like"; the sheet answers "how much is there",
+   which is the question a twelve-screen app actually needs answered. */
+.galsheet{
+  margin-top:26px;display:grid;gap:10px;
+  grid-template-columns:repeat(auto-fill,minmax(140px,1fr));
+}
+.galsheet button{
+  display:block;padding:0;border:1px solid var(--line);border-radius:var(--radius-sm);
+  background:var(--sunken);overflow:hidden;position:relative;cursor:pointer;
+  transition:border-color var(--quick) var(--ease),transform var(--quick) var(--ease);
+}
+.galsheet button img{width:100%;height:auto;aspect-ratio:16/10;object-fit:cover;object-position:top center}
+.galsheet button .nm{
+  display:block;padding:6px 8px;font-size:11.5px;color:var(--t2);text-align:left;
+  border-top:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.galsheet button:hover{border-color:var(--accent-edge);transform:translateY(-2px)}
+.galsheet button:hover .nm{color:var(--t1)}
+.galsheet button[aria-current=true]{border-color:var(--accent)}
+.galsheet button[aria-current=true] .nm{color:var(--t1);font-weight:600}
+@media(prefers-reduced-motion:reduce){.galsheet button:hover{transform:none}}
 .galbar{display:flex;align-items:center;gap:12px;padding:0 13px;height:40px;border-bottom:1px solid var(--line);background:var(--sunken)}
 .galbar .path{font-family:var(--mono);font-size:12px;color:var(--t3);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .galbar .count{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px;color:var(--t2)}
@@ -922,30 +986,37 @@ h1 .slash{color:var(--accent-text)}
         <span class="eyebrow">screens</span>
         <h2>Real screens, no mockups.</h2>
         <p class="lead">Every shot is the shipped desktop app against a seeded demo book, captured
-          with a pinned clock, locale and timezone so it reproduces byte-for-byte. Step through with
-          the tabs, the arrows, or <kbd>←</kbd> <kbd>→</kbd> once the gallery has focus.</p>
+          with a pinned clock, locale and timezone so it reproduces byte-for-byte — in whichever
+          theme you are reading. Pick one from the list, the contact sheet below, the arrows, or
+          <kbd>←</kbd> <kbd>→</kbd> once the gallery has focus.</p>
       </div>
 
       <div class="gal reveal">
-        <div class="galtabs" role="tablist" aria-label="Screens of the shipped app" id="galTabs"></div>
-        <div class="window galstage">
-          <div class="galbar">
-            <span class="dots"><i></i><i></i><i></i></span>
-            <span class="path" id="galPath">slip/scan — Dashboard</span>
-            <span class="count" id="galCount">01 / 12</span>
-            <span class="galnav">
-              <button type="button" id="galPrev" aria-label="Previous screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
-              <button type="button" id="galNext" aria-label="Next screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></button>
-            </span>
-          </div>
-          <div class="shot-holder loading" id="galHolder" tabindex="0" role="group" aria-label="Screen gallery — use the left and right arrow keys">
-            <img id="galImg" src="./screenshots/dashboard.png" width="2880" height="1800" loading="lazy" alt="">
+        <div class="galmain">
+          <div class="galtabs" role="tablist" aria-label="Screens of the shipped app" id="galTabs"></div>
+          <div>
+            <div class="window galstage">
+              <div class="galbar">
+                <span class="dots"><i></i><i></i><i></i></span>
+                <span class="path" id="galPath">slip/scan — Dashboard</span>
+                <span class="count" id="galCount">01 / 12</span>
+                <span class="galnav">
+                  <button type="button" id="galPrev" aria-label="Previous screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg></button>
+                  <button type="button" id="galNext" aria-label="Next screen"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg></button>
+                </span>
+              </div>
+              <div class="shot-holder loading" id="galHolder" tabindex="0" role="group" aria-label="Screen gallery — use the left and right arrow keys">
+                <img id="galImg" src="./screenshots/dashboard.png" width="2880" height="1800" loading="lazy" alt="">
+              </div>
+            </div>
+            <p class="galcap" id="galCap"></p>
           </div>
         </div>
-        <p class="galcap" id="galCap"></p>
-        <p class="lightnote" id="lightNote">You are reading the light theme. The app ships light as a
-          first-class theme, but the committed gallery holds a light capture of the Dashboard only —
-          the other screens below are the dark capture, shown as they were taken rather than recoloured.</p>
+
+        <!-- Contact sheet. Populated from the same SHOTS list that drives the
+             rail and the stage, so a screen can never appear in one and not
+             the others. -->
+        <div class="galsheet" id="galSheet" aria-label="All screens"></div>
       </div>
     </section>
 
@@ -1401,8 +1472,10 @@ function swapShot(holder,img,url,alt){
 
 /* ── theme ──────────────────────────────────────────────────────────────
    The stored value is the same shape the app stores, and the screenshot set
-   follows it: the Dashboard has a real light capture, the rest do not, and
-   the note under the gallery says so instead of pretending otherwise. */
+   follows it all the way: every screen is captured in both themes, so
+   switching this repaints the hero, the gallery stage and the contact sheet
+   onto captures that match the page they sit on. It used to repaint only the
+   hero, because only the Dashboard had a light capture. */
 function isLight(){return root.getAttribute('data-theme')==='light';}
 function paintTheme(){
   var light=isLight();
@@ -1419,7 +1492,9 @@ function paintTheme(){
   if(meta) meta.setAttribute('content',light?'#FAFAFA':'#09090B');
   var btn=$('#themeBtn');
   if(btn) btn.setAttribute('aria-label',light?'Switch to the dark theme':'Switch to the light theme');
-  paintLightNote();
+  /* Defined further down, with the gallery. Guarded because paintTheme also
+     runs during first paint, before that block has been evaluated. */
+  if(typeof repaintGallery==='function') repaintGallery();
 }
 function toggleTheme(){
   root.setAttribute('data-theme',isLight()?'dark':'light');
@@ -1430,7 +1505,7 @@ $('#themeBtn').addEventListener('click',toggleTheme);
 
 /* ── the screens gallery ─────────────────────────────────────────────── */
 var SHOTS=[
-  {f:'dashboard.png',light:'dashboard-light.png',t:'Dashboard',
+  {f:'dashboard.png',t:'Dashboard',
    c:'<b>Dashboard.</b> Net balance across accounts, spend for the month, budget remaining and slips awaiting review — with locally-computed nudges under them. Every stat card opens the rows behind it.'},
   {f:'transactions.png',t:'Transactions',
    c:'<b>Transactions.</b> Every bank-level row, filterable by account, category and date, with inline category dropdowns and a Member column carrying per-person attribution. Bulk edits, and a filter set you can keep with Save view.'},
@@ -1455,29 +1530,54 @@ var SHOTS=[
   {f:'settings.png',t:'Settings',
    c:'<b>Settings.</b> Appearance, the book’s facts, the SQLite file’s path on disk, data &amp; backup, Connections, and the credential vault — over a privacy statement written as a contract rather than a slogan.'}
 ];
+/* Every screen is captured in both themes (apps/desktop/scripts/screenshot.ts
+   loops them), so the light page shows light captures rather than a wall of
+   dark app windows with an apology under it. */
+function shotFile(s){return isLight()?s.f.replace(/\.png$/,'-light.png'):s.f;}
+
 var gi=0;
 var galTabs=$('#galTabs'),galImg=$('#galImg'),galCap=$('#galCap'),galPath=$('#galPath'),
-    galCount=$('#galCount'),galHolder=$('#galHolder'),lightNote=$('#lightNote');
+    galCount=$('#galCount'),galHolder=$('#galHolder'),galSheet=$('#galSheet');
 
 galTabs.innerHTML=SHOTS.map(function(s,i){
   return '<button role="tab" type="button" data-i="'+i+'" aria-selected="'+(i===0)+'">'+s.t+'</button>';
 }).join('');
 var galBtns=$$('button',galTabs);
 
-function paintLightNote(){
-  if(!lightNote) return;
-  lightNote.classList.toggle('show',!SHOTS[gi].light);
+galSheet.innerHTML=SHOTS.map(function(s,i){
+  return '<button type="button" data-i="'+i+'" aria-current="'+(i===0)+'">'+
+    '<img src="./screenshots/'+shotFile(s)+'" loading="lazy" alt="" width="2880" height="1800">'+
+    '<span class="nm">'+s.t+'</span></button>';
+}).join('');
+var sheetBtns=$$('button',galSheet);
+var sheetImgs=$$('img',galSheet);
+
+/* Re-point the stage and every thumbnail at the current theme's captures. */
+function repaintGallery(){
+  showShot(gi,false);
+  sheetImgs.forEach(function(img,j){
+    var want='./screenshots/'+shotFile(SHOTS[j]);
+    if(img.getAttribute('src')!==want) img.setAttribute('src',want);
+  });
 }
+
+galSheet.addEventListener('click',function(e){
+  var b=e.target.closest('button[data-i]');
+  if(!b) return;
+  showShot(parseInt(b.dataset.i,10),true);
+  galHolder.scrollIntoView({block:'nearest',behavior:reduce?'auto':'smooth'});
+});
+
 function showShot(i,scrollTab){
   gi=(i+SHOTS.length)%SHOTS.length;
   var s=SHOTS[gi];
-  var file=(isLight()&&s.light)?s.light:s.f;
+  var file=shotFile(s);
   galBtns.forEach(function(b,j){b.setAttribute('aria-selected',String(j===gi));});
+  sheetBtns.forEach(function(b,j){b.setAttribute('aria-current',String(j===gi));});
   swapShot(galHolder,galImg,'./screenshots/'+file,s.t+' — the shipped slip/scan desktop app, demo data');
   galCap.innerHTML=s.c+'<span class="k">← → to step</span>';
   galPath.textContent='slip/scan — '+s.t;
   galCount.textContent=('0'+(gi+1)).slice(-2)+' / '+('0'+SHOTS.length).slice(-2);
-  paintLightNote();
   if(scrollTab&&galBtns[gi]) galBtns[gi].scrollIntoView({block:'nearest',inline:'nearest',behavior:reduce?'auto':'smooth'});
 }
 galTabs.addEventListener('click',function(e){

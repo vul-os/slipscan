@@ -39,7 +39,7 @@ const LOCALE_TZ = "Africa/Johannesburg";
 // the month the demo data actually covers.
 const CAPTURE_TIME = "2026-07-16T09:30:00+02:00";
 
-/** Every route, in sidebar order, captured in the dark (brand-first) theme. */
+/** Every route, in sidebar order. Captured in both themes — see the loop. */
 const ROUTES = readRoutes();
 
 async function serverUp(): Promise<boolean> {
@@ -142,17 +142,16 @@ async function main(): Promise<void> {
       );
       const page = await context.newPage();
 
-      if (themeName === "light") {
-        // Light theme: dashboard only.
-        await openRoute(page, "dashboard");
-        await save(page, "dashboard-light");
-        await context.close();
-        continue;
-      }
+      // Both themes get the full gallery. It used to be dark-for-everything
+      // plus a single light Dashboard, which meant the site's light mode
+      // showed a page of dark app windows — the one combination that looks
+      // like a mistake rather than a choice. Light is a first-class theme in
+      // the app, so it is a first-class gallery here.
+      const suffix = themeName === "light" ? "-light" : "";
 
       for (const route of ROUTES) {
         await openRoute(page, route);
-        await save(page, route);
+        await save(page, `${route}${suffix}`);
 
         if (route === "receipts") {
           // Expand one slip for the detail shot. The expander is the button
@@ -177,7 +176,7 @@ async function main(): Promise<void> {
           await page.waitForSelector('button[aria-expanded="true"]');
           // The panel opens with a reveal transition; let it finish.
           await page.waitForTimeout(450);
-          await save(page, "receipt-detail");
+          await save(page, `receipt-detail${suffix}`);
         }
       }
       await context.close();
@@ -196,6 +195,8 @@ async function main(): Promise<void> {
   // hero.png is the dashboard, per the product standard.
   copyFileSync(join(OUT_DIR, "dashboard.png"), join(OUT_DIR, "hero.png"));
   console.log("  ✓ hero.png (copy of dashboard.png)");
+  copyFileSync(join(OUT_DIR, "dashboard-light.png"), join(OUT_DIR, "hero-light.png"));
+  console.log("  ✓ hero-light.png (copy of dashboard-light.png)");
 
   // Mirror outward. sync-screenshots.ts owns which directories exist and
   // which files each one skips (site/ drops hero.png), so it is the only

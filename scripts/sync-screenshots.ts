@@ -4,16 +4,16 @@
 //
 // Why this exists: the same gallery lives in three directories — docs/
 // screenshots/ (the markdown gallery, and where apps/desktop/scripts/
-// screenshot.mjs writes), assets/screens/ (what README.md and outside
+// screenshot.ts writes), assets/screens/ (what README.md and outside
 // embedders point at), and site/screenshots/ (what the static site serves).
-// screenshot.mjs only ever mirrored the first into the second, so site/
+// screenshot.ts only ever mirrored the first into the second, so site/
 // screenshots/ was a hand-copied third set: eleven PNGs that differed from
 // docs/screenshots/ by content at identical 2880x1800 dimensions, payments.png
 // missing outright, and an orphan hero.png nothing loaded. Nothing signalled
 // any of that. Here the mirror is a script, and `--check` fails CI if the
 // three fall out of step again.
 //
-// Regenerating the captures is still screenshot.mjs's job (`npm run
+// Regenerating the captures is still screenshot.ts's job (`npm run
 // screenshot` in apps/desktop); this only copies what that produced.
 //
 // Usage:
@@ -36,14 +36,15 @@ const sourceDir = join(repoRoot, 'docs', 'screenshots');
 // site/index.html points its hero at ./screenshots/dashboard.png directly and
 // no page or markdown chapter loads hero.png (which is a byte-identical copy
 // of dashboard.png), so shipping it would put ~900 kB of dead weight on a
-// deployed page.
+// deployed page. hero-light.png is the same arrangement for the light theme —
+// a byte-identical copy of dashboard-light.png that the site never asks for.
 interface Target {
   dir: string;
   skip: Set<string>;
 }
 const TARGETS: Target[] = [
   { dir: join(repoRoot, 'assets', 'screens'), skip: new Set() },
-  { dir: join(repoRoot, 'site', 'screenshots'), skip: new Set(['hero.png']) },
+  { dir: join(repoRoot, 'site', 'screenshots'), skip: new Set(['hero.png', 'hero-light.png']) },
 ];
 
 const args = new Set(process.argv.slice(2));
