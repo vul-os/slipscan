@@ -212,6 +212,16 @@ kbd{
    install section. Download, the palette and the theme toggle are the three
    things a phone user actually needs from this bar, so they're what's left. */
 @media(max-width:360px){.hdr-gh{display:none}}
+/* Below 340 even that is not enough: with the GitHub mark gone the Download
+   button still overhung the viewport by 9px at 320 — a real width (the
+   smallest iPhone), and one check-site never sampled, because it tests 360 as
+   its narrowest. The wordmark is the item to give up here; the page's own
+   title is directly beneath it, and Download is the thing the bar exists for.
+   Swept 320-1920 in 20px steps rather than spot-checked. */
+@media(max-width:340px){
+  .topbar .brand{display:none}
+  .btn{padding:0 11px}
+}
 
 /* ── shell: one centred column, and no rail ─────────────────────────────
    This page used to reproduce the app's own layout — a sticky, full-height

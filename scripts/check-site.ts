@@ -68,7 +68,19 @@ const SHAPES: Shape[] = [
   { name: 'repo root', base: '/', entry: 'index.html' },
   { name: 'deployed', base: '/projects/slipscan/', entry: 'index.html' },
 ];
-const BREAKPOINTS = [360, 768, 1440];
+// Three round numbers used to be enough to feel covered and were not. Both
+// pages overflowed in bands this list stepped straight over: the header's
+// Vulos mark overhung from ~840-880 on docs.html, and the Download button
+// overhung at 320 on index.html — below the narrowest width ever sampled.
+// Twice now a header-overflow fix has moved a breakpoint and moved the broken
+// band with it rather than closing it, because the check only ever looked
+// where the fix was aimed.
+//
+// So this samples the edges (320 is the smallest phone anyone still uses, 1920
+// the commonest desktop) and, in between, the widths where this page actually
+// changes layout — each of its media queries and one width either side of it.
+// It is nine viewports instead of three and costs a few seconds.
+const BREAKPOINTS = [320, 340, 360, 480, 640, 768, 820, 860, 900, 960, 1040, 1200, 1440, 1920];
 
 // A run that dies early must fail, not pass by doing nothing. Every shape
 // contributes the same fixed number of assertions across the two pages.

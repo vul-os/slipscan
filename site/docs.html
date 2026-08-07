@@ -57,7 +57,7 @@ document.documentElement.setAttribute('data-theme',s==='light'||s==='dark'?s:(ma
   --shadow-raised:inset 0 1px 0 0 var(--hairline);
   --grain:.028;
   --quick:120ms; --base:200ms; --ease:cubic-bezier(.2,0,.2,1);
-  --radius:14px; --max:1180px;
+  --radius:14px; --max:1360px;
   --mono:ui-monospace,SFMono-Regular,"SF Mono","Geist Mono",Menlo,Consolas,monospace;
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
   color-scheme:dark;
@@ -134,7 +134,13 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
    whole tablet range; the links only go at 720 as before. Both thresholds sit
    well inside the flex fallback above, so the grid-centred layout never has to
    reason about them. */
-@media(max-width:820px){.bookchip{display:none}}
+/* 960, not 820. The bar's fixed items need ~970px with the chip shown (the
+   chip alone is 245px), so hiding it at 820 left a second broken band —
+   roughly 821-880px — where the Vulos mark overhung the viewport. That is the
+   same failure the note above describes being fixed once already at 720; it
+   was moved to 820 and the band moved with it rather than closing. Measured,
+   then swept across 320-1920 in 20px steps. */
+@media(max-width:960px){.bookchip{display:none}}
 @media(max-width:720px){.navlinks{display:none}}
 .iconbtn{
   display:grid;place-items:center;width:32px;height:32px;border-radius:9px;
@@ -156,8 +162,17 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
 .btn:hover{background:color-mix(in srgb,var(--accent) 86%,#fff)}
 
 /* Docs shell */
-.docs-shell{display:grid;grid-template-columns:250px minmax(0,1fr);gap:36px;align-items:start;padding:30px 0 70px}
-@media(max-width:900px){.docs-shell{grid-template-columns:1fr;gap:22px}}
+/* Chapters | prose | on-this-page. The right rail is the first thing to go,
+   then the chapter list stacks above the prose — the same order the other
+   docs pages in the suite drop them in. minmax(0,1fr) on the prose column
+   because a grid child defaults to min-width:auto and a wide <pre> or table
+   would otherwise push the page sideways. */
+.docs-shell{
+  display:grid;grid-template-columns:250px minmax(0,1fr) 210px;gap:40px;
+  align-items:start;padding:30px 0 70px;
+}
+@media(max-width:1200px){.docs-shell{grid-template-columns:238px minmax(0,1fr);gap:32px}.docs-toc{display:none}}
+@media(max-width:900px){.docs-shell{grid-template-columns:minmax(0,1fr);gap:22px}}
 .docs-nav{
   position:sticky;top:82px;border:1px solid var(--line);border-radius:var(--radius);
   background:var(--panel);padding:12px;box-shadow:var(--shadow-raised);max-height:calc(100dvh - 104px);overflow-y:auto;
@@ -177,6 +192,22 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
 }
 @media(max-width:900px){.docs-nav{position:static;max-height:none}}
 .docs-main{min-width:0}
+
+/* On this page — built from the rendered headings after each chapter loads. */
+.docs-toc{position:sticky;top:82px;max-height:calc(100dvh - 104px);overflow-y:auto}
+.docs-toc .label{
+  font-family:var(--mono);font-size:11.5px;text-transform:uppercase;letter-spacing:.1em;
+  color:var(--t3);padding:0 0 9px 11px;
+}
+.docs-toc a{
+  display:block;padding:5px 11px;font-size:13px;color:var(--t3);line-height:1.4;
+  border-left:2px solid var(--line);
+  transition:color var(--quick) var(--ease),border-color var(--quick) var(--ease);
+}
+.docs-toc a:hover{color:var(--t1);border-left-color:var(--line-2)}
+.docs-toc a.lvl3{padding-left:22px;font-size:12.5px}
+.docs-toc a[aria-current=true]{color:var(--t1);border-left-color:var(--accent);font-weight:600}
+.docs-toc .empty{padding:5px 11px;font-size:12.5px;color:var(--t3)}
 
 /* Markdown */
 .markdown{font-size:16px;overflow-wrap:anywhere}
@@ -407,6 +438,7 @@ kbd,code,pre,.mono{font-family:var(--mono);font-variant-numeric:tabular-nums lin
     <div class="docs-title" id="crumb"></div>
     <article class="markdown" id="content">Loading…</article>
   </main>
+  <nav class="docs-toc" id="docsToc" aria-label="On this page"></nav>
 </div>
 
 <footer class="site-footer">
@@ -822,6 +854,7 @@ async function load(){
   }
   content.className = 'markdown';
   content.innerHTML = 'Loading…';
+  if (docsToc) docsToc.innerHTML = '';
   try {
     const res = await fetch(doc.path, {cache:'no-cache'});
     if(!res.ok) throw new Error('HTTP '+res.status);
@@ -847,13 +880,63 @@ async function load(){
     });
     content.querySelectorAll('a[href^="http"]').forEach(a=>{a.target='_blank';a.rel='noopener';});
 
+    buildToc();
     await renderMermaid();
     rendered = doc.slug;
     jump(anchor);
   } catch(err){
     rendered = null;
+    if (docsToc) docsToc.innerHTML = '';
     content.innerHTML = '<div class="docs-error">Could not load <code>'+doc.path.split('/').pop()+'</code> — '+err.message+'</div>';
   }
+}
+
+/* ── on this page ─────────────────────────────────────────────────────
+   Built from the headings the chapter actually rendered, so it can never
+   list a section that is not there. h2 and h3 only: h1 is the chapter
+   title (already the crumb above), and h4+ makes the rail longer than the
+   prose it indexes. A chapter with no subheadings gets a stated empty
+   state rather than an unexplained blank column. */
+var docsToc = document.getElementById('docsToc');
+var tocSpy = null;
+
+function buildToc(){
+  if(!docsToc) return;
+  var heads = [].slice.call(content.querySelectorAll('h2,h3'));
+  if(!heads.length){
+    docsToc.innerHTML = '<div class="label">On this page</div>' +
+      '<div class="empty">No sections in this chapter.</div>';
+    return;
+  }
+  docsToc.innerHTML = '<div class="label">On this page</div>' + heads.map(function(h){
+    return '<a href="#' + encodeURIComponent(rendered || '') + '" data-id="' + h.id + '"' +
+      (h.tagName === 'H3' ? ' class="lvl3"' : '') + '>' + h.textContent + '</a>';
+  }).join('');
+
+  [].forEach.call(docsToc.querySelectorAll('a[data-id]'), function(a){
+    a.addEventListener('click', function(e){
+      e.preventDefault();
+      var el = document.getElementById(a.dataset.id);
+      if(el) el.scrollIntoView({block:'start', behavior: reduceMotion() ? 'auto' : 'smooth'});
+    });
+  });
+
+  if(tocSpy) tocSpy.disconnect();
+  if(!('IntersectionObserver' in window)) return;
+  tocSpy = new IntersectionObserver(function(entries){
+    entries.forEach(function(en){
+      if(!en.isIntersecting) return;
+      [].forEach.call(docsToc.querySelectorAll('a[data-id]'), function(a){
+        if(a.dataset.id === en.target.id) a.setAttribute('aria-current','true');
+        else a.removeAttribute('aria-current');
+      });
+    });
+  }, {rootMargin:'-80px 0px -70% 0px'});
+  heads.forEach(function(h){ tocSpy.observe(h); });
+}
+
+function reduceMotion(){
+  return window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 window.addEventListener('hashchange', load);
