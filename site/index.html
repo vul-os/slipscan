@@ -385,16 +385,27 @@ h1 .slash{color:var(--accent-text)}
    noise or steal width the section head's own text needs, and this page's
    real visual proof is the screenshots below, not a diagram standing in
    for one. */
-.section-head{display:flex;align-items:center;justify-content:space-between;gap:36px}
-.section-head .sh-text{flex:1;min-width:0}
-.illo-wrap{flex:none;width:clamp(126px,15vw,190px)}
+/* A grid with a declared illustration column, not `justify-content:
+   space-between` on a flex row. Space-between put whatever slack the row had
+   between the two children, so the copy stopped around 55% and the drawing
+   floated at the far edge with a band of nothing between them — and the width
+   of that band changed with the length of the heading, which is why the
+   "what you get" and "screens" heads did not line up with each other or with
+   the full-width grids underneath them. The column is fixed now, so both
+   heads resolve identically at any width. */
+.section-head{
+  display:grid;grid-template-columns:minmax(0,1fr) clamp(150px,16vw,230px);
+  gap:clamp(28px,4vw,60px);align-items:center;
+}
+.section-head .sh-text{min-width:0}
+.illo-wrap{width:100%}
 /* Below 900px the head stacks and the illustration sits under the copy at a
    fixed size, rather than being dropped. It used to be display:none, which
    left the narrow layout — the one most people actually read — with no
    drawing on it at all. */
 @media(max-width:900px){
-  .section-head{flex-direction:column;align-items:stretch;gap:22px}
-  .illo-wrap{width:170px;align-self:center}
+  .section-head{grid-template-columns:minmax(0,1fr);gap:22px}
+  .illo-wrap{width:170px;justify-self:center}
 }
 .illo{display:block;width:100%;height:auto;overflow:visible}
 .illo .i-line{stroke:var(--line-2);stroke-width:1.6;fill:none;stroke-linecap:round;stroke-linejoin:round}
