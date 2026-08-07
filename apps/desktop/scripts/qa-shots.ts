@@ -4,7 +4,7 @@
  *
  * This is the responsive/accessibility sweep, not the gallery: it exists to
  * be looked through by a human before a UI change lands, and it covers two
- * things the published gallery (scripts/screenshot.mjs, a single 1440px dark
+ * things the published gallery (scripts/screenshot.ts, a single 1440px dark
  * shot per route) structurally cannot.
  *
  *   - The `rail` breakpoint. The sidebar collapses to an icon rail below
@@ -31,12 +31,12 @@ const OUT = process.env.QA_OUT || join(tmpdir(), "slipscan-qa-shots");
 const BASE = "http://localhost:1420";
 const WIDTHS = [760, 1100, 1520] as const;
 const HEIGHT = 960;
-// Same authority as the gallery — see scripts/routes.mjs. This list used to
+// Same authority as the gallery — see scripts/routes.ts. This list used to
 // be inline here too, and was missing `household` and `packs`.
 const ROUTES = readRoutes();
 // The sweep is compared run-to-run by eye, so it is pinned exactly as the
 // gallery is: an unpinned clock changes the dashboard greeting and, after
-// July 2026, empties every month-scoped screen. See screenshot.mjs.
+// July 2026, empties every month-scoped screen. See screenshot.ts.
 const LOCALE_TZ = "Africa/Johannesburg";
 const CAPTURE_TIME = "2026-07-16T09:30:00+02:00";
 
@@ -123,7 +123,7 @@ async function main(): Promise<void> {
           await openRoute(page, "receipts");
           try {
             // The expander is the button in the row's first cell, not the
-            // row — see the matching note in screenshot.mjs.
+            // row — see the matching note in screenshot.ts.
             const row = page.locator("tbody button[aria-expanded]").first();
             await row.click({ timeout: 3000 });
             await page.waitForSelector('button[aria-expanded="true"]', {

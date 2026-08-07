@@ -6,7 +6,7 @@
  * `vite dev` — the browser build uses the in-memory mock dataset
  * (src/lib/api/mock.ts), so no backend is needed. Writes PNGs to
  * docs/screenshots/ (standard location; hero.png = dashboard.png), then
- * hands off to scripts/sync-screenshots.mjs to mirror them into
+ * hands off to scripts/sync-screenshots.ts to mirror them into
  * assets/screens/ and site/screenshots/.
  *
  * Usage:  npm run screenshot          (starts vite itself on :1420)
@@ -24,7 +24,7 @@ import { readRoutes } from "./routes.ts";
 
 const appDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = resolve(appDir, "..", "..");
-// The gallery is written here and mirrored outward by sync-screenshots.mjs.
+// The gallery is written here and mirrored outward by sync-screenshots.ts.
 // This script deliberately does not copy anywhere else: a second, hand-kept
 // mirror list is exactly how site/screenshots/ drifted before.
 const OUT_DIR = join(repoRoot, "docs", "screenshots");
@@ -197,12 +197,12 @@ async function main(): Promise<void> {
   copyFileSync(join(OUT_DIR, "dashboard.png"), join(OUT_DIR, "hero.png"));
   console.log("  ✓ hero.png (copy of dashboard.png)");
 
-  // Mirror outward. sync-screenshots.mjs owns which directories exist and
+  // Mirror outward. sync-screenshots.ts owns which directories exist and
   // which files each one skips (site/ drops hero.png), so it is the only
   // thing that copies — this script just tells it there is new work.
   const sync = spawnSync(
     process.execPath,
-    [join(repoRoot, "scripts", "sync-screenshots.mjs")],
+    [join(repoRoot, "scripts", "sync-screenshots.ts")],
     { stdio: "inherit" },
   );
   if (sync.status !== 0) {

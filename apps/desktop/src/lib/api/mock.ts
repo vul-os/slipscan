@@ -642,7 +642,7 @@ const vatRates: VatRate[] = [
   },
 ];
 
-const accounts: Account[] = [
+export const accounts: Account[] = [
   {
     id: id("ac01"),
     book_id: BOOK_ID,
@@ -686,22 +686,49 @@ const accounts: Account[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// net worth — a few months of plausible history, in the same order as
-// `accounts`, so the Dashboard chart has something to draw in mock mode.
-// Real history comes from `networth_backfill` reconstructing the actual
-// transaction ledger; this is fabricated for the mock fallback only, and
-// its last row matches `accounts`' own current balances so the chart's most
-// recent point agrees with the stat tiles above it.
+// net worth — month-end history in the same order as `accounts`, so the
+// Dashboard chart has something to draw in mock mode. Real history comes from
+// `networth_backfill` reconstructing the actual transaction ledger; this is
+// fabricated for the mock fallback only.
+//
+// Two properties matter, and both were wrong before — see the assertions in
+// mock-networth.test.ts, which pin them:
+//
+// 1. It spans the whole window the Dashboard asks for. The Dashboard requests
+//    twelve months and labels the card "last 12 months", but this table used
+//    to start at 2026-02-28 — five months of line drawn into a twelve-month
+//    axis, with the left 60% of the card empty. NetWorthChart draws the
+//    requested window rather than the data's extent (deliberately, so a short
+//    book cannot masquerade as a full one), so the gap was the data's, not
+//    the chart's.
+//
+// 2. Its last visible row equals `accounts`' current balances. The old last
+//    row did match them, but was dated 2026-08-03 — after DEMO_TODAY, so the
+//    range filter dropped it and the chart ended on 2026-06-30 showing
+//    R55,160.00 while the stat tile above read R56,844.22. A final row dated
+//    on DEMO_TODAY itself keeps the two in agreement.
+//
+// The December dip is deliberate: a monotonic line gives the eye no shape to
+// read, and a real book has a spending season.
 // ---------------------------------------------------------------------------
 
-const networthHistory: { date: string; totals: number[] }[] = [
-  { date: "2026-02-28", totals: [1_180_000, 4_120_000, -410_000, 35_000] },
-  { date: "2026-03-31", totals: [1_340_000, 4_220_000, -520_000, 38_000] },
-  { date: "2026-04-30", totals: [1_510_000, 4_310_000, -610_000, 39_500] },
-  { date: "2026-05-31", totals: [1_620_000, 4_400_000, -655_000, 40_000] },
-  { date: "2026-06-30", totals: [1_705_000, 4_470_000, -700_000, 41_000] },
-  { date: "2026-07-31", totals: [1_780_000, 4_510_000, -725_000, 41_500] },
-  { date: "2026-08-03", totals: [1_824_540, 4_550_000, -732_118, 42_000] },
+/** The date the mock dataset presents as "today" — see scripts/screenshot.ts,
+ *  which pins the capture clock to the same day. */
+export const DEMO_TODAY = "2026-07-16";
+
+export const networthHistory: { date: string; totals: number[] }[] = [
+  { date: "2025-08-31", totals: [985_000, 3_820_000, -281_000, 31_500] },
+  { date: "2025-09-30", totals: [1_042_000, 3_895_000, -305_400, 33_000] },
+  { date: "2025-10-31", totals: [1_128_000, 3_968_000, -352_900, 29_800] },
+  { date: "2025-11-30", totals: [1_205_000, 4_042_000, -398_200, 34_600] },
+  { date: "2025-12-31", totals: [1_058_000, 4_071_000, -614_500, 26_400] },
+  { date: "2026-01-31", totals: [1_142_000, 4_118_000, -571_300, 30_200] },
+  { date: "2026-02-28", totals: [1_246_000, 4_186_000, -498_700, 35_000] },
+  { date: "2026-03-31", totals: [1_351_000, 4_242_000, -546_100, 38_000] },
+  { date: "2026-04-30", totals: [1_498_000, 4_318_000, -602_400, 39_500] },
+  { date: "2026-05-31", totals: [1_618_000, 4_402_000, -651_800, 40_000] },
+  { date: "2026-06-30", totals: [1_729_000, 4_478_000, -698_500, 41_000] },
+  { date: DEMO_TODAY, totals: [1_824_540, 4_550_000, -732_118, 42_000] },
 ];
 
 function networthPoints(): NetWorthPoint[] {
